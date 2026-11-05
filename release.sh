@@ -12,7 +12,16 @@ xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release -sdk 
 rm -rf build/ipa && mkdir -p build/ipa/Payload && cp -R $DD/Build/Products/Release-iphoneos/DouDuo.app build/ipa/Payload/
 (cd build/ipa && rm -f ../DouDuo-$VER-unsigned.ipa && zip -qry ../DouDuo-$VER-unsigned.ipa Payload)
 gh release view v$VER >/dev/null 2>&1 || gh release create v$VER --title "抖Duo $VER" --notes "见 README 安装说明"
-gh release upload v$VER build/DouDuo-$VER-unsigned.ipa --clobber
+# GitHub 上传偶发 408（家里上行只有几十 KB/s，15MB 包经常超时）→ 重试 3 次，失败就先挂自己服务器
+for i in 1 2 3; do
+  gh release upload v$VER build/DouDuo-$VER-unsigned.ipa --clobber && break
+  echo "上传重试 $i ..."; sleep 5
+done
+if ! gh release view v$VER --json assets --jq '.assets[].name' | grep -q "unsigned.ipa"; then
+  S0=~/Sites/wuwei; SEC0=$(cat $S0/.dl_secret)
+  cp build/DouDuo-$VER-unsigned.ipa "$S0/dl/$SEC0/DouDuo-$VER-unsigned.ipa"
+  echo "⚠️ GitHub 传不上去，已挂到 https://dl.remon.me/dl/$SEC0/DouDuo-$VER-unsigned.ipa"
+fi
 # ② Ad Hoc OTA
 xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release -destination 'generic/platform=iOS' -archivePath build/DouDuo.xcarchive -allowProvisioningUpdates DEVELOPMENT_TEAM=$TEAM archive -quiet
 xcodebuild -exportArchive -archivePath build/DouDuo.xcarchive -exportPath build/adhoc -exportOptionsPlist signing/ExportOptions-adhoc.plist -allowProvisioningUpdates -quiet

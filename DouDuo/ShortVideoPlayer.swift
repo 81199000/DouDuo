@@ -65,9 +65,10 @@ struct PlayerPage: View {
         ZStack {
             Color.black
             if let vlc {
-                VLCPlayerSurface(controller: vlc, fillWidth: fillWidth)
+                // 画面铺到屏幕边缘（状态栏/底部安全区也盖住）：跟抖音原生一样，不留上下黑边
+                VLCPlayerSurface(controller: vlc, fillWidth: fillWidth).ignoresSafeArea()
             } else if let player {
-                VideoSurface(player: player, fillWidth: fillWidth)
+                VideoSurface(player: player, fillWidth: fillWidth).ignoresSafeArea()
             } else {
                 ProgressView().tint(.white)
             }
@@ -401,7 +402,7 @@ final class PlayerUIView: UIView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 视频比屏幕窄（左右黑边）→ 放大到宽度铺满，上下裁掉一点；比屏幕宽（横屏）仍完整显示。
+    /// 自适应：竖屏视频左右黑边 → 放大铺满宽度；横屏/宽视频上下黑边 → 放大铺满高度。
     /// presentationSize 要等 readyToPlay 才有值，所以 layoutSubviews + KVO 都刷一次。
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -416,9 +417,8 @@ final class PlayerUIView: UIView {
     func applyGravity() {
         guard let size = playerLayer.player?.currentItem?.presentationSize, size.width > 1, size.height > 1,
               bounds.width > 1, bounds.height > 1 else { return }
-        let video = size.width / size.height, screen = bounds.width / bounds.height
-        let fill = fillWidth && video < screen - 0.01
-        let g: AVLayerVideoGravity = fill ? .resizeAspectFill : .resizeAspect
+        // 竖屏/横屏都自适应：只要画面比例和屏幕不一致就把多出来的边裁掉铺满（无黑边）
+        let g: AVLayerVideoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
         if playerLayer.videoGravity != g { playerLayer.videoGravity = g }
     }
 }
