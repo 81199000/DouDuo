@@ -97,7 +97,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
 
     /// 设 media 但**不立即 play**——必须等 VLCPlayerSurface 把 drawable 挂上后
     /// 再由 drawableAttached() 触发，否则 VLC 解码无视频输出目标 → 有声无画。
-    func play(url: URL, autoplay: Bool = true, headers: [String: String] = [:]) {
+    func play(url: URL, autoplay: Bool = true, headers: [String: String] = [:], cachingMs: Int32 = 1500) {
         let media = VLCMedia(url: url)
         // 抖音 CDN 不带浏览器 UA + Referer 会 403
         if let ua = headers["User-Agent"] { media.addOption(":http-user-agent=\(ua)") }
@@ -105,7 +105,8 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         // 逐 media 再声明一次硬解，确保 VideoToolbox 生效
         media.addOption(":avcodec-hw=videotoolbox")
         media.addOption(":codec=videotoolbox,avcodec")
-        media.addOption(":network-caching=1500")
+        media.addOption(":network-caching=\(cachingMs)")
+        media.addOption(":live-caching=\(cachingMs)")
         mediaPlayer.media = media
         pendingURL = url
         pendingAutoplay = autoplay
