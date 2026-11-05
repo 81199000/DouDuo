@@ -84,6 +84,28 @@ final class DouDuoUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
     }
 
+    /// 停声链路本身（不依赖切后台事件）：8 秒后触发一次 pauseAll，进度必须冻住
+    func testPauseAllPlumbing() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_BGTEST"] = "1"
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 60), .completed)
+        sleep(5)
+        let t1 = playTime(app)
+        sleep(12)                       // 跨过 20s 触发点
+        let t2 = playTime(app)
+        sleep(6)
+        let t3 = playTime(app)
+        print("DDTEST plumbing t1=\(t1) t2=\(t2) t3=\(t3)")
+        XCTAssertGreaterThan(t1, 0)
+        XCTAssertLessThanOrEqual(t3, t2 + 1, "pauseAll 之后进度还在走")
+    }
+
+    /// 注：切后台停声用 shell 验证（UI 测试里 press(.home) 在这台无头环境不生效）：
+    ///   xcrun simctl launch <sim> me.rrmm.douduo → 播起来后 launch com.apple.Preferences 把它顶到后台
+    ///   → 读 App 容器 Documents/ddlog.txt，能看到 pauseAll / pauseForBackground，且回前台 t 不跳。
     /// 竖屏 + 横屏 都要自适应（无黑边）：本地 720x1280 与 1280x720 测试片各跑一遍
     func testLocalFillBothOrientations() throws {
         // 先启动再转屏（启动时设方向会被 App 启动重置）
