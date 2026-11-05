@@ -335,7 +335,7 @@ final class DYPreloader {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
                 continue
             }
-            let item = AVPlayerItem(asset: AVURLAsset(url: url))
+            let item = AVPlayerItem(asset: DYMedia.asset(url))
             item.preferredForwardBufferDuration = 6
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
@@ -875,6 +875,7 @@ private struct DYVideoPage: View {
                 .overlay(Circle().stroke(fg, lineWidth: 1.5))
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("douyin.author")
             action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                    tint: liked ? theme.status.danger.color(for: scheme) : fg, onLike)
             action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, onComments)
