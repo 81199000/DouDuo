@@ -385,6 +385,8 @@ final class DYFeedModel: ObservableObject {
     /// 电脑版推荐流给匿名用户大多是横屏长视频（实测竖屏只占一两成），默认只留竖屏 + 图集，
     /// 不够就连拉几页补齐；菜单里可关掉
     @AppStorage("douyin_portrait_only_v1") var portraitOnly = true
+    /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
+    @AppStorage("douyin_autofit_v1") var autoFit = true
 
     func loadMore(_ bridge: DouyinBridge) async {
         guard !loading, hasMore || items.isEmpty else { return }
@@ -477,7 +479,12 @@ struct DouyinFeedScreen: View {
             }
             #endif
         }
-        .onChange(of: currentID) { _, _ in focusCurrent() }
+        .onChange(of: currentID) { old, new in
+            // ⚠️ 宽屏（Duo 内屏）首次布局时 ScrollView 会把 scrollPosition 回写成 nil → 没有「当前条」→ 全部不播、上滑也不认。
+            // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
+            if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
+            focusCurrent()
+        }
         .onChange(of: feed.portraitOnly) { _, _ in
             preloader.clear(); feed.reset(); currentID = nil
             Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; focusCurrent() }
@@ -593,7 +600,7 @@ struct DouyinFeedScreen: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $currentID)
+                .scrollPosition(id: $currentID, anchor: .center)
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
             }
@@ -612,6 +619,7 @@ struct DouyinFeedScreen: View {
                 Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; focusCurrent() }
             }
             Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
+            Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
             Button("网页版 / 登录", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
             if let cur = current {
                 ShareLink(item: cur.webURL) { Label("分享链接", systemImage: "square.and.arrow.up") }
@@ -794,6 +802,7 @@ private struct DYVideoPage: View {
     let preloader: DYPreloader
     @State private var heart = false
     @State private var descExpanded = false
+    @AppStorage("douyin_autofit_v1") private var autoFit = true
 
     var body: some View {
         let fg = theme.media.onMedia.color(for: scheme)
@@ -810,7 +819,7 @@ private struct DYVideoPage: View {
                                         heart = true
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
                                     },
-                                    onSavePosition: onSavePosition, onClose: {})
+                                    onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in

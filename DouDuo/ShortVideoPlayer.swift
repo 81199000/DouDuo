@@ -21,10 +21,11 @@ extension PlayerPage {
                          compactChrome: Bool,
                          preparedPlayer: (() -> AVPlayer?)? = nil,
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
-                         onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void) -> PlayerPage {
+                         onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
+                         fillWidth: Bool = true) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
-                   onDoubleTap: onDoubleTap, onSavePosition: onSavePosition)
+                   onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth)
     }
 }
 
@@ -39,6 +40,8 @@ struct PlayerPage: View {
     let onEnded: (() -> Void)?
     let onDoubleTap: (() -> Void)?
     let onSavePosition: (Double) -> Void
+    /// 竖屏时视频比屏幕窄（左右黑边）→ 放大铺满宽度；关掉则保持完整画面（上下留边）
+    var fillWidth: Bool = true
 
     @State private var player: AVPlayer?
     @State private var imgGen: AVAssetImageGenerator?
@@ -62,14 +65,14 @@ struct PlayerPage: View {
         ZStack {
             Color.black
             if let vlc {
-                VLCPlayerSurface(controller: vlc)
-                    .overlay(gestures)
+                VLCPlayerSurface(controller: vlc, fillWidth: fillWidth)
             } else if let player {
-                VideoSurface(player: player)
-                    .overlay(gestures)
+                VideoSurface(player: player, fillWidth: fillWidth)
             } else {
                 ProgressView().tint(.white)
             }
+            // 手势层铺满整页（含视频上下黑边）：横滑快进 / 单击 / 双击 / 长按，竖滑漏给分页
+            if player != nil || vlc != nil { gestures }
             if seeking { seekHUD }
             if isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
                 Image(systemName: "play.fill").font(.system(size: 52)).foregroundStyle(.white.opacity(0.75))
@@ -139,6 +142,8 @@ struct PlayerPage: View {
                 requestPreview(seekPreview)
             },
             onSeekEnded: {
+                #if DEBUG
+                    #endif
                 if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
             },
             verticalFirst: true
@@ -210,6 +215,12 @@ struct PlayerPage: View {
     // MARK: 播放
 
     private func setup() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_FORCE_VLC"] == "1" {
+            if knownDuration > 0 { duration = knownDuration }
+            startVLC(); return
+        }
+        #endif
         let pre = preparedPlayer?()
         let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? DYMedia.asset(url)
         let p = pre ?? AVPlayer(playerItem: AVPlayerItem(asset: asset))
@@ -367,13 +378,19 @@ func ddWrite(_ s: String) {
 
 struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
-    func makeUIView(context: Context) -> PlayerUIView { PlayerUIView(player: player) }
+    var fillWidth: Bool = true
+    func makeUIView(context: Context) -> PlayerUIView {
+        let v = PlayerUIView(player: player); v.fillWidth = fillWidth; v.watchSize(); return v
+    }
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         if uiView.playerLayer.player !== player { uiView.playerLayer.player = player }
+        uiView.fillWidth = fillWidth
+        uiView.applyGravity()
     }
 }
 
 final class PlayerUIView: UIView {
+    var fillWidth = true
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     init(player: AVPlayer) {
@@ -383,4 +400,26 @@ final class PlayerUIView: UIView {
         backgroundColor = .black
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// 视频比屏幕窄（左右黑边）→ 放大到宽度铺满，上下裁掉一点；比屏幕宽（横屏）仍完整显示。
+    /// presentationSize 要等 readyToPlay 才有值，所以 layoutSubviews + KVO 都刷一次。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        applyGravity()
+    }
+    private var sizeObs: NSKeyValueObservation?
+    func watchSize() {
+        sizeObs = playerLayer.player?.currentItem?.observe(\.presentationSize, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.applyGravity() }
+        }
+    }
+    func applyGravity() {
+        guard let size = playerLayer.player?.currentItem?.presentationSize, size.width > 1, size.height > 1,
+              bounds.width > 1, bounds.height > 1 else { return }
+        let video = size.width / size.height, screen = bounds.width / bounds.height
+        let fill = fillWidth && video < screen - 0.01
+        let g: AVLayerVideoGravity = fill ? .resizeAspectFill : .resizeAspect
+        if playerLayer.videoGravity != g { playerLayer.videoGravity = g }
+    }
 }
+

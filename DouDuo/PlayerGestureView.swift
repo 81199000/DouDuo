@@ -113,6 +113,7 @@ struct PlayerGestureView: UIViewRepresentable {
 
         // 方向仲裁：Pan 起手定轴。横向偏置——除非竖向明显主导才让给 ScrollView 切视频，
         // 否则都判为快进，避免快进时带点下滑分量被误识别成切视频。
+
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
             if g is UIScreenEdgePanGestureRecognizer { return true }   // 边缘退出始终允许
             guard let pg = g as? UIPanGestureRecognizer, let v = view else { return true }
