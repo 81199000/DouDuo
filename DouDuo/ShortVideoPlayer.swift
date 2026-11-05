@@ -3,6 +3,51 @@
 import SwiftUI
 import AVFoundation
 
+/// 全局播放登记表：App 进后台/失焦时由 App 层直接命令所有播放器停声，
+/// 比依赖视图的 onReceive 稳（视图可能还没渲染、或被 LazyVStack 回收）。
+final class DDPlayback {
+    static let shared = DDPlayback()
+    private var stoppers: [UUID: () -> Void] = [:]
+    private var starters: [UUID: () -> Void] = [:]
+    private var lock = NSLock()
+    /// App 当前是否在前台：注册晚于切后台时（视频刚起播），要立刻停，不能接着响
+    private(set) var appIsActive = true
+
+    func register(_ id: UUID, stop: @escaping () -> Void, start: @escaping () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        stoppers[id] = stop; starters[id] = start
+        let shouldStop = !appIsActive
+        #if DEBUG
+        ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive)")
+        #endif
+        if shouldStop { stop() }
+    }
+    func unregister(_ id: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        stoppers[id] = nil; starters[id] = nil
+        #if DEBUG
+        ddWrite("DDBG unregister \(id.uuidString.prefix(4)) total=\(stoppers.count)")
+        #endif
+    }
+    func pauseAll() {
+        appIsActive = false
+        lock.lock(); let s = Array(stoppers.values); lock.unlock()
+        #if DEBUG
+        ddWrite("DDBG pauseAll count=\(s.count)")
+        #endif
+        s.forEach { $0() }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+    func resumeAll() {
+        appIsActive = true
+        lock.lock(); let s = Array(starters.values); lock.unlock()
+        #if DEBUG
+        ddWrite("DDBG resumeAll count=\(s.count)")
+        #endif
+        s.forEach { $0() }
+    }
+}
+
 /// 抖音视频 CDN（douyinvod.com）要浏览器 UA + Referer，否则 403（真机实测：plain/CoreMedia UA 403，Safari UA+Referer 206）
 enum DYMedia {
     static let headers = [
@@ -60,6 +105,7 @@ struct PlayerPage: View {
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
     @State private var avRetried = false
+    private let playbackID = UUID()
 
     var body: some View {
         ZStack {
@@ -91,8 +137,24 @@ struct PlayerPage: View {
         .overlay(alignment: .bottom) {
             if isActive { progressBar.padding(.bottom, max(bottomInset, 18)) }
         }
-        .onAppear { if player == nil { setup() } }
-        .onDisappear { teardown() }
+        .onAppear {
+            if player == nil { setup() }
+            DDPlayback.shared.register(playbackID, stop: { pauseForBackground() }, start: { resumeAfterBackground() })
+        }
+        .onDisappear {
+            DDPlayback.shared.unregister(playbackID)
+            teardown()
+        }
+        // 切后台 / 来电 / 下拉控制中心立刻停声（否则退出 App 声音还在响）
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            pauseForBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            pauseForBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            resumeAfterBackground()
+        }
         .onChange(of: isActive) { _, active in
             if let v = vlc {
                 if active { v.mediaPlayer.audio?.isMuted = false; v.mediaPlayer.play(); isPlaying = true }
@@ -272,6 +334,45 @@ struct PlayerPage: View {
         p.play()
         isPlaying = true
         watchdog(p)
+    }
+
+    /// 失焦/切后台：立即暂停并释放音频会话，声音一秒都不该多留
+    private func pauseForBackground() {
+        #if DEBUG
+        ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
+        #endif
+        if let v = vlc, v.isPlaying {
+            v.mediaPlayer.pause(); isPlaying = false
+            onSavePosition(v.current)
+        }
+        if let p = player, p.rate != 0 {
+            p.pause(); isPlaying = false
+            onSavePosition(p.currentTime().seconds)
+        }
+        #if DEBUG
+        ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
+        #endif
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// 回到前台：还是当前条就接着播
+    private func resumeAfterBackground() {
+        #if DEBUG
+        ddWrite("DDBG resumeAfterBackground id=\(id) active=\(isActive) av=\(player != nil) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1))")
+        #endif
+        guard isActive else { return }
+        if let v = vlc {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            v.mediaPlayer.audio?.isMuted = false
+            v.mediaPlayer.play(); isPlaying = true
+            return
+        }
+        if let p = player {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            p.play(); isPlaying = true
+        }
     }
 
     /// VLC 软解接管（AVPlayer 两次起不来 / 状态 failed）

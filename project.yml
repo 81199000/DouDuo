@@ -10,7 +10,7 @@ packages:
 settings:
   base:
     MARKETING_VERSION: 1.1.0
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
@@ -42,7 +42,7 @@ targets:
       properties:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        UIBackgroundModes: [audio]
+        # 不做后台播放：抖音类短视频退出/切后台就该停声，给了 audio 后台模式反而会继续响
   DouDuoUITests:
     type: bundle.ui-testing
     platform: iOS
