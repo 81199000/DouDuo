@@ -868,7 +868,8 @@ final class DYLiveModel: ObservableObject {
         sizeObs = vlc.$videoSize.receive(on: RunLoop.main).sink { [weak self] size in
             guard let self else { return }
             let r = (size.width > 0 && size.height > 0) || self.vlc.current > 0
-            if r != self.ready { self.ready = r }
+            // 只允许 false → true：播过之后短暂的缓冲不要再弹「加载中」
+            if r, !self.ready { self.ready = true }
             if r { DYLiveModel.log("DDLIVE 出画 size=\(size)") }
         }
     }
@@ -894,7 +895,8 @@ final class DYLiveModel: ObservableObject {
     func play(_ room: DYLiveRoom?) {
         // ⚠️ 别对 nil 停播：LazyVStack 布局/滚动会把 scrollPosition 回写成 nil
         guard let room else { return }
-        if loadedRoom == room.id, vlc.isPlaying || vlc.videoSize != .zero { return }
+        // 只按房间去重：缓冲瞬间 isPlaying=videoSize 都会变，按它们判断会不断重开流 → 卡顿+反复「加载中」
+        if loadedRoom == room.id, vlc.mediaPlayer.media != nil { return }
         loadedRoom = room.id
         roomRef = room
         // 画质从高到低排队：某个码流在这台机器/这个网络下起不来时自动降一档
@@ -932,7 +934,7 @@ final class DYLiveModel: ObservableObject {
         readyFallback = fb
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: fb)
         vlc.stop()   // 换码流/换房间先停，避免旧画面残留
-        vlc.play(url: u, headers: DYMedia.liveHeaders)
+        vlc.play(url: u, headers: DYMedia.liveHeaders, cachingMs: 3000)   // 直播 3 秒缓存，抗网络抖动
         DYLiveModel.log("DDLIVEPLAY room=\(roomRef?.id ?? "-") q=\(key) url=\(u.absoluteString.prefix(70)) drawable=\(vlc.mediaPlayer.drawable != nil)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
             DYLiveModel.log("DDLIVESTATE state=\(vlc.mediaPlayer.state.rawValue) size=\(vlc.videoSize) cur=\(String(format: "%.1f", vlc.current))")
@@ -954,6 +956,8 @@ private struct DYLiveFeed: View {
     @ObservedObject var model: DYLiveModel
     let onWeb: (URL) -> Void
     @State private var tick = 0      // 0.5s 刷新一次，让调试进度文案跟着走
+    @State private var scrollID: String?
+    @State private var userScrolling = false
 
     var body: some View {
         ZStack {
@@ -984,6 +988,9 @@ private struct DYLiveFeed: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // 上下滑翻直播间（抖音手感）。⚠️ 不能把 scrollPosition 直接绑到 currentID：
+                // LazyVStack 追加内容/重排时系统会自己改写它，导致直播莫名其妙切房间（看着就是卡一下+加载中）。
+                // 这里滚动位置单独存 scrollID，只有「手指在滑」时才同步给 currentID。
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(model.rooms) { room in
@@ -996,9 +1003,38 @@ private struct DYLiveFeed: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $model.currentID)
+                .scrollPosition(id: $scrollID)
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 10)
+                        .onChanged { _ in
+                            if !userScrolling { DYLiveModel.log("DDLIVEOID 手势开始") }
+                            userScrolling = true
+                        }
+                        .onEnded { _ in
+                            // 分页动画/惯性要一会儿才落位，延迟复位
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { userScrolling = false }
+                        }
+                )
+                .onChange(of: scrollID) { _, id in
+                    guard let id else { return }
+                    // 只接受「相邻」的房间切换（用户上下滑必然是相邻页）；
+                    // 系统重排时把 scrollPosition 写到很远的房间 → 拉回当前房间，避免莫名其妙换直播间
+                    let a = model.rooms.firstIndex { $0.id == id }
+                    let b = model.rooms.firstIndex { $0.id == model.currentID }
+                    let adjacent = a != nil && b != nil && abs(a! - b!) <= 1
+                    if model.currentID != id, userScrolling || adjacent {
+                        DYLiveModel.log("DDLIVEOID 切房间 \(model.currentID ?? "-") -> \(id) user=\(userScrolling)")
+                        model.currentID = id
+                    } else if id != model.currentID {
+                        DYLiveModel.log("DDLIVEOID 忽略 \(model.currentID ?? "-") -> \(id) 并拉回")
+                        scrollID = model.currentID
+                    }
+                }
+                .onChange(of: model.currentID) { _, id in
+                    if let id, scrollID != id { scrollID = id }
+                }
             }
         }
         .task {
@@ -1006,6 +1042,7 @@ private struct DYLiveFeed: View {
             model.play(model.rooms.first { $0.id == model.currentID })
         }
         .onChange(of: model.currentID) { old, id in
+            DYLiveModel.log("DDLIVEID \(old ?? "-") -> \(id ?? "-") rooms=\(model.rooms.count)")
             if id == nil, let old, model.rooms.contains(where: { $0.id == old }) {
                 model.currentID = old
                 return
