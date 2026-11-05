@@ -35,6 +35,13 @@ struct DYAweme: Identifiable, Decodable, Equatable {
     var webURL: URL { URL(string: "https://www.douyin.com/video/\(id)")! }
 }
 
+/// 点赞/收藏的结果：成功 / 没登录 / 其它失败（带原因）
+enum DYActionResult {
+    case ok
+    case notLoggedIn
+    case failed(String)
+}
+
 struct DYActionResp: Decodable {
     let status: Int
     let statusCode: Int?
@@ -177,17 +184,24 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     /// 真点赞（走网页端同一个接口，页面 SDK 自动签名）
-    func digg(_ id: String, like: Bool) async throws -> Bool {
+    func digg(_ id: String, like: Bool) async throws -> DYActionResult {
         let d = try await call(Self.diggJS, args: ["id": id, "type": like ? "1" : "0"])
         let r = try JSONDecoder().decode(DYActionResp.self, from: d)
         #if DEBUG
         ddWrite("DDACT digg id=\(id) like=\(like) status=\(r.status) code=\(r.statusCode ?? -1) msg=\(r.msg ?? "-")")
         #endif
-        return r.status == 200 && (r.statusCode ?? 0) == 0
+        return Self.interpret(r)
+    }
+
+    /// 统一解读：status_code 8 = 用户未登录；0 = 成功
+    private static func interpret(_ r: DYActionResp) -> DYActionResult {
+        if r.status == 200, (r.statusCode ?? 0) == 0 { return .ok }
+        if r.statusCode == 8 || (r.msg ?? "").contains("未登录") { return .notLoggedIn }
+        return .failed(r.msg?.isEmpty == false ? r.msg! : "HTTP \(r.status) / code \(r.statusCode ?? -1)")
     }
 
     /// 真收藏 / 取消收藏
-    func favorite(_ id: String, add: Bool) async throws -> Bool {
+    func favorite(_ id: String, add: Bool) async throws -> DYActionResult {
         #if DEBUG
         ddWrite("DDACT fav start id=\(id) add=\(add)")
         #endif
@@ -199,7 +213,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         #if DEBUG
         ddWrite("DDACT fav id=\(id) add=\(add) status=\(r.status) code=\(r.statusCode ?? -1) msg=\(r.msg ?? "-")")
         #endif
-        return r.status == 200 && (r.statusCode ?? 0) == 0
+        return Self.interpret(r)
     }
 
     /// 是否已登录（登录后推荐流才跟着账号走）
@@ -580,11 +594,6 @@ struct DouyinFeedScreen: View {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
             live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
             Task {
-                let on = await bridge.isLoggedIn()
-                feed.isLoggedIn = on
-                #if DEBUG
-                ddWrite("DDACT 网页返回后登录态=\(on)")
-                #endif
                 await feed.loadMore(bridge)
                 currentID = feed.items.first?.id
                 focusCurrent()
@@ -635,14 +644,7 @@ struct DouyinFeedScreen: View {
         .onChange(of: tab) { _, t in
             if t == .recommend { focusCurrent() }
         }
-        .task {
-            // 登录后推荐流才按账号个性化；没登录就是冷启动的「推荐」
-            let on = await bridge.isLoggedIn()
-            feed.isLoggedIn = on
-            #if DEBUG
-            ddWrite("DDACT 推荐流登录态=\(on)")
-            #endif
-        }
+
     }
 
     /// 顶部「推荐 / 直播」切换（抖音顶栏同款位置）
@@ -721,20 +723,27 @@ struct DouyinFeedScreen: View {
         }
     }
 
-    /// 点赞：先本地乐观更新，再调抖音网页接口；失败回滚并提示
+    /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
+    /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
     private func toggleLike(_ id: String, force: Bool?) {
-        guard ensureLoggedIn() else { return }
         let has = feed.liked.contains(id)
         let want = force ?? !has
         guard want != has else { return }
         if want { feed.liked.insert(id) } else { feed.liked.remove(id) }
         Task {
             do {
-                let ok = try await bridge.digg(id, like: want)
-                if !ok {
+                switch try await bridge.digg(id, like: want) {
+                case .ok:
+                    break
+                case .notLoggedIn:
                     await MainActor.run {
                         if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                        showToast("点赞没成功（请先在菜单里「网页版 / 登录」登录抖音）")
+                        showToast("抖音未登录：菜单 → 网页版 / 登录")
+                    }
+                case .failed(let why):
+                    await MainActor.run {
+                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
+                        showToast("点赞失败：\(why)")
                     }
                 }
             } catch {
@@ -751,20 +760,24 @@ struct DouyinFeedScreen: View {
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
     private func toggleCollect(_ id: String) {
-        guard ensureLoggedIn() else { return }
         let has = feed.collected.contains(id)
         let want = !has
         if want { feed.collected.insert(id) } else { feed.collected.remove(id) }
         Task {
             do {
-                let ok = try await bridge.favorite(id, add: want)
-                if !ok {
+                switch try await bridge.favorite(id, add: want) {
+                case .ok:
+                    await MainActor.run { showToast(want ? "已收藏" : "已取消收藏") }
+                case .notLoggedIn:
                     await MainActor.run {
                         if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                        showToast("收藏没成功（可能没登录，或该视频不允许收藏）")
+                        showToast("抖音未登录：菜单 → 网页版 / 登录")
                     }
-                } else {
-                    await MainActor.run { showToast(want ? "已收藏" : "已取消收藏") }
+                case .failed(let why):
+                    await MainActor.run {
+                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
+                        showToast("收藏失败：\(why)")
+                    }
                 }
             } catch {
                 #if DEBUG
@@ -776,13 +789,6 @@ struct DouyinFeedScreen: View {
                 }
             }
         }
-    }
-
-    /// 未登录就别调接口了（服务端只会回「用户未登录」）。只提示、不自动跳网页版——老板嫌点赞时弹网页
-    private func ensureLoggedIn() -> Bool {
-        if feed.isLoggedIn { return true }
-        showToast("请先登录：菜单 → 网页版 / 登录")
-        return false
     }
 
     private func showToast(_ s: String) {
