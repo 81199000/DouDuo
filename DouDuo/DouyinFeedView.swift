@@ -24,12 +24,22 @@ struct DYAweme: Identifiable, Decodable, Equatable {
     let author: Author
     let stats: Stats
     let music: String
+    /// 该视频在你账号里是否已点赞 / 已收藏（未登录时一般没有这些字段）
+    let userDigged: Int?
+    let isCollect: Int?
 
     struct Author: Decodable, Equatable { let name: String; let avatar: String?; let secUid: String? }
     struct Stats: Decodable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
 
     var isPortrait: Bool { height > width * 1.05 }
     var webURL: URL { URL(string: "https://www.douyin.com/video/\(id)")! }
+}
+
+struct DYActionResp: Decodable {
+    let status: Int
+    let statusCode: Int?
+    let msg: String?
+    enum CodingKeys: String, CodingKey { case status, statusCode = "statusCode", msg }
 }
 
 struct DYComment: Identifiable, Decodable, Equatable {
@@ -166,6 +176,42 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         return (p.items, p.hasMore)
     }
 
+    /// 真点赞（走网页端同一个接口，页面 SDK 自动签名）
+    func digg(_ id: String, like: Bool) async throws -> Bool {
+        let d = try await call(Self.diggJS, args: ["id": id, "type": like ? "1" : "0"])
+        let r = try JSONDecoder().decode(DYActionResp.self, from: d)
+        #if DEBUG
+        ddWrite("DDACT digg id=\(id) like=\(like) status=\(r.status) code=\(r.statusCode ?? -1) msg=\(r.msg ?? "-")")
+        #endif
+        return r.status == 200 && (r.statusCode ?? 0) == 0
+    }
+
+    /// 真收藏 / 取消收藏
+    func favorite(_ id: String, add: Bool) async throws -> Bool {
+        #if DEBUG
+        ddWrite("DDACT fav start id=\(id) add=\(add)")
+        #endif
+        let d = try await call(Self.favJS, args: ["id": id, "action": add ? "1" : "0"])
+        #if DEBUG
+        ddWrite("DDACT fav raw \(String(data: d, encoding: .utf8)?.prefix(200) ?? "-")")
+        #endif
+        let r = try JSONDecoder().decode(DYActionResp.self, from: d)
+        #if DEBUG
+        ddWrite("DDACT fav id=\(id) add=\(add) status=\(r.status) code=\(r.statusCode ?? -1) msg=\(r.msg ?? "-")")
+        #endif
+        return r.status == 200 && (r.statusCode ?? 0) == 0
+    }
+
+    /// 是否已登录（登录后推荐流才跟着账号走）
+    func isLoggedIn() async -> Bool {
+        let r = try? await web.callAsyncJavaScript(Self.loginJS, arguments: [:], contentWorld: .page)
+        let s = (r as? String) ?? ""
+        #if DEBUG
+        ddWrite("DDACT login check -> \(s)")
+        #endif
+        return s.contains("sessionid") || s == "1"
+    }
+
     func fetchComments(_ id: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool, total: Int) {
         let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor)])
         let p = try JSONDecoder().decode(DYCommentPage.self, from: d)
@@ -205,14 +251,43 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     return JSON.stringify({ status: r.s, items });
     """#
 
+    private static let diggJS = #"""
+    const P = Object.assign({}, base, { aweme_id: id, type: type, item_type: '0' });
+    const u = '/aweme/v1/web/commit/item/digg/?' + new URLSearchParams(P).toString();
+    const r = await req('POST', u, '');
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, statusCode: d.status_code, msg: d.status_msg || (r.s === 200 ? '' : r.t.slice(0, 120)) });
+    """#
+
+    private static let favJS = #"""
+    const P = Object.assign({}, base, { aweme_id: id, action: action });
+    const tries = ['/aweme/v1/web/commit/item/collect/', '/aweme/v1/web/aweme/collect/'];
+    let last = { status: -1 };
+    for (const u of tries) {
+      const r = await req('POST', u + '?' + new URLSearchParams(P).toString(), '');
+      const d = parse(r.t) || {};
+      if (r.s === 200 && (d.status_code === 0 || d.status_code === undefined)) return JSON.stringify({ status: 200, statusCode: 0 });
+      last = { status: r.s, statusCode: d.status_code, msg: (d.status_msg || r.t.slice(0, 120)) };
+    }
+    return JSON.stringify(last);
+    """#
+
+    private static let loginJS = #"""
+    return (document.cookie || '').includes('sessionid') ? 'sessionid' : '0';
+    """#
+
     // 共用：在页面世界里发 XHR（被抖音 SDK hook，自动加签名）
     private static let requestJS = #"""
     const req = (method, path, body) => new Promise(ok => {
       const x = new XMLHttpRequest();
+      let done = false;
+      const fin = r => { if (!done) { done = true; ok(r) } };
+      x.timeout = 12000;
+      x.ontimeout = () => fin({ s: -2, t: '' });
       x.open(method, path); x.withCredentials = true;
       x.setRequestHeader('Accept', 'application/json, text/plain, */*');
       if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-      x.onload = () => ok({ s: x.status, t: x.responseText }); x.onerror = () => ok({ s: -1, t: '' });
+      x.onload = () => fin({ s: x.status, t: x.responseText }); x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
     const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', pc_client_type: '1', pc_libra_divert: 'Mac',
@@ -244,7 +319,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid },
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0 },
-        music: (a.music && a.music.title) || ''
+        music: (a.music && a.music.title) || '',
+        userDigged: a.user_digged ? 1 : 0,
+        isCollect: (a.is_collect || a.is_collected) ? 1 : 0
       };
     });
     return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null });
@@ -380,6 +457,10 @@ final class DYFeedModel: ObservableObject {
     @Published var error: String?
     @Published var loading = false
     @Published var liked: Set<String> = []
+    @Published var collected: Set<String> = []
+    @Published var toast: String?
+    /// 是否已登录抖音（登录后推荐流才按账号个性化，点赞/收藏才能进账号）
+    @Published var isLoggedIn = false
     private var hasMore = true
 
     /// 电脑版推荐流给匿名用户大多是横屏长视频（实测竖屏只占一两成），默认只留竖屏 + 图集，
@@ -403,6 +484,11 @@ final class DYFeedModel: ObservableObject {
                         && (!portraitOnly || !a.images.isEmpty || a.isPortrait)
                 }
                 items.append(contentsOf: fresh)
+                // 账号里已点赞/已收藏的，进页面就是选中态
+                for a in fresh {
+                    if a.userDigged == 1 { liked.insert(a.id) }
+                    if a.isCollect == 1 { collected.insert(a.id) }
+                }
                 added += fresh.count
                 hasMore = r.hasMore || !r.items.isEmpty
                 if added >= want || !hasMore { break }
@@ -519,6 +605,15 @@ struct DouyinFeedScreen: View {
                 recommendArea
             }
             tabSwitcher.padding(.top, 10)
+            if let t = feed.toast {
+                Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.62)))
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("douyin.toast")
+            }
             menuButton.padding(.leading, 10).padding(.top, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
             #if DEBUG
@@ -530,6 +625,14 @@ struct DouyinFeedScreen: View {
         }
         .onChange(of: tab) { _, t in
             if t == .recommend { focusCurrent() }
+        }
+        .task {
+            // 登录后推荐流才按账号个性化；没登录就是冷启动的「推荐」
+            let on = await bridge.isLoggedIn()
+            feed.isLoggedIn = on
+            #if DEBUG
+            ddWrite("DDACT 推荐流登录态=\(on)")
+            #endif
         }
     }
 
@@ -583,7 +686,9 @@ struct DouyinFeedScreen: View {
                                         insets: insets,
                                         resume: resume[item.id],
                                         liked: feed.liked.contains(item.id),
+                                        collected: feed.collected.contains(item.id),
                                         onLike: { toggleLike(item.id, force: nil) },
+                                        onCollect: { toggleCollect(item.id) },
                                         onDoubleTap: { toggleLike(item.id, force: true) },
                                         onComments: { withAnimation(.snappy) { showComments.toggle() } },
                                         onAuthor: {
@@ -607,9 +712,76 @@ struct DouyinFeedScreen: View {
         }
     }
 
+    /// 点赞：先本地乐观更新，再调抖音网页接口；失败回滚并提示
     private func toggleLike(_ id: String, force: Bool?) {
-        if force == true { feed.liked.insert(id); return }
-        if feed.liked.contains(id) { feed.liked.remove(id) } else { feed.liked.insert(id) }
+        guard ensureLoggedIn() else { return }
+        let has = feed.liked.contains(id)
+        let want = force ?? !has
+        guard want != has else { return }
+        if want { feed.liked.insert(id) } else { feed.liked.remove(id) }
+        Task {
+            do {
+                let ok = try await bridge.digg(id, like: want)
+                if !ok {
+                    await MainActor.run {
+                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
+                        showToast("点赞没成功（请先在菜单里「网页版 / 登录」登录抖音）")
+                    }
+                }
+            } catch {
+                #if DEBUG
+                ddWrite("DDACT digg ERROR \(error)")
+                #endif
+                await MainActor.run {
+                    if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
+                    showToast("点赞失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
+    private func toggleCollect(_ id: String) {
+        guard ensureLoggedIn() else { return }
+        let has = feed.collected.contains(id)
+        let want = !has
+        if want { feed.collected.insert(id) } else { feed.collected.remove(id) }
+        Task {
+            do {
+                let ok = try await bridge.favorite(id, add: want)
+                if !ok {
+                    await MainActor.run {
+                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
+                        showToast("收藏没成功（可能没登录，或该视频不允许收藏）")
+                    }
+                } else {
+                    await MainActor.run { showToast(want ? "已收藏" : "已取消收藏") }
+                }
+            } catch {
+                #if DEBUG
+                ddWrite("DDACT fav ERROR \(error)")
+                #endif
+                await MainActor.run {
+                    if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
+                    showToast("收藏失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// 未登录就别调接口了（服务端只会回「用户未登录」），直接引导去登录
+    private func ensureLoggedIn() -> Bool {
+        if feed.isLoggedIn { return true }
+        showToast("请先登录抖音：菜单 → 网页版 / 登录")
+        web = DYWebTarget(url: DouyinWeb.home)
+        return false
+    }
+
+    private func showToast(_ s: String) {
+        feed.toast = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            if feed.toast == s { feed.toast = nil }
+        }
     }
 
     private var menuButton: some View {
@@ -794,7 +966,9 @@ private struct DYVideoPage: View {
     let insets: EdgeInsets
     let resume: Double?
     let liked: Bool
+    let collected: Bool
     let onLike: () -> Void
+    let onCollect: () -> Void
     let onDoubleTap: () -> Void
     let onComments: () -> Void
     let onAuthor: () -> Void
@@ -886,9 +1060,11 @@ private struct DYVideoPage: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.author")
             action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-                   tint: liked ? theme.status.danger.color(for: scheme) : fg, onLike)
-            action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, onComments)
-            action("star.fill", DYFormat.count(item.stats.collect), tint: fg, {})
+                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
+            action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
+            action(collected ? "star.fill" : "star",
+                   DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
+                   tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
             ShareLink(item: item.webURL) {
                 VStack(spacing: 3) {
                     Image(systemName: "arrowshape.turn.up.right.fill").font(.system(size: theme.typography.pointSize(.displayLarge)))
@@ -900,7 +1076,7 @@ private struct DYVideoPage: View {
         .themeShadow(.mediaLabel)
     }
 
-    private func action(_ icon: String, _ text: String, tint: Color, _ act: @escaping () -> Void) -> some View {
+    private func action(_ icon: String, _ text: String, tint: Color, _ id: String = "", _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: theme.typography.pointSize(.displayLarge))).foregroundStyle(tint)
@@ -908,6 +1084,7 @@ private struct DYVideoPage: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 }
 

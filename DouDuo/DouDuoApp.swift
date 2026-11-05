@@ -18,6 +18,24 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         #if DEBUG
+        // 自动测试用：DOUDUO_ACTTEST=<aweme_id> → 起播后直接打点赞/收藏接口，结果写 ddlog
+        if let aid = ProcessInfo.processInfo.environment["DOUDUO_ACTTEST"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 14) {
+                Task { @MainActor in
+                    let bridge = actTestBridge
+                    do {
+                        let ok = try await bridge.digg(aid, like: true)
+                        LocalVideoLaunch.log("DDACTTEST digg ok=\(ok)")
+                        let ok2 = try await bridge.digg(aid, like: false)
+                        LocalVideoLaunch.log("DDACTTEST undigg ok=\(ok2)")
+                    } catch { LocalVideoLaunch.log("DDACTTEST digg error \(error)") }
+                    do {
+                        let f = try await bridge.favorite(aid, add: true)
+                        LocalVideoLaunch.log("DDACTTEST fav ok=\(f)")
+                    } catch { LocalVideoLaunch.log("DDACTTEST fav error \(error)") }
+                }
+            }
+        }
         // 自动测试用：DOUDUO_BGTEST=1 → 起播 20 秒后模拟一次「进后台」，验证停声链路
         if ProcessInfo.processInfo.environment["DOUDUO_BGTEST"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
@@ -63,6 +81,10 @@ struct DouDuoApp: App {
 }
 
 #if DEBUG
+/// 给 DOUDUO_ACTTEST 用的、独立于界面的桥接实例
+@MainActor
+let actTestBridge = DouyinBridge()
+
 /// 用法：启动环境变量 DOUDUO_LOCALVIDEO=<Documents 里的文件名或绝对路径> [DOUDUO_LOCALFIT=0]
 /// 直接把本地视频丢进播放页，用来核对「自动铺满宽度」的裁切效果。
 enum LocalVideoLaunch {

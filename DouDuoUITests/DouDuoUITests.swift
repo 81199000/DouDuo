@@ -159,6 +159,59 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "vlc-2")
     }
 
+
+    /// 停声链路（不依赖切后台事件）：DOUDUO_BGTEST=1 → 20 秒后自动 pauseAll，进度必须冻住
+    func testPauseAllPlumbing() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_BGTEST"] = "1"
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 60), .completed)
+        sleep(5)
+        let t1 = playTime(app)
+        sleep(12)
+        let t2 = playTime(app)
+        sleep(6)
+        let t3 = playTime(app)
+        print("DDTEST plumbing t1=\(t1) t2=\(t2) t3=\(t3)")
+        XCTAssertGreaterThan(t1, 0)
+        XCTAssertLessThanOrEqual(t3, t2 + 1, "pauseAll 之后进度还在走")
+    }
+
+    /// 点赞 / 收藏走真接口。
+    /// 未登录时 App 会提示「请先登录抖音」并自动打开网页登录 → 这种情况 skip（不是缺陷）
+    func testLikeAndCollect() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 90), .completed)
+        sleep(6)
+
+        let toast = app.staticTexts["douyin.toast"]
+        let like = app.buttons["douyin.like"].firstMatch
+        XCTAssertTrue(like.waitForExistence(timeout: 10), "没有点赞按钮")
+
+        like.tap()
+        let gotToast = toast.waitForExistence(timeout: 6)
+        let label = gotToast ? toast.label : ""
+        print("DDTEST like toast: \(label.isEmpty ? "<none>" : label)")
+        if label.contains("请先登录") { throw XCTSkip("当前未登录抖音，点赞/收藏需要登录后才能验") }
+        XCTAssertFalse(gotToast, "点赞失败弹了提示：\(label)")
+        attach(app, "like")
+
+        let collect = app.buttons["douyin.collect"].firstMatch
+        XCTAssertTrue(collect.waitForExistence(timeout: 10), "没有收藏按钮")
+        collect.tap()
+        let got2 = toast.waitForExistence(timeout: 10)
+        let label2 = got2 ? toast.label : "<none>"
+        print("DDTEST collect toast: \(label2)")
+        XCTAssertTrue(got2, "收藏后没有提示（接口没返回）")
+        XCTAssertTrue(label2.contains("已收藏"), "收藏没成功：\(label2)")
+        attach(app, "collect")
+    }
+
     /// 底部进度条左侧时间（秒）
     private func playTime(_ app: XCUIApplication) -> Int {
         let q = app.staticTexts.matching(NSPredicate(format: "label MATCHES '^[0-9]+:[0-9][0-9]$'"))
