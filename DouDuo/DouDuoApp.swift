@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// 后台/失焦立刻停声：用 AppDelegate 回调，比 SwiftUI 的 scenePhase 稳
 /// （实测 Scene 上的 onChange 在部分切后台路径下不触发，声音就漏出去了）
@@ -34,6 +35,34 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
                         LocalVideoLaunch.log("DDACTTEST fav ok=\(f)")
                     } catch { LocalVideoLaunch.log("DDACTTEST fav error \(error)") }
                 }
+            }
+        }
+        // 自动测试用：DOUDUO_LIVETEST=1 → 静默试播前 6 个直播间，逐条写日志（模拟器里跑，不碰手机）
+        if ProcessInfo.processInfo.environment["DOUDUO_LIVETEST"] == "1" {
+            Task { @MainActor in
+                let rooms = (try? await actTestBridge.fetchLive(reset: true)) ?? []
+                LocalVideoLaunch.log("DDLIVE rooms=\(rooms.count)")
+                for (i, r) in rooms.prefix(6).enumerated() {
+                    guard let u = r.bestHLS else { continue }
+                    LocalVideoLaunch.log("DDLIVE #\(i) \(r.title) quality=\(r.hls.keys.sorted().joined(separator: "/")) url=\(u.absoluteString.prefix(80))")
+                    let p = AVPlayer()
+                    let withHeaders = AVPlayerItem(asset: DYMedia.liveAsset(u))
+                    p.replaceCurrentItem(with: withHeaders)
+                    p.play()
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    LocalVideoLaunch.log("DDLIVE #\(i) headers status=\(withHeaders.status.rawValue) t=\(String(format: "%.1f", p.currentTime().seconds)) err=\(String(describing: withHeaders.error).prefix(100))")
+                    if withHeaders.status != .readyToPlay {
+                        // 换常用画质再试；有些房间 HD1 挂了但 SD1 正常
+                        for key in ["FULL_HD1", "SD1", "SD2"] {
+                            guard let s2 = r.hls[key], let u2 = URL(string: s2) else { continue }
+                            let p2 = AVPlayer(); let it2 = AVPlayerItem(asset: DYMedia.liveAsset(u2)); p2.replaceCurrentItem(with: it2); p2.play()
+                            try? await Task.sleep(nanoseconds: 4_000_000_000)
+                            LocalVideoLaunch.log("DDLIVE #\(i) \(key) status=\(it2.status.rawValue) t=\(String(format: "%.1f", p2.currentTime().seconds))")
+                            if it2.status == .readyToPlay { break }
+                        }
+                    }
+                }
+                LocalVideoLaunch.log("DDLIVE done")
             }
         }
         // 自动测试用：DOUDUO_BGTEST=1 → 起播 20 秒后模拟一次「进后台」，验证停声链路

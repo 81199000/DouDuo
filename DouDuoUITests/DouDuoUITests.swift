@@ -179,6 +179,24 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertLessThanOrEqual(t3, t2 + 1, "pauseAll 之后进度还在走")
     }
 
+    /// 直播播放：UI 测试里量不到真实播放（XCTest 环境下 HLS 已 readyToPlay 但进度不走，
+    /// 同样的构建用 simctl 启动播放正常）→ 这里只做冒烟：能进直播页、能拿到房间、不崩
+    func testLivePlayback() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let liveID = app.staticTexts["live.currentID"]
+        XCTAssertTrue(liveID.waitForExistence(timeout: 30), "直播页没打开")
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: liveID)], timeout: 60), .completed, "直播列表没加载出来")
+        sleep(8)
+        let st = app.staticTexts["live.status"].label
+        let rate = app.staticTexts["live.rate"].label
+        let t = app.staticTexts["live.time"].label
+        print("DDTEST live id=\(liveID.label) status=\(st) rate=\(rate) time=\(t)")
+        attach(app, "live")
+        XCTAssertEqual(st, "1", "直播流没 ready（status=\(st)）")
+    }
+
     /// 点赞 / 收藏走真接口。
     /// 未登录时 App 会提示「请先登录抖音」并自动打开网页登录 → 这种情况 skip（不是缺陷）
     func testLikeAndCollect() throws {

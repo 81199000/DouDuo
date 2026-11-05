@@ -528,7 +528,7 @@ struct DouyinFeedScreen: View {
     @State private var currentID: String?
     @State private var showComments = false
     @State private var web: DYWebTarget?
-    @State private var tab: DYTab = .recommend
+    @State private var tab: DYTab = ProcessInfo.processInfo.environment["DOUDUO_STARTLIVE"] == "1" ? .live : .recommend
     @StateObject private var live = DYLiveModel()
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
@@ -563,10 +563,15 @@ struct DouyinFeedScreen: View {
         .task {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
+            if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             await feed.loadMore(bridge)
             if currentID == nil { currentID = feed.items.first?.id }
             focusCurrent()
             #if DEBUG
+            let env0 = ProcessInfo.processInfo.environment
+            if let d = env0["DOUDUO_LIVEDELAY"], let sec = Double(d) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + sec) { tab = .live }
+            }
             let env = ProcessInfo.processInfo.environment
             if env["WUWEI_DEBUG_DOUYIN_ADVANCE"] == "1" {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
@@ -642,7 +647,7 @@ struct DouyinFeedScreen: View {
             #endif
         }
         .onChange(of: tab) { _, t in
-            if t == .recommend { focusCurrent() }
+            if t == .recommend { focusCurrent() } else { preloader.clear() }
         }
 
     }
@@ -835,7 +840,12 @@ final class DYLiveModel: ObservableObject {
     @Published var currentID: String?
     @Published var error: String?
     @Published var loading = false
+    /// 当前直播是否已能出画面（首帧前显示「加载中」，别让用户对着封面以为挂了）
+    @Published var ready = false
     let player = AVPlayer()
+    private var qualityOrder: [String] = []
+    private var roomRef: DYLiveRoom?
+    private var retryTask: DispatchWorkItem?
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
         guard !loading else { return }
@@ -853,17 +863,71 @@ final class DYLiveModel: ObservableObject {
         }
     }
 
+    private var loadedRoom: String?
+
     func play(_ room: DYLiveRoom?) {
-        guard let u = room?.bestHLS else { player.replaceCurrentItem(with: nil); return }
-        let it = AVPlayerItem(url: u)
-        it.preferredForwardBufferDuration = 2
-        player.replaceCurrentItem(with: it)
-        player.automaticallyWaitsToMinimizeStalling = true
-        player.play()
+        // ⚠️ 别对 nil 做 replaceCurrentItem(nil)：LazyVStack 布局/滚动会把 scrollPosition 回写成 nil
+        guard let room else { return }
+        // 同一条房间重复调用（每次布局都会触发 onChange）不要重建播放项，否则一直在重新拉流 → 永远 0 秒
+        if loadedRoom == room.id, player.currentItem != nil {
+            if player.rate == 0 { player.playImmediately(atRate: 1) }
+            return
+        }
+        loadedRoom = room.id
+        roomRef = room
+        // 画质从高到低排队：某个码流在这台机器/这个网络下起不来时自动降一档
+        qualityOrder = ["FULL_HD1", "HD1", "SD1", "SD2"].filter { room.hls[$0] != nil }
+        startCurrentQuality()
     }
 
-    func stop() { player.pause(); player.replaceCurrentItem(with: nil) }
-    func reset() { stop(); rooms = []; currentID = nil; error = nil }
+    /// 按当前排队顺序起播；不起播的码流超时后自动换下一档
+    private func startCurrentQuality() {
+        guard let room = roomRef else { return }
+        guard let key = qualityOrder.first, let s = room.hls[key], let u = URL(string: s) else {
+            if let u = room.bestHLS { load(u) } else { player.replaceCurrentItem(with: nil) }
+            return
+        }
+        load(u)
+        retryTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            guard let self, self.player.currentItem?.status != .readyToPlay else { return }
+            #if DEBUG
+            ddWrite("DDLIVE retry quality=\(key) 起不来，降一档")
+            #endif
+            self.qualityOrder.removeFirst()
+            if self.qualityOrder.isEmpty { self.qualityOrder = [] }
+            self.startCurrentQuality()
+        }
+        retryTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: task)
+    }
+
+    private func load(_ u: URL) {
+        ready = false
+        let it = AVPlayerItem(asset: DYMedia.liveAsset(u))
+        player.replaceCurrentItem(with: it)
+        player.playImmediately(atRate: 1)
+        // 首帧出来后置 ready，盖住「加载中」
+        statusObs = it.observe(\.status, options: [.new]) { [weak self] item, _ in
+            DispatchQueue.main.async {
+                self?.ready = item.status == .readyToPlay
+                #if DEBUG
+                ddWrite("DDLIVE status=\(item.status.rawValue) err=\(String(describing: item.error).prefix(80))")
+                #endif
+            }
+        }
+        #if DEBUG
+        ddWrite("DDLIVEPLAY room=\(roomRef?.id ?? "-") url=\(u.absoluteString.prefix(70))")
+        #endif
+    }
+    private var statusObs: NSKeyValueObservation?
+
+    func stop() {
+        retryTask?.cancel(); statusObs = nil
+        player.pause(); player.replaceCurrentItem(with: nil)
+        loadedRoom = nil; ready = false
+    }
+    func reset() { stop(); rooms = []; currentID = nil; error = nil; loadedRoom = nil }
 }
 
 private struct DYLiveFeed: View {
@@ -872,9 +936,25 @@ private struct DYLiveFeed: View {
     let bridge: DouyinBridge
     @ObservedObject var model: DYLiveModel
     let onWeb: (URL) -> Void
+    @State private var tick = 0      // 0.5s 刷新一次，让调试进度文案跟着走
 
     var body: some View {
         ZStack {
+            #if DEBUG
+            VStack {
+                Text(model.currentID ?? "-").font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("live.currentID")
+                Text(String(format: "%.1f", model.player.currentTime().seconds)).font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("live.time")
+                Text(String(format: "%.2f", model.player.rate)).font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("live.rate")
+                Text("\(model.player.currentItem?.status.rawValue ?? -1)").font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("live.status")
+                Text(String(describing: model.player.currentItem?.error).prefix(120)).font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("live.err")
+            }
+            .allowsHitTesting(false)
+            #endif
             if model.rooms.isEmpty {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
                     if let e = model.error {
@@ -890,7 +970,8 @@ private struct DYLiveFeed: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(model.rooms) { room in
-                            DYLivePage(room: room, player: model.currentID == room.id ? model.player : nil, onWeb: onWeb)
+                            DYLivePage(room: room, player: model.currentID == room.id ? model.player : nil,
+                                       ready: model.ready, onWeb: onWeb)
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(room.id)
                         }
@@ -907,13 +988,18 @@ private struct DYLiveFeed: View {
             if model.rooms.isEmpty { await model.load(bridge, reset: true) }
             model.play(model.rooms.first { $0.id == model.currentID })
         }
-        .onChange(of: model.currentID) { _, id in
+        .onChange(of: model.currentID) { old, id in
+            if id == nil, let old, model.rooms.contains(where: { $0.id == old }) {
+                model.currentID = old
+                return
+            }
             model.play(model.rooms.first { $0.id == id })
             if let id, let i = model.rooms.firstIndex(where: { $0.id == id }), i >= model.rooms.count - 3 {
                 Task { await model.load(bridge) }
             }
         }
         .onDisappear { model.stop() }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
     }
 }
 
@@ -922,6 +1008,7 @@ private struct DYLivePage: View {
     @Environment(\.colorScheme) private var scheme
     let room: DYLiveRoom
     let player: AVPlayer?
+    let ready: Bool
     let onWeb: (URL) -> Void
 
     var body: some View {
@@ -936,6 +1023,13 @@ private struct DYLivePage: View {
                 DYPlayerLayerView(player: player, gravity: fill ? .resizeAspectFill : .resizeAspect,
                                   readyFill: UIColor(theme.media.strongScrim.color(for: scheme)))
                     .frame(width: geo.size.width, height: geo.size.height)
+                if player != nil, !ready {
+                    VStack(spacing: 8) {
+                        ProgressView().tint(.white)
+                        Text("直播加载中…").font(.caption).foregroundStyle(.white.opacity(0.85))
+                    }
+                    .allowsHitTesting(false)
+                }
                 LinearGradient(colors: [.clear, theme.media.strongScrim.color(for: scheme).opacity(0.5)],
                                startPoint: .center, endPoint: .bottom)
                     .allowsHitTesting(false)
