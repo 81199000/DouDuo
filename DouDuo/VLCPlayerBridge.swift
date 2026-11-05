@@ -110,6 +110,12 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         pendingURL = url
         pendingAutoplay = autoplay
         isPlaying = autoplay
+        // ⚠️ drawable 已经在（复用同一个渲染层）时必须立刻 play：
+        // 只靠 drawableAttached() 的话，stop() 之后再播会永远等不到回调 → 有声无画 / 完全不出画
+        if mediaPlayer.drawable != nil, autoplay {
+            pendingURL = nil
+            mediaPlayer.play()
+        }
     }
 
     /// drawable（渲染层）就绪后调用：首帧真正 play；或渲染层重连时恢复画面。

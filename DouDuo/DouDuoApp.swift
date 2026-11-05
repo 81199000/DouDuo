@@ -37,29 +37,24 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
                 }
             }
         }
-        // 自动测试用：DOUDUO_LIVETEST=1 → 静默试播前 6 个直播间，逐条写日志（模拟器里跑，不碰手机）
+        // 自动测试用：DOUDUO_LIVETEST=1 → 对比不同 Referer 下是否能拿到视频轨
         if ProcessInfo.processInfo.environment["DOUDUO_LIVETEST"] == "1" {
             Task { @MainActor in
                 let rooms = (try? await actTestBridge.fetchLive(reset: true)) ?? []
                 LocalVideoLaunch.log("DDLIVE rooms=\(rooms.count)")
-                for (i, r) in rooms.prefix(6).enumerated() {
+                for (i, r) in rooms.prefix(4).enumerated() {
                     guard let u = r.bestHLS else { continue }
-                    LocalVideoLaunch.log("DDLIVE #\(i) \(r.title) quality=\(r.hls.keys.sorted().joined(separator: "/")) url=\(u.absoluteString.prefix(80))")
-                    let p = AVPlayer()
-                    let withHeaders = AVPlayerItem(asset: DYMedia.liveAsset(u))
-                    p.replaceCurrentItem(with: withHeaders)
-                    p.play()
-                    try? await Task.sleep(nanoseconds: 6_000_000_000)
-                    LocalVideoLaunch.log("DDLIVE #\(i) headers status=\(withHeaders.status.rawValue) t=\(String(format: "%.1f", p.currentTime().seconds)) err=\(String(describing: withHeaders.error).prefix(100))")
-                    if withHeaders.status != .readyToPlay {
-                        // 换常用画质再试；有些房间 HD1 挂了但 SD1 正常
-                        for key in ["FULL_HD1", "SD1", "SD2"] {
-                            guard let s2 = r.hls[key], let u2 = URL(string: s2) else { continue }
-                            let p2 = AVPlayer(); let it2 = AVPlayerItem(asset: DYMedia.liveAsset(u2)); p2.replaceCurrentItem(with: it2); p2.play()
-                            try? await Task.sleep(nanoseconds: 4_000_000_000)
-                            LocalVideoLaunch.log("DDLIVE #\(i) \(key) status=\(it2.status.rawValue) t=\(String(format: "%.1f", p2.currentTime().seconds))")
-                            if it2.status == .readyToPlay { break }
-                        }
+                    for ref in ["https://live.douyin.com/", "https://live.douyin.com/\(r.webRid)", "https://www.douyin.com/"] {
+                        var h = DYMedia.headers
+                        h["Referer"] = ref
+                        let asset = AVURLAsset(url: u, options: ["AVURLAssetHTTPHeaderFieldsKey": h])
+                        let item = AVPlayerItem(asset: asset)
+                        let p = AVPlayer(playerItem: item)
+                        p.play()
+                        try? await Task.sleep(nanoseconds: 7_000_000_000)
+                        if i == 0, ref.hasSuffix(".com/") { LocalVideoLaunch.log("DDLIVEURL \(u.absoluteString)") }
+                        LocalVideoLaunch.log("DDLIVE #\(i) ref=\(ref.suffix(12)) st=\(item.status.rawValue) size=\(item.presentationSize) n=\(item.tracks.count) types=\(item.tracks.compactMap { $0.assetTrack?.mediaType.rawValue }.joined(separator: ",")) t=\(String(format: "%.1f", p.currentTime().seconds))")
+                        p.pause()
                     }
                 }
                 LocalVideoLaunch.log("DDLIVE done")

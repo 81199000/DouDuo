@@ -57,6 +57,12 @@ enum DYMedia {
     static func asset(_ url: URL) -> AVURLAsset {
         AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
     }
+    /// 直播（VLC 用）：Referer 要 live.douyin.com
+    static var liveHeaders: [String: String] {
+        var h = headers
+        h["Referer"] = "https://live.douyin.com/"
+        return h
+    }
     /// 直播 HLS：CDN 认 live.douyin.com 的 Referer，不带会 403（表现为一直转圈/黑屏）
     static func liveAsset(_ url: URL) -> AVURLAsset {
         var h = headers
