@@ -1,0 +1,264 @@
+// 抖音网页版内嵌：官方 App 不适配 iPhone Duo，用电脑版网页模拟 App。
+// - 桌面 Safari UA：手机 UA 会被导去下载/唤起 App，电脑版布局自适应任意宽度（Duo 内外屏、横竖屏都铺满）。
+// - 拦掉 snssdk / itms 等私有 scheme，抖音域名链接不尝试 Universal Link → 不再自动跳 App。
+// - 电脑版 viewport 写死 initial-scale=0.5（手机上字小一半），注入脚本按屏宽重写：宽屏 1 倍，窄屏（Duo 外屏）以 760 布局等比塞满；菜单可调缩放档。
+// - 推荐流在电脑版靠键盘 ↑↓ 切视频：注入触屏上下滑 → 方向键，手感接近 App。
+// - 登录态存在 WKWebsiteDataStore.default()，退出 App 不丢。
+import SwiftUI
+import WebKit
+
+enum DouyinWeb {
+    static let home = URL(string: "https://www.douyin.com/?recommend=1")!
+    static let zoomKey = "douyin_web_zoom_v1"
+    static let zoomSteps: [Double] = [0.8, 0.9, 1.0, 1.1, 1.25]
+    /// 电脑版 Safari UA（不带 Mobile），抖音据此出电脑版且不弹「打开 App」
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+
+    /// 直接打开 ?recommend=1 首次会被导回「精选」，点导航栏「推荐」才稳
+    static let goRecommendJS = "(()=>{const a=[...document.querySelectorAll('a')].find(a=>a.innerText.trim()==='推荐');if(a){a.click();return true}location.href='https://www.douyin.com/?recommend=1';return false})()"
+
+    static let bootstrapJS = #"""
+    (() => {
+      if (window.__wuweiDouyin) return; window.__wuweiDouyin = true;
+      // 1) 适配宽度：电脑版自带 viewport initial-scale=0.5（手机上字小一半），网格两列最小要 ~760px。
+      //    改写 viewport：布局宽 L = max(屏宽/缩放档, 760)，scale = 屏宽/L。内屏 1 倍；Duo 外屏竖着（~466pt）760 等比塞满。
+      window.__wuweiFixViewport = () => {
+        const vw = window.__wuweiViewW || window.screen.width;
+        const uz = window.__wuweiZoom || 1;
+        const L = Math.round(Math.max(vw / uz, 760));
+        const sc = (vw / L).toFixed(4);
+        const want = `width=${L},initial-scale=${sc},minimum-scale=${sc},maximum-scale=${sc},user-scalable=no,viewport-fit=cover`;
+        let m = document.querySelector('meta[name=viewport]');
+        if (!m) { if (!document.head) return; m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
+        if (m.content !== want) {
+          m.content = want;
+          // 页面的网格列宽由 JS 按窗口宽算，改完 viewport 补发 resize 让它重排
+          clearTimeout(window.__wuweiRz);
+          window.__wuweiRz = setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+        }
+      };
+      const fixViewport = window.__wuweiFixViewport;
+      fixViewport();
+      new MutationObserver(fixViewport).observe(document.documentElement, { childList: true, subtree: true });
+      // 2) 推荐流：触屏上下滑 → ↑↓ 方向键切视频
+      let sx = 0, sy = 0, st = 0, armed = false;
+      const inFeed = t => {
+        if (!t || !t.closest) return false;
+        if (t.closest('[data-e2e="comment-list"], [class*="comment"], input, textarea')) return false;
+        return !!t.closest('[data-e2e="feed-active-video"], [data-e2e="slideList"]');
+      };
+      const key = k => {
+        const o = { key: k, code: k, keyCode: k === 'ArrowDown' ? 40 : 38, which: k === 'ArrowDown' ? 40 : 38, bubbles: true };
+        document.dispatchEvent(new KeyboardEvent('keydown', o));
+        document.dispatchEvent(new KeyboardEvent('keyup', o));
+      };
+      window.__wuweiKey = key;
+      document.addEventListener('touchstart', e => {
+        if (e.touches.length !== 1) { armed = false; return; }
+        armed = inFeed(e.target);
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+      }, { passive: true, capture: true });
+      document.addEventListener('touchmove', e => {
+        if (!armed) return;
+        const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
+        if (Math.abs(dy) > Math.abs(dx)) e.preventDefault();   // 别让整页跟着滚
+      }, { passive: false, capture: true });
+      document.addEventListener('touchend', e => {
+        if (!armed) return; armed = false;
+        const t = e.changedTouches[0]; const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (Math.abs(dy) < 50 || Math.abs(dy) < Math.abs(dx) * 1.3 || Date.now() - st > 900) return;
+        key(dy < 0 ? 'ArrowDown' : 'ArrowUp');
+      }, { passive: true, capture: true });
+    })();
+    """#
+}
+
+/// 首页「影音」里的入口卡点进来：全屏抖音
+struct DouyinWebScreen: View {
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(DouyinWeb.zoomKey) private var zoom = 1.0
+    @StateObject private var model = DouyinWebModel()
+    var start: URL = DouyinWeb.home
+    @State private var drag: CGSize = .zero
+    /// 悬浮钮位置（占屏比例），默认盖在左上角抖音 logo 上（logo 本身只是回首页，菜单里有）
+    @AppStorage("douyin_web_handle_x_v2") private var handleX = 0.0
+    @AppStorage("douyin_web_handle_y_v2") private var handleY = 0.0
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                theme.media.strongScrim.color(for: scheme).ignoresSafeArea()
+                DouyinWebContainer(model: model, zoom: zoom, start: start)
+                    .ignoresSafeArea(edges: [.bottom, .horizontal])
+                if model.progress < 1 {
+                    ProgressView(value: model.progress)
+                        .tint(theme.accent.color(for: scheme))
+                        .frame(maxWidth: .infinity)
+                }
+                handle
+                    .position(point(in: geo.size, extra: drag))
+                    .simultaneousGesture(DragGesture(minimumDistance: 6)
+                        .onChanged { drag = $0.translation }
+                        .onEnded { v in
+                            let p = point(in: geo.size, extra: v.translation)
+                            handleX = Double(p.x / max(geo.size.width, 1))
+                            handleY = Double(p.y / max(geo.size.height, 1))
+                            drag = .zero
+                        })
+            }
+        }
+    }
+
+    private func point(in size: CGSize, extra: CGSize) -> CGPoint {
+        let r: CGFloat = 22
+        let x = handleX > 0 ? CGFloat(handleX) * size.width : r + 6
+        let y = handleY > 0 ? CGFloat(handleY) * size.height : r + 2
+        return CGPoint(x: min(max(x + extra.width, r), size.width - r),
+                       y: min(max(y + extra.height, r), size.height - r))
+    }
+
+    /// 一颗可拖的悬浮钮：点开菜单（关闭 / 后退 / 刷新 / 回推荐 / 缩放）
+    private var handle: some View {
+        Menu {
+            Button("关闭抖音", systemImage: "xmark") { dismiss() }
+            Button("后退", systemImage: "chevron.backward") { model.web?.goBack() }
+                .disabled(!model.canGoBack)
+            Button("刷新", systemImage: "arrow.clockwise") { model.web?.reload() }
+            Button("推荐（上下滑）", systemImage: "play.square.stack") { model.web?.evaluateJavaScript(DouyinWeb.goRecommendJS) }
+            Picker("页面缩放", selection: $zoom) {
+                ForEach(DouyinWeb.zoomSteps, id: \.self) { z in
+                    Text("\(Int(z * 100))%").tag(z)
+                }
+            }
+        } label: {
+            Image(systemName: "square.grid.2x2.fill")
+                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(theme.media.chromeFill.color(for: scheme)))
+                .themeShadow(.floatingPanel)
+        }
+        .accessibilityLabel("抖音菜单")
+    }
+}
+
+@MainActor
+final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    @Published var canGoBack = false
+    @Published var progress: Double = 0
+    weak var web: WKWebView?
+    private var observers: [NSKeyValueObservation] = []
+
+    func attach(_ wv: WKWebView) {
+        web = wv
+        observers = [
+            wv.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
+                let p = w.estimatedProgress
+                Task { @MainActor in self?.progress = p }
+            },
+            wv.observe(\.canGoBack, options: [.new]) { [weak self] w, _ in
+                let b = w.canGoBack
+                Task { @MainActor in self?.canGoBack = b }
+            },
+        ]
+    }
+
+    private static func isDouyinHost(_ host: String?) -> Bool {
+        guard let h = host?.lowercased() else { return false }
+        return ["douyin.com", "douyinpic.com", "douyinvod.com", "iesdouyin.com", "amemv.com", "snssdk.com", "bytedance.com", "zijieapi.com"]
+            .contains { h == $0 || h.hasSuffix("." + $0) }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard let url = action.request.url, let scheme = url.scheme?.lowercased() else {
+            decisionHandler(.cancel); return
+        }
+        // snssdk1128:// / itms-apps:// / aweme:// 等一律拦掉，不唤起 App 也不去 App Store
+        guard ["http", "https", "about", "blob", "data"].contains(scheme) else {
+            decisionHandler(.cancel); return
+        }
+        // 抖音系域名：允许但不尝试 Universal Link（WKNavigationActionPolicyAllowWithoutTryingAppLink = .allow + 2）
+        if Self.isDouyinHost(url.host), let noAppLink = WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2) {
+            decisionHandler(noAppLink); return
+        }
+        decisionHandler(.allow)
+    }
+
+    /// 打开时像 App 一样直接进「推荐」竖屏流（首次访问会被导到精选）
+    private var jumpedToFeed = false
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !jumpedToFeed, webView.url?.path.hasPrefix("/jingxuan") == true else { return }
+        jumpedToFeed = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { webView.evaluateJavaScript(DouyinWeb.goRecommendJS) }
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        (webView as? DouyinFitWebView)?.syncViewport()
+    }
+
+
+    /// target=_blank：在当前页打开，别丢
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            webView.load(URLRequest(url: url))
+        }
+        return nil
+    }
+}
+
+private struct DouyinWebContainer: UIViewRepresentable {
+    @ObservedObject var model: DouyinWebModel
+    let zoom: Double
+    let start: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        cfg.websiteDataStore = .default()            // 登录态持久化
+        cfg.allowsInlineMediaPlayback = true
+        cfg.mediaTypesRequiringUserActionForPlayback = []
+        cfg.allowsPictureInPictureMediaPlayback = true
+        cfg.defaultWebpagePreferences.preferredContentMode = .mobile   // 电脑版靠 UA；.desktop 会锁死 viewport 缩放
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        let wv = DouyinFitWebView(frame: .zero, configuration: cfg)
+        wv.customUserAgent = DouyinWeb.userAgent
+        wv.navigationDelegate = model
+        wv.uiDelegate = model
+        wv.allowsBackForwardNavigationGestures = true
+        wv.isOpaque = false
+        wv.scrollView.contentInsetAdjustmentBehavior = .never
+        wv.userZoom = zoom
+        #if DEBUG
+        wv.isInspectable = true
+        #endif
+        model.attach(wv)
+        wv.load(URLRequest(url: start))
+        return wv
+    }
+
+    func updateUIView(_ wv: WKWebView, context: Context) {
+        (wv as? DouyinFitWebView)?.userZoom = zoom
+    }
+}
+
+/// 把当前宽度和缩放档同步给页面脚本（开合 / 旋转 / 换档 / 每次页面提交都同步一次）
+final class DouyinFitWebView: WKWebView {
+    var userZoom: Double = 1 { didSet { if oldValue != userZoom { syncViewport() } } }
+    private var lastWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if abs(bounds.width - lastWidth) > 0.5 { lastWidth = bounds.width; syncViewport() }
+    }
+
+    func syncViewport() {
+        guard bounds.width > 0 else { return }
+        evaluateJavaScript("window.__wuweiViewW = \(Int(bounds.width)); window.__wuweiZoom = \(userZoom); window.__wuweiFixViewport && window.__wuweiFixViewport();")
+    }
+}
