@@ -7,6 +7,7 @@
 //   播放用 /aweme/v1/play/ 链接（302 到 CDN mp4，不需要 cookie，系统播放器直接播）。
 // - 评论：GET /aweme/v1/web/comment/list/。
 import SwiftUI
+import Combine
 import WebKit
 import AVFoundation
 
@@ -840,12 +841,37 @@ final class DYLiveModel: ObservableObject {
     @Published var currentID: String?
     @Published var error: String?
     @Published var loading = false
-    /// 当前直播是否已能出画面（首帧前显示「加载中」，别让用户对着封面以为挂了）
+    /// 当前直播是否已出画面（首帧前显示「加载中」）
     @Published var ready = false
-    let player = AVPlayer()
+    /// ⚠️ 直播必须走 VLC：抖音直播 HLS 用 AVPlayer 只解析出音轨（tracks=1 types=soun），
+    /// 表现就是「有声有封面、没有画面」。VLC 能正确拿到视频轨道。
+    let vlc = VLCPlayerController()
     private var qualityOrder: [String] = []
     private var roomRef: DYLiveRoom?
     private var retryTask: DispatchWorkItem?
+    private var sizeObs: AnyCancellable?
+
+    /// 直播日志：Release 也要能用（ddWrite 只在 DEBUG 编译），排查真机「有声无画」靠它
+    nonisolated static func log(_ s: String) {
+        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let url = dir.appendingPathComponent("ddlog.txt")
+        let df = DateFormatter(); df.dateFormat = "HH:mm:ss"
+        let line = df.string(from: Date()) + " " + s + "\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    init() {
+        sizeObs = vlc.$videoSize.receive(on: RunLoop.main).sink { [weak self] size in
+            guard let self else { return }
+            let r = (size.width > 0 && size.height > 0) || self.vlc.current > 0
+            if r != self.ready { self.ready = r }
+            if r { DYLiveModel.log("DDLIVE 出画 size=\(size)") }
+        }
+    }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
         guard !loading else { return }
@@ -866,13 +892,9 @@ final class DYLiveModel: ObservableObject {
     private var loadedRoom: String?
 
     func play(_ room: DYLiveRoom?) {
-        // ⚠️ 别对 nil 做 replaceCurrentItem(nil)：LazyVStack 布局/滚动会把 scrollPosition 回写成 nil
+        // ⚠️ 别对 nil 停播：LazyVStack 布局/滚动会把 scrollPosition 回写成 nil
         guard let room else { return }
-        // 同一条房间重复调用（每次布局都会触发 onChange）不要重建播放项，否则一直在重新拉流 → 永远 0 秒
-        if loadedRoom == room.id, player.currentItem != nil {
-            if player.rate == 0 { player.playImmediately(atRate: 1) }
-            return
-        }
+        if loadedRoom == room.id, vlc.isPlaying || vlc.videoSize != .zero { return }
         loadedRoom = room.id
         roomRef = room
         // 画质从高到低排队：某个码流在这台机器/这个网络下起不来时自动降一档
@@ -880,51 +902,46 @@ final class DYLiveModel: ObservableObject {
         startCurrentQuality()
     }
 
-    /// 按当前排队顺序起播；不起播的码流超时后自动换下一档
     private func startCurrentQuality() {
         guard let room = roomRef else { return }
+        retryTask?.cancel()
         guard let key = qualityOrder.first, let s = room.hls[key], let u = URL(string: s) else {
-            if let u = room.bestHLS { load(u) } else { player.replaceCurrentItem(with: nil) }
+            if let u = room.bestHLS { start(u, key: "-") }
             return
         }
-        load(u)
-        retryTask?.cancel()
+        start(u, key: key)
         let task = DispatchWorkItem { [weak self] in
-            guard let self, self.player.currentItem?.status != .readyToPlay else { return }
-            #if DEBUG
-            ddWrite("DDLIVE retry quality=\(key) 起不来，降一档")
-            #endif
-            self.qualityOrder.removeFirst()
-            if self.qualityOrder.isEmpty { self.qualityOrder = [] }
+            // 只要在走时间就算活着（VLC 对 HLS 常常不报 videoSize，别误判成没出画又重开，越重开越不出画）
+            guard let self, self.vlc.videoSize == .zero, self.vlc.current < 1 else { return }
+            DYLiveModel.log("DDLIVE retry quality=\(key) 没出画，降一档")
+            if !self.qualityOrder.isEmpty { self.qualityOrder.removeFirst() }
+            guard !self.qualityOrder.isEmpty else { return }
             self.startCurrentQuality()
         }
         retryTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: task)
     }
 
-    private func load(_ u: URL) {
+    private var readyFallback: DispatchWorkItem?
+
+    private func start(_ u: URL, key: String) {
         ready = false
-        let it = AVPlayerItem(asset: DYMedia.liveAsset(u))
-        player.replaceCurrentItem(with: it)
-        player.playImmediately(atRate: 1)
-        // 首帧出来后置 ready，盖住「加载中」
-        statusObs = it.observe(\.status, options: [.new]) { [weak self] item, _ in
-            DispatchQueue.main.async {
-                self?.ready = item.status == .readyToPlay
-                #if DEBUG
-                ddWrite("DDLIVE status=\(item.status.rawValue) err=\(String(describing: item.error).prefix(80))")
-                #endif
-            }
+        // VLC 有些流不回报 videoSize，4 秒后无论如何收起「加载中」，别一直转圈
+        readyFallback?.cancel()
+        let fb = DispatchWorkItem { [weak self] in self?.ready = true }
+        readyFallback = fb
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: fb)
+        vlc.stop()   // 换码流/换房间先停，避免旧画面残留
+        vlc.play(url: u, headers: DYMedia.liveHeaders)
+        DYLiveModel.log("DDLIVEPLAY room=\(roomRef?.id ?? "-") q=\(key) url=\(u.absoluteString.prefix(70)) drawable=\(vlc.mediaPlayer.drawable != nil)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
+            DYLiveModel.log("DDLIVESTATE state=\(vlc.mediaPlayer.state.rawValue) size=\(vlc.videoSize) cur=\(String(format: "%.1f", vlc.current))")
         }
-        #if DEBUG
-        ddWrite("DDLIVEPLAY room=\(roomRef?.id ?? "-") url=\(u.absoluteString.prefix(70))")
-        #endif
     }
-    private var statusObs: NSKeyValueObservation?
 
     func stop() {
-        retryTask?.cancel(); statusObs = nil
-        player.pause(); player.replaceCurrentItem(with: nil)
+        retryTask?.cancel()
+        vlc.stop()
         loadedRoom = nil; ready = false
     }
     func reset() { stop(); rooms = []; currentID = nil; error = nil; loadedRoom = nil }
@@ -944,13 +961,13 @@ private struct DYLiveFeed: View {
             VStack {
                 Text(model.currentID ?? "-").font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("live.currentID")
-                Text(String(format: "%.1f", model.player.currentTime().seconds)).font(.caption2).opacity(0.01)
+                Text(String(format: "%.1f", model.vlc.current)).font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("live.time")
-                Text(String(format: "%.2f", model.player.rate)).font(.caption2).opacity(0.01)
+                Text(String(format: "%.2f", model.vlc.isPlaying ? 1 : 0)).font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("live.rate")
-                Text("\(model.player.currentItem?.status.rawValue ?? -1)").font(.caption2).opacity(0.01)
+                Text("\(model.vlc.videoSize.width > 0 ? 1 : 0)").font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("live.status")
-                Text(String(describing: model.player.currentItem?.error).prefix(120)).font(.caption2).opacity(0.01)
+                Text("\(Int(model.vlc.videoSize.width))x\(Int(model.vlc.videoSize.height))").font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("live.err")
             }
             .allowsHitTesting(false)
@@ -970,7 +987,7 @@ private struct DYLiveFeed: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(model.rooms) { room in
-                            DYLivePage(room: room, player: model.currentID == room.id ? model.player : nil,
+                            DYLivePage(room: room, vlc: model.currentID == room.id ? model.vlc : nil,
                                        ready: model.ready, onWeb: onWeb)
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(room.id)
@@ -1007,7 +1024,7 @@ private struct DYLivePage: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let room: DYLiveRoom
-    let player: AVPlayer?
+    let vlc: VLCPlayerController?
     let ready: Bool
     let onWeb: (URL) -> Void
 
@@ -1020,10 +1037,11 @@ private struct DYLivePage: View {
                     CachedAsyncImage(url: u) { img in img.resizable().aspectRatio(contentMode: fill ? .fill : .fit) } placeholder: { Color.clear }
                         .frame(width: geo.size.width, height: geo.size.height).clipped()
                 }
-                DYPlayerLayerView(player: player, gravity: fill ? .resizeAspectFill : .resizeAspect,
-                                  readyFill: UIColor(theme.media.strongScrim.color(for: scheme)))
-                    .frame(width: geo.size.width, height: geo.size.height)
-                if player != nil, !ready {
+                if let vlc {
+                    VLCPlayerSurface(controller: vlc, fillWidth: fill)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
+                if vlc != nil, !ready {
                     VStack(spacing: 8) {
                         ProgressView().tint(.white)
                         Text("直播加载中…").font(.caption).foregroundStyle(.white.opacity(0.85))
