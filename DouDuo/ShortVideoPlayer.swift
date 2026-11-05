@@ -57,6 +57,12 @@ enum DYMedia {
     static func asset(_ url: URL) -> AVURLAsset {
         AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
     }
+    /// 直播 HLS：CDN 认 live.douyin.com 的 Referer，不带会 403（表现为一直转圈/黑屏）
+    static func liveAsset(_ url: URL) -> AVURLAsset {
+        var h = headers
+        h["Referer"] = "https://live.douyin.com/"
+        return AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": h])
+    }
 }
 
 extension PlayerPage {
