@@ -1,0 +1,44 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "00008160-001924AE0E08000A",
+        "deviceName" : "無為-Duo",
+        "exportedFileName" : "533CF870-2874-4516-9586-ABEC4F532FC2.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "wide_0_BF8EDF60-D4E6-4F11-A4B5-7D50891C1403.mp4-landscape",
+        "timestamp" : 1793892774.714
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "00008160-001924AE0E08000A",
+        "deviceName" : "無為-Duo",
+        "exportedFileName" : "1DC240BB-52AE-440C-AD1D-BF19C33BB491.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "narrow_0_C191F82F-3F05-4B07-A44D-CF60F48664D1.mp4-landscape",
+        "timestamp" : 1793892764.388
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "00008160-001924AE0E08000A",
+        "deviceName" : "無為-Duo",
+        "exportedFileName" : "FADDCECE-E89E-428A-B722-6B9F902309BF.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "wide_0_E5E1021F-8B87-46A0-BADC-E25D82A6AEC4.mp4-portrait",
+        "timestamp" : 1793892754.054
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "00008160-001924AE0E08000A",
+        "deviceName" : "無為-Duo",
+        "exportedFileName" : "6BE87412-8B3F-4E7C-ABB0-12AEBBB5B14D.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "narrow_0_4A7355AE-2731-40E0-AD29-7D22E8A9C56A.mp4-portrait",
+        "timestamp" : 1793892743.938
+      }
+    ],
+    "testIdentifier" : "DouDuoUITests/testLocalFillBothOrientations()",
+    "testIdentifierURL" : "test://com.apple.xcode/DouDuo/DouDuoUITests/DouDuoUITests/testLocalFillBothOrientations"
+  }
+]

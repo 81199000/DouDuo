@@ -65,6 +65,46 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 确认 App 真的能转到横屏（窗口宽>高）
+    func testRotationSanity() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_LOCALVIDEO"] = "wide.mp4"
+        app.launchEnvironment["DOUDUO_LOCALFIT"] = "1"
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        sleep(4)
+        let p = app.windows.firstMatch.frame
+        print("DDTEST portrait window \(p)")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(4)
+        let l = app.windows.firstMatch.frame
+        print("DDTEST landscape window \(l)")
+        attach(app, "rot-landscape")
+        XCTAssertGreaterThan(l.width, l.height, "App 没转到横屏")
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    /// 竖屏 + 横屏 都要自适应（无黑边）：本地 720x1280 与 1280x720 测试片各跑一遍
+    func testLocalFillBothOrientations() throws {
+        // 先启动再转屏（启动时设方向会被 App 启动重置）
+        for (file, orient, tag) in [("narrow.mp4", UIDeviceOrientation.portrait, "portrait"),
+                                    ("wide.mp4", .portrait, "portrait"),
+                                    ("narrow.mp4", .landscapeLeft, "landscape"),
+                                    ("wide.mp4", .landscapeLeft, "landscape")] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_LOCALVIDEO"] = file
+            app.launchEnvironment["DOUDUO_LOCALFIT"] = "1"
+            XCUIDevice.shared.orientation = .portrait
+            app.launch()
+            sleep(4)
+            XCUIDevice.shared.orientation = orient
+            sleep(5)
+            attach(app, "\(file)-\(tag)")
+            app.terminate()
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
     /// 菜单里的「自动铺满宽度」开关：开=竖屏窄视频放大铺满，关=完整画面留边
     func testAutoFitToggle() throws {
         let app = XCUIApplication()

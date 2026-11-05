@@ -40,7 +40,7 @@ final class VLCPlayerUIView: UIView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 视频比屏幕窄（左右黑边）→ 裁成屏幕同比例铺满宽度；比屏幕宽（横屏）保持完整显示。
+    /// 自适应：竖屏视频按宽度铺满、横屏视频按高度铺满，不留黑边。
     override func layoutSubviews() {
         super.layoutSubviews()
         applyFill()
@@ -49,10 +49,10 @@ final class VLCPlayerUIView: UIView {
         guard let mp = controller?.mediaPlayer, bounds.width > 1, bounds.height > 1 else { return }
         let vs = mp.videoSize
         guard vs.width > 1, vs.height > 1 else { layer.transform = CATransform3DIdentity; return }
-        // VLC 按等比 fit 渲染（窄视频左右黑边）。要铺满宽度只需把整个渲染层放大 screenAR/videoAR 倍，
-        // 超出屏幕的部分自然看不见（视图居中缩放，裁切对称）。比屏幕宽的横屏视频保持原样。
+        // VLC 按等比 fit 渲染（必有黑边）。把渲染层放大到「刚好铺满」即可：竖屏视频按宽度、横屏按高度，
+        // 超出屏幕部分看不见（居中缩放，裁切对称）。
         let video = vs.width / vs.height, screen = bounds.width / bounds.height
-        let s = (fillWidth && video < screen - 0.01) ? screen / video : 1
+        let s = fillWidth ? max(screen / video, video / screen) : 1
         let t = CATransform3DMakeScale(s, s, 1)
         if !CATransform3DEqualToTransform(layer.transform, t) { layer.transform = t }
     }
