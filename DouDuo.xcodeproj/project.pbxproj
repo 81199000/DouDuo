@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */; };
+		26559796455EB77627AA7093 /* VLCPlayerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */; };
+		2ECF269C61C88FFF8EFD2169 /* VLCKitSPM in Frameworks */ = {isa = PBXBuildFile; productRef = 0ABFD1885FF4C1B4325A07D2 /* VLCKitSPM */; };
 		47FEEF8C736CB36FD20BA396 /* ShortVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */; };
 		48F46B135907F902C9B20475 /* CachedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */; };
 		5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */; };
@@ -17,18 +20,43 @@
 		D3DE2156FEFF721744FDB55E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8C00A82D0DF6727AA1E57D1 /* Theme.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		8809206E32A3AC286BDBA5F4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 19FA93B65B4A6CA63BD110E7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5945444A05F5E468EFC4ED47;
+			remoteInfo = DouDuo;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedAsyncImage.swift; sourceTree = "<group>"; };
 		4533C36FD7AE2A46CAA52B82 /* DouDuo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DouDuo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
 		79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeedView.swift; sourceTree = "<group>"; };
 		7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoApp.swift; sourceTree = "<group>"; };
 		7F33EB1CF5B949489AA77586 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VLCPlayerBridge.swift; sourceTree = "<group>"; };
 		960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortVideoPlayer.swift; sourceTree = "<group>"; };
+		A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoUITests.swift; sourceTree = "<group>"; };
+		B354D23E6C4EF0CC47B0C165 /* VLCKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VLCKit; path = Vendor/VLCKit; sourceTree = SOURCE_ROOT; };
 		BC6C461FDA2AC796478F78BD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinWebView.swift; sourceTree = "<group>"; };
 		E8C00A82D0DF6727AA1E57D1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8E8202A138785B656B08416C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2ECF269C61C88FFF8EFD2169 /* VLCKitSPM in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		716A33F79FCF26424F8D46DB /* DouDuo */ = {
@@ -43,6 +71,7 @@
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
 				E8C00A82D0DF6727AA1E57D1 /* Theme.swift */,
+				9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */,
 			);
 			path = DouDuo;
 			sourceTree = "<group>";
@@ -51,16 +80,35 @@
 			isa = PBXGroup;
 			children = (
 				716A33F79FCF26424F8D46DB /* DouDuo */,
+				E64F9911BD421B28B661B17D /* DouDuoUITests */,
+				A5367E698ABCB9B7E77322C6 /* Packages */,
 				AC0F0F81B083958ED04B3A5B /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A5367E698ABCB9B7E77322C6 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				B354D23E6C4EF0CC47B0C165 /* VLCKit */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 		AC0F0F81B083958ED04B3A5B /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				4533C36FD7AE2A46CAA52B82 /* DouDuo.app */,
+				67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E64F9911BD421B28B661B17D /* DouDuoUITests */ = {
+			isa = PBXGroup;
+			children = (
+				A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */,
+			);
+			path = DouDuoUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -72,6 +120,7 @@
 			buildPhases = (
 				36ECA62C687F6CAC1ED168AB /* Sources */,
 				BA0FDEB1C445704369185500 /* Resources */,
+				8E8202A138785B656B08416C /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -79,10 +128,29 @@
 			);
 			name = DouDuo;
 			packageProductDependencies = (
+				0ABFD1885FF4C1B4325A07D2 /* VLCKitSPM */,
 			);
 			productName = DouDuo;
 			productReference = 4533C36FD7AE2A46CAA52B82 /* DouDuo.app */;
 			productType = "com.apple.product-type.application";
+		};
+		67FA4ACB21915C23150E8B6F /* DouDuoUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E347AC0D61DA98401F245F56 /* Build configuration list for PBXNativeTarget "DouDuoUITests" */;
+			buildPhases = (
+				28B7BCF1643A45E6A6CE1E48 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5CC5ED3D060B0EF302ED0991 /* PBXTargetDependency */,
+			);
+			name = DouDuoUITests;
+			packageProductDependencies = (
+			);
+			productName = DouDuoUITests;
+			productReference = 67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -97,6 +165,10 @@
 						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
+					67FA4ACB21915C23150E8B6F = {
+						DevelopmentTeam = "";
+						TestTargetID = 5945444A05F5E468EFC4ED47;
+					};
 				};
 			};
 			buildConfigurationList = 85A15153E8D364192D1DE15D /* Build configuration list for PBXProject "DouDuo" */;
@@ -108,12 +180,16 @@
 			);
 			mainGroup = 91E0F9C31F9B7DFDD5CF804B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1A22B54854F0389F651300AC /* XCLocalSwiftPackageReference "Vendor/VLCKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AC0F0F81B083958ED04B3A5B /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				5945444A05F5E468EFC4ED47 /* DouDuo */,
+				67FA4ACB21915C23150E8B6F /* DouDuoUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -130,6 +206,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		28B7BCF1643A45E6A6CE1E48 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		36ECA62C687F6CAC1ED168AB /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -141,10 +225,19 @@
 				B072D11672770FB4836781C5 /* PlayerGestureView.swift in Sources */,
 				47FEEF8C736CB36FD20BA396 /* ShortVideoPlayer.swift in Sources */,
 				D3DE2156FEFF721744FDB55E /* Theme.swift in Sources */,
+				26559796455EB77627AA7093 /* VLCPlayerBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5CC5ED3D060B0EF302ED0991 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5945444A05F5E468EFC4ED47 /* DouDuo */;
+			targetProxy = 8809206E32A3AC286BDBA5F4 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1DA8D3FE2F749CCD01FC2013 /* Release */ = {
@@ -198,6 +291,23 @@
 				PRODUCT_NAME = DouDuo;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5F3D09EE57262E264E04D9F8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.rrmm.douduo.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = DouDuo;
 			};
 			name = Debug;
 		};
@@ -257,6 +367,23 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D1CFB4145693D3DD11F407B8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.rrmm.douduo.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = DouDuo;
 			};
 			name = Release;
 		};
@@ -347,7 +474,30 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		E347AC0D61DA98401F245F56 /* Build configuration list for PBXNativeTarget "DouDuoUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F3D09EE57262E264E04D9F8 /* Debug */,
+				D1CFB4145693D3DD11F407B8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		1A22B54854F0389F651300AC /* XCLocalSwiftPackageReference "Vendor/VLCKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/VLCKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		0ABFD1885FF4C1B4325A07D2 /* VLCKitSPM */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VLCKitSPM;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 19FA93B65B4A6CA63BD110E7 /* Project object */;
 }

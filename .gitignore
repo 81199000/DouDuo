@@ -4,3 +4,5 @@ DerivedData/
 *.ipa
 xcuserdata/
 .DS_Store
+Vendor/VLCKit/VLCKit-all.xcframework/
+Vendor/VLCKit/*.zip

@@ -3,6 +3,17 @@
 import SwiftUI
 import AVFoundation
 
+/// 抖音视频 CDN（douyinvod.com）要浏览器 UA + Referer，否则 403（真机实测：plain/CoreMedia UA 403，Safari UA+Referer 206）
+enum DYMedia {
+    static let headers = [
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+        "Referer": "https://www.douyin.com/",
+    ]
+    static func asset(_ url: URL) -> AVURLAsset {
+        AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+    }
+}
+
 extension PlayerPage {
     /// 与 無為 同名同参的构造入口，DouyinFeedView 原样复用
     static func external(id: String, title: String, url: URL, durationSec: Double, isActive: Bool,
@@ -44,18 +55,23 @@ struct PlayerPage: View {
     @State private var timeToken: Any?
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
+    @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
+    @State private var avRetried = false
 
     var body: some View {
         ZStack {
             Color.black
-            if let player {
+            if let vlc {
+                VLCPlayerSurface(controller: vlc)
+                    .overlay(gestures)
+            } else if let player {
                 VideoSurface(player: player)
                     .overlay(gestures)
             } else {
                 ProgressView().tint(.white)
             }
             if seeking { seekHUD }
-            if isActive && !isPlaying && player != nil && !seeking {
+            if isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
                 Image(systemName: "play.fill").font(.system(size: 52)).foregroundStyle(.white.opacity(0.75))
                     .allowsHitTesting(false)
             }
@@ -74,6 +90,11 @@ struct PlayerPage: View {
         .onAppear { if player == nil { setup() } }
         .onDisappear { teardown() }
         .onChange(of: isActive) { _, active in
+            if let v = vlc {
+                if active { v.mediaPlayer.audio?.isMuted = false; v.mediaPlayer.play(); isPlaying = true }
+                else { v.mediaPlayer.pause(); isPlaying = false; onSavePosition(v.current) }
+                return
+            }
             guard let p = player else { if active { setup() }; return }
             if active, p.currentItem == nil || p.currentItem?.status == .failed { rebuild(); return }
             if active {
@@ -95,13 +116,18 @@ struct PlayerPage: View {
             onSingleTap: { togglePlay() },
             onDoubleTap: { _, _ in onDoubleTap?() },
             onLongPress: { pressing in
+                if let v = vlc {
+                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(1); rateBoost = false }
+                    return
+                }
                 guard let p = player else { return }
                 if pressing { p.rate = 2; rateBoost = true }
                 else if rateBoost { p.rate = isPlaying ? 1 : 0; rateBoost = false }
             },
             onSeekBegan: {
-                guard duration > 0, let p = player else { return }
-                current = p.currentTime().seconds
+                guard duration > 0 else { return }
+                if let v = vlc { current = v.current }
+                else if let p = player { current = p.currentTime().seconds } else { return }
                 holdAnchor = current
                 seekPreview = current
                 seeking = true
@@ -185,7 +211,7 @@ struct PlayerPage: View {
 
     private func setup() {
         let pre = preparedPlayer?()
-        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? AVURLAsset(url: url)
+        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? DYMedia.asset(url)
         let p = pre ?? AVPlayer(playerItem: AVPlayerItem(asset: asset))
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
@@ -206,19 +232,26 @@ struct PlayerPage: View {
         }
         isPlaying = isActive
         if isActive { watchdog(p) }
+        #if DEBUG
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+            ddWrite("DDPLAY \(id) active=\(isActive) engine=\(vlc == nil ? "AV" : "VLC") status=\(p.currentItem?.status.rawValue ?? -1) t=\(p.currentTime().seconds) err=\(String(describing: p.currentItem?.error))")
+        }
+        #endif
     }
 
     /// 起播看门狗：当前屏 6 秒还没走（网络抖 / 预加载的 item 失效），重建播放项再来一次
     private func watchdog(_ p: AVPlayer) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-            guard isActive, isPlaying, player === p, !seeking else { return }
-            if p.currentItem == nil || p.currentItem?.status == .failed || p.currentTime().seconds < 0.1 { rebuild() }
+            guard isActive, isPlaying, player === p, !seeking, vlc == nil else { return }
+            let stuck = p.currentItem == nil || p.currentItem?.status == .failed || p.currentTime().seconds < 0.1
+            guard stuck else { return }
+            if avRetried { startVLC() } else { avRetried = true; rebuild() }
         }
     }
 
     private func rebuild() {
         teardownPlayerOnly()
-        let item = AVPlayerItem(url: url)
+        let item = AVPlayerItem(asset: DYMedia.asset(url))
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
@@ -226,6 +259,30 @@ struct PlayerPage: View {
         p.isMuted = false
         p.play()
         isPlaying = true
+        watchdog(p)
+    }
+
+    /// VLC 软解接管（AVPlayer 两次起不来 / 状态 failed）
+    private func startVLC() {
+        teardownPlayerOnly()
+        let v = VLCPlayerController()
+        if knownDuration > 0 { v.setKnownDuration(knownDuration) }
+        v.onProgress = { pos in
+            if !seeking { current = pos }
+            if v.duration > 0 { duration = v.duration }
+        }
+        v.onEnd = { [weak v] in
+            DispatchQueue.main.async {
+                if let onEnded { onEnded() } else if let v, isActive { v.seekTo(0); v.mediaPlayer.play() }
+            }
+        }
+        v.play(url: url, autoplay: isActive, headers: DYMedia.headers)
+        vlc = v
+        #if DEBUG
+        ddWrite("DDVLC takeover \(id)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { ddWrite("DDVLC \(id) t=\(v.current) playing=\(v.isPlaying)") }
+        #endif
+        isPlaying = isActive
     }
 
     private func attachObservers(_ p: AVPlayer) {
@@ -252,12 +309,14 @@ struct PlayerPage: View {
     }
 
     private func togglePlay() {
+        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; return }
         guard let p = player else { return }
         if isPlaying { p.pause() } else { p.play() }
         isPlaying.toggle()
     }
 
     private func seekTo(_ pos: Double) {
+        if let v = vlc { v.seekTo(pos); current = pos; return }
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
         current = pos
@@ -277,6 +336,7 @@ struct PlayerPage: View {
     }
 
     private func teardown() {
+        if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
         if let p = player { onSavePosition(p.currentTime().seconds) }
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
@@ -293,6 +353,17 @@ struct PlayerPage: View {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
     }
 }
+
+
+#if DEBUG
+/// 调试：播放状态写进 Documents/ddlog.txt，真机上用 devicectl copy 拉回来看
+func ddWrite(_ s: String) {
+    let u = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddlog.txt")
+    let line = "\(Date()) \(s)\n"
+    if let h = try? FileHandle(forWritingTo: u) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+    else { try? Data(line.utf8).write(to: u) }
+}
+#endif
 
 struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer

@@ -97,16 +97,22 @@ struct DouyinWebScreen: View {
                         .tint(theme.accent.color(for: scheme))
                         .frame(maxWidth: .infinity)
                 }
-                handle
-                    .position(point(in: geo.size, extra: drag))
-                    .simultaneousGesture(DragGesture(minimumDistance: 6)
-                        .onChanged { drag = $0.translation }
-                        .onEnded { v in
-                            let p = point(in: geo.size, extra: v.translation)
-                            handleX = Double(p.x / max(geo.size.width, 1))
-                            handleY = Double(p.y / max(geo.size.height, 1))
-                            drag = .zero
-                        })
+                // 左上角常驻「返回」：从作者主页 / 网页版一点就回原生页（原来藏在菜单里，找不到会以为回不去）
+                HStack(spacing: 8) {
+                    Button { dismiss() } label: {
+                        Label("返回", systemImage: "chevron.backward")
+                            .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                            .padding(.horizontal, 14).frame(height: 40)
+                            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("douyin.web.back")
+                    handle
+                }
+                .themeShadow(.floatingPanel)
+                .padding(.leading, 10)
+                .padding(.top, 4)
             }
         }
     }
@@ -122,8 +128,7 @@ struct DouyinWebScreen: View {
     /// 一颗可拖的悬浮钮：点开菜单（关闭 / 后退 / 刷新 / 回推荐 / 缩放）
     private var handle: some View {
         Menu {
-            Button("关闭抖音", systemImage: "xmark") { dismiss() }
-            Button("后退", systemImage: "chevron.backward") { model.web?.goBack() }
+            Button("网页后退一页", systemImage: "arrow.uturn.backward") { model.web?.goBack() }
                 .disabled(!model.canGoBack)
             Button("刷新", systemImage: "arrow.clockwise") { model.web?.reload() }
             Button("推荐（上下滑）", systemImage: "play.square.stack") { model.web?.evaluateJavaScript(DouyinWeb.goRecommendJS) }
@@ -133,12 +138,11 @@ struct DouyinWebScreen: View {
                 }
             }
         } label: {
-            Image(systemName: "square.grid.2x2.fill")
+            Image(systemName: "ellipsis")
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 44, height: 44)
+                .frame(width: 40, height: 40)
                 .background(Circle().fill(theme.media.chromeFill.color(for: scheme)))
-                .themeShadow(.floatingPanel)
         }
         .accessibilityLabel("抖音菜单")
     }
