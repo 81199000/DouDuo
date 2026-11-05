@@ -577,9 +577,18 @@ struct DouyinFeedScreen: View {
         }
         .onDisappear { live.stop(); preloader.clear() }
         .fullScreenCover(item: $web, onDismiss: {
-            // 网页里可能登录 / 过了验证：重开签名页，刷新推荐
+            // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
             live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
-            Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; focusCurrent() }
+            Task {
+                let on = await bridge.isLoggedIn()
+                feed.isLoggedIn = on
+                #if DEBUG
+                ddWrite("DDACT 网页返回后登录态=\(on)")
+                #endif
+                await feed.loadMore(bridge)
+                currentID = feed.items.first?.id
+                focusCurrent()
+            }
         }) { t in
             DouyinWebScreen(start: t.url)
         }
@@ -769,11 +778,10 @@ struct DouyinFeedScreen: View {
         }
     }
 
-    /// 未登录就别调接口了（服务端只会回「用户未登录」），直接引导去登录
+    /// 未登录就别调接口了（服务端只会回「用户未登录」）。只提示、不自动跳网页版——老板嫌点赞时弹网页
     private func ensureLoggedIn() -> Bool {
         if feed.isLoggedIn { return true }
-        showToast("请先登录抖音：菜单 → 网页版 / 登录")
-        web = DYWebTarget(url: DouyinWeb.home)
+        showToast("请先登录：菜单 → 网页版 / 登录")
         return false
     }
 
