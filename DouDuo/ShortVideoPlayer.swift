@@ -402,7 +402,7 @@ final class PlayerUIView: UIView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// 自适应：竖屏视频左右黑边 → 放大铺满宽度；横屏/宽视频上下黑边 → 放大铺满高度。
+    /// 自适应（仅同向时）：竖屏看竖屏铺满宽度；横屏看横屏铺满高度。竖屏看横屏保持原样。
     /// presentationSize 要等 readyToPlay 才有值，所以 layoutSubviews + KVO 都刷一次。
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -417,8 +417,16 @@ final class PlayerUIView: UIView {
     func applyGravity() {
         guard let size = playerLayer.player?.currentItem?.presentationSize, size.width > 1, size.height > 1,
               bounds.width > 1, bounds.height > 1 else { return }
-        // 竖屏/横屏都自适应：只要画面比例和屏幕不一致就把多出来的边裁掉铺满（无黑边）
-        let g: AVLayerVideoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
+        let video = size.width / size.height, screen = bounds.width / bounds.height
+        // 只有「视频和屏幕同向」时才放大铺满：竖屏看竖屏 → 铺满宽度；横屏看横屏 → 铺满高度。
+        // 竖屏看横屏（或反之）保持完整画面不动，否则会裁掉一大块。
+        let sameOrientation = (video < 1) == (screen < 1)
+        let g: AVLayerVideoGravity = (fillWidth && sameOrientation) ? .resizeAspectFill : .resizeAspect
+        #if DEBUG
+        if playerLayer.videoGravity != g {
+            ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")
+        }
+        #endif
         if playerLayer.videoGravity != g { playerLayer.videoGravity = g }
     }
 }
