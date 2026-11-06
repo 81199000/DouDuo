@@ -260,7 +260,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DouDuo/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "抖Duo";
+				INFOPLIST_KEY_CFBundleDisplayName = DouDuo;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "保存视频和图集到相册";
@@ -288,7 +288,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DouDuo/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "抖Duo";
+				INFOPLIST_KEY_CFBundleDisplayName = DouDuo;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "保存视频和图集到相册";
@@ -359,7 +359,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -435,7 +435,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

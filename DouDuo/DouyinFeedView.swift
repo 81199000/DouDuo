@@ -1,4 +1,4 @@
-// 抖Duo：抖音第三方客户端。数据走抖音网页端接口，界面 / 播放全原生。
+// DouDuo：抖音第三方客户端。数据走抖音网页端接口，界面 / 播放全原生。
 // 源自 無為 App 的「抖音原生模式」。
 // - 一个看不见的 WKWebView（电脑版 UA）挂在抖音页面上，只当「签名代理」：在页面里发 XHR，
 //   抖音自己的安全 SDK 自动补 a_bogus 等签名，签名算法跟着官方更新走，我们不用逆向。
@@ -176,7 +176,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }()
 
     /// 观看上报：跟网页版一样，起播时报播放(aweme/stats)、登录时写观看历史(history/write)。
-    /// 不上报，账号就学不到你在抖Duo里看了什么，推荐会和 App 越走越远。
+    /// 不上报，账号就学不到你在DouDuo里看了什么，推荐会和 App 越走越远。
     func reportWatch(_ a: DYAweme, preID: String?, preSeen: Bool) async {
         let d = try? await call(Self.watchJS, args: [
             "id": a.id, "type": String(a.awemeType ?? 0), "author": a.author.uid ?? "",

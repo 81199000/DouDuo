@@ -10,7 +10,7 @@ packages:
 settings:
   base:
     MARKETING_VERSION: 1.2.0
-    CURRENT_PROJECT_VERSION: "20"
+    CURRENT_PROJECT_VERSION: "21"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
@@ -25,7 +25,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo
         PRODUCT_NAME: DouDuo
-        INFOPLIST_KEY_CFBundleDisplayName: 抖Duo
+        INFOPLIST_KEY_CFBundleDisplayName: DouDuo
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
