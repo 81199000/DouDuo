@@ -79,10 +79,11 @@ extension PlayerPage {
                          preparedPlayer: (() -> AVPlayer?)? = nil,
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
                          onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
-                         fillWidth: Bool = true) -> PlayerPage {
+                         fillWidth: Bool = true, danmaku: [DYDanmaku] = []) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
-                   onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth)
+                   onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
+                   topInset: topInset, danmaku: danmaku)
     }
 }
 
@@ -99,6 +100,9 @@ struct PlayerPage: View {
     let onSavePosition: (Double) -> Void
     /// 竖屏时视频比屏幕窄（左右黑边）→ 放大铺满宽度；关掉则保持完整画面（上下留边）
     var fillWidth: Bool = true
+    var topInset: CGFloat = 0
+    /// 视频弹幕（空 = 不显示）
+    var danmaku: [DYDanmaku] = []
 
     @State private var player: AVPlayer?
     @State private var imgGen: AVAssetImageGenerator?
@@ -129,6 +133,9 @@ struct PlayerPage: View {
                 VideoSurface(player: player, fillWidth: fillWidth).ignoresSafeArea()
             } else {
                 ProgressView().tint(.white)
+            }
+            if isActive && !danmaku.isEmpty {
+                DYDanmakuLayer(items: danmaku, time: current, topInset: topInset)
             }
             // 手势层铺满整页（含视频上下黑边）：横滑快进 / 单击 / 双击 / 长按，竖滑漏给分页
             if player != nil || vlc != nil { gestures }
@@ -258,14 +265,15 @@ struct PlayerPage: View {
             HStack {
                 Text(fmt(pos)); Spacer(); Text(fmt(duration))
             }
-            .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.85))
+            .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(seeking ? 0.9 : 0.45))
             .padding(.horizontal, 16)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.28)).frame(height: seeking ? 6 : 3)
-                    Capsule().fill(.white).frame(width: g.size.width * frac, height: seeking ? 6 : 3)
-                    Circle().fill(.white).frame(width: seeking ? 15 : 9, height: seeking ? 15 : 9)
-                        .offset(x: max(0, g.size.width * frac - (seeking ? 7.5 : 4.5)))
+                    // 平时半透明不挡画面（横滑全屏都能拖进度），拖动时才变实
+                    Capsule().fill(.white.opacity(seeking ? 0.28 : 0.12)).frame(height: seeking ? 6 : 2)
+                    Capsule().fill(.white.opacity(seeking ? 1 : 0.4)).frame(width: g.size.width * frac, height: seeking ? 6 : 2)
+                    Circle().fill(.white.opacity(seeking ? 1 : 0.45)).frame(width: seeking ? 15 : 6, height: seeking ? 15 : 6)
+                        .offset(x: max(0, g.size.width * frac - (seeking ? 7.5 : 3)))
                 }
                 .frame(maxHeight: .infinity)
                 .onAppear { barWidth = g.size.width }
