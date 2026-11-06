@@ -327,6 +327,17 @@ struct PlayerPage: View {
         isPlaying = isActive
         if isActive { watchdog(p) }
         #if DEBUG
+        if isActive {
+            let t0 = Date()
+            func probe(_ n: Int) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    if p.currentTime().seconds > 0.05 {
+                        ddWrite("DDSTART \(id) local=\(url.isFileURL) 起播用时=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s 距启动=\(String(format: "%.2f", Date().timeIntervalSince(DDLaunch.t0)))s")
+                    } else if n < 100 { probe(n + 1) }
+                }
+            }
+            probe(0)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
             ddWrite("DDPLAY \(id) active=\(isActive) engine=\(vlc == nil ? "AV" : "VLC") status=\(p.currentItem?.status.rawValue ?? -1) t=\(p.currentTime().seconds) err=\(String(describing: p.currentItem?.error))")
         }
@@ -491,6 +502,7 @@ struct PlayerPage: View {
 
 
 #if DEBUG
+enum DDLaunch { static let t0 = Date() }
 /// 调试：播放状态写进 Documents/ddlog.txt，真机上用 devicectl copy 拉回来看
 func ddWrite(_ s: String) {
     let u = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddlog.txt")
