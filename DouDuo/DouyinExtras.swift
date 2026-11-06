@@ -99,8 +99,12 @@ extension DouyinBridge {
         try await list(Self.followJS, ["cursor": cursor])
     }
 
+    /// 搜索：网页接口只给第一页（翻第二页安全 SDK 直接压住不返回，换参数 / search_id 都一样）
+    /// → 只拉一次、hasMore 置 false，免得底部一直转圈或报「拦截」
     func search(_ kw: String, offset: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        try await list(Self.searchJS, ["kw": kw, "cursor": offset])
+        guard offset == "0" else { return ([], offset, false) }
+        let r = try await list(Self.searchJS, ["kw": kw, "cursor": "0"])
+        return (r.items, r.cursor, false)
     }
 
     func suggest(_ kw: String) async -> [DYSug] {
@@ -181,7 +185,7 @@ extension DouyinBridge {
 
     static let searchJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ search_channel: 'aweme_video_web', keyword: kw, search_source: 'normal_search',
-      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '16', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
+      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '24', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     return pack(r, d, arr, d.cursor, d.has_more);
@@ -1000,3 +1004,37 @@ final class DYPagedModelHolder: ObservableObject {
         return n
     }
 }
+
+
+#if DEBUG
+/// 真机自检：用 App 里真实的接口函数逐个跑一遍（登录态），结果写 ddlog，不用点界面
+@MainActor enum DDSelfTest {
+    static func run(_ b: DouyinBridge) async {
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        func log(_ s: String) { DYLiveModel.log("DDSELF " + s) }
+        await b.debugExportCookies()
+        do { let u = try await b.selfProfile(); log("self ok name=\(u.name) likes=\(u.likes) works=\(u.works) sec=\(u.secUid.prefix(10))") }
+        catch { log("self FAIL \(error.localizedDescription)") }
+        for k in DYListKind.allCases {
+            do {
+                let r = try await b.myList(k, cursor: "0")
+                let playable = r.items.filter { $0.play != nil || !$0.images.isEmpty }.count
+                log("\(k.title) ok n=\(r.items.count) playable=\(playable) more=\(r.hasMore) cur=\(r.cursor) first=\(r.items.first?.desc.prefix(16) ?? "-")")
+                if r.hasMore {
+                    let r2 = try await b.myList(k, cursor: r.cursor)
+                    log("\(k.title) page2 n=\(r2.items.count) dup=\(Set(r.items.map(\.id)).intersection(r2.items.map(\.id)).count)")
+                }
+            } catch { log("\(k.title) FAIL \(error.localizedDescription)") }
+        }
+        do { let r = try await b.followFeed(cursor: "0"); log("关注 ok n=\(r.items.count) more=\(r.hasMore) first=\(r.items.first?.author.name ?? "-")") }
+        catch { log("关注 FAIL \(error.localizedDescription)") }
+        do {
+            let r = try await b.search("猫", offset: "0")
+            log("搜索 ok n=\(r.items.count) more=\(r.hasMore) cur=\(r.cursor) first=\(r.items.first?.desc.prefix(16) ?? "-")")
+            if r.hasMore { let r2 = try await b.search("猫", offset: r.cursor); log("搜索 page2 n=\(r2.items.count)") }
+        } catch { log("搜索 FAIL \(error.localizedDescription)") }
+        let sug = await b.suggest("猫"); log("联想 n=\(sug.count) first=\(sug.first?.word ?? "-")")
+        log("done")
+    }
+}
+#endif
