@@ -623,6 +623,10 @@ struct DouyinFeedScreen: View {
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
     @State private var currentID: String?
+    @State private var scrollID: String?
+    @State private var userScrolling = false
+    @State private var scrollEndTask: Task<Void, Never>?
+    @State private var initialized = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
     @State private var tab: DYTab = ProcessInfo.processInfo.environment["DOUDUO_STARTLIVE"] == "1" ? .live : .recommend
@@ -664,6 +668,8 @@ struct DouyinFeedScreen: View {
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
         .statusBarHidden(true)
         .task {
+            guard !initialized else { return }
+            initialized = true
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
             #if DEBUG
@@ -672,6 +678,17 @@ struct DouyinFeedScreen: View {
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
+            if feed.items.isEmpty, let saved = DYFeedSession.load() {
+                feed.items = saved.items
+                resume = saved.positions
+                currentID = saved.currentID
+                scrollID = saved.currentID
+                for a in saved.items {
+                    if a.userDigged == 1 { feed.liked.insert(a.id) }
+                    if a.isCollect == 1 { feed.collected.insert(a.id) }
+                }
+                DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0)")
+            }
             if feed.items.isEmpty {
                 let cached = DYVideoCache.pendingSnapshot()
                 if !cached.isEmpty {
@@ -723,7 +740,15 @@ struct DouyinFeedScreen: View {
             // ⚠️ 宽屏（Duo 内屏）首次布局时 ScrollView 会把 scrollPosition 回写成 nil → 没有「当前条」→ 全部不播、上滑也不认。
             // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
+            scrollID = new
             focusCurrent()
+            saveSession()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            saveSession()
+        }
+        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
+            if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.portraitOnly) { _, _ in
@@ -741,6 +766,28 @@ struct DouyinFeedScreen: View {
             }
         }) { t in
             DouyinWebScreen(start: t.url)
+        }
+    }
+
+    private func saveSession() {
+        guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
+        var positions = resume
+        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
+            positions[id] = max(0, DDNowPlaying.time)
+        }
+        DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
+    }
+
+    private func selectTab(_ target: DYTab) {
+        if tab == .recommend && target == .recommend {
+            guard let first = feed.items.first else { return }
+            showComments = false
+            // 明确回到第一条，不重新赋值同一个 tab 触发布局动画。
+            currentID = first.id
+            scrollID = first.id
+            DYLiveModel.log("DDSESSION 推荐回顶部 id=\(first.id)")
+        } else {
+            tab = target
         }
     }
 
@@ -851,7 +898,7 @@ struct DouyinFeedScreen: View {
         let fg = theme.media.onMedia.color(for: scheme)
         return HStack(spacing: 18) {
             ForEach(DYTab.allCases, id: \.self) { t in
-                Button { withAnimation(.snappy) { tab = t } } label: {
+                Button { selectTab(t) } label: {
                     VStack(spacing: 4) {
                         Text(t.title)
                             .font(.headline.weight(tab == t ? .bold : .medium))
@@ -902,7 +949,7 @@ struct DouyinFeedScreen: View {
                                         onDoubleTap: { toggleLike(item.id, force: true) },
                                         onComments: { withAnimation(.snappy) { showComments.toggle() } },
                                         onAuthor: { authorTarget = item.author },
-                                        onSavePosition: { resume[item.id] = $0 },
+                                        onSavePosition: { resume[item.id] = $0; saveSession() },
                                         preloader: preloader,
                                         bridge: bridge,
                                         onToast: { showToast($0) })
@@ -913,7 +960,25 @@ struct DouyinFeedScreen: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $currentID, anchor: .center)
+                .scrollPosition(id: $scrollID, anchor: .center)
+                .onAppear { scrollID = currentID }
+                .simultaneousGesture(DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        if abs(value.translation.height) > abs(value.translation.width) {
+                            scrollEndTask?.cancel(); userScrolling = true
+                        }
+                    }
+                    .onEnded { _ in
+                        scrollEndTask = Task {
+                            try? await Task.sleep(nanoseconds: 800_000_000)
+                            if !Task.isCancelled { userScrolling = false }
+                        }
+                    })
+                .onChange(of: scrollID) { _, id in
+                    guard let id, feed.items.contains(where: { $0.id == id }) else { return }
+                    if userScrolling { currentID = id }
+                    else if id != currentID { scrollID = currentID }
+                }
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
             }

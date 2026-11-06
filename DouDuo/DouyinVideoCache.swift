@@ -5,6 +5,31 @@
 import Foundation
 import UIKit
 
+/// 浏览会话保存在 Application Support，不随视频缓存清理或系统回收而丢失。
+struct DYFeedSession: Codable {
+    var items: [DYAweme]
+    var currentID: String
+    var positions: [String: Double]
+
+    static var url: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("feed-session.json")
+    }
+    static func load() -> DYFeedSession? {
+        guard let data = try? Data(contentsOf: url),
+              let session = try? JSONDecoder().decode(Self.self, from: data),
+              session.items.contains(where: { $0.id == session.currentID }) else { return nil }
+        return session
+    }
+    func save() {
+        guard items.contains(where: { $0.id == currentID }),
+              let data = try? JSONEncoder().encode(self) else { return }
+        do { try data.write(to: Self.url, options: .atomic) }
+        catch { DYLiveModel.log("DDSESSION 保存失败 \(error.localizedDescription)") }
+    }
+}
+
 actor DYVideoCache {
     static let shared = DYVideoCache()
     static let countKey = "douyin_cache_count_v1"
