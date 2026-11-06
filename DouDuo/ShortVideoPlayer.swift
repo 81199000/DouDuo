@@ -104,6 +104,14 @@ struct PlayerPage: View {
     /// 视频弹幕（空 = 不显示）
     var danmaku: [DYDanmaku] = []
 
+    private var dmStress: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["DOUDUO_DM_STRESS"] == "1"
+        #else
+        false
+        #endif
+    }
+
     @State private var player: AVPlayer?
     @State private var imgGen: AVAssetImageGenerator?
     @State private var duration: Double = 0
@@ -116,6 +124,7 @@ struct PlayerPage: View {
     @State private var lastPreviewAt: Double = 0
     @State private var holdAnchor: Double = 0
     @State private var rateBoost = false
+    @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
@@ -134,8 +143,8 @@ struct PlayerPage: View {
             } else {
                 ProgressView().tint(.white)
             }
-            if isActive && !danmaku.isEmpty {
-                DYDanmakuLayer(items: danmaku, time: current, topInset: topInset)
+            if isActive && (!danmaku.isEmpty || dmStress) {
+                DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
             }
             // 手势层铺满整页（含视频上下黑边）：横滑快进 / 单击 / 双击 / 长按，竖滑漏给分页
             if player != nil || vlc != nil { gestures }
@@ -414,6 +423,7 @@ struct PlayerPage: View {
         v.onProgress = { pos in
             if !seeking { current = pos }
             if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
+            if !danmaku.isEmpty || dmStress { dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate)) }
             if v.duration > 0 { duration = v.duration }
         }
         v.onEnd = { [weak v] in
@@ -435,6 +445,7 @@ struct PlayerPage: View {
             MainActor.assumeIsolated {
                 if !seeking { current = t.seconds }
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
+                if !danmaku.isEmpty || dmStress { dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate)) }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
             }
         }
@@ -455,13 +466,15 @@ struct PlayerPage: View {
     }
 
     private func togglePlay() {
-        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; return }
+        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; dmClock.sync(v.current, playing: v.isPlaying, rate: 1); return }
         guard let p = player else { return }
         if isPlaying { p.pause() } else { p.play() }
         isPlaying.toggle()
+        dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: Double(max(p.rate, 1)))
     }
 
     private func seekTo(_ pos: Double) {
+        dmClock.sync(pos, playing: isPlaying, rate: rateBoost ? 2 : 1)
         if let v = vlc { v.seekTo(pos); current = pos; return }
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
