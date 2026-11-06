@@ -625,8 +625,10 @@ struct DouyinFeedScreen: View {
     @State private var currentID: String?
     @State private var scrollID: String?
     @State private var userScrolling = false
+    @State private var dragStartID: String?
     @State private var scrollEndTask: Task<Void, Never>?
     @State private var initialized = false
+    @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
     @State private var tab: DYTab = ProcessInfo.processInfo.environment["DOUDUO_STARTLIVE"] == "1" ? .live : .recommend
@@ -780,19 +782,51 @@ struct DouyinFeedScreen: View {
 
     private func selectTab(_ target: DYTab) {
         if tab == .recommend && target == .recommend {
-            guard let first = feed.items.first else { return }
-            showComments = false
-            // 明确回到第一条，不重新赋值同一个 tab 触发布局动画。
-            currentID = first.id
-            scrollID = first.id
-            DYLiveModel.log("DDSESSION 推荐回顶部 id=\(first.id)")
+            Task { await refreshRecommendations() }
         } else {
             tab = target
         }
     }
 
+    /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
+    @MainActor private func refreshRecommendations() async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false; focusCurrent() }
+        showToast("正在刷新推荐…")
+        while feed.loading {
+            do { try await Task.sleep(nanoseconds: 100_000_000) }
+            catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        let previous = Set(feed.items.map(\.id))
+        let replacement = DYFeedModel()
+        await replacement.loadMore(bridge)
+        guard !Task.isCancelled else { return }
+        let fresh = replacement.items.filter { !previous.contains($0.id) }
+        guard !fresh.isEmpty else {
+            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
+            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
+            return
+        }
+        showComments = false
+        scrollEndTask?.cancel(); userScrolling = false
+        preloader.clear()
+        feed.reset()
+        feed.items = fresh
+        feed.liked.formUnion(replacement.liked)
+        feed.collected.formUnion(replacement.collected)
+        resume = [:]
+        currentID = fresh.first?.id
+        scrollID = currentID
+        lastFeedPull = Date()
+        saveSession()
+        showToast("推荐已刷新")
+        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+    }
+
     private func focusCurrent() {
-        guard let i = currentIndex else { return }
+        guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
@@ -887,7 +921,8 @@ struct DouyinFeedScreen: View {
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: 40, height: 40)
-                .background(Circle().fill(theme.media.chromeFill.color(for: scheme)))
+                .contentShape(Rectangle())
+                .themeShadow(.mediaLabel)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
@@ -959,16 +994,25 @@ struct DouyinFeedScreen: View {
                     }
                     .scrollTargetLayout()
                 }
+                .refreshable { await refreshRecommendations() }
                 .scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollID, anchor: .center)
                 .onAppear { scrollID = currentID }
                 .simultaneousGesture(DragGesture(minimumDistance: 8)
                     .onChanged { value in
                         if abs(value.translation.height) > abs(value.translation.width) {
+                            if !userScrolling { dragStartID = currentID }
                             scrollEndTask?.cancel(); userScrolling = true
                         }
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
+                        // 播放器手势层可能拦住原生 refreshable 的触发，首条下拉显式兜底。
+                        if dragStartID == feed.items.first?.id,
+                           value.translation.height > 90,
+                           value.translation.height > abs(value.translation.width) {
+                            Task { await refreshRecommendations() }
+                        }
+                        dragStartID = nil
                         scrollEndTask = Task {
                             try? await Task.sleep(nanoseconds: 800_000_000)
                             if !Task.isCancelled { userScrolling = false }
@@ -1063,9 +1107,9 @@ struct DouyinFeedScreen: View {
     private var menuButton: some View {
         Menu {
             Button("刷新推荐", systemImage: "arrow.clockwise") {
-                preloader.clear(); feed.reset(); currentID = nil
-                Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; focusCurrent() }
+                Task { await refreshRecommendations() }
             }
+            .disabled(refreshing)
             Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
             Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
             Toggle(isOn: $danmakuOn) { Label("弹幕", systemImage: "text.bubble") }
@@ -1092,7 +1136,8 @@ struct DouyinFeedScreen: View {
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: 40, height: 40)
-                .background(Circle().fill(theme.media.chromeFill.color(for: scheme)))
+                .contentShape(Rectangle())
+                .themeShadow(.mediaLabel)
         }
         .accessibilityLabel("抖音菜单")
     }
