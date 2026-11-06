@@ -1124,6 +1124,10 @@ private struct DYLiveFeed: View {
     @ObservedObject var model: DYLiveModel
     let onWeb: (URL) -> Void
     @StateObject private var chat = DYLiveChat()
+    @State private var liveDraft = ""
+    @State private var liveSending = false
+    @State private var liveErr: String?
+    @FocusState private var liveFocused: Bool
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var tick = 0      // 0.5s 刷新一次，让调试进度文案跟着走
     @State private var scrollID: String?
@@ -1166,7 +1170,8 @@ private struct DYLiveFeed: View {
                         ForEach(model.rooms) { room in
                             DYLivePage(room: room, vlc: model.currentID == room.id ? model.vlc : nil,
                                        ready: model.ready, onWeb: onWeb,
-                                       chat: (danmakuOn && model.currentID == room.id) ? chat.messages : [])
+                                       chat: (danmakuOn && model.currentID == room.id) ? chat.messages : [],
+                                       chatInput: model.currentID == room.id ? AnyView(liveInput) : nil)
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(room.id)
                         }
@@ -1245,6 +1250,40 @@ private struct DYLiveFeed: View {
 }
 
 extension DYLiveFeed {
+    fileprivate var liveInput: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let e = liveErr { Text(e).font(.caption2).foregroundStyle(.orange) }
+            HStack(spacing: 8) {
+                TextField("", text: $liveDraft, prompt: Text("说点什么…").foregroundStyle(.white.opacity(0.5)))
+                    .foregroundStyle(.white)
+                    .focused($liveFocused)
+                    .submitLabel(.send)
+                    .onSubmit { sendLive() }
+                    .padding(.horizontal, 14).frame(height: 38)
+                    .background(Capsule().fill(.black.opacity(0.45)))
+                    .accessibilityIdentifier("live.chat.input")
+                if !liveDraft.isEmpty {
+                    Button(action: sendLive) {
+                        if liveSending { ProgressView().tint(.white) } else { Text("发送").font(.subheadline.weight(.semibold)) }
+                    }
+                    .foregroundStyle(.white).padding(.horizontal, 12).frame(height: 38)
+                    .background(Capsule().fill(Color(red: 1.0, green: 0.17, blue: 0.33)))
+                    .accessibilityIdentifier("live.chat.send")
+                }
+            }
+        }
+    }
+
+    fileprivate func sendLive() {
+        let text = liveDraft.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !liveSending else { return }
+        liveSending = true
+        Task {
+            if let err = await chat.send(text) { liveErr = err } else { liveDraft = ""; liveErr = nil; liveFocused = false }
+            liveSending = false
+        }
+    }
+
     fileprivate func openChat(_ id: String?) {
         guard danmakuOn, let id, let r = model.rooms.first(where: { $0.id == id }) else { return }
         chat.open(r.webRid)
@@ -1259,6 +1298,7 @@ private struct DYLivePage: View {
     let ready: Bool
     let onWeb: (URL) -> Void
     var chat: [DYLiveMsg] = []
+    var chatInput: AnyView? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -1298,8 +1338,9 @@ private struct DYLivePage: View {
                             .background(Capsule().fill(theme.status.danger.color(for: scheme)))
                     }
                     if !room.title.isEmpty { Text(room.title).font(.subheadline).lineLimit(2) }
+                    if let chatInput { chatInput.frame(maxWidth: 320) }
                     Button { onWeb(room.webURL) } label: {
-                        Label("进直播间（弹幕 / 礼物）", systemImage: "bubble.left.and.text.bubble.right")
+                        Label("进直播间（礼物）", systemImage: "gift")
                             .font(.caption.weight(.medium))
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
@@ -1340,6 +1381,10 @@ struct DYVideoPage: View {
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
     @State private var saving = false
+    @State private var showDanmakuInput = false
+    @State private var danmakuDraft = ""
+    @State private var danmakuSending = false
+    @FocusState private var danmakuFocused: Bool
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
 
@@ -1399,7 +1444,11 @@ struct DYVideoPage: View {
             .padding(.horizontal, 12)
             .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 92 : 24))   // 让开底部时间 + 进度条 + 拖动区
         }
+        .overlay(alignment: .bottom) {
+            if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
+        }
         .animation(.snappy, value: heart)
+        .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
@@ -1410,6 +1459,55 @@ struct DYVideoPage: View {
             } catch {
                 DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
             }
+        }
+    }
+
+    private var danmakuBar: some View {
+        HStack(spacing: 8) {
+            TextField("", text: $danmakuDraft, prompt: Text("发个弹幕见证当下").foregroundStyle(.white.opacity(0.5)))
+                .foregroundStyle(.white)
+                .focused($danmakuFocused)
+                .submitLabel(.send)
+                .onSubmit { sendDanmaku() }
+                .padding(.horizontal, 14).frame(height: 40)
+                .background(Capsule().fill(.black.opacity(0.6)))
+                .accessibilityIdentifier("douyin.danmaku.input")
+            Button(action: sendDanmaku) {
+                if danmakuSending { ProgressView().tint(.white) }
+                else { Text("发送").font(.subheadline.weight(.semibold)) }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14).frame(height: 40)
+            .background(Capsule().fill(theme.accent.color(for: scheme)))
+            .disabled(danmakuDraft.trimmingCharacters(in: .whitespaces).isEmpty || danmakuSending)
+            .accessibilityIdentifier("douyin.danmaku.send")
+            Button { showDanmakuInput = false; danmakuFocused = false } label: {
+                Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    .frame(width: 36, height: 40)
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private func sendDanmaku() {
+        let text = danmakuDraft.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !danmakuSending, let b = bridge else { return }
+        danmakuSending = true
+        let at = DDNowPlaying.id == item.id ? DDNowPlaying.time : 0
+        Task {
+            do {
+                let id = try await b.postDanmaku(item.id, text: text, offset: at)
+                // 自己发的立刻上屏（从当前时间点开始飘）
+                danmaku.append(DYDanmaku(id: id, text: text, offset: at + 0.3))
+                danmaku.sort { $0.offset < $1.offset }
+                danmakuDraft = ""
+                showDanmakuInput = false
+                danmakuFocused = false
+                onToast?("弹幕已发送")
+            } catch {
+                onToast?("弹幕发送失败：\(error.localizedDescription)")
+            }
+            danmakuSending = false
         }
     }
 
@@ -1465,6 +1563,12 @@ struct DYVideoPage: View {
             action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                    tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
             action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
+            if item.images.isEmpty, bridge != nil {
+                action("text.bubble", "弹幕", tint: fg, "douyin.danmaku.open") {
+                    showDanmakuInput = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
+                }
+            }
             action(collected ? "star.fill" : "star",
                    DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                    tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
@@ -1544,6 +1648,11 @@ struct DYCommentPanel: View {
     @State private var replyMore: [String: Bool] = [:]
     @State private var replyLoading: Set<String> = []
     @State private var replyErr: [String: String] = [:]
+    @State private var draft = ""
+    @State private var replyTo: DYComment?
+    @State private var sending = false
+    @State private var sendErr: String?
+    @FocusState private var inputFocused: Bool
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?) {
         self.bridge = bridge; self.aweme = aweme; self.onClose = onClose
@@ -1582,11 +1691,72 @@ struct DYCommentPanel: View {
                 }
                 .padding(16)
             }
+            Divider()
+            inputBar
         }
         .background(GlassBackground())
     }
 
+    private var inputBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let r = replyTo {
+                HStack {
+                    Text("回复 @\(r.name)").font(.caption).foregroundStyle(.themeTextSecondary).lineLimit(1)
+                    Spacer()
+                    Button { replyTo = nil } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(.themeTextSecondary)
+                }
+            }
+            if let e = sendErr {
+                Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
+            }
+            HStack(spacing: 8) {
+                TextField(replyTo == nil ? "说点什么…" : "回复 \(replyTo!.name)", text: $draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .focused($inputFocused)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                    .accessibilityIdentifier("douyin.comment.input")
+                Button { Task { await send() } } label: {
+                    if sending { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "paperplane.fill").font(.body.weight(.semibold)) }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary : theme.accent.color(for: scheme))
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                .accessibilityIdentifier("douyin.comment.send")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    private func send() async {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !sending else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            let c = try await bridge.publishComment(aweme.id, text: text, replyID: replyTo?.id)
+            if let parent = replyTo {
+                replies[parent.id, default: []].insert(c, at: 0)
+            } else {
+                items.insert(c, at: 0)
+                total += 1
+            }
+            draft = ""; replyTo = nil; sendErr = nil
+            inputFocused = false
+        } catch {
+            sendErr = "发送失败：\(error.localizedDescription)"
+        }
+    }
+
     private func row(_ c: DYComment) -> some View {
+        rowBody(c)
+            .contentShape(Rectangle())
+            .onTapGesture { replyTo = c; inputFocused = true }
+    }
+
+    private func rowBody(_ c: DYComment) -> some View {
         HStack(alignment: .top, spacing: 10) {
             CachedAsyncImage(url: c.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
                 placeholder: { Color.primary.opacity(0.08) }

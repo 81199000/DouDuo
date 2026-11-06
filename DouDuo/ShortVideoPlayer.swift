@@ -402,6 +402,7 @@ struct PlayerPage: View {
         if knownDuration > 0 { v.setKnownDuration(knownDuration) }
         v.onProgress = { pos in
             if !seeking { current = pos }
+            if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
             if v.duration > 0 { duration = v.duration }
         }
         v.onEnd = { [weak v] in
@@ -422,6 +423,7 @@ struct PlayerPage: View {
         timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { t in
             MainActor.assumeIsolated {
                 if !seeking { current = t.seconds }
+                if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
             }
         }

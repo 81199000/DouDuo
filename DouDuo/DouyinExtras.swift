@@ -48,6 +48,7 @@ enum DYListKind: String, CaseIterable, Identifiable {
 private struct DYListPage: Decodable { let status: Int; let items: [DYAweme]; let cursor: String; let hasMore: Bool; let code: Int?; let msg: String? }
 private struct DYDanmakuPage: Decodable { let status: Int; let items: [DYDanmaku] }
 private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let msg: String? }
+private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String? }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 
@@ -125,6 +126,77 @@ extension DouyinBridge {
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
         return (p.items, p.cursor, p.hasMore)
     }
+
+    /// 发评论 / 回复评论（replyID 非空 = 回复那条）
+    func publishComment(_ awemeID: String, text: String, replyID: String? = nil) async throws -> DYComment {
+        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0"], attempts: 1)
+        let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
+        DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-")")
+        if r.code == 8 { throw DYError.bad("抖音未登录") }
+        guard r.status == 200, (r.code ?? 0) == 0, let c = r.comment else {
+            throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发送失败（HTTP \(r.status) / \(r.code ?? -1)）")
+        }
+        return c
+    }
+
+    func deleteComment(_ cid: String) async -> Bool {
+        guard let d = try? await call(Self.deleteCommentJS, args: ["cid": cid], attempts: 1),
+              let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else { return false }
+        return r.status == 200 && (r.code ?? 0) == 0
+    }
+
+    /// 发视频弹幕（offset 秒 = 出现在视频的哪个时间点）
+    func postDanmaku(_ awemeID: String, text: String, offset: Double) async throws -> String {
+        let d = try await call(Self.danmakuPostJS, args: ["id": awemeID, "text": text, "offset": String(Int(max(0, offset) * 1000))], attempts: 1)
+        let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
+        DYLiveModel.log("DDSEND danmaku status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") id=\(r.danmakuID ?? "-")")
+        if r.code == 8 { throw DYError.bad("抖音未登录") }
+        guard r.status == 200, (r.code ?? 0) == 0 else {
+            throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发送失败（HTTP \(r.status) / \(r.code ?? -1)）")
+        }
+        return r.danmakuID ?? UUID().uuidString
+    }
+
+    func deleteDanmaku(_ id: String) async -> Bool {
+        guard let d = try? await call(Self.danmakuDeleteJS, args: ["did": id], attempts: 1),
+              let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else { return false }
+        return r.status == 200 && (r.code ?? 0) == 0
+    }
+
+    private static let cmap = #"""
+    const cmap = c => c ? ({ id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
+      digg: c.digg_count || 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null }) : null;
+    """#
+
+    // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
+    static let publishJS = cmap + #"""
+    const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
+    const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
+    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', '0'); }
+    const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || (r.s === 200 ? null : (r.t || '').slice(0, 80)), comment: cmap(d.comment), danmakuID: null });
+    """#
+
+    static let deleteCommentJS = #"""
+    const r = await req('POST', '/aweme/v1/web/comment/delete?' + q({ cid: cid, channel_id: '0', app_name: 'aweme' }), '');
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, comment: null, danmakuID: null });
+    """#
+
+    static let danmakuPostJS = #"""
+    const r = await req('POST', '/aweme/v1/web/danmaku/post_v2/?' + q({ item_id: id, offset_time: offset, text: text, user_id: '', enter_from: 'video_detail', previous_page: 'video_detail' }), '');
+    const d = parse(r.t) || {};
+    const dm = d.danmaku || d.data || {};
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || (r.s === 200 ? null : (r.t || '').slice(0, 80)), comment: null,
+      danmakuID: dm.danmaku_id ? String(dm.danmaku_id) : (d.danmaku_id ? String(d.danmaku_id) : null) });
+    """#
+
+    static let danmakuDeleteJS = #"""
+    const r = await req('POST', '/aweme/v1/web/danmaku/delete_v2/?' + q({ app_name: 'aweme', format: 'json', user_type: '1', danmaku_id: did }), '');
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, comment: null, danmakuID: null });
+    """#
 
     // MARK: JS（requestJS 里有 req / base / parse / first / q / mapA）
 
@@ -204,8 +276,12 @@ extension DouyinBridge {
     """#
 
     static let replyJS = #"""
-    let r = await req('GET', '/aweme/v1/web/comment/list/reply/?' + q({ item_id: id, comment_id: cid, cut_version: '1', cursor: cursor, count: '10', item_type: '0' }));
+    let r = await req('GET', '/aweme/v2/web/comment/list/reply/?' + q({ item_id: id, comment_id: cid, cut_version: '1', cursor: cursor, count: '10', item_type: '0' }));
     let d = parse(r.t);
+    if (!d || !Array.isArray(d.comments)) {
+      r = await req('GET', '/aweme/v1/web/comment/list/reply/?' + q({ item_id: id, comment_id: cid, cut_version: '1', cursor: cursor, count: '10', item_type: '0' }));
+      d = parse(r.t);
+    }
     if (!d) {
       r = await req('GET', '/aweme/v1/web/comment/list/reply/?' + q({ item_id: id, comment_id: cid, cursor: cursor, count: '10', item_type: '0', whale_cut_token: '', cut_version: '1', rcFT: '' }));
       d = parse(r.t);
@@ -216,6 +292,12 @@ extension DouyinBridge {
       digg: c.digg_count || 0, time: c.create_time || 0, replies: 0, ip: c.ip_label || null }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, msg: null });
     """#
+}
+
+/// 当前在播视频的进度（PlayerPage 周期性写入；发弹幕时取）
+@MainActor enum DDNowPlaying {
+    static var id = ""
+    static var time: Double = 0
 }
 
 // MARK: - 弹幕层（视频）

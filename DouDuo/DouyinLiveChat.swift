@@ -43,6 +43,38 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
         }
     }
 
+    /// 直播间发言：往隐藏直播间页面的输入框里填字、点发送（走页面自己的流程和签名）
+    func send(_ text: String) async -> String? {
+        let js = #"""
+        (() => {
+          const box = document.querySelector('textarea, [contenteditable="true"]');
+          if (!box) return 'no-input';
+          box.focus();
+          if (box.tagName === 'TEXTAREA') {
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, TEXT);
+          } else {
+            box.innerText = TEXT;
+          }
+          box.dispatchEvent(new InputEvent('input', { bubbles: true, data: TEXT, inputType: 'insertText' }));
+          box.dispatchEvent(new Event('change', { bubbles: true }));
+          const btn = [...document.querySelectorAll('[class*="send"], button')].find(b => /发送/.test(b.innerText || '') || /send-btn|sendBtn|send_btn/i.test(String(b.className)));
+          if (btn) { btn.click(); return 'clicked'; }
+          box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+          return 'enter';
+        })()
+        """#
+        let lit = (try? String(data: JSONSerialization.data(withJSONObject: [text]), encoding: .utf8))
+            .map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let r = try? await web.evaluateJavaScript(js.replacingOccurrences(of: "TEXT", with: lit))
+        let s = (r as? String) ?? "nil"
+        DYLiveModel.log("DDSEND live \(s)")
+        if s == "no-input" { return "直播间输入框没找到（可能要先登录）" }
+        // 自己发的话本地先显示一下（页面回显后会被去重读进来也无妨）
+        seq += 1
+        messages = Array((messages + [DYLiveMsg(id: seq, name: "我", text: text)]).suffix(40))
+        return nil
+    }
+
     func close() {
         timer?.invalidate(); timer = nil
         room = nil
