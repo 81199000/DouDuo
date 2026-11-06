@@ -6,3 +6,6 @@ xcuserdata/
 .DS_Store
 Vendor/VLCKit/VLCKit-all.xcframework/
 Vendor/VLCKit/*.zip
+release.local.sh
+att*/
+*.xcresult/
