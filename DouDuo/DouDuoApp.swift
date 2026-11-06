@@ -154,7 +154,6 @@ struct LocalVideoPlaybackView: View {
                   const lists = Object.keys(d).filter(k => Array.isArray(d[k])).map(k => k + ':' + d[k].length).join(',');
                   return name + ' http=' + r.s + ' code=' + d.status_code + ' msg=' + (d.status_msg || '') + ' lists=[' + lists + '] more=' + d.has_more + ' cur=' + (d.cursor ?? d.max_cursor) + ' keys=' + Object.keys(d).slice(0, 14).join('|') + (Object.keys(d).length ? '' : ' raw=' + (r.t || '').slice(0, 80));
                 };
-                const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
                 """#
                 // 先拿一条有评论的推荐视频
                 let pick = await b.probe(pre + #"""
@@ -165,14 +164,14 @@ struct LocalVideoPlaybackView: View {
                 """#)
                 LocalVideoLaunch.log("DDAPI pick=\(pick)")
                 let parts = pick.split(separator: " ").map(String.init)
-                guard parts.count >= 3 else { return }
-                let aid = parts[0], dur = parts[1], sec = parts[2]
-                let extra = "const ck = k => ((document.cookie.match(new RegExp('(?:^|; )' + k + '=([^;]*)')) || [])[1] || ''); const ex = { webid: ck('webid') || ck('UIFID_TEMP').slice(0, 19), msToken: localStorage.getItem('xmst') || ck('msToken'), verifyFp: ck('s_v_web_id'), fp: ck('s_v_web_id') }; const fx = async (u) => { try { const r = await Promise.race([fetch(u, { credentials: 'include', headers: { accept: 'application/json' } }), new Promise((_, no) => setTimeout(() => no('to'), 12000))]); return { s: r.status, t: await r.text() } } catch (e) { return { s: -9, t: String(e) } } };"
-                let rp = "const cm = parse((await req('GET', '/aweme/v1/web/comment/list/?' + q({ aweme_id: '\(aid)', cursor: '0', count: '20', item_type: '0' }))).t) || {}; const c0 = (cm.comments || []).find(c => c.reply_comment_total > 0); const cid = c0 ? String(c0.cid) : '0';"
+                _ = parts
+                let base1 = "search_channel: 'aweme_video_web', keyword: '猫', search_source: 'normal_search', query_correct_type: '1', is_filter_search: '0', from_group_id: '', list_type: 'single'"
                 let tests: [(String, String)] = [
-                    ("search-item", "const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ search_channel: 'aweme_video_web', keyword: '猫', search_source: 'normal_search', query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: '0', count: '16', need_filter_settings: '1', list_type: 'single' })); const d = parse(r.t) || {}; const x = (d.data || [])[0] || {}; return sum('search-item', r) + ' x0=' + Object.keys(x).join('|') + ' al=' + (d.aweme_list||[]).length + ' a0=' + Object.keys((d.aweme_list||[])[0]||{}).slice(0,8).join('|');"),
-                    ("search-general", "const r = await req('GET', '/aweme/v1/web/general/search/single/?' + q({ search_channel: 'aweme_general', keyword: '猫', search_source: 'normal_search', query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: '0', count: '16', need_filter_settings: '1', list_type: 'single' })); const d = parse(r.t) || {}; const t = (d.data || []).map(x => x.type + ':' + (!!x.aweme_info)).join(','); return sum('search-general', r) + ' types=' + t;"),
-                    ("reply-fetch2", "const cm = parse((await req('GET', '/aweme/v1/web/comment/list/?' + q({ aweme_id: '\(aid)', cursor: '0', count: '20', item_type: '0' }))).t) || {}; const c0 = (cm.comments || []).find(c => c.reply_comment_total > 0); if (!c0) return 'none'; const u = '/aweme/v1/web/comment/list/reply/?' + q({ item_id: '\(aid)', comment_id: String(c0.cid), cut_version: '1', cursor: '0', count: '3', item_type: '0' }); const r = await Promise.race([fetch(u, { credentials: 'include' }).then(async x => ({ s: x.status, t: await x.text(), h: x.headers.get('content-length') + '/' + x.headers.get('x-tt-logid') })), new Promise(ok => setTimeout(() => ok({ s: -3, t: '', h: '' }), 12000))]); return 'reply-fetch2 http=' + r.s + ' len=' + r.t.length + ' h=' + r.h + ' head=' + r.t.slice(0, 120);"),
+                    ("p1", "const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ \(base1), offset: '0', count: '16', need_filter_settings: '1' })); const d = parse(r.t) || {}; window.__sid = (d.log_pb||{}).impr_id || (d.extra||{}).logid || ''; return sum('p1', r) + ' impr=' + window.__sid + ' extra=' + JSON.stringify(d.extra||{}).slice(0,120);"),
+                    ("p2-plain", "return sum('p2-plain', await req('GET', '/aweme/v1/web/search/item/?' + q({ \(base1), offset: '16', count: '16', need_filter_settings: '0' })));"),
+                    ("p2-sid", "return sum('p2-sid', await req('GET', '/aweme/v1/web/search/item/?' + q({ \(base1), offset: '16', count: '16', need_filter_settings: '0', search_id: window.__sid || '' })));"),
+                    ("p2-count10", "return sum('p2-count10', await req('GET', '/aweme/v1/web/search/item/?' + q({ \(base1), offset: '10', count: '10', need_filter_settings: '0', search_id: window.__sid || '' })));"),
+                    ("p2-general", "return sum('p2-general', await req('GET', '/aweme/v1/web/general/search/single/?' + q({ search_channel: 'aweme_general', keyword: '猫', search_source: 'normal_search', query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: '10', count: '10', need_filter_settings: '0', list_type: 'single', search_id: window.__sid || '' })));"),
                 ]
                 for (name, body) in tests {
                     LocalVideoLaunch.log("DDAPI start \(name)")
