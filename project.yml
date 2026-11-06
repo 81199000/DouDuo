@@ -9,8 +9,8 @@ packages:
     path: Vendor/VLCKit
 settings:
   base:
-    MARKETING_VERSION: 1.1.0
-    CURRENT_PROJECT_VERSION: "11"
+    MARKETING_VERSION: 1.2.0
+    CURRENT_PROJECT_VERSION: "12"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
@@ -37,6 +37,7 @@ targets:
         INFOPLIST_KEY_UIStatusBarHidden: YES
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 保存视频和图集到相册
     info:
       path: DouDuo/Info.plist
       properties:

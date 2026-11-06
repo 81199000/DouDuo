@@ -153,10 +153,29 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     @Published var canGoBack = false
     @Published var progress: Double = 0
     weak var web: WKWebView?
+    private var clickedLogin = false
     private var observers: [NSKeyValueObservation] = []
+
+    #if DEBUG
+    private var cmdTimer: Timer?
+    #endif
 
     func attach(_ wv: WKWebView) {
         web = wv
+        #if DEBUG
+        // 调试遥控：往 Documents/dd-cmd.js 写一段 JS，网页版里执行，结果写 dd-cmd.out（只在 DEBUG，模拟器调试用）
+        cmdTimer?.invalidate()
+        cmdTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let f = dir.appendingPathComponent("dd-cmd.js")
+            guard let js = try? String(contentsOf: f, encoding: .utf8) else { return }
+            try? FileManager.default.removeItem(at: f)
+            self?.web?.evaluateJavaScript(js) { r, e in
+                let out = "\(r.map { String(describing: $0) } ?? "nil") \(e.map { String(describing: $0) } ?? "")"
+                try? out.write(to: dir.appendingPathComponent("dd-cmd.out"), atomically: true, encoding: .utf8)
+            }
+        }
+        #endif
         observers = [
             wv.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
                 let p = w.estimatedProgress
@@ -194,6 +213,31 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     /// 打开时像 App 一样直接进「推荐」竖屏流（首次访问会被导到精选）
     private var jumpedToFeed = false
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        #if DEBUG
+        // 模拟器调试：DOUDUO_OPEN=login 时自动点「登录」弹出扫码框
+        if ProcessInfo.processInfo.environment["DOUDUO_OPEN"] == "login", !clickedLogin {
+            clickedLogin = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                webView.evaluateJavaScript("(()=>{const b=[...document.querySelectorAll('button,div,span,a')].find(e=>e.childElementCount===0&&e.innerText&&e.innerText.trim()==='登录');if(b){b.click();(b.closest('button')||b.parentElement).click();return 'clicked'}return 'none'})()")
+                // 登录框窄屏下藏了扫码栏：放宽布局 + 找「扫码」入口点开，把框里的文字写日志方便排查
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    let js = """
+                    (()=>{
+                      const all=[...document.querySelectorAll('*')];
+                      const qr=all.find(e=>e.childElementCount===0&&e.innerText&&/扫码/.test(e.innerText.trim())&&e.innerText.trim().length<10);
+                      if(qr){qr.click();(qr.parentElement||qr).click();}
+                      const ic=all.find(e=>/qrcode|scan|qr-/i.test((e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className)||''));
+                      if(!qr&&ic){ic.click();}
+                      const box=all.find(e=>/登录后免费畅享/.test(e.innerText||'')&&e.childElementCount>2&&e.innerText.length<400);
+                      const imgs=[...document.querySelectorAll('img,canvas')].filter(i=>{const r=i.getBoundingClientRect();return r.width>100&&r.width<400&&Math.abs(r.width-r.height)<10}).map(i=>i.tagName+':'+Math.round(i.getBoundingClientRect().width)+':'+(i.src||'').slice(0,40));
+                      return 'qr='+(qr?qr.innerText:'-')+' icon='+(ic?String(ic.className).slice(0,40):'-')+' squares='+imgs.join(',')+' box='+(box?box.innerText.replace(/\\s+/g,' ').slice(0,200):'-');
+                    })()
+                    """
+                    webView.evaluateJavaScript(js) { r, _ in DYLiveModel.log("DDLOGIN " + String(describing: r ?? "nil")) }
+                }
+            }
+        }
+        #endif
         guard !jumpedToFeed, webView.url?.path.hasPrefix("/jingxuan") == true else { return }
         jumpedToFeed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { webView.evaluateJavaScript(DouyinWeb.goRecommendJS) }
