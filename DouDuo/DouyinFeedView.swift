@@ -219,6 +219,16 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         return Self.interpret(r)
     }
 
+    /// 不感兴趣：网页版同一个接口（commit/dislike/item），抖音据此减少同类推荐
+    func dislike(_ id: String) async throws -> DYActionResult {
+        let d = try await call(Self.dislikeJS, args: ["id": id], attempts: 2)
+        let r = try JSONDecoder().decode(DYActionResp.self, from: d)
+        #if DEBUG
+        ddWrite("DDACT dislike id=\(id) status=\(r.status) code=\(r.statusCode ?? -1) msg=\(r.msg ?? "-")")
+        #endif
+        return Self.interpret(r)
+    }
+
     /// 统一解读：status_code 8 = 用户未登录；0 = 成功
     private static func interpret(_ r: DYActionResp) -> DYActionResult {
         if r.status == 200, (r.statusCode ?? 0) == 0 { return .ok }
@@ -386,6 +396,13 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const r = await req('POST', u, '');
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, statusCode: d.status_code, msg: d.status_msg || (r.s === 200 ? '' : r.t.slice(0, 120)) });
+    """#
+
+    private static let dislikeJS = #"""
+    const r = await req('POST', '/aweme/v1/web/commit/dislike/item/?' + q({ aweme_id: id }),
+      new URLSearchParams({ aweme_id: id }).toString());
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, statusCode: d.status_code, msg: d.status_msg || (r.s === 200 ? '' : (r.t || '').slice(0, 120)) });
     """#
 
     private static let favJS = #"""
@@ -613,7 +630,8 @@ final class DYFeedModel: ObservableObject {
 
     /// 电脑版推荐流给匿名用户大多是横屏长视频（实测竖屏只占一两成），默认只留竖屏 + 图集，
     /// 不够就连拉几页补齐；菜单里可关掉
-    @AppStorage("douyin_portrait_only_v1") var portraitOnly = true
+    /// 默认关：网页版推荐约八成是横屏，只留竖屏会把很多对口味的视频滤掉（2026-11 老板拍板默认关）
+    @AppStorage("douyin_portrait_only_v2") var portraitOnly = false
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage("douyin_autofit_v1") var autoFit = true
 
@@ -641,7 +659,7 @@ final class DYFeedModel: ObservableObject {
                 hasMore = r.hasMore || !r.items.isEmpty
                 if added >= want || !hasMore { break }
             }
-            error = (items.isEmpty && added == 0) ? "暂时没刷到竖屏视频，可在菜单里关掉「只看竖屏」或登录后再试" : nil
+            error = (items.isEmpty && added == 0) ? portraitOnly ? "暂时没刷到竖屏视频，可在菜单里关掉「只看竖屏」或登录后再试" : "暂时没刷到推荐，登录后或稍后再试" : nil
         } catch {
             if items.isEmpty { self.error = error.localizedDescription }
         }
@@ -1038,7 +1056,8 @@ struct DouyinFeedScreen: View {
                                         onSavePosition: { resume[item.id] = $0; saveSession() },
                                         preloader: preloader,
                                         bridge: bridge,
-                                        onToast: { showToast($0) })
+                                        onToast: { showToast($0) },
+                                        onDislike: { dislike(item.id) })
                             .containerRelativeFrame([.horizontal, .vertical])
                             .id(item.id)
                         }
@@ -1113,6 +1132,32 @@ struct DouyinFeedScreen: View {
                 }
             }
         }
+    }
+
+    /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
+    private func dislike(_ id: String) {
+        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
+        let next = i + 1 < feed.items.count ? feed.items[i + 1].id : (i > 0 ? feed.items[i - 1].id : nil)
+        scrollEndTask?.cancel(); userScrolling = false
+        showComments = false
+        if currentID == id { currentID = next; scrollID = next }
+        feed.items.remove(at: i)
+        resume[id] = nil
+        saveSession()
+        showToast("将减少此类推荐")
+        Task {
+            await DYVideoCache.shared.markWatched(id)
+            do {
+                switch try await bridge.dislike(id) {
+                case .ok: break
+                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
+                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
+                }
+            } catch {
+                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
+            }
+        }
+        if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
     }
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
@@ -1581,6 +1626,8 @@ struct DYVideoPage: View {
     let preloader: DYPreloader
     let bridge: DouyinBridge?
     let onToast: ((String) -> Void)?
+    /// 只有推荐流传：关注 / 搜索 / 我的 里不显示「不感兴趣」
+    let onDislike: (() -> Void)?
     @State private var heart = false
     @State private var descExpanded = false
     @State private var danmaku: [DYDanmaku] = []
@@ -1596,12 +1643,14 @@ struct DYVideoPage: View {
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
          onComments: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
-         preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil) {
+         preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
+         onDislike: (() -> Void)? = nil) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
         self.onComments = onComments; self.onAuthor = onAuthor; self.onSavePosition = onSavePosition
         self.preloader = preloader; self.bridge = bridge; self.onToast = onToast
+        self.onDislike = onDislike
     }
 
     var body: some View {
@@ -1778,6 +1827,9 @@ struct DYVideoPage: View {
             action(collected ? "star.fill" : "star",
                    DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                    tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
+            if let onDislike {
+                action("hand.thumbsdown", "不感兴趣", tint: fg, "douyin.dislike", onDislike)
+            }
             ShareLink(item: item.webURL) {
                 VStack(spacing: 3) {
                     Image(systemName: "arrowshape.turn.up.right.fill").font(.system(size: theme.typography.pointSize(.displayLarge)))
