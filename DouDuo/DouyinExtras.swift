@@ -302,28 +302,35 @@ extension DouyinBridge {
 
 // MARK: - 弹幕层（视频）
 
-/// 抖音同款滚动弹幕：按 offset 时间从右往左飘，分 5 条轨道
+/// 抖音同款滚动弹幕：所有弹幕同一速度从右往左飘（同速 → 同一轨道里后面的永远追不上前面的）。
+/// 轨道按「前一条尾巴已经完全进屏 + 间距」分配，整条视频一次排好（和当前时间无关，帧与帧之间位置稳定）；
+/// 某个时刻所有轨道都满就丢掉这一条（抖音也是这样），不会重叠，也不会延后从屏幕中间冒出来。
 struct DYDanmakuLayer: View {
     let items: [DYDanmaku]
     let time: Double
     let topInset: CGFloat
-    private static let lanes = 5
-    private static let travel: Double = 8      // 一条弹幕飘过屏幕用时（秒）
+    private static let laneHeight: CGFloat = 28
+    private static let gap: CGFloat = 28
+
+    private struct Placed { let d: DYDanmaku; let lane: Int; let width: CGFloat; let dur: Double }
 
     var body: some View {
         GeometryReader { g in
             let w = g.size.width
+            // 弹幕区占画面上方约 40%，横屏 / 竖屏自动算轨道数
+            let lanes = min(10, max(3, Int(g.size.height * 0.4 / Self.laneHeight)))
+            let speed = Self.speed(w)
+            let placed = Self.layout(items, w: w, lanes: lanes, speed: speed)
             ZStack(alignment: .topLeading) {
-                ForEach(Array(visible.enumerated()), id: \.element.id) { idx, d in
-                    let p = (time - d.offset) / Self.travel          // 0 → 1
-                    let lane = abs(d.id.hashValue) % Self.lanes
-                    Text(d.text)
+                ForEach(placed.filter { time >= $0.d.offset && time <= $0.d.offset + $0.dur }, id: \.d.id) { p in
+                    Text(p.d.text)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.92))
                         .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
                         .lineLimit(1)
                         .fixedSize()
-                        .offset(x: w - CGFloat(p) * (w + 260), y: topInset + 64 + CGFloat(lane) * 28)
+                        .offset(x: w - CGFloat(time - p.d.offset) * speed,
+                                y: topInset + 64 + CGFloat(p.lane) * Self.laneHeight)
                 }
             }
             .frame(width: w, height: g.size.height, alignment: .topLeading)
@@ -333,8 +340,24 @@ struct DYDanmakuLayer: View {
         .allowsHitTesting(false)
     }
 
-    private var visible: [DYDanmaku] {
-        items.filter { time >= $0.offset && time <= $0.offset + Self.travel }.prefix(18).map { $0 }
+    /// 屏幕宽 + 一段余量，约 7 秒飘完
+    private static func speed(_ w: CGFloat) -> CGFloat { (w + 200) / 7 }
+
+    /// 宽度估算（偏大一点，宁可多留空）：中文 / 全角 16pt，英文数字 9pt
+    private static func textWidth(_ s: String) -> CGFloat {
+        s.unicodeScalars.reduce(0) { $0 + ($1.value < 0x2E80 ? 9 : 16) } + 6
+    }
+
+    private static func layout(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat) -> [Placed] {
+        var free = Array(repeating: -Double.infinity, count: lanes)   // 该轨道最早能接新弹幕的时间
+        var out: [Placed] = []
+        for d in items.sorted(by: { $0.offset < $1.offset }) {
+            let tw = textWidth(d.text)
+            guard let l = free.indices.first(where: { free[$0] <= d.offset }) else { continue }
+            free[l] = d.offset + Double((tw + gap) / speed)
+            out.append(Placed(d: d, lane: l, width: tw, dur: Double((w + tw) / speed)))
+        }
+        return out
     }
 }
 
@@ -510,7 +533,7 @@ struct DYListPlayer: View {
                     .accessibilityIdentifier("douyin.list.back")
                     Text(title).font(.headline).foregroundStyle(.white).shadow(radius: 3)
                 }
-                .padding(.leading, 10).padding(.top, 6)
+                .padding(.leading, 22).padding(.top, 10)
 
                 if let t = toast {
                     Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)

@@ -781,7 +781,7 @@ struct DouyinFeedScreen: View {
             } else {
                 recommendArea
             }
-            topBar.padding(.top, 6)
+            topBar.padding(.top, 10)
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -830,7 +830,8 @@ struct DouyinFeedScreen: View {
                 topIcon("person.crop.circle", "douyin.mine") { showMine = true }
             }
         }
-        .padding(.horizontal, 10)
+        // 屏幕是圆角：两边留够，图标别被圆角裁掉（Duo 横屏尤其明显）
+        .padding(.horizontal, 24)
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
