@@ -1,4 +1,4 @@
-# 抖Duo
+# DouDuo
 
 一个**适配 iPhone Duo（折叠屏）/ iPad / 横屏的第三方抖音客户端**，界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
@@ -37,7 +37,7 @@
 
 ## 安装
 
-iOS / iPadOS **17.0 及以上**。抖Duo 不在 App Store（第三方客户端过不了审核），需要**自己签名安装**。以下方式任选一种：
+iOS / iPadOS **17.0 及以上**。DouDuo 不在 App Store（第三方客户端过不了审核），需要**自己签名安装**。以下方式任选一种：
 
 先到 [Releases](../../releases/latest) 下载最新的 `DouDuo-x.y.z-unsigned.ipa`。
 
@@ -76,8 +76,8 @@ iOS / iPadOS **17.0 及以上**。抖Duo 不在 App Store（第三方客户端�
 需要 macOS + Xcode 26 以上、[XcodeGen](https://github.com/yonaskolb/XcodeGen)。
 
 ```bash
-git clone https://github.com/81199000/douduo.git
-cd douduo
+git clone https://github.com/81199000/DouDuo.git
+cd DouDuo
 brew install xcodegen
 ./scripts/fetch-vlckit.sh      # 下载 VLC 播放内核（约 1GB，不在仓库里）
 xcodegen generate

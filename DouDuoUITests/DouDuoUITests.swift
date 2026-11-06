@@ -1,6 +1,6 @@
 import XCTest
 
-/// 抖Duo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
+/// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
     func testCoreFlow() throws {
         let app = XCUIApplication()

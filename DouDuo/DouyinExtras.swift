@@ -1,4 +1,4 @@
-// 抖Duo 扩展功能：搜索 / 我的（喜欢·收藏·历史·稍后再看）/ 关注 / 作者主页 / 弹幕 / 楼中楼 / 保存到相册
+// DouDuo 扩展功能：搜索 / 我的（喜欢·收藏·历史·稍后再看）/ 关注 / 作者主页 / 弹幕 / 楼中楼 / 保存到相册
 // 全部接口都走隐藏签名页（DouyinBridge.call），和推荐流同一套签名，不逆向。
 import SwiftUI
 import Combine
@@ -423,7 +423,7 @@ enum DYSaver {
         case denied, noURL
         var errorDescription: String? {
             switch self {
-            case .denied: "没有相册权限：设置 → 抖Duo → 照片 → 允许添加"
+            case .denied: "没有相册权限：设置 → DouDuo → 照片 → 允许添加"
             case .noURL: "这条没有可下载的地址"
             }
         }
