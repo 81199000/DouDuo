@@ -302,54 +302,97 @@ extension DouyinBridge {
 
 // MARK: - 弹幕层（视频）
 
+/// 弹幕时钟：播放器每 0.25 秒报一次进度，弹幕按帧插值出「现在」的视频时间，否则位置一跳一跳。
+/// 播放器报一次就校准一次（锚点 = 报的时间 + 报的时刻），中间按播放速率往前推。
+struct DYDanmakuClock {
+    var anchorTime: Double = 0
+    var anchorDate = Date()
+    var rate: Double = 1
+    var playing = false
+
+    func now(_ d: Date) -> Double {
+        playing ? anchorTime + d.timeIntervalSince(anchorDate) * rate : anchorTime
+    }
+
+    mutating func sync(_ t: Double, playing p: Bool, rate r: Double) {
+        let predicted = now(Date())
+        // 进度跳了（拖动 / 循环回开头 / 卡顿）或状态变了：直接对齐；否则差不多就别动，避免往回抖
+        if !p || !playing || r != rate || abs(predicted - t) > 0.35 {
+            anchorTime = t
+        } else {
+            anchorTime = predicted + (t - predicted) * 0.2   // 小误差慢慢拉回
+        }
+        anchorDate = Date()
+        playing = p
+        rate = r
+    }
+}
+
 /// 抖音同款滚动弹幕：所有弹幕同一速度从右往左飘（同速 → 同一轨道里后面的永远追不上前面的）。
-/// 轨道按「前一条尾巴已经完全进屏 + 间距」分配，整条视频一次排好（和当前时间无关，帧与帧之间位置稳定）；
-/// 某个时刻所有轨道都满就丢掉这一条（抖音也是这样），不会重叠，也不会延后从屏幕中间冒出来。
+/// 轨道按「前一条尾巴已经完全进屏 + 间距」分配，整条视频一次排好（布局只在弹幕列表 / 屏幕宽变化时重算）；
+/// 某个时刻所有轨道都满就丢掉这一条（抖音也是这样）。
+/// 位置用 TimelineView(.animation) 逐帧算（跟屏幕刷新率走，ProMotion 上 120Hz），不靠 SwiftUI 补间动画。
 struct DYDanmakuLayer: View {
     let items: [DYDanmaku]
-    let time: Double
+    let clock: DYDanmakuClock
     let topInset: CGFloat
     private static let laneHeight: CGFloat = 28
     private static let gap: CGFloat = 28
 
-    private struct Placed { let d: DYDanmaku; let lane: Int; let width: CGFloat; let dur: Double }
+    fileprivate struct Placed { let d: DYDanmaku; let lane: Int; let width: CGFloat; let dur: Double }
+
+    private var renderItems: [DYDanmaku] {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_DM_STRESS"] == "1" {
+            return (0..<600).map { DYDanmaku(id: "stress-\($0)", text: "弹幕流畅度测试 \($0)", offset: Double($0) * 0.15) }
+        }
+        #endif
+        return items
+    }
 
     var body: some View {
         GeometryReader { g in
             let w = g.size.width
-            // 弹幕区占画面上方约 40%，横屏 / 竖屏自动算轨道数
             let lanes = min(10, max(3, Int(g.size.height * 0.4 / Self.laneHeight)))
             let speed = Self.speed(w)
-            let placed = Self.layout(items, w: w, lanes: lanes, speed: speed)
-            ZStack(alignment: .topLeading) {
-                ForEach(placed.filter { time >= $0.d.offset && time <= $0.d.offset + $0.dur }, id: \.d.id) { p in
-                    Text(p.d.text)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .offset(x: w - CGFloat(time - p.d.offset) * speed,
-                                y: topInset + 64 + CGFloat(p.lane) * Self.laneHeight)
+            let placed = DYDanmakuLayout.shared.get(renderItems, w: w, lanes: lanes, speed: speed)
+            TimelineView(.animation(minimumInterval: nil, paused: !clock.playing)) { ctx in
+                let t = clock.now(ctx.date)
+                Canvas(rendersAsynchronously: false) { gc, _ in
+                    for p in placed where t >= p.d.offset && t <= p.d.offset + p.dur {
+                        let x = w - CGFloat(t - p.d.offset) * speed
+                        let y = topInset + 64 + CGFloat(p.lane) * Self.laneHeight
+                        guard let sym = gc.resolveSymbol(id: p.d.id) else { continue }
+                        gc.draw(sym, at: CGPoint(x: x, y: y), anchor: .topLeading)
+                    }
+                } symbols: {
+                    // 每条弹幕只排版一次（文字 + 阴影），之后每帧只是贴图挪位置，开销很小
+                    ForEach(placed, id: \.d.id) { p in
+                        Text(p.d.text)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .tag(p.d.id)
+                    }
                 }
             }
-            .frame(width: w, height: g.size.height, alignment: .topLeading)
-            .clipped()
-            .animation(.linear(duration: 0.25), value: time)
+            .frame(width: w, height: g.size.height)
         }
         .allowsHitTesting(false)
     }
 
     /// 屏幕宽 + 一段余量，约 7 秒飘完
-    private static func speed(_ w: CGFloat) -> CGFloat { (w + 200) / 7 }
+    fileprivate static func speed(_ w: CGFloat) -> CGFloat { (w + 200) / 7 }
 
     /// 宽度估算（偏大一点，宁可多留空）：中文 / 全角 16pt，英文数字 9pt
-    private static func textWidth(_ s: String) -> CGFloat {
+    fileprivate static func textWidth(_ s: String) -> CGFloat {
         s.unicodeScalars.reduce(0) { $0 + ($1.value < 0x2E80 ? 9 : 16) } + 6
     }
 
-    private static func layout(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat) -> [Placed] {
-        var free = Array(repeating: -Double.infinity, count: lanes)   // 该轨道最早能接新弹幕的时间
+    fileprivate static func layout(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat) -> [Placed] {
+        var free = Array(repeating: -Double.infinity, count: lanes)
         var out: [Placed] = []
         for d in items.sorted(by: { $0.offset < $1.offset }) {
             let tw = textWidth(d.text)
@@ -358,6 +401,18 @@ struct DYDanmakuLayer: View {
             out.append(Placed(d: d, lane: l, width: tw, dur: Double((w + tw) / speed)))
         }
         return out
+    }
+}
+
+/// 布局缓存：同一批弹幕 + 同一屏宽只算一次（body 每次刷新不重排）
+@MainActor private final class DYDanmakuLayout {
+    static let shared = DYDanmakuLayout()
+    private var key = ""
+    private var cache: [DYDanmakuLayer.Placed] = []
+    func get(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat) -> [DYDanmakuLayer.Placed] {
+        let k = "\(items.count)|\(items.first?.id ?? "")|\(items.last?.id ?? "")|\(Int(w))|\(lanes)"
+        if k != key { key = k; cache = DYDanmakuLayer.layout(items, w: w, lanes: lanes, speed: speed) }
+        return cache
     }
 }
 
