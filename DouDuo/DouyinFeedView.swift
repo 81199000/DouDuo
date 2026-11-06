@@ -13,7 +13,7 @@ import AVFoundation
 
 // MARK: - 数据
 
-struct DYAweme: Identifiable, Decodable, Equatable {
+struct DYAweme: Identifiable, Codable, Equatable {
     let id: String
     let desc: String
     let width: Double
@@ -29,8 +29,8 @@ struct DYAweme: Identifiable, Decodable, Equatable {
     let userDigged: Int?
     let isCollect: Int?
 
-    struct Author: Decodable, Equatable { let name: String; let avatar: String?; let secUid: String? }
-    struct Stats: Decodable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
+    struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String? }
+    struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
 
     var isPortrait: Bool { height > width * 1.05 }
     var webURL: URL { URL(string: "https://www.douyin.com/video/\(id)")! }
@@ -523,7 +523,7 @@ final class DYPreloader {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
                 continue
             }
-            let item = AVPlayerItem(asset: DYMedia.asset(url))
+            let item = AVPlayerItem(asset: DYMedia.asset(DYVideoCache.localURL(a.id) ?? url))
             item.preferredForwardBufferDuration = 6
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
@@ -628,6 +628,8 @@ struct DouyinFeedScreen: View {
     @State private var tab: DYTab = ProcessInfo.processInfo.environment["DOUDUO_STARTLIVE"] == "1" ? .live : .recommend
     @StateObject private var live = DYLiveModel()
     @State private var showSearch = false
+    @State private var lastFeedPull = Date.distantPast
+    @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var showMine = false
     @State private var authorTarget: DYAweme.Author?
@@ -669,6 +671,19 @@ struct DouyinFeedScreen: View {
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
+            // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
+            if feed.items.isEmpty {
+                let cached = DYVideoCache.pendingSnapshot()
+                if !cached.isEmpty {
+                    feed.items = cached
+                    for a in cached {
+                        if a.userDigged == 1 { feed.liked.insert(a.id) }
+                        if a.isCollect == 1 { feed.collected.insert(a.id) }
+                    }
+                    currentID = cached.first?.id
+                    DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(cached.count)")
+                }
+            }
             await feed.loadMore(bridge)
             if currentID == nil { currentID = feed.items.first?.id }
             focusCurrent()
@@ -710,6 +725,7 @@ struct DouyinFeedScreen: View {
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
             focusCurrent()
         }
+        .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.portraitOnly) { _, _ in
             preloader.clear(); feed.reset(); currentID = nil
             Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; focusCurrent() }
@@ -731,10 +747,23 @@ struct DouyinFeedScreen: View {
     private func focusCurrent() {
         guard let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
-        if i >= feed.items.count - 6 {
+        let curID = feed.items[i].id
+        let ahead = Array(feed.items.dropFirst(i + 1))
+        Task {
+            await DYVideoCache.shared.markWatched(curID)
+            await DYVideoCache.shared.enqueue(ahead)
+        }
+        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
+        let want = max(6, min(DYVideoCache.limit, 60))
+        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
+            lastFeedPull = Date()
             Task {
                 await feed.loadMore(bridge)
-                if let j = currentIndex { preloader.update(feed.items, current: j) }
+                if let j = currentIndex {
+                    preloader.update(feed.items, current: j)
+                    await DYVideoCache.shared.enqueue(Array(feed.items.dropFirst(j + 1)))
+                    if feed.items.count - j - 1 < want { focusCurrent() }
+                }
             }
         }
     }
@@ -974,6 +1003,20 @@ struct DouyinFeedScreen: View {
             Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
             Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
             Toggle(isOn: $danmakuOn) { Label("弹幕", systemImage: "text.bubble") }
+            Picker(selection: $cacheCount) {
+                Text("关闭").tag(0)
+                Text("20 条").tag(20)
+                Text("50 条").tag(50)
+                Text("100 条").tag(100)
+            } label: { Label("预缓存视频", systemImage: "arrow.down.circle") }
+            .pickerStyle(.menu)
+            Button("清除视频缓存", systemImage: "trash") {
+                Task {
+                    let b = await DYVideoCache.shared.clear()
+                    showToast("已清除 \(b / 1024 / 1024) MB")
+                    focusCurrent()
+                }
+            }
             Button("网页版 / 登录", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
             if let cur = current {
                 ShareLink(item: cur.webURL) { Label("分享链接", systemImage: "square.and.arrow.up") }
@@ -1402,7 +1445,8 @@ struct DYVideoPage: View {
     var body: some View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
-            if item.images.isEmpty, let s = item.play, let url = URL(string: s) {
+            if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
+                let url = DYVideoCache.localURL(item.id) ?? remote
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,

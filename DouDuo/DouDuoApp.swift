@@ -16,6 +16,9 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
         DDPlayback.shared.resumeAll()
     }
 
+    #if DEBUG
+    private let _launch = DDLaunch.t0
+    #endif
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         #if DEBUG
