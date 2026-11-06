@@ -28,8 +28,10 @@ struct DYAweme: Identifiable, Codable, Equatable {
     /// 该视频在你账号里是否已点赞 / 已收藏（未登录时一般没有这些字段）
     let userDigged: Int?
     let isCollect: Int?
+    /// 0=视频 68=图文；上报观看时要带
+    var awemeType: Int? = nil
 
-    struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String? }
+    struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
 
     var isPortrait: Bool { height > width * 1.05 }
@@ -163,6 +165,26 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private var refreshIndex = 1
+    /// 首次安装时间要固定：以前每次请求都用「现在-15分钟」，服务端会当成刚装的新设备，推荐偏冷启动内容
+    static let installTime: Int = {
+        let k = "douyin_install_time_v1"
+        let v = UserDefaults.standard.integer(forKey: k)
+        if v > 0 { return v }
+        let now = Int(Date().timeIntervalSince1970)
+        UserDefaults.standard.set(now, forKey: k)
+        return now
+    }()
+
+    /// 观看上报：跟网页版一样，起播时报播放(aweme/stats)、登录时写观看历史(history/write)。
+    /// 不上报，账号就学不到你在抖Duo里看了什么，推荐会和 App 越走越远。
+    func reportWatch(_ a: DYAweme, preID: String?, preSeen: Bool) async {
+        let d = try? await call(Self.watchJS, args: [
+            "id": a.id, "type": String(a.awemeType ?? 0), "author": a.author.uid ?? "",
+            "pre": preID ?? "", "seen": preSeen ? "1" : "0"], attempts: 1)
+        #if DEBUG
+        DYLiveModel.log("DDWATCH \(a.id) \(d.flatMap { String(data: $0, encoding: .utf8) } ?? "fail")")
+        #endif
+    }
     /// 自己的 sec_uid（拉「喜欢」列表要用）
     var selfSecCache: String?
 
@@ -179,7 +201,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     func fetchFeed() async throws -> (items: [DYAweme], hasMore: Bool) {
         refreshIndex += 1
         let d = try await call(Self.feedJS, args: ["refresh": String(refreshIndex),
-                                                   "install": String(Int(Date().timeIntervalSince1970) - 900)])
+                                                   "install": String(Self.installTime),
+                                                   "pull": refreshIndex <= 2 ? "0" : "2"])
         let p = try JSONDecoder().decode(DYFeedPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
@@ -416,7 +439,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         play: urls.find(u => u.includes('/aweme/v1/play/')) || urls[urls.length - 1] || null,
         cover: first(v.cover) || first(v.origin_cover) || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
-        author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid },
+        author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null },
+        awemeType: a.aweme_type || 0,
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0 },
         music: (a.music && a.music.title) || '',
         userDigged: a.user_digged ? 1 : 0,
@@ -427,7 +451,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     private static let feedJS = #"""
     const P = Object.assign({}, base, { module_id: '3003101', count: '20', screen_width: '430', screen_height: '932', filterGids: '', presented_ids: '', refresh_index: refresh,
-      refer_id: '', refer_type: '10', pull_type: '2',
+      refer_id: '', refer_type: '10', pull_type: pull,
       awemePcRecRawData: JSON.stringify({ is_xigua_user: 0, danmaku_switch_status: 0, is_client: false }),
       'Seo-Flag': '0', install_time: install, tag_id: '', active_id: '', is_active_tab: 'false', use_lite_type: '0',
       xigua_user: '0', is_out_feed: '1', enable_ad: '1' });
@@ -436,6 +460,19 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20) });
     const items = (d.aweme_list || []).filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
     return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null });
+    """#
+
+    private static let watchJS = #"""
+    const s = await req('POST', '/aweme/v2/web/aweme/stats/?' + q({}),
+      new URLSearchParams({ aweme_type: type, item_id: id, source: '0', play_delta: '1' }).toString());
+    const ds = parse(s.t) || {};
+    let h = { s: 0 }, dh = {};
+    if (author) {
+      h = await req('POST', '/aweme/v1/web/history/write/?' + q({}),
+        new URLSearchParams({ aweme_id: id, author_id: author, pre_item_seen: seen, pre_item_id: pre }).toString());
+      dh = parse(h.t) || {};
+    }
+    return JSON.stringify({ stats: [s.s, ds.status_code], history: [h.s, dh.status_code] });
     """#
 
     private static let commentJS = #"""
@@ -745,6 +782,7 @@ struct DouyinFeedScreen: View {
             scrollID = new
             focusCurrent()
             saveSession()
+            reportWatch(old: old, new: new)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
@@ -768,6 +806,19 @@ struct DouyinFeedScreen: View {
             }
         }) { t in
             DouyinWebScreen(start: t.url)
+        }
+    }
+
+    /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
+    private func reportWatch(old: String?, new: String?) {
+        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
+        var seen = false
+        if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
+           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard currentID == new else { return }
+            await bridge.reportWatch(item, preID: old, preSeen: seen)
         }
     }
 
