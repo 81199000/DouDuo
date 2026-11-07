@@ -852,24 +852,39 @@ struct DouyinFeedScreen: View {
         }
     }
 
-    /// 一套布局通吃所有状态：评论按宽度/折痕判断——够宽或有折痕就在右侧滑出、视频缩窄；
-    /// 窄屏（外屏）才从底部弹出。折叠过程中不换容器，播放器不会被重建，所以不黑屏、不重载。
+    /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
+    /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
+    /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
         let fold = DYDuoMetrics.foldIsActive(geo)
-        let sideBySide = geo.size.width >= DYDuoMetrics.legacyWideMin || fold
-        return HStack(spacing: 0) {
+        let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
+        let w = geo.size.width, h = geo.size.height
+        let bookFold = fold && w > h          // 书本姿态：左右分
+        let tableFold = fold && w <= h        // 桌面姿态：上下分
+        let sideBySide = wide || bookFold
+        let showPanel = fold || (showComments && sideBySide && tab == .recommend)
+
+        let panelW = showPanel && sideBySide ? (bookFold ? w * 0.45 : min(380, w * 0.42)) : 0
+        let panelH = tableFold ? h * 0.45 : 0
+        let videoW = sideBySide && panelW > 0 ? w - panelW : w
+        let videoH = tableFold ? h - panelH : h
+
+        return ZStack(alignment: .topLeading) {
             feedArea
-            if sideBySide && showComments && tab == .recommend, let cur = current {
-                DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
-                    .frame(width: min(380, geo.size.width * 0.42))
+                .frame(width: videoW, height: videoH, alignment: .topLeading)
+            if showPanel, let cur = current {
+                DYCommentPanel(bridge: bridge, aweme: cur,
+                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
+                    .frame(width: sideBySide ? panelW : w,
+                           height: tableFold ? panelH : h)
+                    .offset(x: sideBySide ? videoW : 0, y: tableFold ? videoH : 0)
                     .id(cur.id)
-                    .transition(.move(edge: .trailing))
             }
         }
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-        .animation(.snappy, value: showComments)
         .animation(.snappy, value: fold)
-        .sheet(isPresented: Binding(get: { showComments && !sideBySide }, set: { showComments = $0 })) {
+        .animation(.snappy, value: showComments)
+        .sheet(isPresented: Binding(get: { showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
             if let cur = current {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
                     .presentationDetents([.fraction(0.62), .large])
