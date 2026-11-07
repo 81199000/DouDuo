@@ -1335,6 +1335,13 @@ struct DouyinFeedScreen: View {
         } label: {
             Label("播放设置", systemImage: "slider.horizontal.3")
         }
+        Divider()
+        Button {
+            UIApplication.shared.open(DDUpdateChecker.repoURL)
+        } label: {
+            Label("关于（GitHub 开源仓库）", systemImage: "info.circle")
+        }
+        .accessibilityIdentifier("douyin.about")
     }
 }
 

@@ -14,6 +14,8 @@ enum DDUpdateChecker {
     static let repo = "81199000/DouDuo"
     /// 用户点过「关闭 / 去更新」的版本，记下来就不再提示这个版本
     static let dismissedKey = "douduo_dismissed_update_v1"
+    /// 「关于」跳转的开源仓库
+    static var repoURL: URL { URL(string: "https://github.com/\(repo)")! }
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
