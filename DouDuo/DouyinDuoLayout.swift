@@ -6,6 +6,14 @@ import SwiftUI
 enum DYDuoMetrics {
     /// iOS 17–27.0 的宽屏回退，和改版前同一条线。
     static let legacyWideMin: CGFloat = 700
+
+    /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
+    static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
+        if #available(iOS 27.1, *) {
+            return proxy.reservedRegions(kind: .division).contains { $0.isActive }
+        }
+        return false
+    }
 }
 
 // MARK: - 折痕 / 摄像头：整组小幅平移，不大挪
