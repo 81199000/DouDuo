@@ -28,6 +28,13 @@ struct DYUser: Decodable, Equatable {
     let ip: String?
 }
 
+/// 抖音热搜一条：pos 为空 = 置顶条
+struct DYHot: Decodable, Equatable {
+    let word: String
+    let hot: Int
+    let pos: Int?
+}
+
 struct DYSug: Identifiable, Decodable, Equatable {
     var id: String { word }
     let word: String
@@ -111,6 +118,12 @@ extension DouyinBridge {
         guard offset == "0" else { return ([], offset, false) }
         let r = try await list(Self.searchJS, ["kw": kw, "cursor": "0"])
         return (r.items, r.cursor, false)
+    }
+
+    /// 抖音热搜
+    func hotSearch() async -> [DYHot] {
+        guard let d = try? await call(Self.hotJS, args: [:], attempts: 1) else { return [] }
+        return (try? JSONDecoder().decode([DYHot].self, from: d)) ?? []
     }
 
     func suggest(_ kw: String) async -> [DYSug] {
@@ -272,6 +285,13 @@ extension DouyinBridge {
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     return pack(r, d, arr, d.cursor, d.has_more);
+    """#
+
+    static let hotJS = #"""
+    const r = await req('GET', '/aweme/v1/web/hot/search/list/?' + q({ detail_list: '1', source: '6', board_type: '0', board_sub_type: '' }));
+    const d = parse(r.t) || {};
+    const wl = ((d.data || {}).word_list) || [];
+    return JSON.stringify(wl.filter(w => w && w.word).map(w => ({ word: w.word, hot: w.hot_value || 0, pos: w.position ?? null })));
     """#
 
     static let sugJS = #"""
@@ -737,6 +757,7 @@ struct DYSearchScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var kw = ""
     @State private var sugs: [DYSug] = []
+    @State private var hot: [DYHot] = []
     @State private var model: DYPagedModel?
     @State private var open: DYListTarget?
     @State private var sugTask: Task<Void, Never>?
@@ -803,11 +824,15 @@ struct DYSearchScreen: View {
                             FlowTags(tags: history) { w in kw = w; run(w) }
                                 .padding(.horizontal, 16)
                         }
+                        if !hot.isEmpty && (sugs.isEmpty || kw.isEmpty) {
+                            hotSection
+                        }
                     }
                 }
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .task { if hot.isEmpty { hot = await bridge.hotSearch() } }
         .onAppear {
             focused = true
             #if DEBUG
@@ -831,6 +856,39 @@ struct DYSearchScreen: View {
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
         }
+    }
+
+    /// 抖音热搜：宽屏自动两列
+    private var hotSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("抖音热搜").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                .padding(.top, 20)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 24, alignment: .leading)],
+                      alignment: .leading, spacing: 0) {
+                ForEach(Array(hot.enumerated()), id: \.offset) { _, h in
+                    Button { kw = h.word; run(h.word) } label: { hotRow(h) }.buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
+    }
+
+    private func hotRow(_ h: DYHot) -> some View {
+        let accent = Color(red: 1, green: 0.42, blue: 0.32)
+        return HStack(spacing: 10) {
+            Group {
+                if let p = h.pos { Text("\(p)").foregroundStyle(p <= 3 ? accent : .white.opacity(0.45)) }
+                else { Image(systemName: "pin.fill").foregroundStyle(accent) }
+            }
+            .font(.subheadline.weight(.bold).monospacedDigit())
+            .frame(width: 26)
+            Text(h.word).font(.subheadline).foregroundStyle(.white).lineLimit(1)
+            Spacer(minLength: 6)
+            if h.hot > 0 { Text(DYFormat.count(h.hot)).font(.caption).foregroundStyle(.white.opacity(0.4)) }
+        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 
     private func run(_ word: String) {
