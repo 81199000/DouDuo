@@ -770,14 +770,11 @@ final class PlayerUIView: UIView {
         guard let size = playerLayer.player?.currentItem?.presentationSize, size.width > 1, size.height > 1,
               bounds.width > 1, bounds.height > 1 else { return }
         let video = size.width / size.height, screen = bounds.width / bounds.height
-        // 只有「视频和屏幕同向」时才放大铺满：竖屏看竖屏 → 铺满宽度；横屏看横屏 → 铺满高度。
-        // 竖屏看横屏（或反之）保持完整画面不动，否则会裁掉一大块。
+        // 「自动铺满宽度」打开就铺满（必要时裁切），关掉才保持完整画面。
+        // 老板要求铺满行为跟以前一致：不再按屏幕形状/裁切比例自动降级。
         let sameOrientation = (video < 1) == (screen < 1)
-        // 铺满会裁掉的比例。手机形状的屏（外屏 / 普通 iPhone）照旧铺满；
-        // Duo 内屏这种接近方形的屏，裁超过 8% 就不铺（竖屏 9:16 会被裁 ~20%，横屏 16:9 ~33%）
         let crop = 1 - min(video, screen) / max(video, screen)
-        let phoneShaped = screen < 0.6 || screen > 1.67
-        let g: AVLayerVideoGravity = (fillWidth && sameOrientation && (phoneShaped || crop <= 0.08)) ? .resizeAspectFill : .resizeAspect
+        let g: AVLayerVideoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
         #if DEBUG
         if playerLayer.videoGravity != g {
             ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) crop=\(String(format: "%.2f", crop)) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")
