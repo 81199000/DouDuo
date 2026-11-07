@@ -482,23 +482,36 @@ struct DYGrid: View {
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: cols, spacing: 2) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
-                    Button { onOpen(i) } label: { cell(a) }
-                        .buttonStyle(.plain)
-                        .onAppear { if i >= items.count - 6 { onLoadMore() } }
+        // 底部哨兵只在真正滚进可视区时才翻页：ScrollView 的非惰性子视图会立刻 onAppear，
+        // 直接 onAppear 会一页接一页把作者作品全拉下来（2026-11-07 实测）。
+        GeometryReader { outer in
+            ScrollView {
+                LazyVGrid(columns: cols, spacing: 2) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
+                        Button { onOpen(i) } label: { cell(a) }
+                            .buttonStyle(.plain)
+                    }
+                }
+                if let error {
+                    Text(error).font(.footnote).foregroundStyle(.white.opacity(0.75))
+                        .multilineTextAlignment(.center).padding(24)
+                } else if loading {
+                    ProgressView().tint(.white).padding(24)
+                } else if items.isEmpty {
+                    Text("这里还没有内容").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding(40)
+                } else if hasMore {
+                    Color.clear
+                        .frame(height: 40)
+                        .background(
+                            GeometryReader { g in
+                                Color.clear.preference(key: DYBottomYKey.self, value: g.frame(in: .named("ddgrid")).minY)
+                            }
+                        )
                 }
             }
-            if let error {
-                Text(error).font(.footnote).foregroundStyle(.white.opacity(0.75))
-                    .multilineTextAlignment(.center).padding(24)
-            } else if loading {
-                ProgressView().tint(.white).padding(24)
-            } else if items.isEmpty {
-                Text("这里还没有内容").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding(40)
-            } else if hasMore {
-                Color.clear.frame(height: 40).onAppear(perform: onLoadMore)
+            .coordinateSpace(name: "ddgrid")
+            .onPreferenceChange(DYBottomYKey.self) { y in
+                if y < outer.size.height - 16 { onLoadMore() }
             }
         }
     }
@@ -532,6 +545,11 @@ struct DYGrid: View {
             }
             .contentShape(Rectangle())
     }
+}
+
+private struct DYBottomYKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
 }
 
 // MARK: - 列表播放器（从网格点进来，上下滑接着看）
