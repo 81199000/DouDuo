@@ -37,10 +37,14 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(playTime(app), 25, "横滑快进没跳")
 
         // 点作者头像 → 网页主页 → 返回
-        let author = app.buttons["douyin.author"].firstMatch
-        XCTAssertTrue(author.waitForExistence(timeout: 5))
+        // 分页 ScrollView 同时保留离屏元素，只点当前可命中的作者。
+        let authors = app.buttons.matching(identifier: "douyin.author")
+        let author = authors.allElementsBoundByIndex.first(where: { $0.isHittable })
+        XCTAssertNotNil(author, "当前页没有可点击的作者入口")
+        guard let author else { return }
         author.tap()
-        let back = app.buttons["douyin.web.back"]
+        // 改版作者页已原生化，不能再等旧网页版返回键。
+        let back = app.buttons["douyin.author.back"]
         XCTAssertTrue(back.waitForExistence(timeout: 15), "作者主页没打开 / 没有返回键")
         sleep(4)
         attach(app, "3-author")
@@ -200,6 +204,7 @@ final class DouDuoUITests: XCTestCase {
     /// 点赞 / 收藏走真接口。
     /// 未登录时 App 会提示「请先登录抖音」并自动打开网页登录 → 这种情况 skip（不是缺陷）
     func testLikeAndCollect() throws {
+        throw XCTSkip("本次只读验收：禁止使用老板账号执行点赞/收藏写接口")
         let app = XCUIApplication()
         app.launch()
         let current = app.staticTexts["douyin.currentID"]
