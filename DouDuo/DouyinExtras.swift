@@ -20,6 +20,7 @@ struct DYUser: Decodable, Equatable {
     let avatar: String?
     let signature: String
     let secUid: String
+    let uid: String
     let followers: Int
     let following: Int
     let likes: Int
@@ -211,7 +212,7 @@ extension DouyinBridge {
 
     private static let userMap = #"""
     const umap = u => u ? ({ name: u.nickname || '', avatar: first(u.avatar_larger) || first(u.avatar_thumb), signature: u.signature || '',
-      secUid: u.sec_uid || '', followers: u.follower_count || u.mplatform_followers_count || 0, following: u.following_count || 0,
+      secUid: u.sec_uid || '', uid: u.uid ? String(u.uid) : '', followers: u.follower_count || u.mplatform_followers_count || 0, following: u.following_count || 0,
       likes: u.total_favorited || 0, works: u.aweme_count || 0, ip: u.ip_location || null }) : null;
     """#
 
@@ -891,6 +892,7 @@ struct DYMineScreen: View {
     @State private var kind: DYListKind = .post
     @State private var models: [DYListKind: DYPagedModel] = [:]
     @State private var open: DYListTarget?
+    @State private var relations: DYRelationsTarget?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -940,6 +942,9 @@ struct DYMineScreen: View {
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
         }
+        .fullScreenCover(item: $relations) { t in
+            DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid)
+        }
     }
 
     private func ensure(_ k: DYListKind) {
@@ -952,7 +957,9 @@ struct DYMineScreen: View {
     @ViewBuilder
     private var header: some View {
         if let u = user {
-            DYUserHeader(user: u)
+            DYUserHeader(user: u,
+                         onFollowing: { relations = DYRelationsTarget(kind: .following, user: u) },
+                         onFollowers: { relations = DYRelationsTarget(kind: .followers, user: u) })
         } else if let e = userErr {
             VStack(spacing: 10) {
                 Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(.white.opacity(0.8)).font(.subheadline)
@@ -976,6 +983,9 @@ private struct DYMineList: View {
 
 struct DYUserHeader: View {
     let user: DYUser
+    /// 「关注 / 粉丝」数字可点（传了回调才显示为按钮）；不传保持纯展示，作者页不受影响
+    var onFollowing: (() -> Void)? = nil
+    var onFollowers: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
@@ -990,7 +1000,10 @@ struct DYUserHeader: View {
                 }
             }
             HStack(spacing: 20) {
-                stat(user.likes, "获赞"); stat(user.following, "关注"); stat(user.followers, "粉丝"); stat(user.works, "作品")
+                stat(user.likes, "获赞")
+                statTap(user.following, "关注", onFollowing, "douyin.header.following")
+                statTap(user.followers, "粉丝", onFollowers, "douyin.header.followers")
+                stat(user.works, "作品")
             }
             if !user.signature.isEmpty {
                 Text(user.signature).font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(3)
@@ -1003,6 +1016,18 @@ struct DYUserHeader: View {
             Text(DYFormat.count(n)).font(.subheadline.weight(.bold)).foregroundStyle(.white)
             Text(t).font(.caption).foregroundStyle(.white.opacity(0.6))
         }
+    }
+    private func statTap(_ n: Int, _ t: String, _ act: (() -> Void)?, _ id: String) -> some View {
+        Button { act?() } label: {
+            HStack(spacing: 4) {
+                Text(DYFormat.count(n)).font(.subheadline.weight(.bold)).foregroundStyle(.white)
+                Text(t).font(.caption).foregroundStyle(.white.opacity(0.6))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(act == nil)
+        .accessibilityIdentifier(id)
     }
 }
 
