@@ -705,7 +705,14 @@ struct DouyinFeedScreen: View {
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
     var body: some View {
-        layoutRoot
+        ZStack(alignment: .top) {
+            layoutRoot
+            topBar
+                .padding(.top, hSize == .regular ? 0 : -80)
+                .frame(maxWidth: .infinity)
+        }
+        // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
+        .ignoresSafeArea(edges: [.top, .horizontal])
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
         .task {
             guard !initialized else { return }
@@ -981,7 +988,6 @@ struct DouyinFeedScreen: View {
             } else {
                 recommendArea
             }
-            topBar
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
