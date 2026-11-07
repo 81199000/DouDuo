@@ -981,8 +981,7 @@ struct DouyinFeedScreen: View {
                 recommendArea
             }
             topBar
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, 4)
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
@@ -1030,20 +1029,15 @@ struct DouyinFeedScreen: View {
     }
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
-    /// 顶栏：菜单 + 关注/推荐/直播 + 搜索/消息/我的，全部并进一根靠左的液态玻璃胶囊，
-    /// 和系统时间同一行（不单独占第二行）。
+    /// 顶栏：只保留「关注 / 推荐 / 直播」+ 搜索，整体居中的一根胶囊。
+    /// 菜单、消息、我的都收进右下角「更多」里。
     private var topBar: some View {
         HStack(spacing: 10) {
-            menuButton
             tabSwitcher
             Divider().frame(height: 18).opacity(0.35)
-            HStack(spacing: 12) {
-                topIcon("magnifyingglass", "douyin.search") { showSearch = true }
-                messageEntry
-                topIcon("person.crop.circle", "douyin.mine") { showMine = true }
-            }
+            topIcon("magnifyingglass", "douyin.search") { showSearch = true }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .ddGlassCapsule()
         .modifier(DYRailReservedNudge())
@@ -1124,24 +1118,9 @@ struct DouyinFeedScreen: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(feed.items) { item in
-                            DYVideoPage(item: item,
-                                        isCurrent: item.id == currentID && web == nil && tab == .recommend && !showSearch && !showMine,
-                                        insets: insets,
-                                        resume: resume[item.id],
-                                        liked: feed.liked.contains(item.id),
-                                        collected: feed.collected.contains(item.id),
-                                        onLike: { toggleLike(item.id, force: nil) },
-                                        onCollect: { toggleCollect(item.id) },
-                                        onDoubleTap: { toggleLike(item.id, force: true) },
-                                        onComments: { withAnimation(.snappy) { showComments.toggle() } },
-                                        onAuthor: { authorTarget = item.author },
-                                        onSavePosition: { resume[item.id] = $0; saveSession() },
-                                        preloader: preloader,
-                                        bridge: bridge,
-                                        onToast: { showToast($0) },
-                                        onDislike: { dislike(item.id) })
-                            .containerRelativeFrame([.horizontal, .vertical])
-                            .id(item.id)
+                            page(for: item)
+                                .containerRelativeFrame([.horizontal, .vertical])
+                                .id(item.id)
                         }
                     }
                     .scrollTargetLayout()
@@ -1179,6 +1158,29 @@ struct DouyinFeedScreen: View {
                 .ignoresSafeArea()
             }
         }
+    }
+
+    /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
+    private func page(for item: DYAweme) -> some View {
+        let extras = AnyView(moreExtrasMenu(item))
+        let active = item.id == currentID && web == nil && tab == .recommend && !showSearch && !showMine
+        return DYVideoPage(item: item,
+                           isCurrent: active,
+                           insets: insets,
+                           resume: resume[item.id],
+                           liked: feed.liked.contains(item.id),
+                           collected: feed.collected.contains(item.id),
+                           onLike: { toggleLike(item.id, force: nil) },
+                           onCollect: { toggleCollect(item.id) },
+                           onDoubleTap: { toggleLike(item.id, force: true) },
+                           onComments: { withAnimation(.snappy) { showComments.toggle() } },
+                           onAuthor: { authorTarget = item.author },
+                           onSavePosition: { resume[item.id] = $0; saveSession() },
+                           preloader: preloader,
+                           bridge: bridge,
+                           onToast: { showToast($0) },
+                           onDislike: { dislike(item.id) },
+                           moreExtras: extras)
     }
 
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
@@ -1282,12 +1284,23 @@ struct DouyinFeedScreen: View {
         }
     }
 
-    private var menuButton: some View {
+    /// 右下角「更多」里追加：消息 / 我的 / 设置项（顶栏不再放这三个入口）
+    @ViewBuilder
+    private func moreExtrasMenu(_ item: DYAweme) -> some View {
+        Button {
+            showMessages = true
+        } label: {
+            Label(noticeUnread > 0 ? "消息（\(noticeUnread)）" : "消息", systemImage: "bell")
+        }
+        .accessibilityIdentifier("douyin.messages")
+        Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
+            .accessibilityIdentifier("douyin.mine")
+        Divider()
+        Button("刷新推荐", systemImage: "arrow.clockwise") {
+            Task { await refreshRecommendations() }
+        }
+        .disabled(refreshing)
         Menu {
-            Button("刷新推荐", systemImage: "arrow.clockwise") {
-                Task { await refreshRecommendations() }
-            }
-            .disabled(refreshing)
             Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
             Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
             Toggle(isOn: $danmakuOn) { Label("弹幕", systemImage: "text.bubble") }
@@ -1306,17 +1319,10 @@ struct DouyinFeedScreen: View {
                 }
             }
             Button("网页版 / 登录", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
-            if let cur = current {
-                ShareLink(item: cur.webURL) { Label("分享链接", systemImage: "square.and.arrow.up") }
-            }
+            ShareLink(item: item.webURL) { Label("分享链接", systemImage: "square.and.arrow.up") }
         } label: {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
-                .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
+            Label("播放设置", systemImage: "slider.horizontal.3")
         }
-        .accessibilityLabel("抖音菜单")
     }
 }
 
@@ -1709,6 +1715,8 @@ struct DYVideoPage: View {
     let onToast: ((String) -> Void)?
     /// 只有推荐流传：关注 / 搜索 / 我的 里不显示「不感兴趣」
     let onDislike: (() -> Void)?
+    /// 「更多」菜单末尾追加的条目（消息 / 我的 / 设置），由推荐流注入
+    var moreExtras: AnyView = AnyView(EmptyView())
     @State private var heart = false
     @State private var descExpanded = false
     @State private var danmaku: [DYDanmaku] = []
@@ -1727,13 +1735,14 @@ struct DYVideoPage: View {
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
          onComments: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
-         onDislike: (() -> Void)? = nil) {
+         onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView())) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
         self.onComments = onComments; self.onAuthor = onAuthor; self.onSavePosition = onSavePosition
         self.preloader = preloader; self.bridge = bridge; self.onToast = onToast
         self.onDislike = onDislike
+        self.moreExtras = moreExtras
     }
 
     var body: some View {
@@ -1994,6 +2003,8 @@ struct DYVideoPage: View {
             }
             .disabled(saving)
             .accessibilityIdentifier("douyin.save")
+            Divider()
+            moreExtras
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
