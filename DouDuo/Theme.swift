@@ -44,6 +44,8 @@ struct DDTheme {
 
 extension EnvironmentValues {
     @Entry var appTheme = DDTheme()
+    /// 界面放大系数：目前固定 1（不做全局缩放）；PR 里播放器部分用到，先给个默认值
+    @Entry var ddScale: CGFloat = 1
 }
 
 enum DDElevation { case mediaLabel, floatingPanel }

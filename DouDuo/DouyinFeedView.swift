@@ -20,6 +20,12 @@ struct DYAweme: Identifiable, Codable, Equatable {
     let height: Double
     let duration: Double
     let play: String?
+    /// 抖音默认清晰度的地址（play 选了更高一档时才有）；高清起不来时备用
+    var playAlt: String? = nil
+    /// 秒开用的低码率地址（冷启动先放它，高清好了再换）
+    var playFast: String? = nil
+    /// 选中的清晰度说明（调试日志用）
+    var q: String? = nil
     let cover: String?
     let images: [String]
     let author: Author
@@ -134,6 +140,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
             self.ready = true
+            // 签名 SDK 就绪后把整页 DOM 清空：隐藏页面不再持续渲染（真机上 WebContent 曾占约 43% 一个核，手机发烫）
+            self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil")") }
             self.readyWaiters.forEach { $0.resume() }
             self.readyWaiters.removeAll()
         }
@@ -421,6 +429,21 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     return JSON.stringify(last);
     """#
 
+    /// SDK 就绪后清空隐藏页：停媒体、清 body 与样式表，之后新增元素（脚本除外）也移除。
+    /// 清空后签名请求照常（热搜、观看上报、作品列表都验证过）。
+    private static let quietPageJS = #"""
+    (() => { try {
+      document.querySelectorAll('video,audio').forEach(v => { try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {} });
+      if (document.body) {
+        document.body.replaceChildren();
+        new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1 && n.tagName !== 'SCRIPT') n.remove(); })))
+          .observe(document.body, { childList: true });
+      }
+      document.querySelectorAll('style,link[rel=stylesheet]').forEach(e => e.remove());
+      return 'quiet';
+    } catch (e) { return 'err ' + e; } })()
+    """#
+
     private static let loginJS = #"""
     return (document.cookie || '').includes('sessionid') ? 'sessionid' : '0';
     """#
@@ -450,13 +473,40 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const parse = t => { try { return JSON.parse(t) } catch (e) { return null } };
     const first = o => (o && o.url_list && o.url_list[0]) || null;
     const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
+    // 直连 CDN（douyinvod）优先：实测首字节 0.27–0.30s；www.douyin.com/aweme/v1/play/ 多跳一次 0.95–1.85s
+    const pickPlay = l => (l || []).find(u => !u.includes('/aweme/v1/play/')) || (l && l[0]) || null;
+    const pickRedirect = l => (l || []).find(u => u.includes('/aweme/v1/play/')) || null;
+    // 清晰度：按「有效码率」挑最高一档（H.265 同码率约等于 H.264 的 1.4 倍），跳过弱网档
+    const resOf = r => {
+      const pa = r.play_addr || {}, w = pa.width || 0, h = pa.height || 0;
+      if (w && h) return Math.min(w, h);
+      const m = /_(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
+    };
+    const bestRate = v => {
+      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
+        .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
+      rs.sort((a, b) => ((b.bit_rate || 0) * (b.is_h265 ? 1.4 : 1)) - ((a.bit_rate || 0) * (a.is_h265 ? 1.4 : 1)));
+      return rs[0] || null;
+    };
+    const fastRate = v => {
+      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
+      rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
+      return rs[0] || null;
+    };
     // 抖音作品 → 精简结构（推荐 / 关注 / 搜索 / 喜欢 / 收藏 / 历史 / 作品 共用）
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
       const st = a.statistics || {};
+      const def = pickPlay(urls), br = bestRate(v), best = br ? pickPlay(br.play_addr.url_list) : null;
+      const fr = fastRate(v), fast = fr ? pickPlay(fr.play_addr.url_list) : null;
+      const pd = v.play_addr || {};
       return {
         id: String(a.aweme_id), desc: a.desc || '', width: v.width || 0, height: v.height || 0, duration: (v.duration || 0) / 1000,
-        play: urls.find(u => u.includes('/aweme/v1/play/')) || urls[urls.length - 1] || null,
+        play: best || def,
+        playAlt: pickRedirect(br ? br.play_addr.url_list : urls) || (best && def && best !== def ? def : null),
+        playFast: fast && fast !== (best || def) ? fast : null,
+        q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
+          + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
         cover: first(v.cover) || first(v.origin_cover) || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
@@ -556,7 +606,7 @@ private struct DYPlayerLayerView: UIViewRepresentable {
 /// 封面同时预取。窗口外的立即释放（硬解码会话有限，不能无限开）。
 @MainActor
 final class DYPreloader {
-    static let ahead = 3
+    static let ahead = 3   // 提前暖 3 条；微热降到 2、烫了 1
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -568,7 +618,9 @@ final class DYPreloader {
 
     func update(_ items: [DYAweme], current index: Int) {
         guard !disabled, items.indices.contains(index) else { return }
-        let lo = index + 1, hi = min(items.count - 1, index + Self.ahead)
+        let th = ProcessInfo.processInfo.thermalState
+        let ahead = th == .nominal ? Self.ahead : (th == .fair ? 2 : 1)
+        let lo = index + 1, hi = min(items.count - 1, index + ahead)
         let window = lo <= hi ? Array(items[lo...hi]) : []
         let ids = Set(window.map(\.id))
         // 离开窗口的：释放没被领走的；已领走的只要离当前 ≥2 条就不再记账（页面已经销毁）
@@ -698,6 +750,8 @@ struct DouyinFeedScreen: View {
     @State private var showMine = false
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
+    @AppStorage("douyin_autoplay_v1") private var autoNext = false
+    @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     @State private var noticeUnread = 0
@@ -918,6 +972,21 @@ struct DouyinFeedScreen: View {
             positions[id] = max(0, DDNowPlaying.time)
         }
         DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
+    }
+
+    /// 自动连播：播完滑到下一条；快到底时先补一页
+    private func playNext(after id: String) {
+        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
+        if i + 1 < feed.items.count {
+            withAnimation { currentID = feed.items[i + 1].id }
+        } else {
+            Task {
+                await feed.loadMore(bridge)
+                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
+                    withAnimation { currentID = feed.items[j + 1].id }
+                }
+            }
+        }
     }
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
@@ -1212,7 +1281,8 @@ struct DouyinFeedScreen: View {
                            bridge: bridge,
                            onToast: { showToast($0) },
                            onDislike: { dislike(item.id) },
-                           moreExtras: extras)
+                           moreExtras: extras,
+                           onEnded: { playNext(after: item.id) })
     }
 
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
@@ -1322,6 +1392,8 @@ struct DouyinFeedScreen: View {
         Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
             .accessibilityIdentifier("douyin.mine")
         Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
+        Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+        Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
         Divider()
         Button("刷新推荐", systemImage: "arrow.clockwise") {
             Task { await refreshRecommendations() }
@@ -1752,6 +1824,9 @@ struct DYVideoPage: View {
     let onDislike: (() -> Void)?
     /// 「更多」菜单末尾追加的条目（消息 / 我的 / 设置），由推荐流注入
     var moreExtras: AnyView = AnyView(EmptyView())
+    /// 播完切下一条（「自动连播」打开才生效）
+    var onEnded: (() -> Void)? = nil
+    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var heart = false
     @State private var descExpanded = false
     @State private var danmaku: [DYDanmaku] = []
@@ -1770,7 +1845,8 @@ struct DYVideoPage: View {
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
          onComments: @escaping () -> Void, onSearch: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
-         onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView())) {
+         onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView()),
+         onEnded: (() -> Void)? = nil) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
@@ -1778,6 +1854,7 @@ struct DYVideoPage: View {
         self.preloader = preloader; self.bridge = bridge; self.onToast = onToast
         self.onDislike = onDislike
         self.moreExtras = moreExtras
+        self.onEnded = onEnded
     }
 
     var body: some View {
@@ -1790,14 +1867,18 @@ struct DYVideoPage: View {
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
                                     resumePosition: resume, compactChrome: true,
                                     preparedPlayer: { preloader.take(item.id) },
-                                    onEnded: nil,
+                                    onEnded: autoNext ? onEnded : nil,
                                     onDoubleTap: {
                                         onDoubleTap()
                                         heart = true
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
                                     },
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
-                                    danmaku: danmakuOn ? danmaku : [])
+                                    danmaku: danmakuOn ? danmaku : [],
+                                    altURL: item.playAlt.flatMap(URL.init(string:)),
+                                    quality: item.q,
+                                    fastURL: item.playFast.flatMap(URL.init(string:)),
+                                    posterURL: item.cover.flatMap(URL.init(string:)))
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in

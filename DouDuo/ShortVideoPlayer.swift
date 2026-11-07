@@ -79,11 +79,13 @@ extension PlayerPage {
                          preparedPlayer: (() -> AVPlayer?)? = nil,
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
                          onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
-                         fillWidth: Bool = true, danmaku: [DYDanmaku] = []) -> PlayerPage {
+                         fillWidth: Bool = true, danmaku: [DYDanmaku] = [], altURL: URL? = nil,
+                         quality: String? = nil, fastURL: URL? = nil, posterURL: URL? = nil) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
-                   topInset: topInset, danmaku: danmaku)
+                   topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
+                   posterURL: posterURL)
     }
 }
 
@@ -103,6 +105,18 @@ struct PlayerPage: View {
     var topInset: CGFloat = 0
     /// 视频弹幕（空 = 不显示）
     var danmaku: [DYDanmaku] = []
+    /// 高清流起不来时的备用地址（抖音默认清晰度那条）；看门狗第一次重建就换它
+    var altURL: URL? = nil
+    /// 选中的清晰度描述（只进调试日志）
+    var quality: String? = nil
+    /// 秒开：低码率地址。滑到一条还没缓冲好的视频时先放它，高清在上层缓冲好后无缝盖上去
+    var fastURL: URL? = nil
+    /// 封面：首帧出来前先显示（网格里已经缓存过，点进来立刻有画面，不是黑屏转圈）
+    var posterURL: URL? = nil
+    @State private var firstFrame = false
+    /// 静音（右下角按钮，全局记住）
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @Environment(\.ddScale) private var ui
 
     private var dmStress: Bool {
         #if DEBUG
@@ -130,6 +144,10 @@ struct PlayerPage: View {
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
     @State private var avRetried = false
+    /// 秒开期间：高清播放器（静音、几乎透明地叠在低清上面缓冲），就绪后淡入接管
+    @State private var hdPlayer: AVPlayer?
+    @State private var hdVisible = false
+    @State private var fastT0 = Date()
     private let playbackID = UUID()
 
     var body: some View {
@@ -143,6 +161,17 @@ struct PlayerPage: View {
             } else {
                 ProgressView().tint(.white)
             }
+            if vlc == nil, let hd = hdPlayer {
+                // 0.001 而不是 0：完全透明的层可能不出画面，换上来时会黑一下
+                VideoSurface(player: hd, fillWidth: fillWidth).ignoresSafeArea()
+                    .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
+            }
+            if !firstFrame, let posterURL {
+                CachedAsyncImage(url: posterURL) { img in img.resizable().scaledToFit() } placeholder: { Color.clear }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
             if isActive && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
             }
@@ -150,7 +179,7 @@ struct PlayerPage: View {
             if player != nil || vlc != nil { gestures }
             if seeking { seekHUD }
             if isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
-                Image(systemName: "play.fill").font(.system(size: 52)).foregroundStyle(.white.opacity(0.75))
+                Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
                     .allowsHitTesting(false)
             }
             if rateBoost {
@@ -158,12 +187,12 @@ struct PlayerPage: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Capsule().fill(.black.opacity(0.45)))
-                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 70)
+                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 70 * ui)
                     .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .bottom) {
-            if isActive { progressBar.padding(.bottom, max(bottomInset, 18)) }
+            if isActive { progressBar.padding(.bottom, max(bottomInset, 8)) }
         }
         .onAppear {
             if player == nil { setup() }
@@ -183,18 +212,33 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             resumeAfterBackground()
         }
+        .onChange(of: muted) { _, m in
+            guard isActive else { return }
+            player?.isMuted = m
+            vlc?.mediaPlayer.audio?.isMuted = m
+        }
         .onChange(of: isActive) { _, active in
             if let v = vlc {
-                if active { v.mediaPlayer.audio?.isMuted = false; v.mediaPlayer.play(); isPlaying = true }
+                if active { v.mediaPlayer.audio?.isMuted = muted; v.mediaPlayer.play(); isPlaying = true }
                 else { v.mediaPlayer.pause(); isPlaying = false; onSavePosition(v.current) }
                 return
             }
+            if !active && hdPlayer != nil { revertToHD() }   // 秒开中途滑走：留下高清那个，回来接着用
             guard let p = player else { if active { setup() }; return }
             if active, p.currentItem == nil || p.currentItem?.status == .failed { rebuild(); return }
+            if active, shouldFastStart(p) {
+                try? AVAudioSession.sharedInstance().setCategory(.playback)
+                try? AVAudioSession.sharedInstance().setActive(true)
+                startFast(hd: p)
+                return
+            }
             if active {
                 try? AVAudioSession.sharedInstance().setCategory(.playback)
                 try? AVAudioSession.sharedInstance().setActive(true)
-                p.isMuted = false; p.play(); isPlaying = true
+                #if DEBUG
+                logSwipeStart(p)
+                #endif
+                p.isMuted = muted; p.play(); isPlaying = true
                 watchdog(p)
             } else {
                 p.isMuted = true; p.pause(); isPlaying = false
@@ -250,7 +294,7 @@ struct PlayerPage: View {
                     Color.black.opacity(0.4).overlay(ProgressView().tint(.white))
                 }
             }
-            .frame(width: 196, height: 110)
+            .frame(width: 196 * ui, height: 110 * ui)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             HStack(spacing: 8) {
                 Text(fmt(seekPreview)).font(.subheadline.weight(.bold).monospacedDigit())
@@ -270,29 +314,26 @@ struct PlayerPage: View {
     private var progressBar: some View {
         let pos = seeking ? seekPreview : current
         let frac = duration > 0 ? max(0, min(1, pos / duration)) : 0
-        return VStack(spacing: 4) {
-            HStack {
-                Text(fmt(pos)); Spacer(); Text(fmt(duration))
-            }
-            .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(seeking ? 0.9 : 0.45))
-            .padding(.horizontal, 16)
+        // 不显示时间（拖动时预览气泡里有），只留细进度条
+        return VStack(spacing: 0) {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     // 平时半透明不挡画面（横滑全屏都能拖进度），拖动时才变实
-                    Capsule().fill(.white.opacity(seeking ? 0.28 : 0.12)).frame(height: seeking ? 6 : 2)
-                    Capsule().fill(.white.opacity(seeking ? 1 : 0.4)).frame(width: g.size.width * frac, height: seeking ? 6 : 2)
-                    Circle().fill(.white.opacity(seeking ? 1 : 0.45)).frame(width: seeking ? 15 : 6, height: seeking ? 15 : 6)
-                        .offset(x: max(0, g.size.width * frac - (seeking ? 7.5 : 3)))
+                    Capsule().fill(.white.opacity(seeking ? 0.28 : 0.12)).frame(height: (seeking ? 6 : 2) * ui)
+                    Capsule().fill(.white.opacity(seeking ? 1 : 0.4)).frame(width: g.size.width * frac, height: (seeking ? 6 : 2) * ui)
+                    Circle().fill(.white.opacity(seeking ? 1 : 0.45)).frame(width: (seeking ? 15 : 6) * ui, height: (seeking ? 15 : 6) * ui)
+                        .offset(x: max(0, g.size.width * frac - (seeking ? 7.5 : 3) * ui))
                 }
                 .frame(maxHeight: .infinity)
                 .onAppear { barWidth = g.size.width }
                 .onChange(of: g.size.width) { _, w in barWidth = w }
             }
-            .frame(height: 16)
-            .padding(.horizontal, 16)
-            // 常驻拖动区：高 40，按住左右拖拉进度
-            Color.white.opacity(0.001).frame(height: 40).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
+            .frame(height: 16 * ui)
+            .padding(.horizontal, 16 * ui)
+            // 拖动区：进度条往上多 20pt 好按，不往下占空白
+            .padding(.top, 20 * ui)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { v in
                         guard duration > 0 else { return }
                         if !seeking { holdAnchor = current; seeking = true }
@@ -314,6 +355,10 @@ struct PlayerPage: View {
         }
         #endif
         let pre = preparedPlayer?()
+        #if DEBUG
+        let preReady = pre?.currentItem?.status == .readyToPlay
+        let preBuf = pre?.currentItem?.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
+        #endif
         let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? DYMedia.asset(url)
         let p = pre ?? AVPlayer(playerItem: AVPlayerItem(asset: asset))
         p.automaticallyWaitsToMinimizeStalling = true
@@ -327,7 +372,13 @@ struct PlayerPage: View {
         imgGen = gen
         attachObservers(p)
         if let r = resumePosition, r > 1 { p.seek(to: CMTime(seconds: r, preferredTimescale: 600)) }
-        p.isMuted = !isActive
+        if isActive, shouldFastStart(p) {
+            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            startFast(hd: p)
+            return
+        }
+        p.isMuted = !isActive || muted
         if isActive {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -341,7 +392,7 @@ struct PlayerPage: View {
             func probe(_ n: Int) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     if p.currentTime().seconds > 0.05 {
-                        ddWrite("DDSTART \(id) local=\(url.isFileURL) 起播用时=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s 距启动=\(String(format: "%.2f", Date().timeIntervalSince(DDLaunch.t0)))s")
+                        ddWrite("DDSTART \(id) local=\(url.isFileURL) pre=\(pre != nil) preReady=\(preReady) preBuf=\(String(format: "%.1f", preBuf))s q=\(quality ?? "-") 起播用时=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s 距启动=\(String(format: "%.2f", Date().timeIntervalSince(DDLaunch.t0)))s")
                     } else if n < 100 { probe(n + 1) }
                 }
             }
@@ -351,6 +402,149 @@ struct PlayerPage: View {
             ddWrite("DDPLAY \(id) active=\(isActive) engine=\(vlc == nil ? "AV" : "VLC") status=\(p.currentItem?.status.rawValue ?? -1) t=\(p.currentTime().seconds) err=\(String(describing: p.currentItem?.error))")
         }
         #endif
+    }
+
+    #if DEBUG
+    /// 滑到这条时记一笔：滑入时缓冲了多少、是不是本地文件、后台缓存在下几条，以及多久真正动起来
+    private func logSwipeStart(_ p: AVPlayer, fast: Bool = false) {
+        let t0 = Date(), start = p.currentTime().seconds
+        let it = p.currentItem
+        let buf = it?.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
+        let st = it?.status.rawValue ?? -1
+        let local = (it?.asset as? AVURLAsset)?.url.isFileURL ?? false
+        let dl = DYVideoCache.activeDownloads
+        let th = ProcessInfo.processInfo.thermalState.rawValue   // 0 正常 1 微热 2 烫 3 很烫
+        func probe(_ n: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard player === p else { return }
+                if p.currentTime().seconds > start + 0.05 {
+                    ddWrite("DDSWIPE \(id) 起播=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s fast=\(fast) local=\(local) status=\(st) buf=\(String(format: "%.1f", buf))s dl=\(dl) th=\(th) q=\(quality ?? "-")")
+                } else if n < 400 { probe(n + 1) }
+                else { ddWrite("DDSWIPE \(id) 20s 未起播 local=\(local) status=\(st) buf=\(String(format: "%.1f", buf))s dl=\(dl)") }
+            }
+        }
+        probe(0)
+    }
+    #endif
+
+    // MARK: 秒开（低码率先放，高清缓冲好后无缝接管）
+
+    /// 冷：没就绪，或就绪了但缓冲不到 1 秒。本地文件 / 没有低码率档 / VLC 接管中都不走秒开
+    private func shouldFastStart(_ p: AVPlayer) -> Bool {
+        // 默认关：实测低清也要 1–2s 才起播、还要两路解码陪跑发热；直连 CDN 后冷启动本身快了 ~1s。菜单里可开
+        guard UserDefaults.standard.bool(forKey: "douyin_faststart_v1"), fastURL != nil, vlc == nil, hdPlayer == nil, !url.isFileURL, let it = p.currentItem else { return false }
+        if (it.asset as? AVURLAsset)?.url.isFileURL == true { return false }
+        let buf = it.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
+        return it.status != .readyToPlay || buf < 1
+    }
+
+    private func startFast(hd: AVPlayer) {
+        guard let f = fastURL else { return }
+        detachObservers()
+        let resume = hd.currentTime()
+        // 高清：静音陪跑（播着 AVPlayer 才会一直往前缓冲），放在上层几乎透明
+        hd.isMuted = true
+        hd.automaticallyWaitsToMinimizeStalling = true
+        hd.currentItem?.preferredForwardBufferDuration = 0
+        hd.play()
+        hdPlayer = hd; hdVisible = false
+        // 低清：拿到一点数据就开播
+        let low = AVPlayer(playerItem: AVPlayerItem(asset: DYMedia.asset(f)))
+        low.automaticallyWaitsToMinimizeStalling = false
+        if resume.seconds > 1 { low.seek(to: resume) }
+        player = low
+        attachObservers(low)
+        low.isMuted = muted
+        low.play()
+        isPlaying = true
+        fastT0 = Date()
+        #if DEBUG
+        logSwipeStart(low, fast: true)
+        #endif
+        watchdog(low)
+        pollUpgrade(low, hd, 0)
+    }
+
+    /// 高清在 target 之后已缓冲多少秒（target 不在已缓冲区间里 → 0）
+    private func bufferedAhead(_ it: AVPlayerItem, from target: Double) -> Double {
+        for v in it.loadedTimeRanges {
+            let r = v.timeRangeValue
+            let s = r.start.seconds, e = (r.start + r.duration).seconds
+            if target >= s - 0.05 && target <= e { return e - target }
+        }
+        return 0
+    }
+
+    private func pollUpgrade(_ low: AVPlayer, _ hd: AVPlayer, _ n: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard isActive, player === low, hdPlayer === hd else { return }
+            guard let it = hd.currentItem, it.status != .failed else { cancelUpgrade(); return }
+            let t = low.currentTime().seconds
+            if it.status == .readyToPlay, !seeking, bufferedAhead(it, from: t + 0.1) >= 1.5 {
+                swapToHD(low, hd)
+            } else if n < 160 {
+                pollUpgrade(low, hd, n + 1)      // 最多等 40 秒；网太慢就一直看低清，不卡
+            } else {
+                cancelUpgrade()
+            }
+        }
+    }
+
+    private func swapToHD(_ low: AVPlayer, _ hd: AVPlayer) {
+        let target = low.currentTime() + CMTime(seconds: 0.08, preferredTimescale: 600)
+        hd.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { done in
+            DispatchQueue.main.async {
+                guard done, isActive, player === low, hdPlayer === hd else { return }
+                hd.rate = isPlaying ? max(low.rate, 1) : 0
+                // 等高清出两帧画面再盖上去，声音同时交接
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    guard player === low, hdPlayer === hd else { return }
+                    withAnimation(.easeInOut(duration: 0.15)) { hdVisible = true }
+                    hd.isMuted = muted
+                    low.isMuted = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { finishUpgrade(low, hd) }
+                }
+            }
+        }
+    }
+
+    /// 底层也换成高清（上层还盖着，所以不会黑一下），再拆掉低清和上层
+    private func finishUpgrade(_ low: AVPlayer, _ hd: AVPlayer) {
+        guard player === low, hdPlayer === hd else { return }
+        detachObservers()
+        low.pause(); low.replaceCurrentItem(with: nil)
+        player = hd
+        attachObservers(hd)
+        #if DEBUG
+        ddWrite("DDUPGRADE \(id) 高清接管=\(String(format: "%.2f", Date().timeIntervalSince(fastT0)))s")
+        #endif
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if hdPlayer === hd { hdPlayer = nil; hdVisible = false }
+        }
+    }
+
+    /// 秒开中途滑走：丢掉低清，把高清（停在同一时间点）留作这一页的播放器
+    private func revertToHD() {
+        guard let hd = hdPlayer, let low = player else { return }
+        let t = low.currentTime()
+        detachObservers()
+        low.pause(); low.replaceCurrentItem(with: nil)
+        hd.pause(); hd.isMuted = true
+        hd.seek(to: t)
+        player = hd
+        attachObservers(hd)
+        hdPlayer = nil; hdVisible = false
+    }
+
+    private func cancelUpgrade() {
+        guard let hd = hdPlayer else { return }
+        hd.pause(); hd.replaceCurrentItem(with: nil)
+        hdPlayer = nil; hdVisible = false
+    }
+
+    private func detachObservers() {
+        if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
+        if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
     }
 
     /// 起播看门狗：当前屏 6 秒还没走（网络抖 / 预加载的 item 失效），重建播放项再来一次
@@ -364,13 +558,17 @@ struct PlayerPage: View {
     }
 
     private func rebuild() {
+        cancelUpgrade()
         teardownPlayerOnly()
-        let item = AVPlayerItem(asset: DYMedia.asset(url))
+        #if DEBUG
+        ddWrite("DDREBUILD \(id) alt=\(altURL != nil)")
+        #endif
+        let item = AVPlayerItem(asset: DYMedia.asset(altURL ?? url))
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         attachObservers(p)
-        p.isMuted = false
+        p.isMuted = muted
         p.play()
         isPlaying = true
         watchdog(p)
@@ -389,6 +587,7 @@ struct PlayerPage: View {
             p.pause(); isPlaying = false
             onSavePosition(p.currentTime().seconds)
         }
+        hdPlayer?.pause()
         #if DEBUG
         ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
         #endif
@@ -404,7 +603,7 @@ struct PlayerPage: View {
         if let v = vlc {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
-            v.mediaPlayer.audio?.isMuted = false
+            v.mediaPlayer.audio?.isMuted = muted
             v.mediaPlayer.play(); isPlaying = true
             return
         }
@@ -412,6 +611,7 @@ struct PlayerPage: View {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
             p.play(); isPlaying = true
+            hdPlayer?.play()      // 秒开中：高清继续静音陪跑缓冲
         }
     }
 
@@ -422,6 +622,7 @@ struct PlayerPage: View {
         if knownDuration > 0 { v.setKnownDuration(knownDuration) }
         v.onProgress = { pos in
             if !seeking { current = pos }
+            if !firstFrame, pos > 0.02 { withAnimation(.easeOut(duration: 0.2)) { firstFrame = true } }
             if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
             dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate))
             if v.duration > 0 { duration = v.duration }
@@ -444,6 +645,7 @@ struct PlayerPage: View {
         timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { t in
             MainActor.assumeIsolated {
                 if !seeking { current = t.seconds }
+                if !firstFrame, t.seconds > 0.02 { withAnimation(.easeOut(duration: 0.2)) { firstFrame = true } }
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
                 dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
@@ -478,6 +680,7 @@ struct PlayerPage: View {
         if let v = vlc { v.seekTo(pos); current = pos; return }
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
+        hdPlayer?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
         current = pos
     }
 
@@ -495,6 +698,7 @@ struct PlayerPage: View {
     }
 
     private func teardown() {
+        cancelUpgrade()
         if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
         if let p = player { onSavePosition(p.currentTime().seconds) }
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
@@ -532,7 +736,7 @@ struct VideoSurface: UIViewRepresentable {
         let v = PlayerUIView(player: player); v.fillWidth = fillWidth; v.watchSize(); return v
     }
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
-        if uiView.playerLayer.player !== player { uiView.playerLayer.player = player }
+        if uiView.playerLayer.player !== player { uiView.playerLayer.player = player; uiView.watchSize() }
         uiView.fillWidth = fillWidth
         uiView.applyGravity()
     }
@@ -569,10 +773,14 @@ final class PlayerUIView: UIView {
         // 只有「视频和屏幕同向」时才放大铺满：竖屏看竖屏 → 铺满宽度；横屏看横屏 → 铺满高度。
         // 竖屏看横屏（或反之）保持完整画面不动，否则会裁掉一大块。
         let sameOrientation = (video < 1) == (screen < 1)
-        let g: AVLayerVideoGravity = (fillWidth && sameOrientation) ? .resizeAspectFill : .resizeAspect
+        // 铺满会裁掉的比例。手机形状的屏（外屏 / 普通 iPhone）照旧铺满；
+        // Duo 内屏这种接近方形的屏，裁超过 8% 就不铺（竖屏 9:16 会被裁 ~20%，横屏 16:9 ~33%）
+        let crop = 1 - min(video, screen) / max(video, screen)
+        let phoneShaped = screen < 0.6 || screen > 1.67
+        let g: AVLayerVideoGravity = (fillWidth && sameOrientation && (phoneShaped || crop <= 0.08)) ? .resizeAspectFill : .resizeAspect
         #if DEBUG
         if playerLayer.videoGravity != g {
-            ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")
+            ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) crop=\(String(format: "%.2f", crop)) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")
         }
         #endif
         if playerLayer.videoGravity != g { playerLayer.videoGravity = g }
