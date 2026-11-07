@@ -17,6 +17,10 @@ struct VLCPlayerSurface: UIViewRepresentable {
         controller.drawableAttached()   // drawable 就绪后才真正 play，避免「有声无画」
         return v
     }
+    /// 页面被拆掉时把 drawable 摘掉：直播切房间后旧页的视图已离屏，不能让新流画到它上面
+    static func dismantleUIView(_ uiView: VLCPlayerUIView, coordinator: ()) {
+        if let c = uiView.controller, c.mediaPlayer.drawable as? UIView === uiView { c.mediaPlayer.drawable = nil }
+    }
     func updateUIView(_ uiView: VLCPlayerUIView, context: Context) {
         // ⚠️ 不要每次 updateUIView 都重设 drawable（@State 0.25s 变一次会反复触发，
         // 频繁 attach/detach 视频输出 → 画面冻结）。仅在 drawable 丢失时补挂。
@@ -127,8 +131,8 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
                 mediaPlayer.play()
                 isPlaying = true
             }
-        } else if isPlaying && !mediaPlayer.isPlaying {
-            // drawable 丢失后重挂 → 恢复渲染
+        } else if isPlaying && [.stopped, .paused, .ended, .error].contains(mediaPlayer.state) {
+            // drawable 丢失后重挂 → 恢复渲染。正在打开/缓冲时别再 play：直播切房间时会把刚起的流打断
             mediaPlayer.play()
         }
     }

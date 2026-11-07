@@ -16,6 +16,8 @@ struct PlayerGestureView: UIViewRepresentable {
     var onSeekEnded: () -> Void
     var onEdgeChanged: (CGFloat) -> Void = { _ in }        // 左缘右滑过程中：位移跟手
     var onEdgeEnded: (CGFloat, CGFloat, CGFloat) -> Void = { _, _, _ in }  // 松手：(位移, 横向速度, 屏宽)
+    /// 抖音：按住中间弹菜单，按住两侧才 2 倍速；nil = 哪里按住都 2 倍速（影库）
+    var onLongPressCenter: (() -> Void)? = nil
     /// 竖向优先（抖音短视频：上下滑切视频是主操作，只有明显横向才算快进）；影库保持横向偏置
     var verticalFirst = false
 
@@ -41,6 +43,7 @@ struct PlayerGestureView: UIViewRepresentable {
         long.minimumPressDuration = 0.5
         long.allowableMovement = 12     // 手指移动超 12pt（横滑/竖滑）→ 长按取消，让位给 pan/分页
         long.delegate = c
+        c.long = long
 
         let pan = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.handlePan(_:)))
         pan.delegate = c
@@ -70,6 +73,7 @@ struct PlayerGestureView: UIViewRepresentable {
         weak var view: UIView?
         weak var pan: UIPanGestureRecognizer?
         weak var edge: UIScreenEdgePanGestureRecognizer?
+        weak var long: UILongPressGestureRecognizer?
         init(_ p: PlayerGestureView) { parent = p }
 
         @objc func handleSingle(_ g: UITapGestureRecognizer) { parent.onSingleTap() }
@@ -81,8 +85,13 @@ struct PlayerGestureView: UIViewRepresentable {
 
         @objc func handleLong(_ g: UILongPressGestureRecognizer) {
             switch g.state {
-            case .began: parent.onLongPress(true)
-            case .ended, .cancelled, .failed: parent.onLongPress(false)
+            case .began:
+                if let center = parent.onLongPressCenter, let v = view {
+                    let x = g.location(in: v).x / max(v.bounds.width, 1)
+                    if x > 1.0 / 3, x < 2.0 / 3 { center(); return }
+                }
+                parent.onLongPress(true)
+            case .ended, .cancelled, .failed: parent.onLongPress(false)   // 中间那次没开倍速，这里是空操作
             default: break
             }
         }
@@ -117,6 +126,8 @@ struct PlayerGestureView: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
             if g is UIScreenEdgePanGestureRecognizer { return true }   // 边缘退出始终允许
             guard let pg = g as? UIPanGestureRecognizer, let v = view else { return true }
+            // 长按 2 倍速期间不再触发快进（同抖音），否则倍速和快进框叠在一起
+            if let l = long, l.state == .began || l.state == .changed { return false }
             let vel = pg.velocity(in: v)
             // 底部 ~64pt 留给底部进度条手势，避免与全屏横滑重复触发
             let start = pg.location(in: v)
