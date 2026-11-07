@@ -595,6 +595,7 @@ struct DYListPlayer: View {
                                         onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
                                         onDoubleTap: { toggleLike(item.id, force: true) },
                                         onComments: { showComments = true },
+                                        onSearch: {},
                                         onAuthor: { onAuthor(item) },
                                         onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
                                         bridge: bridge, onToast: { show($0) })
@@ -904,6 +905,7 @@ struct DYMineScreen: View {
     let bridge: DouyinBridge
     let onLogin: () -> Void
     let onAuthor: (DYAweme) -> Void
+    var onMessages: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var user: DYUser?
     @State private var userErr: String?
@@ -921,6 +923,13 @@ struct DYMineScreen: View {
                 }
                 .accessibilityIdentifier("douyin.mine.back")
                 Spacer()
+                if let onMessages {
+                    Button(action: onMessages) {
+                        Image(systemName: "bell").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                    }
+                    .accessibilityIdentifier("douyin.messages")
+                }
                 Button("网页版 / 登录", systemImage: "safari") { onLogin() }
                     .font(.footnote).foregroundStyle(.white.opacity(0.8))
             }
@@ -1255,6 +1264,7 @@ struct DYFollowFeed: View {
                                         collected: collected.contains(item.id) || item.isCollect == 1,
                                         onLike: { like(item.id, force: nil) }, onCollect: { collect(item.id) },
                                         onDoubleTap: { like(item.id, force: true) }, onComments: { showComments = true },
+                                        onSearch: {},
                                         onAuthor: { onAuthor(item) }, onSavePosition: { resume[item.id] = $0 },
                                         preloader: preloader, bridge: bridge, onToast: onToast)
                                 .containerRelativeFrame([.horizontal, .vertical])
