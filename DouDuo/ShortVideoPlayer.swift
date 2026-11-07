@@ -423,7 +423,7 @@ struct PlayerPage: View {
         v.onProgress = { pos in
             if !seeking { current = pos }
             if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
-            if !danmaku.isEmpty || dmStress { dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate)) }
+            dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate))
             if v.duration > 0 { duration = v.duration }
         }
         v.onEnd = { [weak v] in
@@ -445,7 +445,7 @@ struct PlayerPage: View {
             MainActor.assumeIsolated {
                 if !seeking { current = t.seconds }
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
-                if !danmaku.isEmpty || dmStress { dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate)) }
+                dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
             }
         }
