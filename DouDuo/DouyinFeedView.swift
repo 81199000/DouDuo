@@ -31,7 +31,7 @@ struct DYAweme: Identifiable, Codable, Equatable {
     /// 0=视频 68=图文；上报观看时要带
     var awemeType: Int? = nil
 
-    struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil }
+    struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
 
     /// 视频画面高宽比，不是界面方向。界面布局看容器尺寸 / size class。
@@ -459,7 +459,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         play: urls.find(u => u.includes('/aweme/v1/play/')) || urls[urls.length - 1] || null,
         cover: first(v.cover) || first(v.origin_cover) || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
-        author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null },
+        author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0 },
         music: (a.music && a.music.title) || '',
@@ -1026,12 +1026,12 @@ struct DouyinFeedScreen: View {
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
     private var topBar: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             menuButton
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
             tabSwitcher
-            Spacer(minLength: 6)
-            HStack(spacing: 6) {
+            Spacer(minLength: 4)
+            HStack(spacing: 4) {
                 topIcon("magnifyingglass", "douyin.search") { showSearch = true }
                 messageEntry
                 topIcon("person.crop.circle", "douyin.mine") { showMine = true }
@@ -1039,7 +1039,7 @@ struct DouyinFeedScreen: View {
             .modifier(DYRailReservedNudge())
         }
         // 屏幕是圆角：两边留够，图标别被圆角裁掉（Duo 横屏尤其明显）
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 18)
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
@@ -1047,7 +1047,7 @@ struct DouyinFeedScreen: View {
             Image(systemName: name)
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 40, height: 40)
+                .frame(width: 36, height: 36)
                 .contentShape(Circle())
                 .ddGlassCircle()
         }
@@ -1062,7 +1062,7 @@ struct DouyinFeedScreen: View {
                 if noticeUnread > 0 {
                     Circle().fill(theme.status.danger.color(for: scheme))
                         .frame(width: 8, height: 8)
-                        .offset(x: -8, y: 8)
+                        .offset(x: -6, y: 6)
                         .allowsHitTesting(false)
                         .accessibilityIdentifier("douyin.messages.badge")
                 }
@@ -1072,19 +1072,24 @@ struct DouyinFeedScreen: View {
     /// 顶部「关注 / 推荐 / 直播」切换（抖音顶栏同款位置）
     private var tabSwitcher: some View {
         let fg = theme.media.onMedia.color(for: scheme)
-        return HStack(spacing: 18) {
+        return HStack(spacing: 14) {
             ForEach(DYTab.allCases, id: \.self) { t in
                 Button { selectTab(t) } label: {
                     VStack(spacing: 4) {
                         Text(t.title)
                             .font(.headline.weight(tab == t ? .bold : .medium))
                             .foregroundStyle(fg.opacity(tab == t ? 1 : 0.6))
+                            .lineLimit(1)
+                            .fixedSize()
                         Capsule().fill(fg).frame(width: 18, height: 3).opacity(tab == t ? 1 : 0)
                     }
+                    .padding(.horizontal, 2)
                 }
                 .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 3)
+        .ddGlassCapsule()
         .themeShadow(.mediaLabel)
     }
 
@@ -1705,6 +1710,8 @@ struct DYVideoPage: View {
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
     @State private var saving = false
+    @State private var followedNow: Bool?
+    @State private var followBusy = false
     @State private var showDanmakuInput = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
@@ -1854,12 +1861,38 @@ struct DYVideoPage: View {
         }
     }
 
+    /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button(action: onAuthor) {
-                Text("@" + item.author.name).font(.headline).foregroundStyle(fg)
+            HStack(spacing: 8) {
+                Button(action: onAuthor) {
+                    HStack(spacing: 8) {
+                        CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
+                            img.resizable().scaledToFill()
+                        } placeholder: { theme.media.chromeFill.color(for: scheme) }
+                        .frame(width: 34, height: 34)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(fg.opacity(0.9), lineWidth: 1))
+                        Text(item.author.name).font(.subheadline.weight(.semibold)).foregroundStyle(fg).lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.author")
+                if bridge != nil, item.author.uid != nil, !((followedNow ?? ((item.author.follow ?? 0) > 0))) {
+                    Button { toggleFollow() } label: {
+                        Group {
+                            if followBusy { ProgressView().controlSize(.mini).tint(fg) }
+                            else { Text("关注").font(.footnote.weight(.semibold)) }
+                        }
+                        .foregroundStyle(fg)
+                        .frame(minWidth: 48).frame(height: 26)
+                        .padding(.horizontal, 4)
+                        .background(Capsule().fill(theme.accent.color(for: scheme)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("douyin.follow")
+                }
             }
-            .buttonStyle(.plain)
             if !item.desc.isEmpty {
                 Text(item.desc)
                     .font(.subheadline)
@@ -1876,37 +1909,54 @@ struct DYVideoPage: View {
         .themeShadow(.mediaLabel)
     }
 
-    @ViewBuilder
+    /// 只在用户点「关注」时发请求
+    private func toggleFollow() {
+        guard let b = bridge, let uid = item.author.uid, !followBusy else { return }
+        followBusy = true
+        Task {
+            do {
+                switch try await b.followUser(uid, follow: true) {
+                case .ok: followedNow = true; onToast?("已关注")
+                case .notLoggedIn: onToast?("抖音未登录")
+                case .failed(let why): onToast?("关注失败：\(why)")
+                }
+            } catch { onToast?("关注失败：\(error.localizedDescription)") }
+            followBusy = false
+        }
+    }
+
+    /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
-        let column = VStack(spacing: 16) {
-            Button(action: onAuthor) {
-                CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
-                    img.resizable().scaledToFill()
-                } placeholder: { theme.media.chromeFill.color(for: scheme) }
-                .frame(width: 48, height: 48)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(fg, lineWidth: 1.5))
+        VStack(spacing: 12) {
+            VStack(spacing: 14) {
+                railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
+                         tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
+                railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
+                         tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
+                railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("douyin.author")
-            action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-                   tint: liked ? theme.status.danger.color(for: scheme) : fg,
-                   glassTint: liked ? theme.status.danger.color(for: scheme) : nil, "douyin.like", onLike)
-            action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
-            action(collected ? "star.fill" : "star",
-                   DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
-                   tint: collected ? theme.status.warning.color(for: scheme) : fg,
-                   glassTint: collected ? theme.status.warning.color(for: scheme) : nil, "douyin.collect", onCollect)
+            .padding(.vertical, 14)
+            .frame(width: 54)
+            .ddGlassCapsule()
             moreMenu(fg)
         }
-        // iOS 26+：整组包进 GlassEffectContainer，液态玻璃连成一片
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer { column }
-                .themeShadow(.mediaLabel)
-        } else {
-            column
-                .themeShadow(.mediaLabel)
+        .themeShadow(.mediaLabel)
+    }
+
+    private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            VStack(spacing: 2) {
+                Image(systemName: icon).font(.system(size: 22, weight: .regular)).foregroundStyle(tint)
+                    .frame(height: 26)
+                Text(text).font(.caption2.weight(.medium)).monospacedDigit()
+                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(width: 54, height: 46)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 
     /// 「更多」：弹幕 / 不感兴趣（仅推荐流）/ 转发 / 下载，收进系统 Menu
@@ -1941,37 +1991,18 @@ struct DYVideoPage: View {
             .disabled(saving)
             .accessibilityIdentifier("douyin.save")
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 22, weight: .medium))
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-                    .ddGlassCircle()
-                Text("更多").font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(fg)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(fg)
+                .frame(width: 50, height: 50)
+                .contentShape(Circle())
+                .ddGlassCircle()
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .accessibilityIdentifier("douyin.more")
     }
 
-    /// 液态圆按钮：48pt 玻璃圆底 + 数字放按钮下方；glassTint 非空 = 选中态（染色）
-    private func action(_ icon: String, _ text: String, tint: Color, glassTint: Color? = nil, _ id: String = "", _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(tint)
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-                    .ddGlassCircle(glassTint)
-                Text(text).font(.caption2.weight(.semibold)).foregroundStyle(theme.media.onMedia.color(for: scheme))
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
-    }
 }
 
 enum DYFormat {
