@@ -167,7 +167,9 @@ struct PlayerPage: View {
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
             if !firstFrame, let posterURL {
-                CachedAsyncImage(url: posterURL) { img in img.resizable().scaledToFit() } placeholder: { Color.clear }
+                CachedAsyncImage(url: posterURL) { img in
+                    img.resizable().aspectRatio(contentMode: fillWidth ? .fill : .fit)
+                } placeholder: { Color.clear }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -733,7 +735,12 @@ struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
     var fillWidth: Bool = true
     func makeUIView(context: Context) -> PlayerUIView {
-        let v = PlayerUIView(player: player); v.fillWidth = fillWidth; v.watchSize(); return v
+        let v = PlayerUIView(player: player)
+        v.fillWidth = fillWidth
+        // 一开始就按设置定好 gravity：否则 presentationSize 出来前是 fit，出来了再跳成 fill，看起来「先小后弹大」
+        v.playerLayer.videoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
+        v.watchSize()
+        return v
     }
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         if uiView.playerLayer.player !== player { uiView.playerLayer.player = player; uiView.watchSize() }
