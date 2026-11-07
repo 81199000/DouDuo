@@ -74,19 +74,19 @@ enum DYMedia {
 extension PlayerPage {
     /// 与 無為 同名同参的构造入口，DouyinFeedView 原样复用
     static func external(id: String, title: String, url: URL, durationSec: Double, isActive: Bool,
-                         topInset: CGFloat, bottomInset: CGFloat, resumePosition: Double?,
+                         topInset: CGFloat, bottomInset: CGFloat, trailingInset: CGFloat = 0, resumePosition: Double?,
                          compactChrome: Bool,
                          preparedPlayer: (() -> AVPlayer?)? = nil,
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
                          onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
                          fillWidth: Bool = true, danmaku: [DYDanmaku] = [], altURL: URL? = nil,
                          quality: String? = nil, fastURL: URL? = nil, posterURL: URL? = nil,
-                         videoAspect: Double = 0) -> PlayerPage {
+                         videoAspect: Double = 0, onLongPressCenter: (() -> Void)? = nil) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
-                   resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
+                   trailingInset: trailingInset, resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
                    topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
-                   posterURL: posterURL, videoAspect: videoAspect)
+                   posterURL: posterURL, videoAspect: videoAspect, onLongPressCenter: onLongPressCenter)
     }
 }
 
@@ -96,6 +96,7 @@ struct PlayerPage: View {
     let knownDuration: Double
     let isActive: Bool
     let bottomInset: CGFloat
+    var trailingInset: CGFloat = 0
     let resumePosition: Double?
     let preparedPlayer: (() -> AVPlayer?)?
     let onEnded: (() -> Void)?
@@ -117,6 +118,7 @@ struct PlayerPage: View {
     @State private var firstFrame = false
     /// 视频画面宽高比（海报占位用同一套铺满规则，避免「先小后跳」）
     var videoAspect: Double = 0
+    var onLongPressCenter: (() -> Void)? = nil
     /// 静音（右下角按钮，全局记住）
     @AppStorage("douyin_muted_v1") private var muted = false
     @Environment(\.ddScale) private var ui
@@ -130,17 +132,16 @@ struct PlayerPage: View {
     }
 
     @State private var player: AVPlayer?
-    @State private var imgGen: AVAssetImageGenerator?
     @State private var duration: Double = 0
     @State private var current: Double = 0
     @State private var isPlaying = false
     @State private var seeking = false
     @State private var seekPreview: Double = 0
     @State private var seekDelta: Double = 0
-    @State private var previewImage: UIImage?
-    @State private var lastPreviewAt: Double = 0
     @State private var holdAnchor: Double = 0
     @State private var rateBoost = false
+    /// 锁定倍速（长按中间面板里选的），松开长按 / 换播放器都回到它
+    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
     @State private var endObserver: NSObjectProtocol?
@@ -206,7 +207,7 @@ struct PlayerPage: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if isActive { progressBar.padding(.bottom, max(bottomInset, 8)) }
+            if isActive { progressBar.padding(.trailing, trailingInset).padding(.bottom, max(bottomInset, 8)) }
         }
         .onAppear {
             if player == nil { setup() }
@@ -269,12 +270,12 @@ struct PlayerPage: View {
             onDoubleTap: { _, _ in onDoubleTap?() },
             onLongPress: { pressing in
                 if let v = vlc {
-                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(1); rateBoost = false }
+                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(lockedRate)); rateBoost = false }
                     return
                 }
                 guard let p = player else { return }
                 if pressing { p.rate = 2; rateBoost = true }
-                else if rateBoost { p.rate = isPlaying ? 1 : 0; rateBoost = false }
+                else if rateBoost { p.rate = isPlaying ? Float(lockedRate) : 0; rateBoost = false }
             },
             onSeekBegan: {
                 guard duration > 0 else { return }
@@ -288,28 +289,19 @@ struct PlayerPage: View {
                 guard duration > 0, seeking else { return }
                 seekPreview = max(0, min(duration, holdAnchor + dx / max(w, 1) * duration * 0.9))
                 seekDelta = seekPreview - current
-                requestPreview(seekPreview)
             },
             onSeekEnded: {
                 #if DEBUG
                     #endif
-                if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
+                if seeking { seekTo(seekPreview); seeking = false }
             },
+            onLongPressCenter: onLongPressCenter,
             verticalFirst: true
         )
     }
 
     private var seekHUD: some View {
         VStack(spacing: 10) {
-            Group {
-                if let img = previewImage {
-                    Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.black.opacity(0.4).overlay(ProgressView().tint(.white))
-                }
-            }
-            .frame(width: 196 * ui, height: 110 * ui)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             HStack(spacing: 8) {
                 Text(fmt(seekPreview)).font(.subheadline.weight(.bold).monospacedDigit())
                 Text("/ " + fmt(duration)).font(.caption.monospacedDigit()).opacity(0.6)
@@ -353,9 +345,8 @@ struct PlayerPage: View {
                         if !seeking { holdAnchor = current; seeking = true }
                         seekPreview = max(0, min(duration, holdAnchor + v.translation.width / max(barWidth, 1) * duration))
                         seekDelta = seekPreview - current
-                        requestPreview(seekPreview)
                     }
-                    .onEnded { _ in if seeking { seekTo(seekPreview); seeking = false; previewImage = nil } })
+                    .onEnded { _ in if seeking { seekTo(seekPreview); seeking = false } })
         }
     }
 
@@ -378,12 +369,6 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         if knownDuration > 0 { duration = knownDuration }
-        let gen = AVAssetImageGenerator(asset: asset)
-        gen.appliesPreferredTrackTransform = true
-        gen.maximumSize = CGSize(width: 320, height: 180)
-        gen.requestedTimeToleranceBefore = CMTime(seconds: 1.5, preferredTimescale: 600)
-        gen.requestedTimeToleranceAfter = CMTime(seconds: 1.5, preferredTimescale: 600)
-        imgGen = gen
         attachObservers(p)
         if let r = resumePosition, r > 1 { p.seek(to: CMTime(seconds: r, preferredTimescale: 600)) }
         if isActive, shouldFastStart(p) {
@@ -639,6 +624,7 @@ struct PlayerPage: View {
             if !firstFrame, pos > 0.02 { firstFrame = true }
             if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
             dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate))
+            if !rateBoost, v.isPlaying, v.mediaPlayer.rate != Float(lockedRate) { v.setRate(Float(lockedRate)) }
             if v.duration > 0 { duration = v.duration }
         }
         v.onEnd = { [weak v] in
@@ -662,6 +648,8 @@ struct PlayerPage: View {
                 if !firstFrame, t.seconds > 0.02 { firstFrame = true }
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
                 dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
+                // 锁定倍速：play()/换播放器都会回到 1 倍，这里每 0.25s 拉回选定速度
+                if !rateBoost, p.rate > 0, p.rate != Float(lockedRate) { p.rate = Float(lockedRate) }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
             }
         }
@@ -698,19 +686,6 @@ struct PlayerPage: View {
         current = pos
     }
 
-    private func requestPreview(_ time: Double) {
-        guard let gen = imgGen else { return }
-        let now = Date().timeIntervalSince1970
-        guard now - lastPreviewAt > 0.15 else { return }
-        lastPreviewAt = now
-        gen.generateCGImagesAsynchronously(forTimes: [NSValue(time: CMTime(seconds: time, preferredTimescale: 600))]) { _, cg, _, result, _ in
-            if result == .succeeded, let cg {
-                let img = UIImage(cgImage: cg)
-                DispatchQueue.main.async { if seeking { previewImage = img } }
-            }
-        }
-    }
-
     private func teardown() {
         cancelUpgrade()
         if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
@@ -720,7 +695,6 @@ struct PlayerPage: View {
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
-        imgGen?.cancelAllCGImageGeneration(); imgGen = nil
         isPlaying = false
     }
 

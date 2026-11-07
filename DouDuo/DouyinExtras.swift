@@ -1285,6 +1285,9 @@ struct DYFollowFeed: View {
     let onAuthor: (DYAweme) -> Void
     let onLogin: () -> Void
     let onToast: (String) -> Void
+    var onLive: (DYLiveRoom) -> Void = { _ in }
+    @Environment(\.horizontalSizeClass) private var hSize
+    @State private var liveNow: [DYLiveRoom] = []
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
     @State private var currentID: String?
     @State private var preloader = DYPreloader()
@@ -1337,6 +1340,9 @@ struct DYFollowFeed: View {
                 .ignoresSafeArea()
             }
         }
+        .overlay(alignment: .top) {
+            if !liveNow.isEmpty { liveRow.padding(.top, (hSize == .regular ? 20 : 80) + 52) }
+        }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -1344,6 +1350,7 @@ struct DYFollowFeed: View {
             }
         }
         .task {
+            Task { await loadLiveNow() }
             if m.items.isEmpty { await m.loadMore() }
             if currentID == nil { currentID = m.items.first?.id }
         }
@@ -1353,8 +1360,44 @@ struct DYFollowFeed: View {
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
-        .onChange(of: active) { _, a in if !a { preloader.clear() } }
+        .onChange(of: active) { _, a in if !a { preloader.clear() } else { Task { await loadLiveNow() } } }
         .onDisappear { preloader.clear() }
+    }
+
+    private func loadLiveNow() async {
+        if let r = try? await bridge.fetchFollowLive() { liveNow = r }
+    }
+
+    /// 顶部「直播中」头像：跟抖音关注页一样，点了直接进这个主播的直播间
+    private var liveRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 14) {
+                ForEach(liveNow) { r in
+                    Button { onLive(r) } label: {
+                        VStack(spacing: 4) {
+                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                                placeholder: { Color.white.opacity(0.15) }
+                                .frame(width: 58, height: 58).clipShape(Circle())
+                                .padding(3)
+                                .overlay(Circle().stroke(Color(red: 1, green: 0.17, blue: 0.33), lineWidth: 2.5))
+                                .overlay(alignment: .bottom) {
+                                    Text("直播中").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Capsule().fill(Color(red: 1, green: 0.17, blue: 0.33)))
+                                        .offset(y: 6)
+                                }
+                            Text(r.owner).font(.caption2).foregroundStyle(.white).lineLimit(1).frame(width: 70)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.trailing, insets.trailing)
+        .shadow(color: .black.opacity(0.5), radius: 4)
     }
 
     private func like(_ id: String, force: Bool?) {
