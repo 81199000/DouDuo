@@ -84,6 +84,18 @@ extension View {
     }
 }
 
+extension View {
+    /// 竖向液态玻璃胶囊（小红书式右侧栏底板）
+    @ViewBuilder
+    func ddGlassCapsule() -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            self.background(.ultraThinMaterial, in: Capsule())
+        }
+    }
+}
+
 struct GlassBackground: View {
     var body: some View { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
 }
