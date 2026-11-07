@@ -62,7 +62,8 @@ enum DDScale {
         return min(1.4, max(1, 1 + (short / 402 - 1) * 0.5))
     }
     static func typeSize(for scale: CGFloat, inherited: DynamicTypeSize) -> DynamicTypeSize {
-        let target: DynamicTypeSize = scale >= 1.35 ? .xxxLarge : scale >= 1.2 ? .xxLarge : scale >= 1.08 ? .xLarge : .large
+        // 文字只放大一档（内屏 ≈1.33 → xLarge）：按钮、头像照样按系数放大，字再大就显得粗笨
+        let target: DynamicTypeSize = scale >= 1.2 ? .xLarge : .large
         return max(inherited, target)   // 用户本来就调大了字号的，不往小了改
     }
 }

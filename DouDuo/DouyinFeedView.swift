@@ -1735,6 +1735,9 @@ struct DYVideoPage: View {
     /// 播完时切到下一条（菜单「自动连播」打开才生效；关掉则单条循环）
     let onEnded: (() -> Void)?
     @AppStorage("douyin_autonext_v1") private var autoNext = false
+    @AppStorage("douyin_muted_v1") private var muted = false
+    /// 页面比高还宽（内屏横放）：按钮栏默认用紧凑版
+    @State private var isWide = false
     @State private var heart = false
     @State private var descExpanded = false
     @State private var danmaku: [DYDanmaku] = []
@@ -1816,6 +1819,7 @@ struct DYVideoPage: View {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
         }
         .animation(.snappy, value: heart)
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isWide = $0 }
         .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）
         .task(id: isCurrent) {
@@ -1895,16 +1899,17 @@ struct DYVideoPage: View {
     }
 
     private func info(_ fg: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6 * ui) {
+        VStack(alignment: .leading, spacing: 4 * ui) {
             Button(action: onAuthor) {
-                Text("@" + item.author.name).font(.headline).foregroundStyle(fg)
+                Text("@" + item.author.name).font(.subheadline.weight(.semibold)).foregroundStyle(fg)
             }
             .buttonStyle(.plain)
             if !item.desc.isEmpty {
+                // 小一号、默认一行（点开看全文），别压住视频里居中的字幕
                 Text(item.desc)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(fg)
-                    .lineLimit(descExpanded ? 8 : 2)
+                    .lineLimit(descExpanded ? 8 : 1)
                     .onTapGesture { descExpanded.toggle() }
             }
             if !item.music.isEmpty {
@@ -1912,44 +1917,29 @@ struct DYVideoPage: View {
                     .font(.caption).lineLimit(1)
                     .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
             }
+            if canDanmaku { danmakuToggle }
         }
+        // 限宽：横屏内屏约占左边 60%，不横跨到画面中间的字幕区
+        .frame(maxWidth: 420 * ui, alignment: .leading)
         .themeShadow(.mediaLabel)
     }
 
-    /// 右侧按钮栏。内屏横放只有 ~670pt 高、竖排放不下：依次换 原尺寸 → 缩小一档 → 常用的留着、其余收进「⋯」
-    private func actionRail(_ fg: Color) -> some View {
-        ViewThatFits(in: .vertical) {
-            actions(fg, size: 1)
-            actions(fg, size: 0.8)
-            condensedActions(fg)
-        }
-    }
-
-    private func authorButton(_ fg: Color, size: CGFloat) -> some View {
-        Button(action: onAuthor) {
-            CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
-                img.resizable().scaledToFill()
-            } placeholder: { theme.media.chromeFill.color(for: scheme) }
-            .frame(width: 46 * ui * size, height: 46 * ui * size)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(fg, lineWidth: 1.5))
+    /// 左下「弹」：开关弹幕（发弹幕在「更多」里）
+    private var danmakuToggle: some View {
+        Button { danmakuOn.toggle() } label: {
+            Text("弹").font(.system(size: 15 * ui, weight: .bold))
+                .foregroundStyle(.white.opacity(danmakuOn ? 1 : 0.45))
+                .frame(width: 34 * ui, height: 34 * ui)
+                .background(Circle().fill(.black.opacity(0.35)))
+                .overlay {
+                    if !danmakuOn {
+                        Rectangle().fill(.white.opacity(0.75)).frame(width: 22 * ui, height: 1.5).rotationEffect(.degrees(-45))
+                    }
+                }
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("douyin.author")
-    }
-
-    private func likeButton(_ fg: Color, size: CGFloat) -> some View {
-        action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-               tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike, size: size)
-    }
-
-    private func commentButton(_ fg: Color, size: CGFloat) -> some View {
-        action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments, size: size)
-    }
-
-    private func collectButton(_ fg: Color, size: CGFloat) -> some View {
-        action(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
-               tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect, size: size)
+        .padding(.top, 6 * ui)
+        .accessibilityIdentifier("douyin.danmaku.toggle")
     }
 
     private var canDanmaku: Bool { item.images.isEmpty && bridge != nil }
@@ -1959,60 +1949,83 @@ struct DYVideoPage: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
     }
 
-    private func actions(_ fg: Color, size: CGFloat) -> some View {
-        VStack(spacing: (size >= 1 ? 16 : 9) * ui) {
+    /// 右侧按钮栏：头像 / 赞 / 评论 / 收藏（竖屏多一个分享）/ 更多 / 静音。
+    /// 横屏（内屏横放）默认紧凑版；高度还是不够就整体缩小一档
+    private func actionRail(_ fg: Color) -> some View {
+        ViewThatFits(in: .vertical) {
+            actions(fg, size: 1, compact: isWide)
+            actions(fg, size: 0.8, compact: isWide)
+            actions(fg, size: 0.8, compact: true)
+        }
+    }
+
+    private func authorButton(_ fg: Color, size: CGFloat) -> some View {
+        Button(action: onAuthor) {
+            CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
+                img.resizable().scaledToFill()
+            } placeholder: { theme.media.chromeFill.color(for: scheme) }
+            .frame(width: 48 * ui * size, height: 48 * ui * size)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(.white, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.author")
+    }
+
+    private func actions(_ fg: Color, size: CGFloat, compact: Bool) -> some View {
+        VStack(spacing: (size >= 1 ? 16 : 10) * ui) {
             authorButton(fg, size: size)
-            likeButton(fg, size: size)
-            commentButton(fg, size: size)
-            if canDanmaku { action("text.bubble", "弹幕", tint: fg, "douyin.danmaku.open", openDanmaku, size: size) }
-            collectButton(fg, size: size)
-            if let onDislike { action("hand.thumbsdown", "不感兴趣", tint: fg, "douyin.dislike", onDislike, size: size) }
-            ShareLink(item: item.webURL) {
-                VStack(spacing: 3 * ui) {
-                    Image(systemName: "arrowshape.turn.up.right.fill")
-                        .font(.system(size: theme.typography.pointSize(.displayLarge) * size))
-                    Text(DYFormat.count(item.stats.share)).font(.caption2.weight(.semibold))
-                }
-                .foregroundStyle(fg)
-            }
-            Button(action: save) {
-                VStack(spacing: 3 * ui) {
-                    if saving {
-                        ProgressView().tint(fg).frame(height: theme.typography.pointSize(.displayLarge) * size)
-                    } else {
-                        Image(systemName: "arrow.down.to.line").font(.system(size: theme.typography.pointSize(.title) * size))
+            action("heart.fill", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
+                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike, size: size)
+            action("ellipsis.bubble.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments, size: size)
+            action("star.fill", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
+                   tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect, size: size)
+            if !compact {
+                ShareLink(item: item.webURL) {
+                    VStack(spacing: 3 * ui) {
+                        Image(systemName: "arrowshape.turn.up.right.fill")
+                            .font(.system(size: theme.typography.pointSize(.displayLarge) * size))
+                        Text(DYFormat.count(item.stats.share)).font(.caption2.weight(.semibold))
                     }
-                    Text("保存").font(.caption2.weight(.semibold))
+                    .foregroundStyle(fg)
                 }
-                .foregroundStyle(fg)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("douyin.save")
+            moreMenu(fg, size: size, includeShare: compact)
+            muteButton(size: size).padding(.top, 6 * ui)
         }
         .themeShadow(.mediaLabel)
     }
 
-    /// 最紧凑（横屏）：头像 / 赞 / 评论 / 收藏 常驻，弹幕 / 分享 / 保存 / 不感兴趣 收进「⋯」
-    private func condensedActions(_ fg: Color) -> some View {
-        VStack(spacing: 8 * ui) {
-            authorButton(fg, size: 0.8)
-            likeButton(fg, size: 0.8)
-            commentButton(fg, size: 0.8)
-            collectButton(fg, size: 0.8)
-            Menu {
-                if canDanmaku { Button("发弹幕", systemImage: "text.bubble", action: openDanmaku) }
-                ShareLink(item: item.webURL) { Label("分享", systemImage: "arrowshape.turn.up.right") }
-                Button("保存到相册", systemImage: "arrow.down.to.line", action: save)
-                if let onDislike { Button("不感兴趣", systemImage: "hand.thumbsdown", action: onDislike) }
-            } label: {
-                Image(systemName: "ellipsis.circle.fill")
-                    .font(.system(size: theme.typography.pointSize(.displayLarge) * 0.8))
-                    .foregroundStyle(fg)
-                    .frame(minWidth: 44, minHeight: 44)
+    /// 「更多」：发弹幕 / 分享（紧凑版时）/ 保存 / 不感兴趣
+    private func moreMenu(_ fg: Color, size: CGFloat, includeShare: Bool) -> some View {
+        Menu {
+            if canDanmaku { Button("发弹幕", systemImage: "text.bubble", action: openDanmaku) }
+            if includeShare { ShareLink(item: item.webURL) { Label("分享", systemImage: "arrowshape.turn.up.right") } }
+            Button("保存到相册", systemImage: "arrow.down.to.line", action: save)
+            if let onDislike { Button("不感兴趣", systemImage: "hand.thumbsdown", action: onDislike) }
+        } label: {
+            VStack(spacing: 3 * ui) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: theme.typography.pointSize(.title) * size, weight: .bold))
+                    .frame(height: theme.typography.pointSize(.displayLarge) * size)
+                Text("更多").font(.caption2.weight(.semibold))
             }
-            .accessibilityIdentifier("douyin.more")
+            .foregroundStyle(fg)
         }
-        .themeShadow(.mediaLabel)
+        .accessibilityIdentifier("douyin.more")
+    }
+
+    /// 右下静音（全局记住，切视频也保持）
+    private func muteButton(size: CGFloat) -> some View {
+        Button { muted.toggle() } label: {
+            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 15 * ui * size, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36 * ui * size, height: 36 * ui * size)
+                .background(Circle().fill(.black.opacity(0.35)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.mute")
     }
 
     private func action(_ icon: String, _ text: String, tint: Color, _ id: String = "", _ act: @escaping () -> Void,

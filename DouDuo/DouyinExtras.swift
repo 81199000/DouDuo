@@ -25,6 +25,11 @@ struct DYUser: Decodable, Equatable {
     let likes: Int
     let works: Int
     let ip: String?
+    /// 抖音号、主页横幅、性别（1 男 2 女）、年龄 —— 主页头用
+    var uniqueId: String? = nil
+    var cover: String? = nil
+    var gender: Int? = nil
+    var age: Int? = nil
 }
 
 /// 抖音热搜一条：pos 为空 = 置顶条
@@ -40,10 +45,11 @@ struct DYSug: Identifiable, Decodable, Equatable {
 }
 
 enum DYListKind: String, CaseIterable, Identifiable {
-    case like, collect, history, later
+    case posts, like, collect, history, later
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .posts: "作品"
         case .like: "喜欢"
         case .collect: "收藏"
         case .history: "历史"
@@ -98,6 +104,9 @@ extension DouyinBridge {
 
     func myList(_ kind: DYListKind, cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
         switch kind {
+        case .posts:
+            let sec = try await selfSecUid()
+            return try await list(Self.postJS, ["sec": sec, "cursor": cursor])
         case .like:
             let sec = try await selfSecUid()
             return try await list(Self.likeJS, ["sec": sec, "cursor": cursor])
@@ -224,7 +233,10 @@ extension DouyinBridge {
     private static let userMap = #"""
     const umap = u => u ? ({ name: u.nickname || '', avatar: first(u.avatar_larger) || first(u.avatar_thumb), signature: u.signature || '',
       secUid: u.sec_uid || '', followers: u.follower_count || u.mplatform_followers_count || 0, following: u.following_count || 0,
-      likes: u.total_favorited || 0, works: u.aweme_count || 0, ip: u.ip_location || null }) : null;
+      likes: u.total_favorited || 0, works: u.aweme_count || 0, ip: u.ip_location || null,
+      uniqueId: u.unique_id || (u.short_id && String(u.short_id) !== '0' ? String(u.short_id) : null),
+      cover: (u.cover_url && u.cover_url[0] && first(u.cover_url[0])) || (u.white_cover_url && u.white_cover_url[0] && first(u.white_cover_url[0])) || null,
+      gender: u.gender || null, age: u.user_age > 0 ? u.user_age : null }) : null;
     """#
 
     static let selfJS = userMap + #"""
@@ -357,6 +369,36 @@ struct DYDanmakuClock {
         anchorDate = Date()
         playing = p
         rate = r
+    }
+}
+
+/// 气泡弹幕：最近 6 秒内的最多 4 条，在左侧往上堆、最新的在最下面。
+/// 每秒刷新 4 次就够（旧的滚动弹幕逐帧 120Hz 重绘，更费电），也不会横穿画面挡住字幕。
+struct DYDanmakuBubbles: View {
+    let items: [DYDanmaku]
+    let clock: DYDanmakuClock
+    @Environment(\.ddScale) private var ui
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
+            let t = clock.now(ctx.date)
+            let shown = Array(items.filter { $0.offset <= t && $0.offset > t - 6 }
+                .sorted { $0.offset < $1.offset }.suffix(4))
+            VStack(alignment: .leading, spacing: 6 * ui) {
+                ForEach(shown) { d in
+                    Text(d.text)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .padding(.horizontal, 10 * ui).padding(.vertical, 6 * ui)
+                        .background(RoundedRectangle(cornerRadius: 14 * ui, style: .continuous).fill(.black.opacity(0.4)))
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.25), value: shown.map(\.id))
+            .frame(maxWidth: 300 * ui, alignment: .leading)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -571,6 +613,7 @@ struct DYListPlayer: View {
     let onAuthor: (DYAweme) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.ddScale) private var ui
+    @State private var showSearch = false
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
     @State private var liked: Set<String> = []
@@ -611,7 +654,7 @@ struct DYListPlayer: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(items) { item in
-                            DYVideoPage(item: item, isCurrent: item.id == currentID, insets: geo.safeAreaInsets,
+                            DYVideoPage(item: item, isCurrent: item.id == currentID && !showSearch, insets: geo.safeAreaInsets,
                                         resume: resume[item.id], liked: liked.contains(item.id), collected: collected.contains(item.id),
                                         onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
                                         onDoubleTap: { toggleLike(item.id, force: true) },
@@ -631,15 +674,24 @@ struct DYListPlayer: View {
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
 
-                HStack(spacing: 10) {
+                // 只留返回（左）和搜索（右），不放标题
+                HStack {
                     Button { dismiss() } label: {
                         Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
                             .frame(width: 40 * ui, height: 40 * ui).background(Circle().fill(.black.opacity(0.35)))
                     }
                     .accessibilityIdentifier("douyin.list.back")
-                    Text(title).font(.headline).foregroundStyle(.white).shadow(radius: 3)
+                    Spacer()
+                    Button { showSearch = true } label: {
+                        Image(systemName: "magnifyingglass").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                            .frame(width: 40 * ui, height: 40 * ui).background(Circle().fill(.black.opacity(0.35)))
+                    }
+                    .accessibilityIdentifier("douyin.list.search")
                 }
-                .padding(.leading, 22).padding(.top, 10)
+                .padding(.horizontal, 22).padding(.top, 10)
+                .fullScreenCover(isPresented: $showSearch) {
+                    DYSearchScreen(bridge: bridge, onAuthor: onAuthor)
+                }
 
                 if let t = toast {
                     Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
@@ -974,54 +1026,36 @@ struct DYMineScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var user: DYUser?
     @State private var userErr: String?
-    @State private var kind: DYListKind = .like
+    @State private var kind: DYListKind = .posts
     @State private var models: [DYListKind: DYPagedModel] = [:]
     @State private var open: DYListTarget?
+    @State private var showSearch = false
     @Environment(\.ddScale) private var ui
     @Namespace private var zoomNS
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40 * ui, height: 40 * ui)
-                }
-                .accessibilityIdentifier("douyin.mine.back")
-                Spacer()
-                // 网页版只是兜底：收进「⋯」（没登录时资料卡里有醒目的「去登录」）
-                Menu {
-                    Button("网页版 / 登录", systemImage: "safari") { onLogin() }
-                } label: {
-                    Image(systemName: "ellipsis").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40 * ui, height: 40 * ui)
-                }
-            }
-            .padding(.horizontal, 8)
-
-            header.padding(.horizontal, 16 * ui).padding(.bottom, 12 * ui)
-
-            HStack(spacing: 22 * ui) {
-                ForEach(DYListKind.allCases) { k in
-                    Button { kind = k } label: {
-                        VStack(spacing: 5) {
-                            Text(k.title).font(.subheadline.weight(kind == k ? .bold : .medium))
-                                .foregroundStyle(.white.opacity(kind == k ? 1 : 0.6))
-                            Capsule().fill(.white).frame(width: 18 * ui, height: 2.5 * ui).opacity(kind == k ? 1 : 0)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("douyin.mine.\(k.rawValue)")
-                }
-            }
-            .padding(.bottom, 6 * ui)
-
+        ZStack(alignment: .top) {
             if let m = models[kind] {
-                DYMineList(model: m, zoomNS: zoomNS) { i in
+                // 主页头 + 标签栏放进网格的 header，跟着一起滚；横幅顶到屏幕最上沿
+                DYMineList(model: m, zoomNS: zoomNS, header: AnyView(headerArea)) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
+                .ignoresSafeArea(edges: .top)
             }
+            HStack(spacing: 10 * ui) {
+                Button { dismiss() } label: { DYRoundIcon(name: "chevron.left") }
+                    .accessibilityIdentifier("douyin.mine.back")
+                Spacer()
+                Button { showSearch = true } label: { DYRoundIcon(name: "magnifyingglass") }
+                    .accessibilityIdentifier("douyin.mine.search")
+                // 网页版只是兜底：收进「⋯」（没登录时主页头下面有醒目的「去登录」）
+                Menu {
+                    Button("网页版 / 登录", systemImage: "safari") { onLogin() }
+                } label: { DYRoundIcon(name: "ellipsis") }
+            }
+            .padding(.horizontal, 12 * ui).padding(.top, 8 * ui)
+            .fullScreenCover(isPresented: $showSearch) { DYSearchScreen(bridge: bridge, onAuthor: onAuthor) }
         }
         .background(Color.black.ignoresSafeArea())
         .statusBarHidden(true)
@@ -1044,29 +1078,152 @@ struct DYMineScreen: View {
         Task { await m.loadMore() }
     }
 
-    @ViewBuilder
-    private var header: some View {
-        if let u = user {
-            DYUserHeader(user: u)
-        } else if let e = userErr {
-            VStack(spacing: 10) {
-                Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(.white.opacity(0.8)).font(.subheadline)
-                Button("去登录") { onLogin() }.buttonStyle(.borderedProminent).tint(.pink)
+    private var headerArea: some View {
+        VStack(alignment: .leading, spacing: 12 * ui) {
+            DYProfileHeader(user: user, fallbackName: userErr != nil ? "还没登录抖音" : "", fallbackAvatar: nil)
+            if user == nil, let e = userErr {
+                HStack {
+                    Text(e.contains("未登录") ? "登录后才能看作品、喜欢和收藏" : e)
+                        .font(.footnote).foregroundStyle(.white.opacity(0.75))
+                    Spacer()
+                    Button("去登录") { onLogin() }.buttonStyle(.borderedProminent).tint(.pink)
+                }
+                .padding(.horizontal, 16 * ui)
             }
-            .frame(maxWidth: .infinity).padding(.vertical, 12)
-        } else {
-            ProgressView().tint(.white).frame(height: 80)
+            DYProfileTabs(tabs: DYListKind.allCases.map { ($0, $0.title) }, selected: $kind)
         }
+        .padding(.bottom, 4 * ui)
     }
 }
 
 private struct DYMineList: View {
     @ObservedObject var model: DYPagedModel
     let zoomNS: Namespace.ID?
+    let header: AnyView?
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, zoomNS: zoomNS)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, header: header, zoomNS: zoomNS)
+    }
+}
+
+/// 主页头（我的 / 作者主页共用）：横幅 + 大头像 + 名字 / 抖音号，下面是大号数据、简介、标签。
+/// 资料还没回来（user == nil）时用点进来就有的头像和昵称先占位
+struct DYProfileHeader: View {
+    let user: DYUser?
+    let fallbackName: String
+    let fallbackAvatar: String?
+    @Environment(\.ddScale) private var ui
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14 * ui) {
+            banner
+            if let u = user {
+                VStack(alignment: .leading, spacing: 10 * ui) {
+                    HStack(spacing: 28 * ui) {
+                        stat(u.likes, "获赞"); stat(u.following, "关注"); stat(u.followers, "粉丝")
+                    }
+                    if !u.signature.isEmpty {
+                        Text(u.signature).font(.footnote).foregroundStyle(.white.opacity(0.8)).lineLimit(3)
+                    }
+                    let tags = Self.tags(u)
+                    if !tags.isEmpty {
+                        HStack(spacing: 6 * ui) {
+                            ForEach(tags, id: \.self) { t in
+                                Text(t).font(.caption).foregroundStyle(.white.opacity(0.75))
+                                    .padding(.horizontal, 8 * ui).padding(.vertical, 3 * ui)
+                                    .background(RoundedRectangle(cornerRadius: 4 * ui).fill(.white.opacity(0.1)))
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16 * ui)
+            }
+        }
+    }
+
+    private var banner: some View {
+        Color.clear
+            .frame(maxWidth: .infinity).frame(height: 190 * ui)
+            .overlay {
+                if let c = user?.cover.flatMap(URL.init(string:)) {
+                    CachedAsyncImage(url: c) { img in img.resizable().scaledToFill() } placeholder: { Color.white.opacity(0.06) }
+                } else {
+                    LinearGradient(colors: [Color(white: 0.24), Color(white: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+            }
+            .clipped()
+            .overlay(LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom))
+            .overlay(alignment: .bottomLeading) {
+                HStack(spacing: 14 * ui) {
+                    CachedAsyncImage(url: (user?.avatar ?? fallbackAvatar).flatMap(URL.init(string:))) { img in
+                        img.resizable().scaledToFill()
+                    } placeholder: { Color.white.opacity(0.1) }
+                    .frame(width: 88 * ui, height: 88 * ui).clipShape(Circle())
+                    .overlay(Circle().stroke(.white, lineWidth: 2.5))
+                    VStack(alignment: .leading, spacing: 4 * ui) {
+                        Text(user?.name ?? fallbackName).font(.title2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
+                        if let id = user?.uniqueId, !id.isEmpty {
+                            Text("抖音号：\(id)").font(.caption).foregroundStyle(.white.opacity(0.65))
+                        }
+                    }
+                }
+                .padding(.horizontal, 16 * ui).padding(.bottom, 14 * ui)
+            }
+    }
+
+    private func stat(_ n: Int, _ t: String) -> some View {
+        VStack(alignment: .leading, spacing: 2 * ui) {
+            Text(DYFormat.count(n)).font(.title3.weight(.bold)).foregroundStyle(.white)
+            Text(t).font(.caption).foregroundStyle(.white.opacity(0.55))
+        }
+    }
+
+    static func tags(_ u: DYUser) -> [String] {
+        var t: [String] = []
+        if let ip = u.ip?.replacingOccurrences(of: "IP属地：", with: "").replacingOccurrences(of: "IP属地:", with: ""), !ip.isEmpty { t.append(ip) }
+        if u.gender == 1 { t.append("男") } else if u.gender == 2 { t.append("女") }
+        if let a = u.age, a > 0 { t.append("\(a)岁") }
+        return t
+    }
+}
+
+/// 主页标签栏：fill = 铺满整行平均分；否则靠左按内容宽。选中的下面一道线
+struct DYProfileTabs<T: Hashable>: View {
+    let tabs: [(T, String)]
+    @Binding var selected: T
+    var fill = true
+    @Environment(\.ddScale) private var ui
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(tabs.enumerated()), id: \.offset) { _, tab in
+                Button { selected = tab.0 } label: {
+                    VStack(spacing: 7 * ui) {
+                        Text(tab.1).font(.subheadline.weight(selected == tab.0 ? .semibold : .regular))
+                            .foregroundStyle(.white.opacity(selected == tab.0 ? 1 : 0.55))
+                        Rectangle().fill(.white).frame(height: 2 * ui).opacity(selected == tab.0 ? 1 : 0)
+                    }
+                    .padding(.horizontal, fill ? 0 : 16 * ui)
+                    .frame(maxWidth: fill ? .infinity : nil)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if !fill { Spacer(minLength: 0) }
+        }
+        .padding(.top, 6 * ui)
+        .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.1)).frame(height: 0.5) }
+    }
+}
+
+/// 主页顶部浮在横幅上的圆形按钮
+struct DYRoundIcon: View {
+    let name: String
+    @Environment(\.ddScale) private var ui
+    var body: some View {
+        Image(systemName: name).font(.headline.weight(.semibold)).foregroundStyle(.white)
+            .frame(width: 38 * ui, height: 38 * ui).background(Circle().fill(.black.opacity(0.35)))
     }
 }
 
@@ -1143,29 +1300,23 @@ struct DYAuthorScreen: View {
     private var webURL: URL? { author.secUid.flatMap { URL(string: "https://www.douyin.com/user/\($0)") } }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.down").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40 * ui, height: 40 * ui)
-                }
-                .accessibilityIdentifier("douyin.author.back")
-                Spacer()
-                if let u = webURL {
-                    Menu {
-                        Button("在网页版打开", systemImage: "safari") { openWeb(u) }
-                    } label: {
-                        Image(systemName: "ellipsis").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                            .frame(width: 40 * ui, height: 40 * ui)
-                    }
-                }
-            }
-            .padding(.horizontal, 8)
-
+        ZStack(alignment: .top) {
             DYGrid(items: posts.items, hasMore: posts.hasMore, loading: posts.loading, error: posts.error,
                    onLoadMore: { Task { await posts.loadMore() } },
                    onOpen: { i in open = DYListTarget(title: user?.name ?? author.name, items: posts.items, start: i, model: posts) },
                    header: AnyView(header), zoomNS: zoomNS)
+                .ignoresSafeArea(edges: .top)
+            HStack {
+                Button { dismiss() } label: { DYRoundIcon(name: "chevron.down") }
+                    .accessibilityIdentifier("douyin.author.back")
+                Spacer()
+                if let u = webURL {
+                    Menu {
+                        Button("在网页版打开", systemImage: "safari") { openWeb(u) }
+                    } label: { DYRoundIcon(name: "ellipsis") }
+                }
+            }
+            .padding(.horizontal, 12 * ui).padding(.top, 8 * ui)
         }
         .background(Color.black.ignoresSafeArea())
         .statusBarHidden(true)
@@ -1185,27 +1336,20 @@ struct DYAuthorScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12 * ui) {
-            if let u = user {
-                DYUserHeader(user: u)
-            } else if let err {
-                Text(err).foregroundStyle(.white.opacity(0.7)).font(.footnote)
-            } else {
-                // 资料还在拉：先用点进来时就有的头像 + 昵称占位，不显示空转圈
-                DYUserHeaderLite(name: author.name, avatar: author.avatar)
+            DYProfileHeader(user: user, fallbackName: author.name, fallbackAvatar: author.avatar)
+            if user == nil, let err {
+                Text(err).foregroundStyle(.white.opacity(0.7)).font(.footnote).padding(.horizontal, 16 * ui)
             }
-            HStack {
-                Text(user.map { "作品 \(DYFormat.count($0.works))" } ?? "作品")
-                    .font(.subheadline.weight(.bold)).foregroundStyle(.white)
-                Spacer()
-                // 作品列表接口被拦时，至少还能去网页版看
-                if posts.error != nil, let u = webURL {
-                    Button("在网页版查看", systemImage: "safari") { openWeb(u) }
-                        .font(.footnote).foregroundStyle(.white.opacity(0.8))
-                }
+            DYProfileTabs(tabs: [(0, user.map { "作品 \(DYFormat.count($0.works))" } ?? "作品")],
+                          selected: .constant(0), fill: false)
+            // 作品列表接口被拦时，至少还能去网页版看
+            if posts.error != nil, let u = webURL {
+                Button("在网页版查看作品", systemImage: "safari") { openWeb(u) }
+                    .font(.footnote).foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 16 * ui)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10 * ui)
+        .padding(.bottom, 4 * ui)
     }
 
     private func openWeb(_ u: URL) {
