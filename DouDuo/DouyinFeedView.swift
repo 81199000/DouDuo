@@ -1817,40 +1817,55 @@ struct DYVideoPage: View {
             action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                    tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
             action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
-            if item.images.isEmpty, bridge != nil {
-                action("text.bubble", "弹幕", tint: fg, "douyin.danmaku.open") {
-                    showDanmakuInput = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
-                }
-            }
             action(collected ? "star.fill" : "star",
                    DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                    tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
-            if let onDislike {
-                action("hand.thumbsdown", "不感兴趣", tint: fg, "douyin.dislike", onDislike)
-            }
-            ShareLink(item: item.webURL) {
-                VStack(spacing: 3) {
-                    Image(systemName: "arrowshape.turn.up.right.fill").font(.system(size: theme.typography.pointSize(.displayLarge)))
-                    Text(DYFormat.count(item.stats.share)).font(.caption2.weight(.semibold))
-                }
-                .foregroundStyle(fg)
-            }
-            Button(action: save) {
-                VStack(spacing: 3) {
-                    if saving {
-                        ProgressView().tint(fg).frame(height: theme.typography.pointSize(.displayLarge))
-                    } else {
-                        Image(systemName: "arrow.down.to.line").font(.system(size: theme.typography.pointSize(.title)))
-                    }
-                    Text("保存").font(.caption2.weight(.semibold))
-                }
-                .foregroundStyle(fg)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("douyin.save")
+            moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
+    }
+
+    /// 「更多」：弹幕 / 不感兴趣（仅推荐流）/ 转发 / 下载，收进系统 Menu
+    @ViewBuilder
+    private func moreMenu(_ fg: Color) -> some View {
+        Menu {
+            if item.images.isEmpty, bridge != nil {
+                Button {
+                    showDanmakuInput = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
+                } label: {
+                    Label("弹幕", systemImage: "text.bubble")
+                }
+                .accessibilityIdentifier("douyin.danmaku.open")
+            }
+            if let onDislike {
+                Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }
+                    .accessibilityIdentifier("douyin.dislike")
+            }
+            ShareLink(item: item.webURL) {
+                Label("转发", systemImage: "arrowshape.turn.up.right")
+            }
+            Button {
+                save()
+            } label: {
+                if saving {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("保存中…") }
+                } else {
+                    Label("下载（保存到相册）", systemImage: "arrow.down.to.line")
+                }
+            }
+            .disabled(saving)
+            .accessibilityIdentifier("douyin.save")
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: "ellipsis").font(.system(size: theme.typography.pointSize(.displayLarge)))
+                Text("更多").font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(fg)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.more")
     }
 
     private func action(_ icon: String, _ text: String, tint: Color, _ id: String = "", _ act: @escaping () -> Void) -> some View {
