@@ -91,11 +91,14 @@ actor DYVideoCache {
     }
 
     /// 当前位置之后的列表（按顺序），排队下载；已下 / 正在下 / 失败过的跳过
+    /// 紧挨着的这几条由 DYPreloader（ahead = 3）的 AVPlayer 边播边缓冲，这里再整条下载就是同一视频下两遍
+    static let skipNearest = 3   // = DYPreloader.ahead
+
     func enqueue(_ ahead: [DYAweme]) {
         let lim = Self.limit
         guard lim > 0 else { queue = []; return }
         let have = Set(entries.map(\.aweme.id))
-        queue = ahead.prefix(lim).filter { a in
+        queue = ahead.prefix(lim).dropFirst(Self.skipNearest).filter { a in
             a.images.isEmpty && a.play != nil && a.duration <= Self.maxDuration
                 && !have.contains(a.id) && !active.contains(a.id) && !failed.contains(a.id)
         }
@@ -128,11 +131,21 @@ actor DYVideoCache {
 
     // MARK: 下载
 
+    /// 正在后台下载的条数（调试日志用，不要求精确）
+    nonisolated(unsafe) static var activeDownloads = 0
+
+    /// 一次只下一条（两条并发 + 预加载播放器一起抢带宽、还持续发热）；手机发烫（serious 及以上）就先不开新下载，
+    /// 下次滑动 / 下完一条时再看
     private func pump() {
-        while active.count < 2, !queue.isEmpty {
+        if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+            DYLiveModel.log("DDCACHE paused thermal=\(ProcessInfo.processInfo.thermalState.rawValue) queued=\(queue.count)")
+            return
+        }
+        while active.count < 1, !queue.isEmpty {
             let a = queue.removeFirst()
             guard let s = a.play, let u = URL(string: s) else { continue }
             active.insert(a.id)
+            Self.activeDownloads = active.count
             Task { await self.download(a, u) }
         }
     }
@@ -159,6 +172,7 @@ actor DYVideoCache {
             DYLiveModel.log("DDCACHE fail \(a.id) \(error.localizedDescription)")
         }
         active.remove(a.id)
+        Self.activeDownloads = active.count
         pump()
     }
 

@@ -22,6 +22,11 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         #if DEBUG
+        // 发热记录：0 正常 1 微热 2 烫 3 很烫
+        ddWrite("DDTHERMAL launch \(ProcessInfo.processInfo.thermalState.rawValue)")
+        NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { _ in
+            ddWrite("DDTHERMAL \(ProcessInfo.processInfo.thermalState.rawValue)")
+        }
         // 自动测试用：DOUDUO_ACTTEST=<aweme_id> → 起播后直接打点赞/收藏接口，结果写 ddlog
         if let aid = ProcessInfo.processInfo.environment["DOUDUO_ACTTEST"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 14) {
@@ -86,11 +91,11 @@ struct DouDuoApp: App {
             if let target = LocalVideoLaunch.target {
                 LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)
             } else {
-                DouyinFeedScreen()
+                DDScaledRoot { DouyinFeedScreen() }
                     .preferredColorScheme(.dark)
             }
             #else
-            DouyinFeedScreen()
+            DDScaledRoot { DouyinFeedScreen() }
                 .preferredColorScheme(.dark)
             #endif
         }

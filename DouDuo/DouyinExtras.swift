@@ -27,6 +27,13 @@ struct DYUser: Decodable, Equatable {
     let ip: String?
 }
 
+/// 抖音热搜一条：pos 为空 = 置顶条
+struct DYHot: Decodable, Equatable {
+    let word: String
+    let hot: Int
+    let pos: Int?
+}
+
 struct DYSug: Identifiable, Decodable, Equatable {
     var id: String { word }
     let word: String
@@ -78,6 +85,10 @@ extension DouyinBridge {
         return u
     }
 
+    func userPosts(_ sec: String, cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
+        try await list(Self.postJS, ["sec": sec, "cursor": cursor])
+    }
+
     func userProfile(_ sec: String) async throws -> DYUser {
         let d = try await call(Self.otherJS, args: ["sec": sec])
         let r = try JSONDecoder().decode(DYUserResp.self, from: d)
@@ -106,6 +117,11 @@ extension DouyinBridge {
         guard offset == "0" else { return ([], offset, false) }
         let r = try await list(Self.searchJS, ["kw": kw, "cursor": "0"])
         return (r.items, r.cursor, false)
+    }
+
+    func hotSearch() async -> [DYHot] {
+        guard let d = try? await call(Self.hotJS, args: [:], attempts: 1) else { return [] }
+        return (try? JSONDecoder().decode([DYHot].self, from: d)) ?? []
     }
 
     func suggest(_ kw: String) async -> [DYSug] {
@@ -223,6 +239,15 @@ extension DouyinBridge {
     return JSON.stringify({ status: r.s, user: umap(d.user), msg: d.status_msg || null });
     """#
 
+    /// 作者作品列表：参数照网页版作者主页的请求
+    static let postJS = listTail + #"""
+    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false',
+      show_live_replay_strategy: '1', need_time_list: cursor === '0' ? '1' : '0', time_list_query: '0', whale_cut_token: '',
+      cut_version: '1', count: '18', publish_video_strategy_type: '2' }));
+    const d = parse(r.t) || {};
+    return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
+    """#
+
     static let likeJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/aweme/favorite/?' + q({ sec_user_id: sec, max_cursor: cursor, min_cursor: '0', count: '18', cut_version: '1' }));
     const d = parse(r.t) || {};
@@ -261,6 +286,13 @@ extension DouyinBridge {
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     return pack(r, d, arr, d.cursor, d.has_more);
+    """#
+
+    static let hotJS = #"""
+    const r = await req('GET', '/aweme/v1/web/hot/search/list/?' + q({ detail_list: '1', source: '6', board_type: '0', board_sub_type: '' }));
+    const d = parse(r.t) || {};
+    const wl = ((d.data || {}).word_list) || [];
+    return JSON.stringify(wl.filter(w => w && w.word).map(w => ({ word: w.word, hot: w.hot_value || 0, pos: w.position ?? null })));
     """#
 
     static let sugJS = #"""
@@ -468,13 +500,18 @@ struct DYGrid: View {
     let error: String?
     let onLoadMore: () -> Void
     let onOpen: (Int) -> Void
-    private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
+    /// 网格上方跟着一起滚的内容（作者主页的资料卡）
+    var header: AnyView? = nil
+    /// 点开时从这个缩略图放大成播放器（iOS 18）
+    var zoomNS: Namespace.ID? = nil
+    @Environment(\.ddScale) private var ui
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: cols, spacing: 2) {
+            if let header { header }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140 * ui), spacing: 2)], spacing: 2) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
-                    Button { onOpen(i) } label: { cell(a) }
+                    Button { onOpen(i) } label: { cell(a).ddZoomSource(a.id, zoomNS) }
                         .buttonStyle(.plain)
                         .onAppear { if i >= items.count - 6 { onLoadMore() } }
                 }
@@ -533,6 +570,7 @@ struct DYListPlayer: View {
     let loadMore: (() async -> [DYAweme])?
     let onAuthor: (DYAweme) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.ddScale) private var ui
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
     @State private var liked: Set<String> = []
@@ -554,6 +592,18 @@ struct DYListPlayer: View {
 
     private var current: DYAweme? { items.first { $0.id == currentID } }
 
+    /// 自动连播：播完滑到下一条；到底了且还能翻页就先续拉
+    private func advance(after id: String) {
+        guard currentID == id, let i = items.firstIndex(where: { $0.id == id }) else { return }
+        if i + 1 < items.count { withAnimation(.easeInOut(duration: 0.35)) { currentID = items[i + 1].id }; return }
+        Task {
+            let more = await loadMore?() ?? []
+            let fresh = more.filter { a in !items.contains { $0.id == a.id } }
+            items.append(contentsOf: fresh)
+            if let n = fresh.first?.id, currentID == id { withAnimation(.easeInOut(duration: 0.35)) { currentID = n } }
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
@@ -568,7 +618,8 @@ struct DYListPlayer: View {
                                         onComments: { showComments = true },
                                         onAuthor: { onAuthor(item) },
                                         onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
-                                        bridge: bridge, onToast: { show($0) })
+                                        bridge: bridge, onToast: { show($0) },
+                                        onEnded: { advance(after: item.id) })
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
@@ -583,7 +634,7 @@ struct DYListPlayer: View {
                 HStack(spacing: 10) {
                     Button { dismiss() } label: {
                         Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                            .frame(width: 40, height: 40).background(Circle().fill(.black.opacity(0.35)))
+                            .frame(width: 40 * ui, height: 40 * ui).background(Circle().fill(.black.opacity(0.35)))
                     }
                     .accessibilityIdentifier("douyin.list.back")
                     Text(title).font(.headline).foregroundStyle(.white).shadow(radius: 3)
@@ -714,6 +765,9 @@ struct DYSearchScreen: View {
     @State private var lastRun = ""
     @FocusState private var focused: Bool
     @AppStorage("douyin_search_history_v1") private var historyRaw = ""
+    @Environment(\.ddScale) private var ui
+    @State private var hot: [DYHot] = []
+    @Namespace private var zoomNS
 
     private var history: [String] { historyRaw.split(separator: "\n").map(String.init) }
 
@@ -722,6 +776,7 @@ struct DYSearchScreen: View {
             HStack(spacing: 10) {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                        .frame(width: 32 * ui, height: 40 * ui)
                 }
                 .accessibilityIdentifier("douyin.search.back")
                 HStack(spacing: 6) {
@@ -738,14 +793,14 @@ struct DYSearchScreen: View {
                         }
                     }
                 }
-                .padding(.horizontal, 12).frame(height: 38)
+                .padding(.horizontal, 12 * ui).frame(height: 38 * ui)
                 .background(Capsule().fill(.white.opacity(0.12)))
                 Button("搜索") { run(kw) }.foregroundStyle(.white).font(.subheadline.weight(.semibold))
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            .padding(.horizontal, 12 * ui).padding(.vertical, 8 * ui)
 
             if let model {
-                DYSearchResults(model: model, onOpen: { i in
+                DYSearchResults(model: model, zoomNS: zoomNS, onOpen: { i in
                     open = DYListTarget(title: "搜索：\(kw)", items: model.items, start: i, model: model)
                 })
             } else {
@@ -764,21 +819,26 @@ struct DYSearchScreen: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                        } else if !history.isEmpty {
-                            HStack {
-                                Text("搜索历史").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                                Spacer()
-                                Button("清空") { historyRaw = "" }.font(.caption).foregroundStyle(.white.opacity(0.6))
+                        } else {
+                            if !history.isEmpty {
+                                HStack {
+                                    Text("搜索历史").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                                    Spacer()
+                                    Button("清空") { historyRaw = "" }.font(.caption).foregroundStyle(.white.opacity(0.6))
+                                }
+                                .padding(16 * ui)
+                                FlowTags(tags: history) { w in kw = w; run(w) }
+                                    .padding(.horizontal, 16 * ui)
                             }
-                            .padding(16)
-                            FlowTags(tags: history) { w in kw = w; run(w) }
-                                .padding(.horizontal, 16)
+                            if !hot.isEmpty { hotSection }
                         }
                     }
                 }
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .statusBarHidden(true)          // 横屏时状态栏占右边一整列：和播放页一样藏起来
+        .task { if hot.isEmpty { hot = await bridge.hotSearch() } }
         .onAppear {
             focused = true
             #if DEBUG
@@ -801,7 +861,41 @@ struct DYSearchScreen: View {
         .fullScreenCover(item: $open) { t in
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
+                .ddZoomTransition(t.items.indices.contains(t.start) ? t.items[t.start].id : nil, zoomNS)
         }
+    }
+
+    /// 抖音热搜：横屏宽屏自动排成两列
+    private var hotSection: some View {
+        VStack(alignment: .leading, spacing: 4 * ui) {
+            Text("抖音热搜").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                .padding(.top, 20 * ui)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 320 * ui), spacing: 24 * ui, alignment: .leading)],
+                      alignment: .leading, spacing: 0) {
+                ForEach(Array(hot.enumerated()), id: \.offset) { _, h in
+                    Button { kw = h.word; run(h.word) } label: { hotRow(h) }.buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 16 * ui)
+        .padding(.bottom, 24 * ui)
+    }
+
+    private func hotRow(_ h: DYHot) -> some View {
+        let accent = Color(red: 1, green: 0.42, blue: 0.32)
+        return HStack(spacing: 10 * ui) {
+            Group {
+                if let p = h.pos { Text("\(p)").foregroundStyle(p <= 3 ? accent : .white.opacity(0.45)) }
+                else { Image(systemName: "pin.fill").foregroundStyle(accent) }
+            }
+            .font(.subheadline.weight(.bold).monospacedDigit())
+            .frame(width: 26 * ui)
+            Text(h.word).font(.subheadline).foregroundStyle(.white).lineLimit(1)
+            Spacer(minLength: 6)
+            if h.hot > 0 { Text(DYFormat.count(h.hot)).font(.caption).foregroundStyle(.white.opacity(0.4)) }
+        }
+        .padding(.vertical, 10 * ui)
+        .contentShape(Rectangle())
     }
 
     private func run(_ word: String) {
@@ -822,10 +916,11 @@ struct DYSearchScreen: View {
 
 private struct DYSearchResults: View {
     @ObservedObject var model: DYPagedModel
+    let zoomNS: Namespace.ID?
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, zoomNS: zoomNS)
     }
 }
 
@@ -882,46 +977,54 @@ struct DYMineScreen: View {
     @State private var kind: DYListKind = .like
     @State private var models: [DYListKind: DYPagedModel] = [:]
     @State private var open: DYListTarget?
+    @Environment(\.ddScale) private var ui
+    @Namespace private var zoomNS
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 40 * ui, height: 40 * ui)
                 }
                 .accessibilityIdentifier("douyin.mine.back")
                 Spacer()
-                Button("网页版 / 登录", systemImage: "safari") { onLogin() }
-                    .font(.footnote).foregroundStyle(.white.opacity(0.8))
+                // 网页版只是兜底：收进「⋯」（没登录时资料卡里有醒目的「去登录」）
+                Menu {
+                    Button("网页版 / 登录", systemImage: "safari") { onLogin() }
+                } label: {
+                    Image(systemName: "ellipsis").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                        .frame(width: 40 * ui, height: 40 * ui)
+                }
             }
             .padding(.horizontal, 8)
 
-            header.padding(.horizontal, 16).padding(.bottom, 12)
+            header.padding(.horizontal, 16 * ui).padding(.bottom, 12 * ui)
 
-            HStack(spacing: 22) {
+            HStack(spacing: 22 * ui) {
                 ForEach(DYListKind.allCases) { k in
                     Button { kind = k } label: {
                         VStack(spacing: 5) {
                             Text(k.title).font(.subheadline.weight(kind == k ? .bold : .medium))
                                 .foregroundStyle(.white.opacity(kind == k ? 1 : 0.6))
-                            Capsule().fill(.white).frame(width: 18, height: 2.5).opacity(kind == k ? 1 : 0)
+                            Capsule().fill(.white).frame(width: 18 * ui, height: 2.5 * ui).opacity(kind == k ? 1 : 0)
                         }
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("douyin.mine.\(k.rawValue)")
                 }
             }
-            .padding(.bottom, 6)
+            .padding(.bottom, 6 * ui)
 
             if let m = models[kind] {
-                DYMineList(model: m) { i in
+                DYMineList(model: m, zoomNS: zoomNS) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .statusBarHidden(true)
         .task {
             do { user = try await bridge.selfProfile() } catch { userErr = error.localizedDescription }
         }
@@ -930,6 +1033,7 @@ struct DYMineScreen: View {
         .fullScreenCover(item: $open) { t in
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
+                .ddZoomTransition(t.items.indices.contains(t.start) ? t.items[t.start].id : nil, zoomNS)
         }
     }
 
@@ -958,21 +1062,40 @@ struct DYMineScreen: View {
 
 private struct DYMineList: View {
     @ObservedObject var model: DYPagedModel
+    let zoomNS: Namespace.ID?
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, zoomNS: zoomNS)
+    }
+}
+
+/// 作者资料未加载完时的占位头：只用点进来那条视频自带的头像 + 昵称
+struct DYUserHeaderLite: View {
+    let name: String
+    let avatar: String?
+    @Environment(\.ddScale) private var ui
+    var body: some View {
+        HStack(spacing: 14 * ui) {
+            CachedAsyncImage(url: avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                placeholder: { Color.white.opacity(0.1) }
+                .frame(width: 72 * ui, height: 72 * ui).clipShape(Circle())
+            Text(name).font(.title3.weight(.bold)).foregroundStyle(.white)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).redacted(reason: .placeholder)
     }
 }
 
 struct DYUserHeader: View {
     let user: DYUser
+    @Environment(\.ddScale) private var ui
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 CachedAsyncImage(url: user.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
                     placeholder: { Color.white.opacity(0.1) }
-                    .frame(width: 72, height: 72).clipShape(Circle())
+                    .frame(width: 72 * ui, height: 72 * ui).clipShape(Circle())
                 VStack(alignment: .leading, spacing: 4) {
                     Text(user.name).font(.title3.weight(.bold)).foregroundStyle(.white)
                     if let ip = user.ip, !ip.isEmpty {
@@ -1004,46 +1127,90 @@ struct DYAuthorScreen: View {
     let author: DYAweme.Author
     let onWeb: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.ddScale) private var ui
     @State private var user: DYUser?
     @State private var err: String?
+    @State private var open: DYListTarget?
+    @StateObject private var posts: DYPagedModel
+    @Namespace private var zoomNS
+
+    init(bridge: DouyinBridge, author: DYAweme.Author, onWeb: @escaping (URL) -> Void) {
+        self.bridge = bridge; self.author = author; self.onWeb = onWeb
+        let sec = author.secUid ?? ""
+        _posts = StateObject(wrappedValue: DYPagedModel { cur in try await bridge.userPosts(sec, cursor: cur) })
+    }
+
+    private var webURL: URL? { author.secUid.flatMap { URL(string: "https://www.douyin.com/user/\($0)") } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
             HStack {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
+                    Image(systemName: "chevron.down").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                        .frame(width: 40 * ui, height: 40 * ui)
                 }
                 .accessibilityIdentifier("douyin.author.back")
                 Spacer()
+                if let u = webURL {
+                    Menu {
+                        Button("在网页版打开", systemImage: "safari") { openWeb(u) }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                            .frame(width: 40 * ui, height: 40 * ui)
+                    }
+                }
             }
+            .padding(.horizontal, 8)
+
+            DYGrid(items: posts.items, hasMore: posts.hasMore, loading: posts.loading, error: posts.error,
+                   onLoadMore: { Task { await posts.loadMore() } },
+                   onOpen: { i in open = DYListTarget(title: user?.name ?? author.name, items: posts.items, start: i, model: posts) },
+                   header: AnyView(header), zoomNS: zoomNS)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .statusBarHidden(true)
+        .task {
+            guard let s = author.secUid else { err = "没有作者信息"; return }
+            async let p: Void = { if posts.items.isEmpty { await posts.loadMore() } }()
+            do { user = try await bridge.userProfile(s) } catch { err = error.localizedDescription }
+            _ = await p
+        }
+        .fullScreenCover(item: $open) { t in
+            DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
+                         loadMore: t.model.map { m in { await m.loadMore() } },
+                         onAuthor: { _ in open = nil })   // 已经在这位作者的主页里：点头像回到网格
+                .ddZoomTransition(t.items.indices.contains(t.start) ? t.items[t.start].id : nil, zoomNS)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12 * ui) {
             if let u = user {
                 DYUserHeader(user: u)
             } else if let err {
                 Text(err).foregroundStyle(.white.opacity(0.7)).font(.footnote)
             } else {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, minHeight: 100)
+                // 资料还在拉：先用点进来时就有的头像 + 昵称占位，不显示空转圈
+                DYUserHeaderLite(name: author.name, avatar: author.avatar)
             }
-            if let s = author.secUid, let u = URL(string: "https://www.douyin.com/user/\(s)") {
-                Button {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onWeb(u) }
-                } label: {
-                    Label("查看全部作品", systemImage: "square.grid.3x3")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.14)))
+            HStack {
+                Text(user.map { "作品 \(DYFormat.count($0.works))" } ?? "作品")
+                    .font(.subheadline.weight(.bold)).foregroundStyle(.white)
+                Spacer()
+                // 作品列表接口被拦时，至少还能去网页版看
+                if posts.error != nil, let u = webURL {
+                    Button("在网页版查看", systemImage: "safari") { openWeb(u) }
+                        .font(.footnote).foregroundStyle(.white.opacity(0.8))
                 }
-                .buttonStyle(.plain)
             }
-            Spacer()
         }
         .padding(.horizontal, 16)
-        .background(Color.black.ignoresSafeArea())
-        .task {
-            guard let s = author.secUid else { err = "没有作者信息"; return }
-            do { user = try await bridge.userProfile(s) } catch { err = error.localizedDescription }
-        }
+        .padding(.bottom, 10 * ui)
+    }
+
+    private func openWeb(_ u: URL) {
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onWeb(u) }
     }
 }
 
@@ -1094,7 +1261,12 @@ struct DYFollowFeed: View {
                                         onLike: { like(item.id, force: nil) }, onCollect: { collect(item.id) },
                                         onDoubleTap: { like(item.id, force: true) }, onComments: { showComments = true },
                                         onAuthor: { onAuthor(item) }, onSavePosition: { resume[item.id] = $0 },
-                                        preloader: preloader, bridge: bridge, onToast: onToast)
+                                        preloader: preloader, bridge: bridge, onToast: onToast,
+                                        onEnded: {
+                                            guard currentID == item.id, let i = m.items.firstIndex(where: { $0.id == item.id }),
+                                                  i + 1 < m.items.count else { return }
+                                            withAnimation(.easeInOut(duration: 0.35)) { currentID = m.items[i + 1].id }
+                                        })
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
