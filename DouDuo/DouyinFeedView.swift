@@ -998,8 +998,9 @@ struct DouyinFeedScreen: View {
                 .allowsHitTesting(false)
             #endif
         }
-        // 顶栏要压在系统状态栏那一行（时间在右、菜单胶囊在左），所以整块忽略顶部安全区
-        .ignoresSafeArea(edges: .top)
+        // 顶栏要压在系统状态栏那一行，所以整块忽略顶部安全区；
+        // 外屏左右有侧边控制区，安全区会把顶栏整行往左挤，所以水平方向也忽略（视频本来就铺满）
+        .ignoresSafeArea(edges: [.top, .horizontal])
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -1051,8 +1052,7 @@ struct DouyinFeedScreen: View {
             }
         }
         .themeShadow(.mediaLabel)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, 18)
+        .frame(maxWidth: .infinity, alignment: .center)
         // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
         // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
         .padding(.top, hSize == .regular ? 27 : 80)
