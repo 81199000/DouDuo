@@ -33,10 +33,11 @@ struct DYSug: Identifiable, Decodable, Equatable {
 }
 
 enum DYListKind: String, CaseIterable, Identifiable {
-    case like, collect, history, later
+    case post, like, collect, history, later
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .post: "作品"
         case .like: "喜欢"
         case .collect: "收藏"
         case .history: "历史"
@@ -87,6 +88,9 @@ extension DouyinBridge {
 
     func myList(_ kind: DYListKind, cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
         switch kind {
+        case .post:
+            let sec = try await selfSecUid()
+            return try await list(Self.postJS, ["sec": sec, "cursor": cursor])
         case .like:
             let sec = try await selfSecUid()
             return try await list(Self.likeJS, ["sec": sec, "cursor": cursor])
@@ -221,6 +225,12 @@ extension DouyinBridge {
     const r = await req('GET', '/aweme/v1/web/user/profile/other/?' + q({ sec_user_id: sec, publish_video_strategy_type: '2', personal_center_strategy: '1' }));
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, user: umap(d.user), msg: d.status_msg || null });
+    """#
+
+    static let postJS = listTail + #"""
+    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
+    const d = parse(r.t) || {};
+    return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
     """#
 
     static let likeJS = listTail + #"""
@@ -878,7 +888,7 @@ struct DYMineScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var user: DYUser?
     @State private var userErr: String?
-    @State private var kind: DYListKind = .like
+    @State private var kind: DYListKind = .post
     @State private var models: [DYListKind: DYPagedModel] = [:]
     @State private var open: DYListTarget?
 
