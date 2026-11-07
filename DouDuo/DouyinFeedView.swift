@@ -697,6 +697,7 @@ struct DouyinFeedScreen: View {
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var showMine = false
     @State private var authorTarget: DYAweme.Author?
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var showMessages = false
     @State private var noticeUnread = 0
 
@@ -981,8 +982,6 @@ struct DouyinFeedScreen: View {
                 recommendArea
             }
             topBar
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 4)
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -1004,7 +1003,8 @@ struct DouyinFeedScreen: View {
         .background {
             GeometryReader { geo in
                 Color.clear
-                    .onAppear { insets = geo.safeAreaInsets }
+                    .onAppear { insets = geo.safeAreaInsets
+                    }
                     .onChange(of: geo.safeAreaInsets) { _, v in insets = v }
             }
         }
@@ -1018,7 +1018,9 @@ struct DouyinFeedScreen: View {
         .fullScreenCover(isPresented: $showMine) {
             DYMineScreen(bridge: bridge,
                          onLogin: { showMine = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
-                         onAuthor: { a in authorTarget = a.author })
+                         onAuthor: { a in authorTarget = a.author },
+                         onMessages: { showMine = false
+                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showMessages = true } })
         }
         .sheet(item: $authorTarget) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) })
@@ -1029,19 +1031,31 @@ struct DouyinFeedScreen: View {
     }
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
-    /// 顶栏：只保留「关注 / 推荐 / 直播」+ 搜索，整体居中的一根胶囊。
-    /// 菜单、消息、我的都收进右下角「更多」里。
+    /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
     private var topBar: some View {
-        HStack(spacing: 10) {
-            tabSwitcher
-            Divider().frame(height: 18).opacity(0.35)
-            topIcon("magnifyingglass", "douyin.search") { showSearch = true }
+        HStack(spacing: 22) {
+            ForEach(DYTab.allCases, id: \.self) { t in
+                Button { selectTab(t) } label: {
+                    VStack(spacing: 3) {
+                        Text(t.title)
+                            .font(.headline.weight(tab == t ? .bold : .medium))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(tab == t ? 1 : 0.62))
+                            .lineLimit(1).fixedSize()
+                        Capsule()
+                            .fill(theme.media.onMedia.color(for: scheme))
+                            .frame(width: 16, height: 3)
+                            .opacity(tab == t ? 1 : 0)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .ddGlassCapsule()
-        .modifier(DYRailReservedNudge())
         .themeShadow(.mediaLabel)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 18)
+        // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
+        // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
+        .padding(.top, hSize == .regular ? 27 : 80)
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
@@ -1174,6 +1188,7 @@ struct DouyinFeedScreen: View {
                            onCollect: { toggleCollect(item.id) },
                            onDoubleTap: { toggleLike(item.id, force: true) },
                            onComments: { withAnimation(.snappy) { showComments.toggle() } },
+                           onSearch: { showSearch = true },
                            onAuthor: { authorTarget = item.author },
                            onSavePosition: { resume[item.id] = $0; saveSession() },
                            preloader: preloader,
@@ -1287,12 +1302,6 @@ struct DouyinFeedScreen: View {
     /// 右下角「更多」里追加：消息 / 我的 / 设置项（顶栏不再放这三个入口）
     @ViewBuilder
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
-        Button {
-            showMessages = true
-        } label: {
-            Label(noticeUnread > 0 ? "消息（\(noticeUnread)）" : "消息", systemImage: "bell")
-        }
-        .accessibilityIdentifier("douyin.messages")
         Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
             .accessibilityIdentifier("douyin.mine")
         Divider()
@@ -1708,6 +1717,7 @@ struct DYVideoPage: View {
     let onCollect: () -> Void
     let onDoubleTap: () -> Void
     let onComments: () -> Void
+    let onSearch: () -> Void
     let onAuthor: () -> Void
     let onSavePosition: (Double) -> Void
     let preloader: DYPreloader
@@ -1733,13 +1743,13 @@ struct DYVideoPage: View {
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
-         onComments: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
+         onComments: @escaping () -> Void, onSearch: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
          onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView())) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
-        self.onComments = onComments; self.onAuthor = onAuthor; self.onSavePosition = onSavePosition
+        self.onComments = onComments; self.onSearch = onSearch; self.onAuthor = onAuthor; self.onSavePosition = onSavePosition
         self.preloader = preloader; self.bridge = bridge; self.onToast = onToast
         self.onDislike = onDislike
         self.moreExtras = moreExtras
@@ -1947,6 +1957,7 @@ struct DYVideoPage: View {
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                          tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
+                railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
             .padding(.vertical, 14)
             .frame(width: 54)
@@ -1961,9 +1972,11 @@ struct DYVideoPage: View {
             VStack(spacing: 2) {
                 Image(systemName: icon).font(.system(size: 22, weight: .regular)).foregroundStyle(tint)
                     .frame(height: 26)
-                Text(text).font(.caption2.weight(.medium)).monospacedDigit()
-                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                    .lineLimit(1).minimumScaleFactor(0.7)
+                if !text.isEmpty {
+                    Text(text).font(.caption2.weight(.medium)).monospacedDigit()
+                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                }
             }
             .frame(width: 54, height: 46)
             .contentShape(Rectangle())
