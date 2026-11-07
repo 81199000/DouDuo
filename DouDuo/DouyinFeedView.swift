@@ -34,7 +34,8 @@ struct DYAweme: Identifiable, Codable, Equatable {
     struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
 
-    var isPortrait: Bool { height > width * 1.05 }
+    /// 视频画面高宽比，不是界面方向。界面布局看容器尺寸 / size class。
+    var isTallFrame: Bool { height > width * 1.05 }
     var webURL: URL { URL(string: "https://www.douyin.com/video/\(id)")! }
 }
 
@@ -61,6 +62,8 @@ struct DYComment: Identifiable, Decodable, Equatable {
     let time: Double
     let replies: Int
     let ip: String?
+    /// 这条评论在账号里是否已赞。缺字段当未赞。
+    var userDigged: Int? = nil
 }
 
 struct DYLiveRoom: Identifiable, Decodable, Equatable {
@@ -499,7 +502,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     if (!d) return JSON.stringify({ status: r.s, items: [], cursor: 0, hasMore: false, total: 0, msg: 'blocked' });
     const items = (d.comments || []).map(c => ({
       id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
-      digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null
+      digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0
     }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, total: d.total || 0, msg: null });
     """#
@@ -647,7 +650,7 @@ final class DYFeedModel: ObservableObject {
                 let seen = Set(items.map(\.id))
                 let fresh = r.items.filter { a in
                     !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty)
-                        && (!portraitOnly || !a.images.isEmpty || a.isPortrait)
+                        && (!portraitOnly || !a.images.isEmpty || a.isTallFrame)
                 }
                 items.append(contentsOf: fresh)
                 // 账号里已点赞/已收藏的，进页面就是选中态
@@ -694,34 +697,14 @@ struct DouyinFeedScreen: View {
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var showMine = false
     @State private var authorTarget: DYAweme.Author?
+    @State private var showMessages = false
+    @State private var noticeUnread = 0
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
     var body: some View {
-        GeometryReader { geo in
-            let wide = geo.size.width >= 700
-            HStack(spacing: 0) {
-                feedArea
-                // 横屏 / 内屏默认整屏播放；点评论按钮才从右侧滑出评论栏，再点或点 × 收起
-                if wide && showComments && tab == .recommend, let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
-                        .frame(width: min(380, geo.size.width * 0.36))
-                        .id(cur.id)
-                        .transition(.move(edge: .trailing))
-                }
-            }
-            .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-            .onAppear { insets = geo.safeAreaInsets }
-            .onChange(of: geo.safeAreaInsets) { _, v in insets = v }
-            .sheet(isPresented: Binding(get: { showComments && !wide }, set: { showComments = $0 })) {
-                if let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                        .presentationDetents([.fraction(0.62), .large])
-                        .presentationDragIndicator(.visible)
-                }
-            }
-        }
+        layoutRoot
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
         .task {
             guard !initialized else { return }
@@ -774,6 +757,7 @@ struct DouyinFeedScreen: View {
                 case "follow": tab = .follow
                 case "author": authorTarget = current?.author
                 case "comments": showComments = true
+                case "messages": showMessages = true
                 case "login": web = DYWebTarget(url: URL(string: "https://www.douyin.com/?recommend=1")!)
                 case "qr": Task { await bridge.debugQRLogin() }
                 case "export": Task { await bridge.debugExportCookies() }
@@ -824,6 +808,72 @@ struct DouyinFeedScreen: View {
         }) { t in
             DouyinWebScreen(start: t.url)
         }
+        .fullScreenCover(isPresented: $showMessages) {
+            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onWeb: { u in
+                showMessages = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
+            })
+        }
+        .task { await refreshNoticeUnread() }
+        .onChange(of: showMessages) { _, open in
+            if !open { Task { await refreshNoticeUnread() } }
+        }
+    }
+
+    @ViewBuilder
+    private var layoutRoot: some View {
+        if #available(iOS 27.1, *) {
+            duoArrangement
+        } else {
+            legacyArrangement
+        }
+    }
+
+    /// iOS 17–27.0：宽屏看容器宽度，不看方向。
+    private var legacyArrangement: some View {
+        GeometryReader { geo in
+            let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
+            HStack(spacing: 0) {
+                feedArea
+                if wide && showComments && tab == .recommend, let cur = current {
+                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
+                        .frame(width: min(380, geo.size.width * 0.36))
+                        .id(cur.id)
+                        .transition(.move(edge: .trailing))
+                }
+            }
+            .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+            .sheet(isPresented: Binding(get: { showComments && !wide }, set: { showComments = $0 })) {
+                if let cur = current {
+                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
+                        .presentationDetents([.fraction(0.62), .large])
+                        .presentationDragIndicator(.visible)
+                }
+            }
+        }
+    }
+
+    @available(iOS 27.1, *)
+    private var duoArrangement: some View {
+        ArrangementView {
+            DYDuoCommentPrimary(
+                bridge: bridge,
+                aweme: tab == .recommend ? current : nil,
+                showComments: showComments,
+                onClose: { withAnimation(.snappy) { showComments = false } },
+                onAuthor: { if let a = current?.author { authorTarget = a } }
+            )
+        } secondary: {
+            feedArea
+        }
+        .arrangementViewStyle(.overlay)
+        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .modifier(DYOuterCommentSheet(showComments: $showComments, aweme: tab == .recommend ? current : nil, bridge: bridge))
+    }
+
+    private func refreshNoticeUnread() async {
+        guard let groups = try? await bridge.noticeCounts() else { return }
+        noticeUnread = DYMessagesScreen.badge(groups)
     }
 
     /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
@@ -947,6 +997,13 @@ struct DouyinFeedScreen: View {
                 .allowsHitTesting(false)
             #endif
         }
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { insets = geo.safeAreaInsets }
+                    .onChange(of: geo.safeAreaInsets) { _, v in insets = v }
+            }
+        }
         .onChange(of: tab) { _, t in
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
@@ -976,8 +1033,10 @@ struct DouyinFeedScreen: View {
             Spacer(minLength: 6)
             HStack(spacing: 6) {
                 topIcon("magnifyingglass", "douyin.search") { showSearch = true }
+                messageEntry
                 topIcon("person.crop.circle", "douyin.mine") { showMine = true }
             }
+            .modifier(DYRailReservedNudge())
         }
         // 屏幕是圆角：两边留够，图标别被圆角裁掉（Duo 横屏尤其明显）
         .padding(.horizontal, 24)
@@ -994,6 +1053,20 @@ struct DouyinFeedScreen: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
+    }
+
+    /// 顶栏「消息」。样式跟现有 topIcon，红暴液态按钮合并后会一起换。
+    private var messageEntry: some View {
+        topIcon("bell", "douyin.messages") { showMessages = true }
+            .overlay(alignment: .topTrailing) {
+                if noticeUnread > 0 {
+                    Circle().fill(theme.status.danger.color(for: scheme))
+                        .frame(width: 8, height: 8)
+                        .offset(x: -8, y: 8)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("douyin.messages.badge")
+                }
+            }
     }
 
     /// 顶部「关注 / 推荐 / 直播」切换（抖音顶栏同款位置）
@@ -1694,6 +1767,7 @@ struct DYVideoPage: View {
                 info(fg)
                 Spacer(minLength: 0)
                 actions(fg)
+                    .modifier(DYRailReservedNudge())
             }
             .padding(.horizontal, 12)
             .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 92 : 24))   // 让开底部时间 + 进度条 + 拖动区
@@ -1944,6 +2018,8 @@ struct DYCommentPanel: View {
     @State private var replyTo: DYComment?
     @State private var sending = false
     @State private var sendErr: String?
+    @State private var digged: Set<String> = []
+    @State private var diggShown: [String: Int] = [:]
     @FocusState private var inputFocused: Bool
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?) {
@@ -1987,6 +2063,7 @@ struct DYCommentPanel: View {
             inputBar
         }
         .background(GlassBackground())
+        .modifier(DYRailReservedNudge())
     }
 
     private var inputBar: some View {
@@ -2064,12 +2141,51 @@ struct DYCommentPanel: View {
                 .font(.caption2).foregroundStyle(.themeTextSecondary)
             }
             Spacer(minLength: 4)
-            VStack(spacing: 2) {
-                Image(systemName: "heart").font(.caption)
-                Text(DYFormat.count(c.digg)).font(.caption2)
-            }
-            .foregroundStyle(.themeTextSecondary)
+            commentDigg(c)
         }
+    }
+
+    private func commentDigg(_ c: DYComment) -> some View {
+        let on = digged.contains(c.id)
+        let n = diggShown[c.id] ?? c.digg
+        return Button { Task { await toggleDigg(c) } } label: {
+            VStack(spacing: 2) {
+                Image(systemName: on ? "heart.fill" : "heart").font(.caption)
+                Text(DYFormat.count(max(0, n))).font(.caption2)
+            }
+            .foregroundStyle(on ? theme.status.danger.color(for: scheme) : Color.themeTextSecondary)
+            .frame(minWidth: 32, minHeight: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.comment.digg")
+    }
+
+    private func toggleDigg(_ c: DYComment) async {
+        let want = !digged.contains(c.id)
+        let before = diggShown[c.id] ?? c.digg
+        if want { digged.insert(c.id) } else { digged.remove(c.id) }
+        diggShown[c.id] = max(0, before + (want ? 1 : -1))
+        do {
+            switch try await bridge.diggComment(c.id, awemeID: aweme.id, like: want) {
+            case .ok:
+                break
+            case .notLoggedIn:
+                revertDigg(c, want: want, before: before)
+                sendErr = "抖音未登录"
+            case .failed(let why):
+                revertDigg(c, want: want, before: before)
+                sendErr = why
+            }
+        } catch {
+            revertDigg(c, want: want, before: before)
+            sendErr = error.localizedDescription
+        }
+    }
+
+    private func revertDigg(_ c: DYComment, want: Bool, before: Int) {
+        if want { digged.remove(c.id) } else { digged.insert(c.id) }
+        diggShown[c.id] = before
     }
 
     @ViewBuilder
@@ -2124,6 +2240,7 @@ struct DYCommentPanel: View {
             let r = try await bridge.fetchComments(aweme.id, cursor: cursor)
             let seen = Set(items.map(\.id))
             items.append(contentsOf: r.items.filter { !seen.contains($0.id) })
+            for c in r.items where c.userDigged == 1 { digged.insert(c.id) }
             cursor = r.cursor
             hasMore = r.hasMore && !r.items.isEmpty
             total = max(total, r.total, aweme.stats.comment)
