@@ -822,33 +822,33 @@ struct DouyinFeedScreen: View {
 
     @ViewBuilder
     private var layoutRoot: some View {
-        if #available(iOS 27.1, *) {
-            duoArrangement
-        } else {
-            legacyArrangement
+        GeometryReader { geo in
+            if #available(iOS 27.1, *), DYDuoMetrics.foldIsActive(geo) {
+                duoArrangement
+            } else {
+                flatArrangement(geo)
+            }
         }
     }
 
-    /// iOS 17–27.0：宽屏看容器宽度，不看方向。
-    private var legacyArrangement: some View {
-        GeometryReader { geo in
-            let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
-            HStack(spacing: 0) {
-                feedArea
-                if wide && showComments && tab == .recommend, let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
-                        .frame(width: min(380, geo.size.width * 0.36))
-                        .id(cur.id)
-                        .transition(.move(edge: .trailing))
-                }
+    /// 平放 / 外屏 / 内屏：评论按容器宽度走——宽屏右侧滑出、视频缩窄；窄屏从底部弹出。
+    private func flatArrangement(_ geo: GeometryProxy) -> some View {
+        let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
+        return HStack(spacing: 0) {
+            feedArea
+            if wide && showComments && tab == .recommend, let cur = current {
+                DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
+                    .frame(width: min(380, geo.size.width * 0.36))
+                    .id(cur.id)
+                    .transition(.move(edge: .trailing))
             }
-            .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-            .sheet(isPresented: Binding(get: { showComments && !wide }, set: { showComments = $0 })) {
-                if let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                        .presentationDetents([.fraction(0.62), .large])
-                        .presentationDragIndicator(.visible)
-                }
+        }
+        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .sheet(isPresented: Binding(get: { showComments && !wide }, set: { showComments = $0 })) {
+            if let cur = current {
+                DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
+                    .presentationDetents([.fraction(0.62), .large])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -859,7 +859,7 @@ struct DouyinFeedScreen: View {
             DYDuoCommentPrimary(
                 bridge: bridge,
                 aweme: tab == .recommend ? current : nil,
-                showComments: showComments,
+                showComments: false,
                 onClose: { withAnimation(.snappy) { showComments = false } },
                 onAuthor: { if let a = current?.author { authorTarget = a } }
             )
@@ -980,7 +980,10 @@ struct DouyinFeedScreen: View {
             } else {
                 recommendArea
             }
-            topBar.padding(.top, 10)
+            topBar
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .padding(.top, 4)
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -997,6 +1000,8 @@ struct DouyinFeedScreen: View {
                 .allowsHitTesting(false)
             #endif
         }
+        // 顶栏要压在系统状态栏那一行（时间在右、菜单胶囊在左），所以整块忽略顶部安全区
+        .ignoresSafeArea(edges: .top)
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -1025,21 +1030,24 @@ struct DouyinFeedScreen: View {
     }
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
+    /// 顶栏：菜单 + 关注/推荐/直播 + 搜索/消息/我的，全部并进一根靠左的液态玻璃胶囊，
+    /// 和系统时间同一行（不单独占第二行）。
     private var topBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             menuButton
-            Spacer(minLength: 4)
             tabSwitcher
-            Spacer(minLength: 4)
-            HStack(spacing: 4) {
+            Divider().frame(height: 18).opacity(0.35)
+            HStack(spacing: 12) {
                 topIcon("magnifyingglass", "douyin.search") { showSearch = true }
                 messageEntry
                 topIcon("person.crop.circle", "douyin.mine") { showMine = true }
             }
-            .modifier(DYRailReservedNudge())
         }
-        // 屏幕是圆角：两边留够，图标别被圆角裁掉（Duo 横屏尤其明显）
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .ddGlassCapsule()
+        .modifier(DYRailReservedNudge())
+        .themeShadow(.mediaLabel)
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
@@ -1047,9 +1055,8 @@ struct DouyinFeedScreen: View {
             Image(systemName: name)
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 36, height: 36)
-                .contentShape(Circle())
-                .ddGlassCircle()
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
@@ -1088,9 +1095,7 @@ struct DouyinFeedScreen: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 3)
-        .ddGlassCapsule()
-        .themeShadow(.mediaLabel)
+        .padding(.horizontal, 2)
     }
 
     @ViewBuilder
@@ -1308,9 +1313,8 @@ struct DouyinFeedScreen: View {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 40, height: 40)
-                .contentShape(Circle())
-                .ddGlassCircle()
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("抖音菜单")
     }
