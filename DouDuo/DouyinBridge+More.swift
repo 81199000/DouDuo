@@ -97,7 +97,7 @@ extension DouyinBridge {
     }
 
     func userPosts(_ sec: String, cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        let d = try await call(Self.postJS, args: ["sec": sec, "cursor": cursor], attempts: 1)
+        let d = try await call(Self.authorPostJS, args: ["sec": sec, "cursor": cursor], attempts: 1)
         let p = try JSONDecoder().decode(DYMoreList.self, from: d)
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
@@ -221,7 +221,7 @@ extension DouyinBridge {
     return JSON.stringify({ status: r.s, code: d.status_code ?? null, item: (a && (a.video || a.images)) ? mapA(a) : null, msg: d.status_msg || null });
     """#
 
-    private static let postJS = #"""
+    private static let authorPostJS = #"""
     const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({
       sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1',
       need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18'
