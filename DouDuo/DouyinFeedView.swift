@@ -831,52 +831,34 @@ struct DouyinFeedScreen: View {
     @ViewBuilder
     private var layoutRoot: some View {
         GeometryReader { geo in
-            if #available(iOS 27.1, *), DYDuoMetrics.foldIsActive(geo) {
-                duoArrangement
-            } else {
-                flatArrangement(geo)
-            }
+            flatArrangement(geo)
         }
     }
 
-    /// 平放 / 外屏 / 内屏：评论按容器宽度走——宽屏右侧滑出、视频缩窄；窄屏从底部弹出。
+    /// 一套布局通吃所有状态：评论按宽度/折痕判断——够宽或有折痕就在右侧滑出、视频缩窄；
+    /// 窄屏（外屏）才从底部弹出。折叠过程中不换容器，播放器不会被重建，所以不黑屏、不重载。
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
+        let fold = DYDuoMetrics.foldIsActive(geo)
+        let sideBySide = geo.size.width >= DYDuoMetrics.legacyWideMin || fold
         return HStack(spacing: 0) {
             feedArea
-            if wide && showComments && tab == .recommend, let cur = current {
+            if sideBySide && showComments && tab == .recommend, let cur = current {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { withAnimation(.snappy) { showComments = false } })
-                    .frame(width: min(380, geo.size.width * 0.36))
+                    .frame(width: min(380, geo.size.width * 0.42))
                     .id(cur.id)
                     .transition(.move(edge: .trailing))
             }
         }
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-        .sheet(isPresented: Binding(get: { showComments && !wide }, set: { showComments = $0 })) {
+        .animation(.snappy, value: showComments)
+        .animation(.snappy, value: fold)
+        .sheet(isPresented: Binding(get: { showComments && !sideBySide }, set: { showComments = $0 })) {
             if let cur = current {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
                     .presentationDetents([.fraction(0.62), .large])
                     .presentationDragIndicator(.visible)
             }
         }
-    }
-
-    @available(iOS 27.1, *)
-    private var duoArrangement: some View {
-        ArrangementView {
-            DYDuoCommentPrimary(
-                bridge: bridge,
-                aweme: tab == .recommend ? current : nil,
-                showComments: false,
-                onClose: { withAnimation(.snappy) { showComments = false } },
-                onAuthor: { if let a = current?.author { authorTarget = a } }
-            )
-        } secondary: {
-            feedArea
-        }
-        .arrangementViewStyle(.overlay)
-        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-        .modifier(DYOuterCommentSheet(showComments: $showComments, aweme: tab == .recommend ? current : nil, bridge: bridge))
     }
 
     private func refreshNoticeUnread() async {
@@ -1307,6 +1289,7 @@ struct DouyinFeedScreen: View {
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
         Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
             .accessibilityIdentifier("douyin.mine")
+        Toggle(isOn: $feed.portraitOnly) { Label("只看竖屏", systemImage: "rectangle.portrait") }
         Divider()
         Button("刷新推荐", systemImage: "arrow.clockwise") {
             Task { await refreshRecommendations() }
