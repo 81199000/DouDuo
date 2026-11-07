@@ -80,12 +80,13 @@ extension PlayerPage {
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
                          onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
                          fillWidth: Bool = true, danmaku: [DYDanmaku] = [], altURL: URL? = nil,
-                         quality: String? = nil, fastURL: URL? = nil, posterURL: URL? = nil) -> PlayerPage {
+                         quality: String? = nil, fastURL: URL? = nil, posterURL: URL? = nil,
+                         videoAspect: Double = 0) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
                    topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
-                   posterURL: posterURL)
+                   posterURL: posterURL, videoAspect: videoAspect)
     }
 }
 
@@ -114,6 +115,8 @@ struct PlayerPage: View {
     /// 封面：首帧出来前先显示（网格里已经缓存过，点进来立刻有画面，不是黑屏转圈）
     var posterURL: URL? = nil
     @State private var firstFrame = false
+    /// 视频画面宽高比（海报占位用同一套铺满规则，避免「先小后跳」）
+    var videoAspect: Double = 0
     /// 静音（右下角按钮，全局记住）
     @AppStorage("douyin_muted_v1") private var muted = false
     @Environment(\.ddScale) private var ui
@@ -167,9 +170,15 @@ struct PlayerPage: View {
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
             if !firstFrame, let posterURL {
-                CachedAsyncImage(url: posterURL) { img in
-                    img.resizable().aspectRatio(contentMode: fillWidth ? .fill : .fit)
-                } placeholder: { Color.clear }
+                GeometryReader { g in
+                    let screen = g.size.width / max(g.size.height, 1)
+                    let video = videoAspect > 0 ? videoAspect : screen
+                    let same = (video < 1) == (screen < 1)
+                    CachedAsyncImage(url: posterURL) { img in
+                        img.resizable().aspectRatio(contentMode: fillWidth && same ? .fill : .fit)
+                    } placeholder: { Color.clear }
+                    .frame(width: g.size.width, height: g.size.height)
+                }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -737,8 +746,8 @@ struct VideoSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> PlayerUIView {
         let v = PlayerUIView(player: player)
         v.fillWidth = fillWidth
-        // 一开始就按设置定好 gravity：否则 presentationSize 出来前是 fit，出来了再跳成 fill，看起来「先小后弹大」
-        v.playerLayer.videoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
+        // 初始用 fit；真正的铺满由 applyGravity 按「是否同向」决定（surface 首帧前隐藏，看不到这中间态）
+        v.playerLayer.videoGravity = .resizeAspect
         v.watchSize()
         return v
     }
@@ -777,11 +786,11 @@ final class PlayerUIView: UIView {
         guard let size = playerLayer.player?.currentItem?.presentationSize, size.width > 1, size.height > 1,
               bounds.width > 1, bounds.height > 1 else { return }
         let video = size.width / size.height, screen = bounds.width / bounds.height
-        // 「自动铺满宽度」打开就铺满（必要时裁切），关掉才保持完整画面。
-        // 老板要求铺满行为跟以前一致：不再按屏幕形状/裁切比例自动降级。
+        // 「自动铺满宽度」只在视频和屏幕同向时铺满（竖屏看竖屏 / 横屏看横屏）；
+        // 竖屏看横屏保持完整画面，不裁掉两侧。
         let sameOrientation = (video < 1) == (screen < 1)
         let crop = 1 - min(video, screen) / max(video, screen)
-        let g: AVLayerVideoGravity = fillWidth ? .resizeAspectFill : .resizeAspect
+        let g: AVLayerVideoGravity = (fillWidth && sameOrientation) ? .resizeAspectFill : .resizeAspect
         #if DEBUG
         if playerLayer.videoGravity != g {
             ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) crop=\(String(format: "%.2f", crop)) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")

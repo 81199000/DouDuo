@@ -1878,7 +1878,8 @@ struct DYVideoPage: View {
                                     altURL: item.playAlt.flatMap(URL.init(string:)),
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
-                                    posterURL: item.cover.flatMap(URL.init(string:)))
+                                    posterURL: item.cover.flatMap(URL.init(string:)),
+                                    videoAspect: item.height > 0 ? item.width / item.height : 0)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in
