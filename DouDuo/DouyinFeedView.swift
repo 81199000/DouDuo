@@ -723,7 +723,6 @@ struct DouyinFeedScreen: View {
             }
         }
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
-        .statusBarHidden(true)
         .task {
             guard !initialized else { return }
             initialized = true

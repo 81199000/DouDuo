@@ -605,7 +605,6 @@ struct DYListPlayer: View {
                 }
             }
         }
-        .statusBarHidden(true)
         .onChange(of: currentID) { old, new in
             if new == nil, let old { currentID = old; return }
             guard let i = items.firstIndex(where: { $0.id == new }) else { return }
