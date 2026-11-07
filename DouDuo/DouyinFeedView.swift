@@ -989,8 +989,8 @@ struct DouyinFeedScreen: View {
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: 40, height: 40)
-                .contentShape(Rectangle())
-                .themeShadow(.mediaLabel)
+                .contentShape(Circle())
+                .ddGlassCircle()
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
@@ -1231,8 +1231,8 @@ struct DouyinFeedScreen: View {
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: 40, height: 40)
-                .contentShape(Rectangle())
-                .themeShadow(.mediaLabel)
+                .contentShape(Circle())
+                .ddGlassCircle()
         }
         .accessibilityLabel("抖音菜单")
     }
@@ -1802,27 +1802,37 @@ struct DYVideoPage: View {
         .themeShadow(.mediaLabel)
     }
 
+    @ViewBuilder
     private func actions(_ fg: Color) -> some View {
-        VStack(spacing: 16) {
+        let column = VStack(spacing: 16) {
             Button(action: onAuthor) {
                 CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
                     img.resizable().scaledToFill()
                 } placeholder: { theme.media.chromeFill.color(for: scheme) }
-                .frame(width: 46, height: 46)
+                .frame(width: 48, height: 48)
                 .clipShape(Circle())
                 .overlay(Circle().stroke(fg, lineWidth: 1.5))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.author")
             action(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
+                   tint: liked ? theme.status.danger.color(for: scheme) : fg,
+                   glassTint: liked ? theme.status.danger.color(for: scheme) : nil, "douyin.like", onLike)
             action("ellipsis.message.fill", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
             action(collected ? "star.fill" : "star",
                    DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
-                   tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
+                   tint: collected ? theme.status.warning.color(for: scheme) : fg,
+                   glassTint: collected ? theme.status.warning.color(for: scheme) : nil, "douyin.collect", onCollect)
             moreMenu(fg)
         }
-        .themeShadow(.mediaLabel)
+        // iOS 26+：整组包进 GlassEffectContainer，液态玻璃连成一片
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer { column }
+                .themeShadow(.mediaLabel)
+        } else {
+            column
+                .themeShadow(.mediaLabel)
+        }
     }
 
     /// 「更多」：弹幕 / 不感兴趣（仅推荐流）/ 转发 / 下载，收进系统 Menu
@@ -1857,8 +1867,12 @@ struct DYVideoPage: View {
             .disabled(saving)
             .accessibilityIdentifier("douyin.save")
         } label: {
-            VStack(spacing: 3) {
-                Image(systemName: "ellipsis").font(.system(size: theme.typography.pointSize(.displayLarge)))
+            VStack(spacing: 4) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 22, weight: .medium))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
+                    .ddGlassCircle()
                 Text("更多").font(.caption2.weight(.semibold))
             }
             .foregroundStyle(fg)
@@ -1868,10 +1882,16 @@ struct DYVideoPage: View {
         .accessibilityIdentifier("douyin.more")
     }
 
-    private func action(_ icon: String, _ text: String, tint: Color, _ id: String = "", _ act: @escaping () -> Void) -> some View {
+    /// 液态圆按钮：48pt 玻璃圆底 + 数字放按钮下方；glassTint 非空 = 选中态（染色）
+    private func action(_ icon: String, _ text: String, tint: Color, glassTint: Color? = nil, _ id: String = "", _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
-            VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: theme.typography.pointSize(.displayLarge))).foregroundStyle(tint)
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(tint)
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
+                    .ddGlassCircle(glassTint)
                 Text(text).font(.caption2.weight(.semibold)).foregroundStyle(theme.media.onMedia.color(for: scheme))
             }
         }

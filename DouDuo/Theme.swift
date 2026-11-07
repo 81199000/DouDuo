@@ -62,6 +62,28 @@ extension ShapeStyle where Self == Color {
     static var themeTextSecondary: Color { .secondary }
 }
 
+// MARK: - 液态玻璃圆按钮（iOS 26+ glassEffect；低版本回退 ultraThinMaterial 圆底）
+
+extension View {
+    /// 液态玻璃圆底：iOS 26+ 用 `.glassEffect(.regular.interactive(), in: .circle)`；
+    /// 传入 tint 表示选中态（点赞红 / 收藏黄），用 `.regular.tint(color.opacity(0.22)).interactive()`；
+    /// iOS 26 以下回退 `.ultraThinMaterial` 圆底（选中态叠一层 22% 的 tint）。
+    @ViewBuilder
+    func ddGlassCircle(_ tint: Color? = nil) -> some View {
+        if #available(iOS 26.0, *) {
+            if let tint {
+                self.glassEffect(.regular.tint(tint.opacity(0.22)).interactive(), in: .circle)
+            } else {
+                self.glassEffect(.regular.interactive(), in: .circle)
+            }
+        } else {
+            self
+                .background(tint.map { $0.opacity(0.22) } ?? .clear, in: Circle())
+                .background(.ultraThinMaterial, in: Circle())
+        }
+    }
+}
+
 struct GlassBackground: View {
     var body: some View { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
 }
