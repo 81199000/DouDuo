@@ -1031,7 +1031,7 @@ struct DYUserHeader: View {
     }
 }
 
-// MARK: - 作者主页（原生资料卡；作品列表网页接口签名受限 → 按钮跳网页版看全部作品）
+// MARK: - 作者主页（资料卡 + 原生作品网格；网页版只作兜底）
 
 struct DYAuthorScreen: View {
     let bridge: DouyinBridge
@@ -1040,9 +1040,19 @@ struct DYAuthorScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var user: DYUser?
     @State private var err: String?
+    @State private var posts: [DYAweme] = []
+    @State private var cursor = "0"
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var postErr: String?
+    @State private var followed = false
+    @State private var followUID: String?
+    @State private var followBusy = false
+    @State private var followMsg: String?
+    @State private var player: DYAuthorPlay?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
@@ -1050,35 +1060,135 @@ struct DYAuthorScreen: View {
                 }
                 .accessibilityIdentifier("douyin.author.back")
                 Spacer()
+                followButton
             }
             if let u = user {
                 DYUserHeader(user: u)
             } else if let err {
                 Text(err).foregroundStyle(.white.opacity(0.7)).font(.footnote)
             } else {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, minHeight: 100)
+                ProgressView().tint(.white).frame(maxWidth: .infinity, minHeight: 72)
             }
             if let s = author.secUid, let u = URL(string: "https://www.douyin.com/user/\(s)") {
                 Button {
                     dismiss()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onWeb(u) }
                 } label: {
-                    Label("查看全部作品", systemImage: "square.grid.3x3")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.14)))
+                    Text("网页版")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.author.web")
             }
-            Spacer()
+            if let followMsg {
+                Text(followMsg).font(.caption2).foregroundStyle(.orange)
+            }
+            DYGrid(items: posts, hasMore: hasMore, loading: loading, error: postErr, onLoadMore: { requestMore() }, onOpen: { i in
+                player = DYAuthorPlay(index: i)
+            })
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("douyin.author.works")
         }
         .padding(.horizontal, 16)
+        .padding(.top, 8)
         .background(Color.black.ignoresSafeArea())
+        .fullScreenCover(item: $player) { p in
+            DYListPlayer(bridge: bridge, title: author.name.isEmpty ? "作品" : author.name, items: posts, start: p.index,
+                         loadMore: { await loadPosts() }, onAuthor: { _ in })
+        }
         .task {
-            guard let s = author.secUid else { err = "没有作者信息"; return }
-            do { user = try await bridge.userProfile(s) } catch { err = error.localizedDescription }
+            guard let s = author.secUid else { err = "没有作者信息"; hasMore = false; return }
+            async let profile: Void = loadProfile(s)
+            async let state: Void = loadFollow(s)
+            _ = await (profile, state)
+            _ = await loadPosts()
         }
     }
+
+    @ViewBuilder
+    private var followButton: some View {
+        let uid = followUID ?? author.uid
+        Button { Task { await toggleFollow() } } label: {
+            Text(followBusy ? "…" : (followed ? "已关注" : "关注"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(followed ? .white : .black)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(Capsule().fill(followed ? Color.white.opacity(0.16) : Color.white))
+        }
+        .buttonStyle(.plain)
+        .disabled(followBusy || uid == nil || uid?.isEmpty == true)
+        .accessibilityIdentifier("douyin.author.follow")
+    }
+
+    private func loadProfile(_ sec: String) async {
+        do { user = try await bridge.userProfile(sec) } catch { err = error.localizedDescription }
+    }
+
+    private func loadFollow(_ sec: String) async {
+        if let s = try? await bridge.followState(sec: sec) {
+            followed = s.followed
+            if let uid = s.uid, !uid.isEmpty { followUID = uid }
+        }
+    }
+
+    private func requestMore() {
+        guard !loading, hasMore, author.secUid != nil else { return }
+        loading = true
+        Task { _ = await loadPosts(alreadyLocked: true) }
+    }
+
+    private func loadPosts(alreadyLocked: Bool = false) async -> [DYAweme] {
+        guard hasMore, let sec = author.secUid else { return [] }
+        if !alreadyLocked {
+            guard !loading else { return [] }
+            loading = true
+        }
+        defer { loading = false }
+        do {
+            let r = try await bridge.userPosts(sec, cursor: cursor)
+            let seen = Set(posts.map(\.id))
+            let fresh = r.items.filter { !seen.contains($0.id) }
+            posts.append(contentsOf: fresh)
+            hasMore = r.hasMore && !r.items.isEmpty && r.cursor != cursor
+            cursor = r.cursor
+            postErr = nil
+            DYLiveModel.log("DDPOST sec=\(sec.prefix(8)) n=\(fresh.count) more=\(hasMore)")
+            return fresh
+        } catch {
+            postErr = error.localizedDescription
+            hasMore = false
+            DYLiveModel.log("DDPOST error \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// 只在按钮点击时发关注。不要在测试里点。
+    private func toggleFollow() async {
+        guard let uid = followUID ?? author.uid, !uid.isEmpty, !followBusy else { return }
+        followBusy = true
+        defer { followBusy = false }
+        let want = !followed
+        do {
+            switch try await bridge.followUser(uid, follow: want) {
+            case .ok:
+                followed = want
+                followMsg = nil
+            case .notLoggedIn:
+                followMsg = "抖音未登录"
+            case .failed(let why):
+                followMsg = why
+            }
+        } catch {
+            followMsg = error.localizedDescription
+        }
+    }
+}
+
+private struct DYAuthorPlay: Identifiable {
+    let id = UUID()
+    let index: Int
 }
 
 // MARK: - 关注流
