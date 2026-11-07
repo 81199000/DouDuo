@@ -698,6 +698,7 @@ struct DouyinFeedScreen: View {
     @State private var showMine = false
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
+    @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     @State private var noticeUnread = 0
 
@@ -825,6 +826,22 @@ struct DouyinFeedScreen: View {
         .task { await refreshNoticeUnread() }
         .onChange(of: showMessages) { _, open in
             if !open { Task { await refreshNoticeUnread() } }
+        }
+        .task {
+            // 启动查一次新版本；关掉后同一版本不再提示
+            if let u = await DDUpdateChecker.check() { pendingUpdate = u }
+        }
+        .alert("有新版本", isPresented: Binding(get: { pendingUpdate != nil }, set: { if !$0 { if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }; pendingUpdate = nil } })) {
+            Button("去 GitHub 更新") {
+                if let u = pendingUpdate { DDUpdateChecker.dismiss(u); DDUpdateChecker.open(u) }
+                pendingUpdate = nil
+            }
+            Button("关闭", role: .cancel) {
+                if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }
+                pendingUpdate = nil
+            }
+        } message: {
+            Text("新版本 \(pendingUpdate?.version ?? "")（当前 \(DDUpdateChecker.currentVersion)）\n去 GitHub 下载新版，重新签名安装即可，登录态会保留。")
         }
     }
 
