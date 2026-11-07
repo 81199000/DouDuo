@@ -2039,15 +2039,16 @@ struct DYVideoPage: View {
                     .allowsHitTesting(false)
             }
 
-            // 文案 / 右侧按钮栏压在播放器底部进度条上方（进度条 + 拖动条约 70pt）
+            // 左下信息贴近进度条；右侧按钮维持原高度，不跟随标题下移。
             HStack(alignment: .bottom, spacing: 12) {
                 info(fg)
                 Spacer(minLength: 0)
                 actions(fg)
                     .modifier(DYRailReservedNudge())
+                    .padding(.bottom, item.images.isEmpty ? 56 : 0)
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 92 : 24))   // 让开底部时间 + 进度条 + 拖动区
+            .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
         }
         .overlay(alignment: .bottom) {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
