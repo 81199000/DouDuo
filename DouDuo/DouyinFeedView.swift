@@ -906,12 +906,11 @@ struct DouyinFeedScreen: View {
         DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
     }
 
+    /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
+    /// 要换一批推荐走「更多 → 刷新推荐」。
     private func selectTab(_ target: DYTab) {
-        if tab == .recommend && target == .recommend {
-            Task { await refreshRecommendations() }
-        } else {
-            tab = target
-        }
+        guard tab != target else { return }
+        tab = target
     }
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
@@ -1053,6 +1052,10 @@ struct DouyinFeedScreen: View {
                             .frame(width: 16, height: 3)
                             .opacity(tab == t ? 1 : 0)
                     }
+                    // 文字本身小，撑开触摸区，避免点不中/误判成下拉
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -1145,7 +1148,6 @@ struct DouyinFeedScreen: View {
                     }
                     .scrollTargetLayout()
                 }
-                .refreshable { await refreshRecommendations() }
                 .scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollID, anchor: .center)
                 .onAppear { scrollID = currentID }
@@ -1156,13 +1158,8 @@ struct DouyinFeedScreen: View {
                             scrollEndTask?.cancel(); userScrolling = true
                         }
                     }
-                    .onEnded { value in
-                        // 播放器手势层可能拦住原生 refreshable 的触发，首条下拉显式兜底。
-                        if dragStartID == feed.items.first?.id,
-                           value.translation.height > 90,
-                           value.translation.height > abs(value.translation.width) {
-                            Task { await refreshRecommendations() }
-                        }
+                    .onEnded { _ in
+                        // 下拉不再触发刷新（顶部点击/轻扫会误判成刷新）；刷新走「更多 → 刷新推荐」。
                         dragStartID = nil
                         scrollEndTask = Task {
                             try? await Task.sleep(nanoseconds: 800_000_000)
@@ -1914,8 +1911,9 @@ struct DYVideoPage: View {
                             else { Text("关注").font(.footnote.weight(.semibold)) }
                         }
                         .foregroundStyle(fg)
-                        .frame(minWidth: 48).frame(height: 26)
-                        .padding(.horizontal, 4)
+                        .frame(minWidth: 58).frame(height: 30)
+                        .padding(.horizontal, 6)
+                        .contentShape(Capsule())
                         .background(Capsule().fill(theme.accent.color(for: scheme)))
                     }
                     .buttonStyle(.plain)
@@ -1965,8 +1963,8 @@ struct DYVideoPage: View {
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 14)
-            .frame(width: 54)
+            .padding(.vertical, 10)
+            .frame(width: 58)
             .ddGlassCapsule()
             moreMenu(fg)
         }
@@ -1984,7 +1982,7 @@ struct DYVideoPage: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: 54, height: 46)
+            .frame(width: 56, height: 56)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2028,7 +2026,7 @@ struct DYVideoPage: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(fg)
-                .frame(width: 50, height: 50)
+                .frame(width: 56, height: 56)
                 .contentShape(Circle())
                 .ddGlassCircle()
         }
