@@ -114,6 +114,8 @@ struct PlayerPage: View {
     /// 封面：首帧出来前先显示（网格里已经缓存过，点进来立刻有画面，不是黑屏转圈）
     var posterURL: URL? = nil
     @State private var firstFrame = false
+    /// 静音（右下角按钮，全局记住）
+    @AppStorage("douyin_muted_v1") private var muted = false
     @Environment(\.ddScale) private var ui
 
     private var dmStress: Bool {
@@ -170,8 +172,12 @@ struct PlayerPage: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
-            if isActive && (!danmaku.isEmpty || dmStress) {
-                DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
+            if isActive && !danmaku.isEmpty {
+                // 气泡弹幕：左侧往上堆，不横穿画面，也就不挡视频里居中的字幕
+                DYDanmakuBubbles(items: danmaku, clock: dmClock)
+                    .padding(.leading, 12 * ui)
+                    .padding(.bottom, max(bottomInset, 8) + 132 * ui)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
             // 手势层铺满整页（含视频上下黑边）：横滑快进 / 单击 / 双击 / 长按，竖滑漏给分页
             if player != nil || vlc != nil { gestures }
@@ -210,9 +216,14 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             resumeAfterBackground()
         }
+        .onChange(of: muted) { _, m in
+            guard isActive else { return }
+            player?.isMuted = m
+            vlc?.mediaPlayer.audio?.isMuted = m
+        }
         .onChange(of: isActive) { _, active in
             if let v = vlc {
-                if active { v.mediaPlayer.audio?.isMuted = false; v.mediaPlayer.play(); isPlaying = true }
+                if active { v.mediaPlayer.audio?.isMuted = muted; v.mediaPlayer.play(); isPlaying = true }
                 else { v.mediaPlayer.pause(); isPlaying = false; onSavePosition(v.current) }
                 return
             }
@@ -231,7 +242,7 @@ struct PlayerPage: View {
                 #if DEBUG
                 logSwipeStart(p)
                 #endif
-                p.isMuted = false; p.play(); isPlaying = true
+                p.isMuted = muted; p.play(); isPlaying = true
                 watchdog(p)
             } else {
                 p.isMuted = true; p.pause(); isPlaying = false
@@ -371,7 +382,7 @@ struct PlayerPage: View {
             startFast(hd: p)
             return
         }
-        p.isMuted = !isActive
+        p.isMuted = !isActive || muted
         if isActive {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -447,7 +458,7 @@ struct PlayerPage: View {
         if resume.seconds > 1 { low.seek(to: resume) }
         player = low
         attachObservers(low)
-        low.isMuted = false
+        low.isMuted = muted
         low.play()
         isPlaying = true
         fastT0 = Date()
@@ -493,7 +504,7 @@ struct PlayerPage: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                     guard player === low, hdPlayer === hd else { return }
                     withAnimation(.easeInOut(duration: 0.15)) { hdVisible = true }
-                    hd.isMuted = false
+                    hd.isMuted = muted
                     low.isMuted = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { finishUpgrade(low, hd) }
                 }
@@ -561,7 +572,7 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         attachObservers(p)
-        p.isMuted = false
+        p.isMuted = muted
         p.play()
         isPlaying = true
         watchdog(p)
@@ -596,7 +607,7 @@ struct PlayerPage: View {
         if let v = vlc {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
-            v.mediaPlayer.audio?.isMuted = false
+            v.mediaPlayer.audio?.isMuted = muted
             v.mediaPlayer.play(); isPlaying = true
             return
         }
