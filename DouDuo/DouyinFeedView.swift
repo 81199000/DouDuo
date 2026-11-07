@@ -1963,8 +1963,8 @@ struct DYVideoPage: View {
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 10)
-            .frame(width: 58)
+            .padding(.vertical, 14)
+            .frame(width: 54)
             .ddGlassCapsule()
             moreMenu(fg)
         }
@@ -1982,7 +1982,7 @@ struct DYVideoPage: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: 56, height: 56)
+            .frame(width: 54, height: 46)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2026,7 +2026,7 @@ struct DYVideoPage: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(fg)
-                .frame(width: 56, height: 56)
+                .frame(width: 50, height: 50)
                 .contentShape(Circle())
                 .ddGlassCircle()
         }
