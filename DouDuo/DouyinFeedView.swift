@@ -1748,10 +1748,12 @@ struct DouyinFeedScreen: View {
                     .accessibilityIdentifier("douyin.landscape.only")
                 Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
                 Picker(selection: $cacheCount) {
-                    Text("关闭").tag(0)
+                    Text("5 条").tag(5)
+                    Text("10 条").tag(10)
                     Text("20 条").tag(20)
                     Text("50 条").tag(50)
                     Text("100 条").tag(100)
+                    Text("关闭").tag(0)
                 } label: { Label("预缓存视频", systemImage: "arrow.down.circle") }
                 .pickerStyle(.menu)
                 Button("清除视频缓存", systemImage: "trash") {
@@ -1852,10 +1854,8 @@ struct DYVideoPage: View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
-                let full = DYVideoCache.localURL(item.id)
-                let head = full == nil ? DYVideoCache.headFile(item.id) : nil
-                let headSecs = head == nil ? nil : DYVideoCache.headPlayableSeconds(item.id)
-                let url = full ?? head ?? remote
+                // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
+                let url = DYVideoCache.localURL(item.id) ?? remote
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
@@ -1874,8 +1874,8 @@ struct DYVideoPage: View {
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
-                                    headEndSeconds: headSecs,
-                                    continuationURL: head == nil ? nil : remote)
+                                    headEndSeconds: nil,
+                                    continuationURL: nil)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in

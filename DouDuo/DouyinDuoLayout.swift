@@ -9,6 +9,10 @@ enum DYDuoMetrics {
 
     /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
     static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
+        #if DEBUG
+        // 演示/截图用：模拟器没有物理折痕，用环境变量强制进入半折叠布局
+        if ProcessInfo.processInfo.environment["DOUDUO_FOLD"] == "1" { return true }
+        #endif
         if #available(iOS 27.1, *) {
             return proxy.reservedRegions(kind: .division).contains { $0.isActive }
         }

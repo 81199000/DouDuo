@@ -32,8 +32,8 @@ struct DYFeedSession: Codable {
 
 actor DYVideoCache {
     static let shared = DYVideoCache()
-    static let countKey = "douyin_cache_count_v1"
-    static let defaultCount = 50
+    static let countKey = "douyin_cache_count_v2"
+    static let defaultCount = 5
     /// 超过这个时长不整条下载，只缓存头部
     static let maxDuration: Double = 600
     /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
@@ -144,10 +144,10 @@ actor DYVideoCache {
         for a in follow { pending[a.id] = a }
         job = Task { [weak self] in
             guard let self else { return }
-            await self.store(id: target.id, full: target.duration <= Self.maxDuration)
+            await self.store(id: target.id)
             for a in follow {
                 if Task.isCancelled { return }
-                await self.store(id: a.id, full: false)
+                await self.store(id: a.id)
             }
         }
     }
@@ -157,13 +157,15 @@ actor DYVideoCache {
         job?.cancel(); job = nil; jobID = nil
     }
 
-    private func store(id: String, full: Bool) async {
+    /// 只缓存整条视频：不再存「头部」，也就没有「头部播完接在线流」那一下切换
+    /// （切换必然有一瞬闪烁/缓冲，长痛不如短痛）
+    private func store(id: String) async {
         guard let a = pending[id], a.images.isEmpty, a.play != nil else { return }
-        if full, Self.localURL(a.id) != nil { return }
+        if Self.localURL(a.id) != nil { return }
         if failed.contains(a.id) { return }
-        // 先拿头部：Range 只要 2.5MB，几秒内完成；刷过来时能本地起播
-        if Self.headFile(id) == nil { await storeHead(id: id) }
-        guard full, !Task.isCancelled else { return }
+        // 超长的视频整条太大，干脆不缓存，直接走在线流（不会闪，只是首帧慢一点）
+        guard a.duration <= Self.maxDuration else { return }
+        if Task.isCancelled { return }
         await storeFull(id: id)
     }
 

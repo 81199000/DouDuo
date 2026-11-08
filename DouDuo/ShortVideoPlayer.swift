@@ -158,6 +158,11 @@ struct PlayerPage: View {
     /// 秒开期间：高清播放器（静音、几乎透明地叠在低清上面缓冲），就绪后淡入接管
     @State private var hdPlayer: AVPlayer?
     @State private var hdVisible = false
+    /// 头部缓存播完要接在线流：提前预热好，到点直接换图层里的 player（不重建、不重新缓冲）
+    @State private var nextPlayer: AVPlayer?
+    @State private var nextPrimedAt: Double = 0
+    @State private var nextOpacity: Double = 0
+    @State private var stalledTicks = 0
     @State private var fastT0 = Date()
     private let playbackID = UUID()
 
@@ -170,8 +175,18 @@ struct PlayerPage: View {
             } else if let player {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
-                VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true } })
-                    .ignoresSafeArea()
+                ZStack {
+                    VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true } })
+                        .ignoresSafeArea()
+                    // 头部缓存接在线流：新播放器先叠在上面亮相（已缓冲、时间点对齐），再撤掉旧的，
+                    // 避免换 AVPlayerLayer 的 player 时断帧
+                    if let np = nextPlayer {
+                        VideoSurface(player: np, fillWidth: fillWidth)
+                            .ignoresSafeArea()
+                            .opacity(nextOpacity)
+                            .allowsHitTesting(false)
+                    }
+                }
             } else {
                 ProgressView().tint(.white)
             }
@@ -382,10 +397,15 @@ struct PlayerPage: View {
     @discardableResult
     private func continueFromRemote(_ p: AVPlayer) -> Bool {
         guard !continued, let remote = continuationURL else { return false }
-        continued = true
         let start = headEndSeconds ?? p.currentTime().seconds
+        // 预热好的播放器直接接管：图层里的 player 从 p 换成 np（都不是 nil，不重建 surface）
+        if let np = nextPlayer, np.currentItem?.status == .readyToPlay {
+            handOver(to: np, from: p, at: start, primed: true)
+            return true
+        }
+        continued = true
         #if DEBUG
-        ddWrite("DDHEAD continue remote at \(String(format: "%.1f", start))")
+        ddWrite("DDHEAD continue remote(cold) at \(String(format: "%.1f", start))")
         #endif
         teardownPlayerOnly()
         let np = AVPlayer(playerItem: AVPlayerItem(asset: DYMedia.asset(remote)))
@@ -397,6 +417,63 @@ struct PlayerPage: View {
         isPlaying = true
         watchdog(np)
         return true
+    }
+
+    /// 距接续点还有几秒时，先把在线流的播放器拉起来缓冲（静音、不显示），到点零等待接管
+    private func primeContinuation() {
+        guard !continued, nextPlayer == nil, let remote = continuationURL, let h = headEndSeconds, h > 0 else { return }
+        // 整条已经下完（多数视频在播到接续点前就下完了）→ 直接读本地文件续播，
+        // 本地 seek 是瞬时的，切换后不会再有等网络缓冲的卡顿
+        let localFull = DYVideoCache.localURL(id)
+        let src = localFull ?? remote
+        let np = AVPlayer(playerItem: AVPlayerItem(asset: DYMedia.asset(src)))
+        np.automaticallyWaitsToMinimizeStalling = true
+        np.isMuted = true
+        // 缓冲就绪后停住；接续点前后各留一点已缓冲数据，切换时 seek 是瞬时的
+        np.seek(to: CMTime(seconds: max(0, h - 0.4), preferredTimescale: 600),
+                toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            DispatchQueue.main.async {
+                np.play()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { if self.nextPlayer === np { np.pause() } }
+            }
+        }
+        nextOpacity = 0.01          // 极低透明度常驻：layer 一直在出帧，切换时只改透明度，不来不急建层
+        nextPlayer = np
+        nextPrimedAt = h
+        #if DEBUG
+        ddWrite("DDHEAD prime at \(String(format: "%.1f", h)) src=\(localFull != nil ? "local" : "remote")")
+        #endif
+    }
+
+    /// 把画面和时间轴从旧 player 交接到新 player：新画面先叠上层亮相，再撤旧层，全程不断帧
+    private func handOver(to np: AVPlayer, from old: AVPlayer, at start: Double, primed: Bool) {
+        guard !continued else { return }
+        continued = true
+        #if DEBUG
+        ddWrite("DDHEAD continue remote at \(String(format: "%.1f", start)) primed=\(primed)")
+        #endif
+        let wasPlaying = isPlaying
+        np.isMuted = muted
+        // 先把它精确定位到接续点（预热过的话这段是已缓冲区间，seek 基本瞬时），
+        // seek 完成才让它亮相，避免露出预热时的错帧
+        np.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            DispatchQueue.main.async {
+                if wasPlaying { np.play() }
+                self.nextOpacity = 1
+                // 新画面已经在顶层播同一位置 → 把主 player 换过去（此时 layer 换绑不会露黑）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    if let t = self.timeToken { old.removeTimeObserver(t); self.timeToken = nil }
+                    if let o = self.endObserver { NotificationCenter.default.removeObserver(o); self.endObserver = nil }
+                    self.player = np
+                    self.nextOpacity = 0
+                    self.nextPlayer = nil
+                    self.attachObservers(np)
+                    self.isPlaying = wasPlaying
+                    self.watchdog(np)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { old.replaceCurrentItem(with: nil) }
+                }
+            }
+        }
     }
 
     private func setup() {
@@ -704,6 +781,24 @@ struct PlayerPage: View {
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
                 dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
+                // 头部缓存 → 在线流：提前预热，到点直接交接（不等 ended，避免尾部没数据干等）
+                if let h = headEndSeconds, h > 0, !continued {
+                    if nextPlayer == nil, t.seconds > h - 4 { primeContinuation() }
+                    if t.seconds >= h - 0.12, let np = nextPlayer, np.currentItem?.status == .readyToPlay {
+                        DispatchQueue.main.async { if !continued { handOver(to: np, from: p, at: h, primed: true) } }
+                    }
+                    // 兜底：预估接续点比真实可播长度乐观时，头部数据会先耗尽（rate 掉 0、时间不动），
+                    // 这时候立刻交接，不让画面干等
+                    if isPlaying, !seeking, p.rate == 0, let np = nextPlayer, np.currentItem?.status == .readyToPlay {
+                        stalledTicks += 1
+                        if stalledTicks >= 4 {
+                            let at = max(t.seconds, 0.5)
+                            DispatchQueue.main.async { if !continued { handOver(to: np, from: p, at: at, primed: true) } }
+                        }
+                    } else {
+                        stalledTicks = 0
+                    }
+                }
             }
         }
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
@@ -759,6 +854,7 @@ struct PlayerPage: View {
         if let p = player { onSavePosition(p.currentTime().seconds) }
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+        if let np = nextPlayer { np.pause(); np.replaceCurrentItem(with: nil); nextPlayer = nil }
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
