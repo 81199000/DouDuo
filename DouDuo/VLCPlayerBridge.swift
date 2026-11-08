@@ -76,6 +76,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
 
     var onProgress: ((Double) -> Void)?
     var onEnd: (() -> Void)?
+    var onError: (() -> Void)?
     private var seekTarget: Double?       // seek 后短暂屏蔽回调防抖
     private var lastReported: Double = 0  // 上次回调值，防回退抖动
     private var pendingURL: URL?          // 等 drawable 就绪再 play
@@ -218,7 +219,10 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
             case .ended:
                 isPlaying = false
                 onEnd?()
-            case .stopped, .error:
+            case .error:
+                isPlaying = false
+                onError?()
+            case .stopped:
                 // stop()/换流不是自然播完，不能触发自动下一条或循环回调。
                 isPlaying = false
             default:
