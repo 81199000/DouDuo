@@ -138,6 +138,250 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "head-cache-continued")
     }
 
+    // MARK: - 演示视频分幕（每幕单独录屏）
+
+    /// 幕2 合盖外屏：刷推荐流
+    func testTourOuter() throws {
+        let app = XCUIApplication()
+        app.launch()
+        sleep(13)
+        for _ in 0..<2 {
+            let s = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
+            let e = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.28))
+            s.press(forDuration: 0.12, thenDragTo: e, withVelocity: .slow, thenHoldForDuration: 0)
+            sleep(5)
+        }
+    }
+
+    /// 幕6 设置：竖屏 70% + 短视频 70%
+    func testTourSettings() throws {
+        let app = XCUIApplication()
+        app.launch()
+        sleep(13)
+        app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }?.tap()
+        sleep(3)
+        app.buttons["设置"].firstMatch.tap()
+        sleep(4)
+        let any = { (kw: String) in
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label CONTAINS %@", kw))
+                .allElementsBoundByIndex.first { $0.isHittable && $0.frame.width > 20 }
+        }
+        any("竖屏占比")?.tap()
+        sleep(4)
+        app.buttons["70%"].firstMatch.tap()
+        sleep(3)
+        any("竖屏短视频占比")?.tap()
+        sleep(4)
+        app.buttons["短视频 70%"].firstMatch.tap()
+        sleep(3)
+        app.tap()
+        sleep(4)
+    }
+
+    /// 幕7 液态玻璃胶囊：点赞 / 收藏反馈
+    func testTourRail() throws {
+        let app = XCUIApplication()
+        app.launch()
+        sleep(13)
+        for id in ["douyin.like", "douyin.favorite"] {
+            let b = app.buttons.matching(identifier: id).allElementsBoundByIndex.first { $0.isHittable }
+            b?.tap()
+            sleep(4)
+            b?.tap()
+            sleep(3)
+        }
+    }
+
+    /// 幕5 半折叠桌面式：滑评论
+    func testTourFold() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_FOLD"] = "1"
+        app.launch()
+        sleep(26)
+        let s = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
+        let e = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        s.press(forDuration: 0.12, thenDragTo: e, withVelocity: .slow, thenHoldForDuration: 0)
+        sleep(5)
+        s.press(forDuration: 0.12, thenDragTo: e, withVelocity: .slow, thenHoldForDuration: 0)
+        sleep(4)
+    }
+
+    /// 幕9 直播：分类按钮 → 进原生直播间
+    func testTourLive() throws {
+        let app = XCUIApplication()
+        app.launch()
+        sleep(13)
+        app.buttons["直播"].firstMatch.tap()
+        sleep(9)
+        app.buttons["live.categories"].firstMatch.tap()
+        sleep(6)
+        app.buttons["推荐直播"].firstMatch.tap()
+        sleep(9)
+        app.buttons.matching(identifier: "live.room.enter").firstMatch.tap()
+        sleep(14)
+    }
+
+    /// 幕3 展开宽屏（iPad）：点评论 → 右侧滑出
+    func testTourWide() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .portrait
+        sleep(14)
+        let b = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+        b?.tap()
+        sleep(6)
+        let s = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.6))
+        let e = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.25))
+        s.press(forDuration: 0.12, thenDragTo: e, withVelocity: .slow, thenHoldForDuration: 0)
+        sleep(5)
+    }
+
+    /// 截图用（iPad 宽屏）：点开评论 → 右侧滑出
+    func testCaptureWideComment() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .portrait
+        sleep(14)
+        let btn = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+        btn?.tap()
+        sleep(5)
+        attach(app, "wide-comment")
+    }
+
+    /// 截图用（iPad 横屏 + 半折叠）：书本式左右分
+    func testCaptureBookFold() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_FOLD"] = "1"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(16)
+        attach(app, "book-fold")
+    }
+
+    /// 截图用：保持横屏 40 秒，外部用 simctl 抓物理屏
+    func testHoldLandscape() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_FOLD"] = "1"
+        app.launch()
+        sleep(10)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(40)
+    }
+
+    /// 截图用：横屏 + 宽屏布局（评论右侧滑出）
+    func testCaptureLandscapeWide() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(12)
+        let btn = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+        btn?.tap()
+        sleep(4)
+        attach(app, "land-wide")
+    }
+
+    /// 截图用：横屏 + 强制半折叠（书本式左右分）
+    func testCaptureLandscapeFold() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_FOLD"] = "1"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(14)
+        attach(app, "land-fold")
+    }
+
+    /// 录屏版：先手动启动 App 再开录，这里只接管前台，画面从第一帧就是 App
+    func testFeatureTourActive() throws {
+        let app = XCUIApplication()
+        app.activate()
+        sleep(2)
+        app.buttons["推荐"].firstMatch.tap()
+        sleep(4)
+        let current = app.staticTexts["douyin.currentID"]
+        _ = XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 40)
+        sleep(4)
+
+        // 更多 → 设置：短视频占比（展示 4 秒 + 选项 5 秒）
+        app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }?.tap()
+        sleep(3)
+        app.buttons["设置"].firstMatch.tap()
+        sleep(4)
+        app.buttons["竖屏短视频占比（3 分钟内）"].firstMatch.tap()
+        sleep(5)
+        app.buttons["短视频 70%"].firstMatch.tap()
+        sleep(2)
+        app.tap()
+        sleep(3)
+
+        // 直播：分类按钮 → 面板 → 专区 → 进房
+        app.buttons["直播"].firstMatch.tap()
+        sleep(5)
+        app.buttons["live.categories"].firstMatch.tap()
+        sleep(5)
+        app.buttons["英雄联盟"].firstMatch.tap()
+        sleep(6)
+        app.buttons.matching(identifier: "live.room.enter").firstMatch.tap()
+        sleep(6)
+
+        // 直播间：更多 → 清屏 → 恢复
+        app.buttons["live.room.more"].firstMatch.tap()
+        sleep(3)
+        app.buttons["清屏"].firstMatch.tap()
+        sleep(4)
+        app.buttons["live.room.restore"].firstMatch.tap()
+        sleep(3)
+        app.buttons["live.room.close"].firstMatch.tap()
+        sleep(4)
+        app.buttons["推荐"].firstMatch.tap()
+        sleep(4)
+        attach(app, "tour-active-end")
+    }
+
+    /// 功能演示脚本（录屏用）：按固定节奏走一遍新功能，不做断言，只保证画面走位
+    func testFeatureTour() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        _ = XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 60)
+        sleep(3)
+
+        // 更多 → 设置：短视频占比
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+        more?.tap()
+        sleep(2)
+        app.buttons["设置"].firstMatch.tap()
+        sleep(2)
+        app.buttons["竖屏短视频占比（3 分钟内）"].firstMatch.tap()
+        sleep(2)
+        app.buttons["短视频 70%"].firstMatch.tap()
+        sleep(2)
+        app.tap()
+        sleep(2)
+
+        // 直播：分类按钮 → 专区 → 进房 → 清屏 → 退出
+        app.buttons["直播"].firstMatch.tap()
+        sleep(4)
+        app.buttons["live.categories"].firstMatch.tap()
+        sleep(3)
+        app.buttons["英雄联盟"].firstMatch.tap()
+        sleep(5)
+        app.buttons.matching(identifier: "live.room.enter").firstMatch.tap()
+        sleep(4)
+        app.buttons["live.room.more"].firstMatch.tap()
+        sleep(2)
+        app.buttons["清屏"].firstMatch.tap()
+        sleep(2)
+        app.buttons["live.room.restore"].firstMatch.tap()
+        sleep(2)
+        app.buttons["live.room.close"].firstMatch.tap()
+        sleep(3)
+        app.buttons["推荐"].firstMatch.tap()
+        sleep(4)
+        attach(app, "tour-end")
+    }
+
     func testConditionalTitleExpansion() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_TITLETEST"] = "1"
