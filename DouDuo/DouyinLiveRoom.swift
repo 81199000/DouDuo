@@ -225,7 +225,7 @@ struct DYLiveFeed: View {
                         Spacer()
                     }
                     .padding(.horizontal, 18)
-                    .padding(.top, hSize == .compact ? 72 : 86)
+                    .padding(.top, hSize == .compact ? 46 : 74)
                 }
                 #if DEBUG
                 VStack {
@@ -236,7 +236,10 @@ struct DYLiveFeed: View {
                 #endif
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
         }
+        // 分页与 drawable 使用同一整屏视口，不能只让 ScrollView 越过底部安全区。
+        .ignoresSafeArea(.container, edges: .bottom)
         .background(DYLiveChatHost(chat: chat).frame(width: 1, height: 1).allowsHitTesting(false))
         .onAppear { if active { model.activate() } }
         .onChange(of: active) { _, value in
@@ -320,6 +323,7 @@ struct DYLiveFeed: View {
         .scrollPosition(id: $scrollID)
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
+        .ignoresSafeArea(.container, edges: .bottom)
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
@@ -467,6 +471,10 @@ private struct DYLiveRoomPage: View {
             }
             .foregroundStyle(foreground)
         }
+        #if DEBUG
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("live.page.\(room.id)")
+        #endif
     }
 
     private var avatar: some View {

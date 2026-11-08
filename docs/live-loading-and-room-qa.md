@@ -18,6 +18,10 @@
 - 真机 `testNativeLivePerformance`（21.058s）与 `testNativeLiveRoomFlow`（24.394s）均通过；三间新闻/戏曲/游戏直播截图都有实际视频画面，进退房及切台不是仅模拟器测试。
 - Release archive 与 Ad Hoc export 均成功；手机安装后读回为 1.3.3 / build 45。
 
+## build 46/47 修正
+- 老板截图发现直播预览底部漏出下一间的封面：每页用 `containerRelativeFrame` 只拿到扣除底部安全区的视口高度（实测 644 vs 窗口 678），ScrollView 却仍铺到屏底。修法：分页容器与整层同时 `.ignoresSafeArea(.container, edges: .bottom)` 并 `.clipped()`，让页高与 drawable 用同一整屏视口。回归用例 `testLivePagesFillViewport` 断言页高与页底和窗口完全一致；修复前红（644≠678），修复后绿。
+- 顶栏页签行内 padding 与文字位置没动（老板已验收的内屏对齐时间/外屏贴顶规则不能顺带改）；只把直播预览「分类」按钮的顶部间距收窄：外屏 72→46、内屏 86→74（内屏顶栏下沿约 73，留 1pt 不重叠）。
+
 ## 性能口径
 - 同批 4 房间在本机 ffmpeg 协议探针中解出首帧：FLV 0.097–0.316s，HLS 0.496–2.643s。这不是手机成绩，也不能证明当前 VLCKit 支持所有 FLV 编码。
 - 模拟器实际 App 最近一轮 HLS 拉流到视频输出就绪：1.124s、2.012s、1.823s；一条兼容游戏 FLV 为 0.633s。不同直播间/网络时刻，不作严格前后 A/B 倍率比较。

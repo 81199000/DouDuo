@@ -31,6 +31,31 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    func testLivePagesFillViewport() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let current = app.staticTexts["live.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        let loaded = expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)
+        XCTAssertEqual(XCTWaiter().wait(for: [loaded], timeout: 40), .completed)
+        for index in 0..<2 {
+            let id = current.label
+            let page = app.otherElements["live.page.\(id)"]
+            XCTAssertTrue(page.waitForExistence(timeout: 5))
+            let window = app.windows.firstMatch.frame
+            XCTAssertEqual(page.frame.height, window.height, accuracy: 1, "直播页必须覆盖实际视口，不能少掉底部安全区")
+            XCTAssertEqual(page.frame.maxY, window.maxY, accuracy: 1, "静止时页底必须与窗口底边重合")
+            attach(app, "live-page-fill-\(index)")
+            if index == 0 {
+                app.swipeUp(velocity: .slow)
+                let changed = expectation(for: NSPredicate(format: "label != %@", id), evaluatedWith: current)
+                XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 10), .completed)
+                sleep(1)
+            }
+        }
+    }
+
     func testNativeLiveRoomFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
