@@ -13,7 +13,7 @@ import AVFoundation
 
 // MARK: - 数据
 
-struct DYAweme: Identifiable, Codable, Equatable {
+struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let desc: String
     let width: Double
@@ -858,7 +858,7 @@ final class DYFeedModel: ObservableObject {
             if let r = targetRatio, !relaxed {
                 // 均匀穿插（类似 Bresenham）：每条攒 r 份「竖屏额度」，满 1 份就放竖屏，例如 70% → 竖横竖竖横竖竖…
                 wantPortrait = r >= 1 ? true : r <= 0 ? false : (mixCredit + r >= 1)
-                idx = pool.firstIndex { Self.isPortrait($0) == wantPortrait! }
+                idx = pickIndex(wantPortrait: wantPortrait!)
             } else {
                 idx = 0
             }
@@ -871,6 +871,23 @@ final class DYFeedModel: ObservableObject {
             n += 1
         }
         return n
+    }
+
+    /// 竖屏优先短视频、横屏优先长视频：只在同方向的候选里、前 8 条内挑，
+    /// 不会把推荐顺序整体打乱（网页推荐里 60 秒以下几乎没有，竖屏也常是中长视频）。
+    private func pickIndex(wantPortrait: Bool) -> Int? {
+        let matches = pool.indices.filter { Self.isPortrait(pool[$0]) == wantPortrait }
+        guard let first = matches.first else { return nil }
+        let window = Array(matches.prefix(20))
+        if wantPortrait {
+            // 竖屏以短视频为主：60 秒内优先，其次 120 秒内，再退到候选里最短的
+            for cap in [60.0, 120.0] {
+                if let i = window.first(where: { pool[$0].duration > 0 && pool[$0].duration <= cap }) { return i }
+            }
+            return window.min { pool[$0].duration < pool[$1].duration } ?? first
+        }
+        // 横屏以长视频为主
+        return window.max { pool[$0].duration < pool[$1].duration } ?? first
     }
 
     /// 方向 / 比例变了：当前条之后的重新按比例排（当前这条不动，不打断播放）
@@ -996,6 +1013,7 @@ struct DouyinFeedScreen: View {
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
@@ -1301,9 +1319,10 @@ struct DouyinFeedScreen: View {
         preloader.update(feed.items, current: i)
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
+        let currentItem = feed.items[i]
         Task {
             await DYVideoCache.shared.markWatched(curID)
-            await DYVideoCache.shared.enqueue(ahead)
+            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
         }
         // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
         let want = max(6, min(DYVideoCache.limit, 60))
@@ -1313,7 +1332,7 @@ struct DouyinFeedScreen: View {
                 await feed.loadMore(bridge)
                 if let j = currentIndex {
                     preloader.update(feed.items, current: j)
-                    await DYVideoCache.shared.enqueue(Array(feed.items.dropFirst(j + 1)))
+                    await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
                     if feed.items.count - j - 1 < want { focusCurrent() }
                 }
             }
@@ -1785,7 +1804,10 @@ struct DYVideoPage: View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
-                let url = DYVideoCache.localURL(item.id) ?? remote
+                let full = DYVideoCache.localURL(item.id)
+                let head = full == nil ? DYVideoCache.headFile(item.id) : nil
+                let headSecs = head == nil ? nil : DYVideoCache.headPlayableSeconds(item.id)
+                let url = full ?? head ?? remote
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
@@ -1803,7 +1825,9 @@ struct DYVideoPage: View {
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
-                                    videoAspect: item.height > 0 ? item.width / item.height : 0)
+                                    videoAspect: item.height > 0 ? item.width / item.height : 0,
+                                    headEndSeconds: headSecs,
+                                    continuationURL: head == nil ? nil : remote)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in
