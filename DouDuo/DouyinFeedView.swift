@@ -1951,7 +1951,7 @@ struct DYVideoPage: View {
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: 12) {
-            VStack(spacing: 12) {
+            VStack(spacing: 7) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
@@ -1959,7 +1959,7 @@ struct DYVideoPage: View {
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 12)
+            .padding(.vertical, 9)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
