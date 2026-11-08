@@ -35,13 +35,13 @@ actor DYVideoCache {
     static let countKey = "douyin_cache_count_v1"
     static let defaultCount = 50
     /// 超过这个时长不整条下载，只缓存头部
-    static let maxDuration: Double = 300
+    static let maxDuration: Double = 600
     /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
-    static let headBytes = 2_500_000
+    static let headBytes = 4_000_000
     /// 后面几条做头部预取（刷过来不卡的关键）
     static let headPrefetch = 2
     /// 保守按 3.2 Mbps 折算，宁可早一点切在线流，也不要播到没数据的尾部
-    static let assumeBitsPerSecond: Double = 3_200_000
+    static let assumeBitsPerSecond: Double = 2_500_000
     static let maxBytes = 2 * 1024 * 1024 * 1024
 
     struct Entry: Codable {
@@ -88,7 +88,7 @@ actor DYVideoCache {
     nonisolated static func headPlayableSeconds(_ id: String) -> Double? {
         guard let f = headFile(id),
               let size = (try? FileManager.default.attributesOfItem(atPath: f.path)[.size]) as? Int else { return nil }
-        let s = Double(size) * 8 / assumeBitsPerSecond - 1.5
+        let s = Double(size) * 8 / assumeBitsPerSecond - 2.0
         return s > 1 ? s : nil
     }
 
@@ -168,64 +168,76 @@ actor DYVideoCache {
     }
 
     /// 头部缓存：Range 请求前 2.5MB（服务端忽略 Range 返回整条时截取前段）
+    /// 抖音直连 CDN 的 play 地址对 App 自己的请求会 403（播放器能播）；
+    /// 实测 `/aweme/v1/play/`（带 sign，302 跳 CDN）和 playFast 可以正常下载。
+    private func downloadURLs(_ a: DYAweme) -> [URL] {
+        [a.playAlt, a.playFast, a.play].compactMap { $0 }.compactMap { URL(string: $0) }
+    }
+
     private func storeHead(id: String) async {
-        guard let a = pending[id], let s = a.play, let u = URL(string: s) else { return }
-        var r = URLRequest(url: u)
-        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-        r.setValue("bytes=0-\(Self.headBytes - 1)", forHTTPHeaderField: "Range")
-        DYLiveModel.log("DDHEAD url=\(u.absoluteString)")
+        guard let a = pending[id] else { return }
         let t0 = Date()
         Self.activeDownloads = 1
         defer { Self.activeDownloads = 0 }
-        do {
-            let (data, resp) = try await session.data(for: r)
-            guard let h = resp as? HTTPURLResponse else { failed.insert(a.id); return }
-            if h.statusCode != 200, h.statusCode != 206 {
-                DYLiveModel.log("DDHEAD status=\(h.statusCode) id=\(a.id)")
-                failed.insert(a.id); return
+        for u in downloadURLs(a) {
+            if Task.isCancelled { return }
+            var r = URLRequest(url: u)
+            DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            r.setValue("bytes=0-\(Self.headBytes - 1)", forHTTPHeaderField: "Range")
+            do {
+                let (data, resp) = try await session.data(for: r)
+                guard let h = resp as? HTTPURLResponse else { continue }
+                guard h.statusCode == 200 || h.statusCode == 206 else {
+                    DYLiveModel.log("DDHEAD status=\(h.statusCode) host=\(u.host ?? "-") id=\(a.id)")
+                    continue
+                }
+                let slice = data.count > Self.headBytes ? data.prefix(Self.headBytes) : data
+                guard slice.count > 120_000 else { continue }
+                try slice.write(to: Self.headURL(a.id))
+                heads.removeAll { $0.id == a.id }
+                heads.append(Head(id: a.id, bytes: slice.count, added: Date().timeIntervalSince1970))
+                let cap = max(Self.limit * 2, 40)
+                if heads.count > cap { heads.removeFirst(heads.count - cap) }
+                saveHeads()
+                DYLiveModel.log("DDHEAD ok \(a.id) \(slice.count / 1024)KB host=\(u.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
+                return
+            } catch {
+                DYLiveModel.log("DDHEAD fail host=\(u.host ?? "-") \(error.localizedDescription)")
             }
-            let slice = data.count > Self.headBytes ? data.prefix(Self.headBytes) : data
-            guard slice.count > 120_000 else { failed.insert(a.id); return }
-            try slice.write(to: Self.headURL(a.id))
-            heads.removeAll { $0.id == a.id }
-            heads.append(Head(id: a.id, bytes: slice.count, added: Date().timeIntervalSince1970))
-            let cap = max(Self.limit * 2, 40)
-            if heads.count > cap { heads.removeFirst(heads.count - cap) }
-            saveHeads()
-            DYLiveModel.log("DDHEAD ok \(a.id) \(slice.count / 1024)KB \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
-        } catch {
-            if !Task.isCancelled { failed.insert(a.id) }
-            DYLiveModel.log("DDHEAD fail \(a.id) \(error.localizedDescription)")
         }
+        if !Task.isCancelled { failed.insert(a.id) }
     }
 
     /// 整条缓存（≤300 秒的视频才做；划走会取消，头部缓存已留下）
     private func storeFull(id: String) async {
-        guard let a = pending[id], let s = a.play, let u = URL(string: s) else { return }
-        var r = URLRequest(url: u)
-        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
+        guard let a = pending[id] else { return }
         let t0 = Date()
-        DYLiveModel.log("DDCACHE url=\(u.absoluteString)")
-        do {
-            let (tmp, resp) = try await session.download(for: r)
-            if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
-                DYLiveModel.log("DDCACHE status=\(h.statusCode) id=\(a.id)")
-                throw URLError(.badServerResponse)
+        for u in downloadURLs(a) {
+            if Task.isCancelled { return }
+            var r = URLRequest(url: u)
+            DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
+            do {
+                let (tmp, resp) = try await session.download(for: r)
+                if let h = resp as? HTTPURLResponse, h.statusCode >= 400 {
+                    DYLiveModel.log("DDCACHE status=\(h.statusCode) host=\(u.host ?? "-") id=\(a.id)")
+                    continue
+                }
+                let dst = Self.fileURL(a.id)
+                try? FileManager.default.removeItem(at: dst)
+                try FileManager.default.moveItem(at: tmp, to: dst)
+                let bytes = ((try? FileManager.default.attributesOfItem(atPath: dst.path)[.size]) as? Int) ?? 0
+                guard bytes > 50_000 else { try? FileManager.default.removeItem(at: dst); continue }
+                entries.removeAll { $0.aweme.id == a.id }
+                entries.append(Entry(aweme: a, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
+                evict()
+                save()
+                DYLiveModel.log("DDCACHE ok \(a.id) \(bytes / 1024)KB host=\(u.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
+                return
+            } catch {
+                DYLiveModel.log("DDCACHE fail host=\(u.host ?? "-") \(error.localizedDescription)")
             }
-            let dst = Self.fileURL(a.id)
-            try? FileManager.default.removeItem(at: dst)
-            try FileManager.default.moveItem(at: tmp, to: dst)
-            let bytes = ((try? FileManager.default.attributesOfItem(atPath: dst.path)[.size]) as? Int) ?? 0
-            guard bytes > 50_000 else { try? FileManager.default.removeItem(at: dst); throw URLError(.zeroByteResource) }
-            entries.removeAll { $0.aweme.id == a.id }
-            entries.append(Entry(aweme: a, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
-            evict()
-            save()
-            DYLiveModel.log("DDCACHE ok \(a.id) \(bytes / 1024)KB \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
-        } catch {
-            if !Task.isCancelled { failed.insert(a.id) }
-            DYLiveModel.log("DDCACHE fail \(a.id) \(error.localizedDescription)")
         }
+        if !Task.isCancelled { failed.insert(a.id) }
     }
 
     func markWatched(_ id: String) {

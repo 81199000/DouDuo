@@ -812,6 +812,10 @@ final class DYFeedModel: ObservableObject {
     /// 竖屏占比（拿手机竖着看时）：-1 = 不限（网页推荐原样，约八成横屏）；30/50/70；100 = 只看竖屏。
     /// 网页推荐里竖屏偏少，按比例从拉到的视频里挑；多出来的先放进候选池，下次直接用，不浪费。
     @AppStorage("douyin_portrait_ratio_v1") var portraitRatio = 70
+    /// 竖屏播放时「短视频」的目标占比（0–100）
+    @AppStorage("douyin_short_ratio_portrait_v1") var shortRatioPortrait = 70
+    /// 横屏播放时「短视频」的目标占比（0–100）
+    @AppStorage("douyin_short_ratio_landscape_v1") var shortRatioLandscape = 70
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
@@ -822,6 +826,9 @@ final class DYFeedModel: ObservableObject {
     var pool: [DYAweme] = []
     static let poolCap = 80
     private var mixCredit: Double = 0
+    private var shortCredit: Double = 0
+    /// 短视频判定：3 分钟内（网页推荐里 60 秒内的几乎为 0，用 3 分钟才凑得出占比）
+    static func isShort(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= 180 }
 
     init() {
         // 旧版「只看竖屏」开着的，迁移成 100%
@@ -841,10 +848,12 @@ final class DYFeedModel: ObservableObject {
 
     var mixLabel: String {
         if screenWide && landscapeWhenWide { return "横屏中：只放横屏" }
+        let short = screenWide ? shortRatioLandscape : shortRatioPortrait
+        let shortText = short < 0 ? "短视频不限" : (short >= 100 ? "只短视频" : "短视频 \(short)%")
         switch portraitRatio {
-        case ..<0: return "不限"
-        case 100...: return "只看竖屏"
-        default: return "竖屏 \(portraitRatio)%"
+        case ..<0: return "竖横不限 · \(shortText)"
+        case 100...: return "只看竖屏 · \(shortText)"
+        default: return "竖屏 \(portraitRatio)% · \(shortText)"
         }
     }
 
@@ -858,7 +867,7 @@ final class DYFeedModel: ObservableObject {
             if let r = targetRatio, !relaxed {
                 // 均匀穿插（类似 Bresenham）：每条攒 r 份「竖屏额度」，满 1 份就放竖屏，例如 70% → 竖横竖竖横竖竖…
                 wantPortrait = r >= 1 ? true : r <= 0 ? false : (mixCredit + r >= 1)
-                idx = pickIndex(wantPortrait: wantPortrait!)
+                idx = pickIndex(wantPortrait: wantPortrait!, wantShort: wantedShort())
             } else {
                 idx = 0
             }
@@ -868,6 +877,11 @@ final class DYFeedModel: ObservableObject {
             if let r = targetRatio, r > 0, r < 1 {
                 mixCredit = (mixCredit + r - (Self.isPortrait(a) ? 1 : 0)).clamped(-1, 1)
             }
+            let pct = screenWide ? shortRatioLandscape : shortRatioPortrait
+            if pct > 0, pct < 100 {
+                let sr = Double(pct) / 100
+                shortCredit = (shortCredit + sr - (Self.isShort(a) ? 1 : 0)).clamped(-1, 1)
+            }
             n += 1
         }
         return n
@@ -875,19 +889,26 @@ final class DYFeedModel: ObservableObject {
 
     /// 竖屏优先短视频、横屏优先长视频：只在同方向的候选里、前 8 条内挑，
     /// 不会把推荐顺序整体打乱（网页推荐里 60 秒以下几乎没有，竖屏也常是中长视频）。
-    private func pickIndex(wantPortrait: Bool) -> Int? {
+    /// 当前方向下这一条要不要短视频（按设置比例均匀穿插）
+    private func wantedShort() -> Bool? {
+        let pct = screenWide ? shortRatioLandscape : shortRatioPortrait
+        guard pct >= 0, pct <= 100 else { return nil }
+        if pct >= 100 { return true }
+        if pct <= 0 { return false }
+        let r = Double(pct) / 100
+        return shortCredit + r >= 1
+    }
+
+    private func pickIndex(wantPortrait: Bool, wantShort: Bool?) -> Int? {
         let matches = pool.indices.filter { Self.isPortrait(pool[$0]) == wantPortrait }
         guard let first = matches.first else { return nil }
-        let window = Array(matches.prefix(20))
-        if wantPortrait {
-            // 竖屏以短视频为主：60 秒内优先，其次 120 秒内，再退到候选里最短的
-            for cap in [60.0, 120.0] {
-                if let i = window.first(where: { pool[$0].duration > 0 && pool[$0].duration <= cap }) { return i }
-            }
-            return window.min { pool[$0].duration < pool[$1].duration } ?? first
+        if let wantShort {
+            // 先找「方向 + 长短」都符合的；凑不到就退到只按方向挑（别让列表断粮）
+            let window = Array(matches.prefix(24))
+            if let i = window.first(where: { Self.isShort(pool[$0]) == wantShort }) { return i }
+            return first
         }
-        // 横屏以长视频为主
-        return window.max { pool[$0].duration < pool[$1].duration } ?? first
+        return first
     }
 
     /// 方向 / 比例变了：当前条之后的重新按比例排（当前这条不动，不打断播放）
@@ -898,6 +919,7 @@ final class DYFeedModel: ObservableObject {
         items.removeSubrange(keep...)
         pool = upcoming + pool
         mixCredit = 0
+        shortCredit = 0
         fill(max(upcoming.count, 6))
         trimPool()
     }
@@ -950,7 +972,7 @@ final class DYFeedModel: ObservableObject {
         }
     }
 
-    func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0 }
+    func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0; shortCredit = 0 }
 }
 
 struct DouyinFeedScreen: View {
@@ -1099,6 +1121,8 @@ struct DouyinFeedScreen: View {
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.portraitRatio) { _, _ in remixUpcoming() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
+        .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
+        .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
@@ -1697,7 +1721,26 @@ struct DouyinFeedScreen: View {
             Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
                 .accessibilityIdentifier("douyin.mine")
             Menu {
-                Toggle(isOn: $feed.landscapeWhenWide) { Label("横着看时只放横屏", systemImage: "rectangle") }
+                Picker(selection: $feed.shortRatioPortrait) {
+                    Text("不限").tag(-1)
+                    Text("短视频 30%").tag(30)
+                    Text("短视频 50%").tag(50)
+                    Text("短视频 70%").tag(70)
+                    Text("只看短视频").tag(100)
+                } label: { Label("竖屏短视频占比（3 分钟内）", systemImage: "rectangle.portrait") }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("douyin.short.portrait")
+                Picker(selection: $feed.shortRatioLandscape) {
+                    Text("不限").tag(-1)
+                    Text("短视频 30%").tag(30)
+                    Text("短视频 50%").tag(50)
+                    Text("短视频 70%").tag(70)
+                    Text("只看短视频").tag(100)
+                } label: { Label("横屏短视频占比（3 分钟内）", systemImage: "rectangle") }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("douyin.short.landscape")
+                Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
+                    .accessibilityIdentifier("douyin.landscape.only")
                 Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
                 Picker(selection: $cacheCount) {
                     Text("关闭").tag(0)
