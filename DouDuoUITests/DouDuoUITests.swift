@@ -69,6 +69,30 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(current.label, nextID, "停止滑动后不应因布局回写继续乱跳")
     }
 
+    /// 真机/模拟器均可跑；计时以 App 的 DDLIVE_READY 日志为准，截图另证是否实际出画。
+    func testNativeLivePerformance() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launchEnvironment["DOUDUO_LIVEPROBE"] = "1"
+        app.launch()
+        let current = app.staticTexts["live.currentID"]
+        let status = app.staticTexts["live.status"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        for index in 0..<3 {
+            let ready = expectation(for: NSPredicate(format: "label == '1'"), evaluatedWith: status)
+            XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 45), .completed, "当前房间没有视频输出")
+            guard app.state == .runningForeground else { throw XCTSkip("用户切走了 App，本次截图作废") }
+            let id = current.label
+            attach(app, "device-live-frame-\(index)")
+            let progress = app.staticTexts["live.time"].label
+            print("DDDEVICE_SAMPLE index=\(index) id=\(id) progress=\(progress)")
+            if index < 2 {
+                let changed = expectation(for: NSPredicate(format: "label != %@", id), evaluatedWith: current)
+                XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 30), .completed, "探针没有切到下一间")
+            }
+        }
+    }
+
     func testConditionalTitleExpansion() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_TITLETEST"] = "1"
