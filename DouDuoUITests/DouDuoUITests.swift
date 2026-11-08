@@ -2,6 +2,29 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testConditionalTitleExpansion() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_TITLETEST"] = "1"
+        app.launch()
+        let short = app.otherElements["title.short"]
+        let long = app.otherElements["title.long"]
+        XCTAssertTrue(short.waitForExistence(timeout: 10))
+        XCTAssertFalse(short.buttons["douyin.description.toggle"].exists, "短标题不应出现展开按钮")
+        let toggle = long.buttons["douyin.description.toggle"]
+        XCTAssertTrue(toggle.exists, "长标题被截断时应有展开按钮")
+        XCTAssertEqual(toggle.label, "展开")
+        let collapsedHeight = long.frame.height
+        toggle.tap()
+        XCTAssertEqual(toggle.label, "收起")
+        sleep(1)
+        XCTAssertGreaterThan(long.frame.height, collapsedHeight, "展开后应显示完整标题而不只是切换按钮文字")
+        attach(app, "expanded-title")
+        toggle.tap()
+        XCTAssertEqual(toggle.label, "展开")
+        sleep(1)
+        attach(app, "conditional-title")
+    }
+
     func testCompactLayoutAndAuthorEntry() throws {
         let app = XCUIApplication()
         app.launch()
