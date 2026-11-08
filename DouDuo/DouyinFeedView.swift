@@ -2122,7 +2122,7 @@ private struct DYLivePage: View {
 
 struct DYVideoPage: View {
     @Environment(\.horizontalSizeClass) private var hSize
-    private var railWidth: CGFloat { hSize == .compact ? 42 : 54 }
+    private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -2149,7 +2149,6 @@ struct DYVideoPage: View {
     var onEnded: (() -> Void)? = nil
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var heart = false
-    @State private var descExpanded = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
     @State private var saving = false
@@ -2331,20 +2330,8 @@ struct DYVideoPage: View {
                 .accessibilityIdentifier("douyin.author")
             }
             if !item.desc.isEmpty {
-                HStack(alignment: .bottom, spacing: 6) {
-                    Text(item.desc)
-                        .font(.subheadline)
-                        .foregroundStyle(fg)
-                        .lineLimit(descExpanded ? nil : 1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onTapGesture { descExpanded.toggle() }
-                        .accessibilityIdentifier("douyin.description")
-                    Button(descExpanded ? "收起" : "展开") { descExpanded.toggle() }
-                        .font(.caption)
-                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("douyin.description.toggle")
-                }
+                DYExpandableTitle(text: item.desc, foreground: fg,
+                                  secondary: theme.media.onMediaSecondary.color(for: scheme))
             }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
@@ -2358,7 +2345,7 @@ struct DYVideoPage: View {
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: 12) {
-            VStack(spacing: 14) {
+            VStack(spacing: 12) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
@@ -2366,7 +2353,7 @@ struct DYVideoPage: View {
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 14)
+            .padding(.vertical, 12)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
@@ -2378,15 +2365,17 @@ struct DYVideoPage: View {
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
             VStack(spacing: 2) {
-                Image(systemName: icon).font(.system(size: 22, weight: .regular)).foregroundStyle(tint)
-                    .frame(height: 26)
+                Image(systemName: icon)
+                    .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .regular))
+                    .foregroundStyle(tint)
+                    .frame(height: 34)
                 if !text.isEmpty {
                     Text(text).font(.caption2.weight(.medium)).monospacedDigit()
                         .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: railWidth, height: 46)
+            .frame(width: railWidth, height: text.isEmpty ? 44 : 56)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2425,9 +2414,9 @@ struct DYVideoPage: View {
             moreExtras
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .semibold))
                 .foregroundStyle(fg)
-                .frame(width: hSize == .compact ? 42 : 50, height: hSize == .compact ? 42 : 50)
+                .frame(width: 50, height: 50)
                 .contentShape(Circle())
                 .ddGlassCircle()
                 .frame(width: 54)
