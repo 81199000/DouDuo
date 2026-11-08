@@ -2,6 +2,31 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testCompactLayoutAndAuthorEntry() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 60), .completed)
+        sleep(3)
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.follow").allElementsBoundByIndex.contains { $0.isHittable })
+        let desc = app.staticTexts.matching(identifier: "douyin.description").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(desc)
+        if let desc { XCTAssertLessThan(desc.frame.height, 40, "标题默认应只有一行") }
+        let toggle = app.buttons.matching(identifier: "douyin.description.toggle").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(toggle)
+        toggle?.tap()
+        XCTAssertTrue(app.buttons["收起"].exists)
+        app.buttons["收起"].tap()
+        attach(app, "compact-single-line")
+        let author = app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(author)
+        author?.tap()
+        XCTAssertTrue(app.buttons["douyin.author.follow"].waitForExistence(timeout: 15))
+        attach(app, "author-follow-retained")
+        app.buttons["douyin.author.back"].tap()
+    }
+
     func testCoreFlow() throws {
         let app = XCUIApplication()
         app.launch()
