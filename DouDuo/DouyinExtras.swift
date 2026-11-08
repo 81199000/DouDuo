@@ -109,7 +109,19 @@ extension DouyinBridge {
     }
 
     func followFeed(cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        try await list(Self.followJS, ["cursor": cursor])
+        // 未登录时抖音的关注流接口不报错，会塞推荐内容（游客兜底）。
+        // 必须先确认登录态，否则「关注」页会显示一堆不是关注的人。
+        if cursor == "0" { _ = try await selfProfile() }
+        let r = try await list(Self.followJS, ["cursor": cursor])
+        #if DEBUG
+        if cursor == "0" {
+            let me = try? await selfProfile()
+            let who = me.map { "\($0.name)(关注\($0.following)/粉丝\($0.followers))" } ?? "未登录"
+            let names = r.items.prefix(6).map { "\($0.author.name)[f\($0.author.follow ?? -1)]" }.joined(separator: " | ")
+            DYLiveModel.log("DDFOLLOW me=\(who) n=\(r.items.count) more=\(r.hasMore) cur=\(r.cursor) first=\(names)")
+        }
+        #endif
+        return r
     }
 
     /// 搜索：网页接口只给第一页（翻第二页安全 SDK 直接压住不返回，换参数 / search_id 都一样）

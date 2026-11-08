@@ -993,7 +993,12 @@ struct DouyinFeedScreen: View {
     @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
-    @State private var tab: DYTab = ProcessInfo.processInfo.environment["DOUDUO_STARTLIVE"] == "1" ? .live : .recommend
+    @State private var tab: DYTab = {
+        let e = ProcessInfo.processInfo.environment
+        if e["DOUDUO_STARTLIVE"] == "1" { return .live }
+        if e["DOUDUO_STARTFOLLOW"] == "1" { return .follow }
+        return .recommend
+    }()
     @StateObject private var live = DYLiveModel()
     @State private var showSearch = false
     @State private var lastFeedPull = Date.distantPast
