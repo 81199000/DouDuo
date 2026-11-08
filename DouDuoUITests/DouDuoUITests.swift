@@ -2,6 +2,73 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    /// 只读采样手机上已安装的正式抖音 UI；默认跳过，不能用 DouDuo 页面冒充原版。
+    func testOriginalLiveReference() throws {
+        guard ProcessInfo.processInfo.environment["DOUDUO_ORIGINAL_REF"] == "1" else {
+            throw XCTSkip("仅在连接已安装正式抖音的真机时手动启用")
+        }
+        let app = XCUIApplication(bundleIdentifier: "com.ss.iphone.ugc.Aweme")
+        app.activate()
+        sleep(5)
+        guard app.state == .runningForeground else { throw XCTSkip("手机正在使用其他 App，停止采样") }
+        print("DDORIGINAL_HOME\n\(app.debugDescription)\nDDORIGINAL_END")
+        attach(app, "original-home")
+        let entry = app.descendants(matching: .any).matching(NSPredicate(format: "label == '直播'")).allElementsBoundByIndex.first { $0.isHittable }
+        if let entry {
+            entry.tap()
+            sleep(6)
+            guard app.state == .runningForeground else { throw XCTSkip("原版已不在前台，停止采样") }
+            print("DDORIGINAL_LIVE\n\(app.debugDescription)\nDDORIGINAL_END")
+            attach(app, "original-live")
+        }
+        let roomEntry = app.buttons.matching(NSPredicate(format: "label CONTAINS '点击进入直播间'")).firstMatch
+        if roomEntry.waitForExistence(timeout: 8), roomEntry.isHittable {
+            roomEntry.tap()
+            sleep(6)
+            guard app.state == .runningForeground else { throw XCTSkip("原版已不在前台，进房采样作废") }
+            print("DDORIGINAL_ROOM\n\(app.debugDescription)\nDDORIGINAL_END")
+            attach(app, "original-room")
+        }
+    }
+
+    func testNativeLiveRoomFlow() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let categories = app.buttons["live.categories"]
+        XCTAssertTrue(categories.waitForExistence(timeout: 15), "分类应收成一个按钮")
+        XCTAssertFalse(app.buttons["英雄联盟"].exists, "分类不能常驻")
+        categories.tap()
+        XCTAssertTrue(app.buttons["英雄联盟"].waitForExistence(timeout: 5))
+        attach(app, "live-category-picker")
+        app.buttons["live.categories.close"].tap()
+        let enter = app.buttons.matching(identifier: "live.room.enter").firstMatch
+        XCTAssertTrue(enter.waitForExistence(timeout: 30))
+        XCTAssertTrue(enter.isHittable)
+        let id = app.staticTexts["live.currentID"].label
+        enter.tap()
+        XCTAssertTrue(app.buttons["live.room.close"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["live.chat.input"].exists)
+        XCTAssertFalse(app.buttons["live.categories"].exists, "进房后不显示首页分类按钮")
+        XCTAssertFalse(app.buttons["douyin.web.close"].exists, "进房不能打开网页版播放器")
+        attach(app, "native-live-room")
+        app.buttons["live.room.more"].tap()
+        app.buttons["清屏"].tap()
+        XCTAssertTrue(app.buttons["live.room.restore"].waitForExistence(timeout: 5))
+        app.buttons["live.room.restore"].tap()
+        app.buttons["live.room.close"].tap()
+        XCTAssertTrue(categories.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["live.currentID"].label, id, "退房应回到同一个直播预览")
+        attach(app, "live-preview-return")
+        app.swipeUp(velocity: .slow)
+        let current = app.staticTexts["live.currentID"]
+        let changed = expectation(for: NSPredicate(format: "label != %@", id), evaluatedWith: current)
+        XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 10), .completed, "上滑应换到相邻房间")
+        let nextID = current.label
+        sleep(3)
+        XCTAssertEqual(current.label, nextID, "停止滑动后不应因布局回写继续乱跳")
+    }
+
     func testConditionalTitleExpansion() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_TITLETEST"] = "1"
