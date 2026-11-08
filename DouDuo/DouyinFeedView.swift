@@ -82,6 +82,7 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     let viewers: String
     let hls: [String: String]      // FULL_HD1 / HD1 / SD1 / SD2
     let portrait: Bool
+    var def: String? = nil
 
     var bestHLS: URL? {
         for k in ["HD1", "FULL_HD1", "SD2", "SD1"] { if let s = hls[k], let u = URL(string: s) { return u } }
@@ -91,6 +92,16 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
 }
 
 private struct DYLiveResp: Decodable { let status: Int; let items: [DYLiveRoom] }
+
+/// 直播专区（网页版「游戏」下的专区；id 取自 live.douyin.com/categorynew/4_103_1_<id>）
+/// shortcut: 写死网页版游戏页上的几个专区，网页改版/要别的分类时再从页面里抓
+struct DYLiveZone: Hashable {
+    let id: String, type: String, name: String
+    static let all: [DYLiveZone] = [
+        ("1010017", "无畏契约"), ("1011032", "三角洲行动"), ("1010045", "王者荣耀"), ("1010014", "英雄联盟"),
+        ("1010032", "和平精英"), ("1010037", "穿越火线"), ("1010026", "绝地求生"), ("1010146", "QQ飞车端游"),
+    ].map { DYLiveZone(id: $0.0, type: "1", name: $0.1) }
+}
 
 private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String? }
 private struct DYCommentPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let total: Int; let msg: String? }
@@ -114,7 +125,15 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     let web: WKWebView
     private var readyWaiters: [CheckedContinuation<Void, Never>] = []
 
-    override init() {
+    private let startURL: URL
+    private var liveContext: DouyinBridge?
+
+    override convenience init() {
+        self.init(startURL: URL(string: "https://www.douyin.com/jingxuan")!)
+    }
+
+    init(startURL: URL) {
+        self.startURL = startURL
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()
         // 隐藏签名页只要接口，不要视频：⚠️ 不能设 allowsInlineMediaPlayback=false——
@@ -132,7 +151,20 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     func reload() {
         ready = false
-        web.load(URLRequest(url: URL(string: "https://www.douyin.com/jingxuan")!))
+        web.load(URLRequest(url: startURL))
+        liveContext?.reload()
+    }
+
+    /// 直播专区请求在 live.douyin.com 的网页 SDK 中发出，共享真实登录态，避免跨域签名/请求被拒。
+    private func callLive(_ body: String, args: [String: Any]) async throws -> Data {
+        if liveContext == nil {
+            let context = DouyinBridge(startURL: URL(string: "https://live.douyin.com/")!)
+            context.web.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+            web.superview?.addSubview(context.web)
+            liveContext = context
+        }
+        guard let context = liveContext, context.web.superview != nil else { throw DYError.notReady }
+        return try await context.call(body, args: args, attempts: 1)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -370,15 +402,91 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private var liveMaxTime = "0"
+    private var liveOffset = 0
+    private var liveCursorGeneration = UUID()
 
-    func fetchLive(reset: Bool) async throws -> [DYLiveRoom] {
-        if reset { liveMaxTime = "0" }
+    /// 关注的主播里正在直播的（网页版直播首页顶上那排头像，同一个接口；要登录）
+    func fetchFollowLive() async throws -> [DYLiveRoom] {
+        let d = try await call(Self.followLiveJS, args: [:], attempts: 2)
+        let p = try JSONDecoder().decode(DYLiveResp.self, from: d)
+        if p.items.isEmpty { DYLiveModel.log("DDFOLLOWLIVE status=\(p.status) raw=\(String(decoding: d.prefix(300), as: UTF8.self))") }
+        guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
+        return p.items
+    }
+
+    private static let followLiveJS = #"""
+    const W = { aid: '6383', app_name: 'douyin_web', live_id: '1', device_platform: 'web', language: 'zh-CN', cookie_enabled: 'true',
+      screen_width: '1440', screen_height: '900', browser_language: 'zh-CN', browser_platform: 'MacIntel', browser_name: 'Safari',
+      browser_version: '26.0', channel: 'channel_pc_web' };
+    const r = await req('GET', 'https://live.douyin.com/webcast/web/feed/follow/?' + new URLSearchParams(Object.assign({}, W,
+      { enter_from: 'web_homepage_follow', scene: 'aweme_pc_follow_top' })).toString());
+    const d = parse(r.t);
+    if (!d) return JSON.stringify({ status: r.s === 200 ? 403 : r.s, items: [], raw: (r.t || '').slice(0, 200) });
+    if (d.status_code) return JSON.stringify({ status: 401, items: [], raw: (r.t || '').slice(0, 200) });
+    const arr = Array.isArray(d.data) ? d.data : ((d.data && d.data.data) || []);
+    const toRoom = (room, rid) => {
+      const su = room.stream_url || {}, o = room.owner || {};
+      return { id: String(room.id_str || room.id || ''), webRid: String(rid || o.web_rid || ''), title: room.title || '',
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
+        hls: su.hls_pull_url_map || {}, portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
+    };
+    const out = [];
+    for (const e of arr.slice(0, 30)) {
+      const room = e.room || e.data || e;
+      let x = toRoom(room, e.web_rid);
+      // 列表里没带流地址的，按 web_rid 进房拿一次（网页点头像也是走这个接口）
+      if (!Object.keys(x.hls).length && x.webRid) {
+        const er = parse((await req('GET', 'https://live.douyin.com/webcast/room/web/enter/?' + new URLSearchParams(Object.assign({}, W,
+          { enter_from: 'web_live', enter_source: '', web_rid: x.webRid })).toString())).t);
+        const rm = er && er.data && er.data.data && er.data.data[0];
+        if (rm && rm.status === 2) x = toRoom(Object.assign({ owner: room.owner }, rm), x.webRid);
+      }
+      if (x.id && Object.keys(x.hls).length) out.push(x);
+    }
+    return JSON.stringify({ status: 200, items: out, raw: out.length ? null : (r.t || '').slice(0, 300) });
+    """#
+
+    func fetchLive(reset: Bool, zone: DYLiveZone? = nil) async throws -> [DYLiveRoom] {
+        if reset { liveMaxTime = "0"; liveOffset = 0; liveCursorGeneration = UUID() }
+        let generation = liveCursorGeneration
+        if let zone {
+            let d = try await callLive(Self.zoneJS, args: ["partition": zone.id, "ptype": zone.type, "offset": String(liveOffset)])
+            guard liveCursorGeneration == generation else { return [] }
+            let p = try JSONDecoder().decode(DYLiveResp.self, from: d)
+            guard p.status == 200 else {
+                throw DYError.bad("专区连接失败（HTTP \(p.status)），可打开网页版检查或返回推荐直播")
+            }
+            liveOffset += 15
+            return p.items
+        }
         let d = try await call(Self.liveJS, args: ["maxtime": liveMaxTime])
+        guard liveCursorGeneration == generation else { return [] }
         let p = try JSONDecoder().decode(DYLiveResp.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         liveMaxTime = String(Int(Date().timeIntervalSince1970))
         return p.items
     }
+
+    // 直播专区（网页版 live.douyin.com/categorynew/4_103_1_<id> 同一接口）：一页 15 个，按 offset 翻页
+    private static let zoneJS = #"""
+    const P = { aid: '6383', app_name: 'douyin_web', live_id: '1', device_platform: 'web', language: 'zh-CN', enter_from: 'page_refresh',
+      cookie_enabled: 'true', screen_width: '1440', screen_height: '900', browser_language: 'zh-CN', browser_platform: 'MacIntel',
+      browser_name: 'Safari', browser_version: '26.0', os_name: 'Mac OS', os_version: '10.15.7',
+      count: '15', offset: offset, partition: partition, partition_type: ptype, req_from: '2' };
+    const r = await req('GET', 'https://live.douyin.com/webcast/web/partition/detail/room/v2/?' + new URLSearchParams(P).toString());
+    const d = parse(r.t);
+    const arr = d && d.data && Array.isArray(d.data.data) ? d.data.data : null;
+    if (!arr) return JSON.stringify({ status: r.s === 200 ? 403 : r.s, items: [] });
+    const items = arr.filter(it => it && it.room && it.room.stream_url).map(it => {
+      const room = it.room, su = room.stream_url || {}, o = room.owner || {};
+      return { id: String(room.id_str || room.id), webRid: String(it.web_rid || o.web_rid || ''), title: room.title || '',
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || (room.user_count ? String(room.user_count) : ''),
+        hls: su.hls_pull_url_map || {}, portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
+    }).filter(x => Object.keys(x.hls).length > 0);
+    return JSON.stringify({ status: r.s, items });
+    """#
 
     // 直播推荐：live.douyin.com/webcast/feed/（跨子域 XHR 同样被页面 SDK 签名，实测 200 / 20 条）
     private static let liveJS = #"""
@@ -396,7 +504,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       return { id: String(room.id_str || room.id), webRid: String(it.web_rid || o.web_rid || ''), title: room.title || '',
         owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
-        hls: su.hls_pull_url_map || {}, portrait: su.stream_orientation !== 2 };
+        hls: su.hls_pull_url_map || {}, portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     }).filter(x => Object.keys(x.hls).length > 0);
     return JSON.stringify({ status: r.s, items });
     """#
@@ -850,9 +958,14 @@ struct DouyinFeedScreen: View {
     var body: some View {
         ZStack(alignment: .top) {
             layoutRoot
-            topBar
+            if !(tab == .live && live.clean) {
+                VStack(spacing: 6) {
+                    topBar
+                    if tab == .live { liveZoneBar }
+                }
                 .padding(.top, hSize == .regular ? 0 : -80)
                 .frame(maxWidth: .infinity)
+            }
         }
         // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
         .ignoresSafeArea(edges: [.top, .horizontal])
@@ -865,6 +978,7 @@ struct DouyinFeedScreen: View {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
@@ -959,6 +1073,7 @@ struct DouyinFeedScreen: View {
                 currentID = feed.items.first?.id
                 focusCurrent()
             }
+            if tab == .live { Task { await live.load(bridge, reset: true) } }
         }) { t in
             DouyinWebScreen(start: t.url)
         }
@@ -1187,10 +1302,11 @@ struct DouyinFeedScreen: View {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) })
             } else if tab == .follow {
-                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !showSearch && !showMine,
+                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !showSearch && !showMine && authorTarget == nil,
                              onAuthor: { a in authorTarget = a.author },
                              onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onToast: { showToast($0) })
+                             onToast: { showToast($0) },
+                             onLive: { r in live.open(r); selectTab(.live) })
             } else {
                 recommendArea
             }
@@ -1300,6 +1416,28 @@ struct DouyinFeedScreen: View {
             }
     }
 
+    /// 直播专区条：推荐 / 无畏契约 / 三角洲… 点一下换专区（同网页版「专区」）
+    private var liveZoneBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach([nil] + DYLiveZone.all.map(Optional.some), id: \.self) { (z: DYLiveZone?) in
+                    let on = live.zone == z
+                    Button { live.select(z, bridge) } label: {
+                        Text(z?.name ?? "推荐")
+                            .font(.subheadline.weight(on ? .semibold : .regular))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(on ? 1 : 0.75))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme).opacity(on ? 1 : 0.6)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.trailing, insets.trailing)
+    }
+
     /// 顶部「关注 / 推荐 / 直播」切换（抖音顶栏同款位置）
     private var tabSwitcher: some View {
         let fg = theme.media.onMedia.color(for: scheme)
@@ -1387,7 +1525,7 @@ struct DouyinFeedScreen: View {
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
     private func page(for item: DYAweme) -> some View {
         let extras = AnyView(moreExtrasMenu(item))
-        let active = item.id == currentID && web == nil && tab == .recommend && !showSearch && !showMine
+        let active = item.id == currentID && web == nil && tab == .recommend && !showSearch && !showMine && authorTarget == nil
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
@@ -1594,6 +1732,9 @@ final class DYLiveModel: ObservableObject {
     @Published var loading = false
     /// 当前直播是否已出画面（首帧前显示「加载中」）
     @Published var ready = false
+    @Published var zone: DYLiveZone?
+    @Published var clean = false
+    private var requestGeneration = UUID()
     /// ⚠️ 直播必须走 VLC：抖音直播 HLS 用 AVPlayer 只解析出音轨（tracks=1 types=soun），
     /// 表现就是「有声有封面、没有画面」。VLC 能正确拿到视频轨道。
     let vlc = VLCPlayerController()
@@ -1616,27 +1757,33 @@ final class DYLiveModel: ObservableObject {
     }
 
     init() {
-        sizeObs = vlc.$videoSize.receive(on: RunLoop.main).sink { [weak self] size in
+        sizeObs = Publishers.CombineLatest(vlc.$videoSize, vlc.$current).receive(on: RunLoop.main).sink { [weak self] size, time in
             guard let self else { return }
-            let r = (size.width > 0 && size.height > 0) || self.vlc.current > 0
+            let r = (size.width > 0 && size.height > 0) || (self.vlc.mediaPlayer.hasVideoOut && time > 0)
             // 只允许 false → true：播过之后短暂的缓冲不要再弹「加载中」
-            if r, !self.ready { self.ready = true }
-            if r { DYLiveModel.log("DDLIVE 出画 size=\(size)") }
+            if r, !self.ready {
+                self.ready = true
+                DYLiveModel.log("DDLIVE 起播 size=\(size) progress=\(time)")
+            }
         }
     }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
         guard !loading else { return }
+        let generation = requestGeneration
+        let requestedZone = zone
         loading = true
-        defer { loading = false }
+        defer { if requestGeneration == generation { loading = false } }
         do {
-            let r = try await bridge.fetchLive(reset: reset)
+            let r = try await bridge.fetchLive(reset: reset, zone: requestedZone)
+            guard requestGeneration == generation, zone == requestedZone else { return }
             if reset { rooms = [] }
-            let seen = Set(rooms.map(\.id))
-            rooms.append(contentsOf: r.filter { !seen.contains($0.id) })
+            var seen = Set(rooms.map(\.id))
+            rooms.append(contentsOf: r.filter { seen.insert($0.id).inserted })
             if currentID == nil { currentID = rooms.first?.id }
-            error = rooms.isEmpty ? "暂时没有直播" : nil
+            error = rooms.isEmpty ? (zone == nil ? "暂时没有直播" : "这个专区暂时没有直播") : nil
         } catch {
+            guard requestGeneration == generation else { return }
             if rooms.isEmpty { self.error = error.localizedDescription }
         }
     }
@@ -1651,7 +1798,9 @@ final class DYLiveModel: ObservableObject {
         loadedRoom = room.id
         roomRef = room
         // 画质从高到低排队：某个码流在这台机器/这个网络下起不来时自动降一档
-        qualityOrder = ["FULL_HD1", "HD1", "SD1", "SD2"].filter { room.hls[$0] != nil }
+        var seen = Set<String>()
+        qualityOrder = ((room.def.map { [$0] } ?? []) + ["HD1", "FULL_HD1", "SD1", "SD2"])
+            .filter { room.hls[$0] != nil && seen.insert($0).inserted }
         startCurrentQuality()
     }
 
@@ -1675,15 +1824,9 @@ final class DYLiveModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: task)
     }
 
-    private var readyFallback: DispatchWorkItem?
-
     private func start(_ u: URL, key: String) {
         ready = false
-        // VLC 有些流不回报 videoSize，4 秒后无论如何收起「加载中」，别一直转圈
-        readyFallback?.cancel()
-        let fb = DispatchWorkItem { [weak self] in self?.ready = true }
-        readyFallback = fb
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: fb)
+        // 仅根据真实视频尺寸 / 播放进度撤掉加载提示，不用定时器伪装起播成功。
         vlc.stop()   // 换码流/换房间先停，避免旧画面残留
         vlc.play(url: u, headers: DYMedia.liveHeaders, cachingMs: 3000)   // 直播 3 秒缓存，抗网络抖动
         DYLiveModel.log("DDLIVEPLAY room=\(roomRef?.id ?? "-") q=\(key) url=\(u.absoluteString.prefix(70)) drawable=\(vlc.mediaPlayer.drawable != nil)")
@@ -1697,7 +1840,18 @@ final class DYLiveModel: ObservableObject {
         vlc.stop()
         loadedRoom = nil; ready = false
     }
-    func reset() { stop(); rooms = []; currentID = nil; error = nil; loadedRoom = nil }
+    func reset() {
+        requestGeneration = UUID(); loading = false
+        stop(); rooms = []; currentID = nil; error = nil; loadedRoom = nil
+    }
+    func select(_ z: DYLiveZone?, _ bridge: DouyinBridge) {
+        guard z != zone else { return }
+        zone = z; reset()
+        Task { await load(bridge, reset: true) }
+    }
+    func open(_ room: DYLiveRoom) {
+        zone = nil; reset(); rooms = [room]; currentID = room.id
+    }
 }
 
 private struct DYLiveFeed: View {
@@ -1738,9 +1892,22 @@ private struct DYLiveFeed: View {
                     if let e = model.error {
                         Text(e).font(.footnote).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                         Button("重试") { Task { await model.load(bridge, reset: true) } }.buttonStyle(.borderedProminent)
+                        Button("网页版 / 登录") {
+                            let url = model.zone.flatMap { URL(string: "https://live.douyin.com/categorynew/4_103_1_\($0.id)") }
+                                ?? URL(string: "https://live.douyin.com/")!
+                            onWeb(url)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("live.login")
+                        if model.zone != nil {
+                            Button("返回推荐直播") { model.select(nil, bridge) }
+                                .buttonStyle(.bordered)
+                        }
                     } else {
                         ProgressView().tint(theme.media.onMedia.color(for: scheme))
                         Text("加载直播…").font(.footnote).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                        Button("网页版 / 登录") { onWeb(URL(string: "https://live.douyin.com/")!) }
+                            .buttonStyle(.bordered)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1752,10 +1919,12 @@ private struct DYLiveFeed: View {
                     LazyVStack(spacing: 0) {
                         ForEach(model.rooms) { room in
                             DYLivePage(room: room, vlc: model.currentID == room.id ? model.vlc : nil,
-                                       ready: model.ready, onWeb: onWeb,
+                                       ready: model.ready, clean: model.clean, onWeb: onWeb,
                                        chat: (danmakuOn && model.currentID == room.id) ? chat.messages : [],
                                        chatInput: model.currentID == room.id ? AnyView(liveInput) : nil)
                                 .containerRelativeFrame([.horizontal, .vertical])
+                                .contentShape(Rectangle())
+                                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { model.clean.toggle() } }
                                 .id(room.id)
                         }
                     }
@@ -1794,6 +1963,16 @@ private struct DYLiveFeed: View {
                 .onChange(of: model.currentID) { _, id in
                     if let id, scrollID != id { scrollID = id }
                 }
+            }
+        }
+        .background {
+            // 只有一个固定 drawable：切台不会拆掉渲染层，也就没有旧 cell 拆卸新流的时序竞争。
+            GeometryReader { geo in
+                let room = model.rooms.first { $0.id == model.currentID }
+                let fill = room?.portrait == true && geo.size.height > geo.size.width * 1.2
+                VLCPlayerSurface(controller: model.vlc, fillWidth: fill)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .allowsHitTesting(false)
             }
         }
         .task {
@@ -1879,6 +2058,7 @@ private struct DYLivePage: View {
     let room: DYLiveRoom
     let vlc: VLCPlayerController?
     let ready: Bool
+    var clean = false
     let onWeb: (URL) -> Void
     var chat: [DYLiveMsg] = []
     var chatInput: AnyView? = nil
@@ -1888,14 +2068,11 @@ private struct DYLivePage: View {
             let fg = theme.media.onMedia.color(for: scheme)
             let fill = room.portrait && geo.size.height > geo.size.width * 1.2
             ZStack(alignment: .bottomLeading) {
-                if let c = room.cover, let u = URL(string: c) {
+                if (vlc == nil || !ready), let c = room.cover, let u = URL(string: c) {
                     CachedAsyncImage(url: u) { img in img.resizable().aspectRatio(contentMode: fill ? .fill : .fit) } placeholder: { Color.clear }
                         .frame(width: geo.size.width, height: geo.size.height).clipped()
                 }
-                if let vlc {
-                    VLCPlayerSurface(controller: vlc, fillWidth: fill)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
+                // VLC 画面由 DYLiveFeed 的固定背景层承载，分页只负责信息和非当前页封面。
                 if vlc != nil, !ready {
                     VStack(spacing: 8) {
                         ProgressView().tint(.white)
@@ -1903,6 +2080,7 @@ private struct DYLivePage: View {
                     }
                     .allowsHitTesting(false)
                 }
+                if !clean {
                 LinearGradient(colors: [.clear, theme.media.strongScrim.color(for: scheme).opacity(0.5)],
                                startPoint: .center, endPoint: .bottom)
                     .allowsHitTesting(false)
@@ -1934,6 +2112,7 @@ private struct DYLivePage: View {
                 .themeShadow(.mediaLabel)
                 .padding(.horizontal, 14)
                 .padding(.bottom, max(geo.safeAreaInsets.bottom, 10) + 18)
+                }
             }
         }
     }
@@ -1942,6 +2121,8 @@ private struct DYLivePage: View {
 // MARK: - 单页
 
 struct DYVideoPage: View {
+    @Environment(\.horizontalSizeClass) private var hSize
+    private var railWidth: CGFloat { hSize == .compact ? 42 : 54 }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -1972,8 +2153,6 @@ struct DYVideoPage: View {
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
     @State private var saving = false
-    @State private var followedNow: Bool?
-    @State private var followBusy = false
     @State private var showDanmakuInput = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
@@ -2045,6 +2224,7 @@ struct DYVideoPage: View {
                 Spacer(minLength: 0)
                 actions(fg)
                     .modifier(DYRailReservedNudge())
+                    .offset(x: hSize == .compact ? -9 : 0)
                     .padding(.bottom, item.images.isEmpty ? 56 : 0)
             }
             .padding(.horizontal, 12)
@@ -2149,28 +2329,22 @@ struct DYVideoPage: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.author")
-                if bridge != nil, item.author.uid != nil, !((followedNow ?? ((item.author.follow ?? 0) > 0))) {
-                    Button { toggleFollow() } label: {
-                        Group {
-                            if followBusy { ProgressView().controlSize(.mini).tint(fg) }
-                            else { Text("关注").font(.footnote.weight(.semibold)) }
-                        }
-                        .foregroundStyle(fg)
-                        .frame(minWidth: 58).frame(height: 30)
-                        .padding(.horizontal, 6)
-                        .contentShape(Capsule())
-                        .background(Capsule().fill(theme.accent.color(for: scheme)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("douyin.follow")
-                }
             }
             if !item.desc.isEmpty {
-                Text(item.desc)
-                    .font(.subheadline)
-                    .foregroundStyle(fg)
-                    .lineLimit(descExpanded ? 8 : 2)
-                    .onTapGesture { descExpanded.toggle() }
+                HStack(alignment: .bottom, spacing: 6) {
+                    Text(item.desc)
+                        .font(.subheadline)
+                        .foregroundStyle(fg)
+                        .lineLimit(descExpanded ? nil : 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onTapGesture { descExpanded.toggle() }
+                        .accessibilityIdentifier("douyin.description")
+                    Button(descExpanded ? "收起" : "展开") { descExpanded.toggle() }
+                        .font(.caption)
+                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.description.toggle")
+                }
             }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
@@ -2179,22 +2353,6 @@ struct DYVideoPage: View {
             }
         }
         .themeShadow(.mediaLabel)
-    }
-
-    /// 只在用户点「关注」时发请求
-    private func toggleFollow() {
-        guard let b = bridge, let uid = item.author.uid, !followBusy else { return }
-        followBusy = true
-        Task {
-            do {
-                switch try await b.followUser(uid, follow: true) {
-                case .ok: followedNow = true; onToast?("已关注")
-                case .notLoggedIn: onToast?("抖音未登录")
-                case .failed(let why): onToast?("关注失败：\(why)")
-                }
-            } catch { onToast?("关注失败：\(error.localizedDescription)") }
-            followBusy = false
-        }
     }
 
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
@@ -2209,8 +2367,9 @@ struct DYVideoPage: View {
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
             .padding(.vertical, 14)
-            .frame(width: 54)
+            .frame(width: railWidth)
             .ddGlassCapsule()
+            .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
@@ -2227,7 +2386,7 @@ struct DYVideoPage: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: 54, height: 46)
+            .frame(width: railWidth, height: 46)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2268,9 +2427,10 @@ struct DYVideoPage: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(fg)
-                .frame(width: 50, height: 50)
+                .frame(width: hSize == .compact ? 42 : 50, height: hSize == .compact ? 42 : 50)
                 .contentShape(Circle())
                 .ddGlassCircle()
+                .frame(width: 54)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -2325,6 +2485,8 @@ struct DYCommentPanel: View {
     @State private var sendErr: String?
     @State private var digged: Set<String> = []
     @State private var diggShown: [String: Int] = [:]
+    @State private var relatedWords: [String] = []
+    @State private var relatedQuery: DYRelatedQuery?
     @FocusState private var inputFocused: Bool
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?) {
@@ -2364,11 +2526,34 @@ struct DYCommentPanel: View {
                 }
                 .padding(16)
             }
+            if !relatedWords.isEmpty {
+                Divider()
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        Text("相关搜索").font(.caption).foregroundStyle(.themeTextSecondary)
+                        ForEach(relatedWords, id: \.self) { word in
+                            Button { relatedQuery = DYRelatedQuery(word: word) } label: {
+                                Label(word, systemImage: "magnifyingglass")
+                                    .font(.footnote).lineLimit(1)
+                                    .foregroundStyle(theme.accent.color(for: scheme))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                }
+                .scrollIndicators(.hidden)
+                .accessibilityIdentifier("douyin.comments.relatedSearch")
+            }
             Divider()
             inputBar
         }
         .background(GlassBackground())
         .modifier(DYRailReservedNudge())
+        .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
+        .fullScreenCover(item: $relatedQuery) { query in
+            DYRelatedSearchScreen(bridge: bridge, word: query.word)
+        }
     }
 
     private var inputBar: some View {
