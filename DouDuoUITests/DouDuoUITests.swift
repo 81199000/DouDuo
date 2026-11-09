@@ -70,22 +70,19 @@ final class DouDuoUITests: XCTestCase {
         app.launch()
         let entry = app.buttons["douyin.messages.stranger"]
         XCTAssertTrue(entry.waitForExistence(timeout: 50), app.debugDescription)
-        // 首页会话列表里不应再混陌生人
+        // 首页会话列表里不应混陌生人
         let rows = app.buttons.matching(identifier: "douyin.conversation.row")
         let mixed = rows.allElementsBoundByIndex.filter { ($0.value as? String) == "stranger" }
         XCTAssertEqual(mixed.count, 0, "陌生人会话不该平铺在首页列表")
         print("DDSTRANGERCAT entry=\(entry.value ?? "-") friendRows=\(rows.count)")
         print("DDCHAT_SHOT_HOME"); sleep(3)
         entry.tap()
-        // 陌生人面板直接在网页里全屏展示
-        let detail = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
-        XCTAssertTrue(detail.waitForExistence(timeout: 25))
-        sleep(4)
-        XCTAssertGreaterThan(detail.frame.width, 800, "陌生人面板没铺满：\(detail.frame)")
-        print("DDSTRANGERCAT opened=\(detail.frame)")
+        // 打开全屏网页私信页：里面能看到完整会话列表（含陌生人），可以自己点人
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 30), app.debugDescription)
+        sleep(8)
+        print("DDSTRANGERCAT web=\(web.frame)")
         print("DDCHAT_SHOT_STRANGERCHAT"); sleep(3)
-        app.buttons["douyin.messages.back"].tap()
-        XCTAssertTrue(entry.waitForExistence(timeout: 10))
     }
 
     func testStrangerConversationOpens() throws {

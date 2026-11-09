@@ -216,6 +216,8 @@ struct DYMessagesScreen: View {
     @State private var scanPaused = false
     /// 网页可能停在上次「已展开陌生人」的状态（没有聚合入口），进来时复位一次
     @State private var ensuredCollapsed = false
+    /// 陌生人/私信列表：直接全屏打开网页私信页（自带会话列表，可点任何人）
+    @State private var showChatWeb = false
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -270,6 +272,9 @@ struct DYMessagesScreen: View {
             }
         }
         .onDisappear { DYMessageCache.shared.retainChat() }
+        .fullScreenCover(isPresented: $showChatWeb) {
+            DouyinWebScreen(start: URL(string: "https://www.douyin.com/chat")!)
+        }
     }
 
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
@@ -396,8 +401,8 @@ struct DYMessagesScreen: View {
             chatStatus = "陌生人列表还没同步出来，请稍后重试"
             return
         }
-        // 展开陌生人面板后直接进第一条会话：面板本身是「选择会话」空态，进去才有内容
-        switch await DYChatOpener.open(agg, web: web, enterFirst: true) {
+        // 只展开陌生人面板并保留会话列表，由用户自己选人（自动进第一条会串到别人的群）
+        switch await DYChatOpener.open(agg, web: web, enterFirst: false, hideList: false) {
         case .opened:
             scanPaused = true
             cache.selectedChat = agg
@@ -508,7 +513,7 @@ struct DYMessagesScreen: View {
                     entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
                           title: "陌生人消息", subtitle: strangerSummary,
                           badge: strangerBadge,
-                          id: "douyin.messages.stranger") { Task { await openStrangerPanel() } }
+                          id: "douyin.messages.stranger") { showChatWeb = true }
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
@@ -855,8 +860,11 @@ enum DYChatOpener {
     enum Result { case opened, notReady, notFound }
 
     /// 原生列表可能由磁盘缓存秒出而网页还没渲染：先等 DOM 真有会话项
-    static func waitDOM(_ web: WKWebView, timeoutMS: Int = 12000) async -> Bool {
-        let probe = "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
+    static func waitDOM(_ web: WKWebView, strangerOnly: Bool = false, timeoutMS: Int = 12000) async -> Bool {
+        // 陌生人聚合项比普通会话晚渲染，单独等它，否则会拿到空列表
+        let probe = strangerOnly
+            ? "document.querySelectorAll('[class*=\"conversationStrangerBoxwrapper\"]').length"
+            : "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
         var waited = 0
         while waited < timeoutMS {
             // 页面还在加载时先别查，查到的 0 会被误判成「没有会话」
@@ -867,8 +875,8 @@ enum DYChatOpener {
         return false
     }
 
-    static func open(_ row: DYConversationRow, web: WKWebView, enterFirst: Bool = true) async -> Result {
-        guard await waitDOM(web) else { return .notReady }
+    static func open(_ row: DYConversationRow, web: WKWebView, enterFirst: Bool = true, hideList: Bool = true) async -> Result {
+        guard await waitDOM(web, strangerOnly: row.stranger) else { return .notReady }
         guard let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
               let args = String(data: data, encoding: .utf8) else { return .notFound }
         let script = """
@@ -887,9 +895,14 @@ enum DYChatOpener {
           // 陌生人条目只挂了 onClick，普通会话是 onMouseDown：按类型派发正确的原生事件
           row.dispatchEvent(new MouseEvent(stranger === '1' ? 'click' : 'mousedown', { bubbles: true, button: 0 }));
           let style = document.getElementById('dd-chat-only');
-          if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
-          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
-          window.__wuweiMinWidth = 320;
+          if (hideList) {
+            if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
+            style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
+            window.__wuweiMinWidth = 320;
+          } else {
+            style && style.remove();
+            window.__wuweiMinWidth = 760;
+          }
           window.__wuweiFixViewport?.();
           window.dispatchEvent(new Event('resize'));
           return true;
