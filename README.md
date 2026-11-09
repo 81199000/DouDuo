@@ -35,23 +35,33 @@
 - 喜欢 / 收藏 / 观看历史 / 稍后再看，点进去接着上下滑
 - 作者资料卡
 
+## 下载与签名安装（国内用户）
+
+- **Gitee 国内下载**：[发行版与 IPA 附件](https://gitee.com/remon8/douduo/releases)
+- **GitHub 下载**：[最新发行版](https://github.com/81199000/DouDuo/releases/latest)
+- GitHub 为主仓库，Gitee 为国内源码与安装包镜像。
+- 下载文件名带 `unsigned.ipa` 的安装包；它是**未签名 IPA，不能下载后直接安装**，需要按下方教程自己签名。
+- v1.3.7 新增消息中心、陌生人消息分类、评论表情与 @ 用户、评论配图/贴纸及直播发现入口，详见[更新说明](docs/releases/v1.3.7.md)。
+
 ## 安装
 
-iOS / iPadOS **17.0 及以上**。DouDuo 不在 App Store（第三方客户端过不了审核），需要**自己签名安装**。以下方式任选一种：
+支持 iOS / iPadOS **17.0 及以上**。DouDuo 未在 App Store 上架，需要**自己签名安装**。以下方式任选一种：
 
-先到 [Releases](../../releases/latest) 下载最新的 `DouDuo-x.y.z-unsigned.ipa`。
+先到 [Gitee 发行版](https://gitee.com/remon8/douduo/releases) 或 [GitHub Releases](https://github.com/81199000/DouDuo/releases/latest) 下载最新的 `DouDuo-x.y.z-unsigned.ipa`，不要下载源码 ZIP 代替 IPA。
 
 ### 方式一：爱思助手（Windows / Mac，最简单）
 
-1. 电脑安装 [爱思助手](https://www.i4.cn)，用数据线连接 iPhone，手机上点「信任此电脑」
-2. 爱思助手 →「工具箱」→「IPA 签名」
-3. 「添加 IPA 文件」选择下载的 `DouDuo-x.y.z-unsigned.ipa`
-4. 「使用 Apple ID 签名」→「添加 Apple ID」，输入你的 Apple ID 和密码（建议用一个**小号**，不要用主力账号）
-5. 勾选 IPA 和 Apple ID →「开始签名」，完成后点「安装」
-6. 手机：**设置 → 通用 → VPN 与设备管理** → 找到你的 Apple ID → 「信任」
-7. iOS 16 以上首次打开还要开 **设置 → 隐私与安全性 → 开发者模式**（打开后会重启）
+1. 电脑安装 [爱思助手](https://www.i4.cn)，用数据线连接 iPhone / iPad，解锁设备并在手机上点「信任此电脑」。先确认爱思助手能识别设备。
+2. 爱思助手 →「工具箱」→「IPA 签名」。
+3. 点击「添加 IPA 文件」，选择发行版附件中的 `DouDuo-x.y.z-unsigned.ipa`（例如 `DouDuo-1.3.7-unsigned.ipa`）。
+4. 选择「使用 Apple ID 签名」→「添加 Apple ID」，在爱思助手内输入 Apple ID 和密码（建议使用专门的小号）。如要求验证码，请在签名工具中完成验证；如要求设备 UDID，选择当前连接设备读取。
+5. 勾选 IPA 和对应 Apple ID →「开始签名」，等待显示「签名成功」；按当前爱思助手界面点击「安装」，或将签名后的 IPA 导入「应用游戏」安装。**未签名原包不能直接安装。**
+6. 手机打开 **设置 → 通用 → VPN 与设备管理**，找到签名使用的 Apple ID / 开发者条目，点「信任」。
+7. 如系统要求，再打开 **设置 → 隐私与安全性 → 开发者模式**，按提示重启并确认启用；随后打开 DouDuo。
 
-> 免费 Apple ID 签名的 App **7 天后过期**（打开闪退），重复第 2～5 步重新签名即可，数据不会丢。
+> **7 天到期怎么办？** 免费 Apple ID 签名通常 **7 天后过期**，届时可能打不开；重新执行第 2～5 步签名并覆盖安装。尽量使用同一 Apple ID、保持相同应用标识，**不要先卸载旧 App**，以免丢失本地数据。
+>
+> **常见问题**：签名成功但安装失败，先确认手机已解锁、信任电脑，且安装的是签名后的 IPA；打开提示不受信任，检查第 6 步；首次打开受开发者模式限制，检查第 7 步。不同版本爱思助手的按钮名称和位置可能略有不同。
 
 ### 方式二：Sideloadly（Windows / Mac）
 
