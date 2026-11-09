@@ -1005,6 +1005,8 @@ struct DouyinFeedScreen: View {
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var showMine = false
+    /// 顶栏「我的」按钮用的账号信息（头像 + 昵称）
+    @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
@@ -1047,6 +1049,7 @@ struct DouyinFeedScreen: View {
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
             #endif
+            Task { myUser = try? await bridge.selfProfile() }
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
             if feed.items.isEmpty, let saved = DYFeedSession.load() {
@@ -1459,6 +1462,30 @@ struct DouyinFeedScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+            // 「我的」：独立按钮（不属于 tab 切换），跟在「直播」后面
+            Button { showMine = true } label: {
+                HStack(spacing: 5) {
+                    CachedAsyncImage(url: myUser?.avatar.flatMap(URL.init(string:))) { img in
+                        img.resizable().scaledToFill()
+                    } placeholder: {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 19))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
+                    }
+                    .frame(width: 22, height: 22)
+                    .clipShape(Circle())
+                    Text(myUser?.name ?? "我的")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.85))
+                        .lineLimit(1)
+                        .frame(maxWidth: 62)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("douyin.mine.top")
         }
         .themeShadow(.mediaLabel)
         .frame(maxWidth: .infinity, alignment: .center)
