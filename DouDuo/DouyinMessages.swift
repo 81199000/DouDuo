@@ -25,7 +25,10 @@ struct DYMessagesScreen: View {
     let onClose: () -> Void
     let onWeb: (URL) -> Void
 
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var group: DYNoticeGroup = .all
+    /// 顶栏头像 = 朋友（互相关注），来自 familiar/atlist
+    @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
     @State private var items: [DYNotice] = []
     @State private var maxTime = 0
@@ -63,6 +66,11 @@ struct DYMessagesScreen: View {
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .task(id: group) { await reload(reset: true) }
+        .task {
+            if friends.isEmpty {
+                friends = (try? await bridge.followingUsers().items) ?? []
+            }
+        }
         .sheet(item: $author) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
                 .presentationDetents([.medium, .large])
@@ -73,18 +81,8 @@ struct DYMessagesScreen: View {
         }
     }
 
-    /// 最近互动的人：从当前通知里去重取头像，做成横排（对齐抖音消息页顶部）
-    private var recentPeople: [DYNotice] {
-        var seen = Set<String>()
-        var out: [DYNotice] = []
-        for n in items where !n.name.isEmpty && n.avatar != nil {
-            if seen.contains(n.name) { continue }
-            seen.insert(n.name)
-            out.append(n)
-            if out.count >= 12 { break }
-        }
-        return out
-    }
+    /// 顶部头像栏 = 朋友（互相关注的人），来自 familiar/atlist，不是粉丝
+    private var recentPeople: [DYFriend] { friends }
 
     private var avatarStrip: some View {
         Group {
@@ -94,7 +92,7 @@ struct DYMessagesScreen: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 16) {
                         ForEach(recentPeople) { p in
-                            Button { Task { await open(p) } } label: {
+                            Button { Task { await openFriend(p) } } label: {
                                 VStack(spacing: 5) {
                                     CachedAsyncImage(url: p.avatar.flatMap(URL.init(string:))) { img in
                                         img.resizable().scaledToFill()
@@ -103,7 +101,7 @@ struct DYMessagesScreen: View {
                                     }
                                     .frame(width: 54, height: 54)
                                     .clipShape(Circle())
-                                    .overlay(Circle().stroke(Color.white.opacity(p.hasRead ? 0.10 : 0.55), lineWidth: p.hasRead ? 1 : 1.6))
+                                    .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
                                     Text(p.name)
                                         .font(.system(size: 11))
                                         .foregroundStyle(.white.opacity(0.8))
@@ -186,19 +184,41 @@ struct DYMessagesScreen: View {
         .buttonStyle(.plain)
     }
 
+    /// Duo 标准：内屏(regular)/合屏时控件走垂直侧栏，返回键贴右侧；
+    /// 外屏(compact) 保持左上，符合单手习惯。
     private var header: some View {
         HStack {
-            Button(action: onClose) {
-                Image(systemName: "chevron.left")
-                    .font(.headline.weight(.semibold))
-                    .frame(width: 40, height: 40)
+            if hSize != .regular {
+                Button(action: goBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                }
+                .accessibilityIdentifier("douyin.messages.back")
             }
-            .accessibilityIdentifier("douyin.messages.back")
-            Text("消息").font(.headline.weight(.bold))
+            Text(group == .all ? "消息" : group.title)
+                .font(.headline.weight(.bold))
             Spacer()
             if opening { ProgressView().tint(.white) }
+            if hSize == .regular {
+                Button(action: goBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                }
+                .accessibilityIdentifier("douyin.messages.back")
+            }
         }
         .padding(.horizontal, 8)
+    }
+
+    /// 分类内点返回 → 回「全部」上一层；已在全部 → 关闭消息页
+    private func goBack() {
+        if group != .all {
+            group = .all
+        } else {
+            onClose()
+        }
     }
 
     private var tabs: some View {
@@ -241,7 +261,7 @@ struct DYMessagesScreen: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(items) { n in
+                    ForEach(visibleItems) { n in
                         Button { Task { await open(n) } } label: { row(n) }
                             .buttonStyle(.plain)
                         Divider().background(Color.white.opacity(0.08))
@@ -254,6 +274,12 @@ struct DYMessagesScreen: View {
             }
             .refreshable { await reload(reset: true) }
         }
+    }
+
+    /// 「全部」页把互动(2/3)/粉丝(401)/系统(961) 都归到上面的聚合卡里，列表不再重复
+    private var visibleItems: [DYNotice] {
+        guard group == .all else { return items }
+        return items.filter { ![2, 3, 401, 961].contains($0.type) }
     }
 
     private func row(_ n: DYNotice) -> some View {
@@ -324,6 +350,12 @@ struct DYMessagesScreen: View {
             hasMore = false
             DYLiveModel.log("DDNOTICE error \(error.localizedDescription)")
         }
+    }
+
+    /// 点朋友头像：打开他的主页（网页版，原生主页需要 sec_uid 走 author 通道）
+    private func openFriend(_ f: DYFriend) async {
+        guard !f.secUid.isEmpty, let u = URL(string: "https://www.douyin.com/user/\(f.secUid)") else { return }
+        onWeb(u)
     }
 
     private func open(_ n: DYNotice) async {
