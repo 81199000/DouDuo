@@ -301,7 +301,7 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     }
 }
 
-private struct DouyinWebContainer: UIViewRepresentable {
+struct DouyinWebContainer: UIViewRepresentable {
     @ObservedObject var model: DouyinWebModel
     let zoom: Double
     let start: URL

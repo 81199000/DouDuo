@@ -1886,6 +1886,7 @@ struct DYVideoPage: View {
     var moreExtras: AnyView = AnyView(EmptyView())
     /// 播完切下一条（「自动连播」打开才生效）
     var onEnded: (() -> Void)? = nil
+    var onBack: (() -> Void)? = nil
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
@@ -1903,7 +1904,7 @@ struct DYVideoPage: View {
          onComments: @escaping () -> Void, onSearch: @escaping () -> Void, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
          onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView()),
-         onEnded: (() -> Void)? = nil) {
+         onEnded: (() -> Void)? = nil, onBack: (() -> Void)? = nil) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
@@ -1912,6 +1913,7 @@ struct DYVideoPage: View {
         self.onDislike = onDislike
         self.moreExtras = moreExtras
         self.onEnded = onEnded
+        self.onBack = onBack
     }
 
     var body: some View {
@@ -2087,6 +2089,18 @@ struct DYVideoPage: View {
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: 12) {
+            if let onBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.backward")
+                        .font(.title2.weight(.medium))
+                        .foregroundStyle(fg)
+                        .frame(width: 50, height: 50)
+                }
+                .buttonStyle(.plain)
+                .ddGlassCapsule()
+                .accessibilityLabel("返回上一层")
+                .accessibilityIdentifier("douyin.list.back")
+            }
             VStack(spacing: 7) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
