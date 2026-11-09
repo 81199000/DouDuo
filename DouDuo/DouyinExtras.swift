@@ -1053,26 +1053,27 @@ struct DYMineScreen: View {
     @State private var relations: DYRelationsTarget?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                }
-                .accessibilityIdentifier("douyin.mine.back")
-                Spacer()
-                if let onMessages {
-                    Button(action: onMessages) {
-                        Image(systemName: "bell").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
+        NavigationStack {
+            content
+                .navigationTitle(user?.name ?? "我的")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    // Duo：返回 + 操作走系统 toolbar，系统放进右侧竖向侧栏（每项都有标题+符号）
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("返回", systemImage: "chevron.backward") { dismiss() }
+                            .accessibilityIdentifier("douyin.mine.back")
                     }
-                    .accessibilityIdentifier("douyin.messages")
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("网页版 / 登录", systemImage: "safari") { onLogin() }
+                    }
                 }
-                Button("网页版 / 登录", systemImage: "safari") { onLogin() }
-                    .font(.footnote).foregroundStyle(.white.opacity(0.8))
-            }
-            .padding(.horizontal, 8)
+        }
+        .preferredColorScheme(.dark)
+        .modifier(DYEdgeSwipeBack(action: { dismiss() }))
+    }
 
+    private var content: some View {
+        VStack(spacing: 0) {
             header.padding(.horizontal, 16).padding(.bottom, 12)
 
             HStack(spacing: 22) {

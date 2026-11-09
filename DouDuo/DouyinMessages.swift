@@ -1,8 +1,7 @@
 // 消息中心（对齐抖音消息页）：顶部朋友头像 → 互动/粉丝/系统/私信入口 → 点进分类二级页。
 // 全部内容在同一个 ScrollView 里滚动，分类入口不固定在顶部。
-// Duo：返回键在右侧；根页左缘右滑关闭，二级页走系统原生左缘返回（回上一层，不回视频）。
+// Duo：返回键走系统 toolbar（自动进右侧竖向侧栏）；根页左缘右滑关闭，二级页系统原生左缘返回上一层。
 import SwiftUI
-import UIKit
 
 enum DYNoticeGroup: Int, CaseIterable, Identifiable {
     case all = 700
@@ -80,12 +79,20 @@ struct DYMessagesScreen: View {
     var body: some View {
         NavigationStack(path: $path) {
             root
-                .toolbar(.hidden, for: .navigationBar)
+                .navigationTitle("消息")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    // Duo：返回/关闭走系统 cancellationAction，系统把它放进右侧竖向侧栏
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("返回", systemImage: "chevron.backward", action: onClose)
+                            .accessibilityIdentifier("douyin.messages.back")
+                    }
+                }
                 .navigationDestination(for: DYMsgRoute.self) { r in
                     DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb)
-                        .toolbar(.hidden, for: .navigationBar)
                 }
         }
+        .preferredColorScheme(.dark)
         .task { await loadRoot() }
         .onChange(of: path) { _, p in
             // 从二级页回来：刷新未读角标
@@ -95,12 +102,6 @@ struct DYMessagesScreen: View {
 
     private var root: some View {
         VStack(spacing: 0) {
-            DYMsgHeader(onBack: onClose) {
-                HStack(spacing: 8) {
-                    Text("消息").font(.headline.weight(.bold))
-                    if loading { ProgressView().tint(.white).scaleEffect(0.8) }
-                }
-            }
             ScrollView {
                 LazyVStack(spacing: 0) {
                     friendStrip
@@ -166,6 +167,9 @@ struct DYMessagesScreen: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
+            // 横向 ScrollView 默认会铺进安全区（Duo 侧栏下面），裁回内容框
+            .scrollClipDisabled(false)
+            .clipped()
         }
     }
 
@@ -243,7 +247,6 @@ struct DYNoticeListScreen: View {
     let route: DYMsgRoute
     let onWeb: (URL) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var group: DYNoticeGroup
     @State private var items: [DYNotice] = []
     @State private var maxTime = 0
@@ -263,16 +266,22 @@ struct DYNoticeListScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            DYMsgHeader(onBack: { dismiss() }) {
-                HStack(spacing: 8) {
-                    titleView
-                    if opening { ProgressView().tint(.white).scaleEffect(0.8) }
+        list.frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay { if opening { ProgressView().tint(.white) } }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle(route.filterTitle(group))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarTitleMenu {
+            // 互动页点标题切 全部互动 / 评论 / 赞（对齐抖音「全部消息 ▾」）
+            if route.filters.count > 1 {
+                ForEach(route.filters) { g in
+                    Button { group = g } label: {
+                        if g == group { Label(route.filterTitle(g), systemImage: "checkmark") }
+                        else { Text(route.filterTitle(g)) }
+                    }
                 }
             }
-            list.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .task(id: group) { await reload(reset: true) }
         .sheet(item: $author) { a in
@@ -282,31 +291,6 @@ struct DYNoticeListScreen: View {
         }
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0, onAuthor: { author = $0.author })
-        }
-    }
-
-    /// 互动页标题是下拉菜单（全部互动 / 评论 / 赞），对齐抖音「全部消息 ▾」
-    @ViewBuilder
-    private var titleView: some View {
-        if route.filters.count > 1 {
-            Menu {
-                ForEach(route.filters) { g in
-                    Button { group = g } label: {
-                        if g == group { Label(route.filterTitle(g), systemImage: "checkmark") }
-                        else { Text(route.filterTitle(g)) }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(route.filterTitle(group))
-                    Image(systemName: "chevron.down").font(.caption.weight(.bold))
-                }
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.white)
-            }
-            .accessibilityIdentifier("douyin.messages.filter")
-        } else {
-            Text(route.title).font(.headline.weight(.bold))
         }
     }
 
@@ -436,31 +420,6 @@ struct DYNoticeListScreen: View {
 
 // MARK: - 公共部件
 
-/// 消息页顶栏：标题在左，返回键在右（Duo 侧栏标准，合屏/展开一致）
-struct DYMsgHeader<Title: View>: View {
-    let onBack: () -> Void
-    @ViewBuilder let title: () -> Title
-
-    var body: some View {
-        HStack(spacing: 8) {
-            title()
-            Spacer(minLength: 8)
-            Button(action: onBack) {
-                Image(systemName: "chevron.backward")
-                    .font(.headline.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("返回")
-            .accessibilityIdentifier("douyin.messages.back")
-        }
-        .padding(.leading, 16)
-        .padding(.trailing, 6)
-        .frame(height: 50)
-    }
-}
-
 /// 根页（fullScreenCover）没有导航栈可退，用左缘右滑关闭
 struct DYEdgeSwipeBack: ViewModifier {
     let action: () -> Void
@@ -474,18 +433,6 @@ struct DYEdgeSwipeBack: ViewModifier {
                     }
                 }
         )
-    }
-}
-
-/// 隐藏导航栏后系统会关掉左缘返回手势；这里把它接回来（只在有上一层时生效）
-extension UINavigationController: UIGestureRecognizerDelegate {
-    override open func viewDidLoad() {
-        super.viewDidLoad()
-        interactivePopGestureRecognizer?.delegate = self
-    }
-
-    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        viewControllers.count > 1
     }
 }
 
