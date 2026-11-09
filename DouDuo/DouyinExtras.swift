@@ -152,10 +152,9 @@ extension DouyinBridge {
         return items
     }
 
-    /// 关注的人（@ 面板用）：先取自己的 sec_uid，再拉 following/list
+    /// @ 面板的人：抖音评论 @ 的专用接口 familiar/atlist（返回「朋友」：互关/最近互动）
     func followingUsers(cursor: String = "0") async throws -> (items: [DYFriend], cursor: String, hasMore: Bool) {
-        let sec = try await selfSecUid()
-        let d = try await call(Self.followingJS, args: ["sec": sec, "cursor": cursor], attempts: 2)
+        let d = try await call(Self.atListJS, args: ["cursor": cursor], attempts: 2)
         let p = try JSONDecoder().decode(DYFriendPage.self, from: d)
         #if DEBUG
         DYLiveModel.log("DDFOLLOWING status=\(p.status) n=\(p.items.count) more=\(p.hasMore) first=\(p.items.prefix(3).map(\.name).joined(separator: ","))")
@@ -337,6 +336,17 @@ extension DouyinBridge {
     const arr = (d.emoji_list || []).filter(e => e && e.display_name && !e.hide)
       .map(e => ({ displayName: e.display_name, url: ((e.emoji_url || {}).url_list || [])[0] || null }));
     return JSON.stringify({ status: r.s, items: arr });
+    """#
+
+    static let atListJS = #"""
+    const r = await req('GET', '/aweme/v1/web/familiar/atlist/?' + q({ count: '20', cursor: cursor, scene: 'comment' }));
+    const d = parse(r.t) || {};
+    const arr = (d.user_list || []).filter(u => u).map(u => ({
+      name: u.nickname || '',
+      avatar: first(u.avatar_thumb) || first(u.avatar_168x168) || first(u.avatar_300x300),
+      secUid: u.sec_uid || ''
+    }));
+    return JSON.stringify({ status: r.s, items: arr, cursor: String(d.cursor || 0), hasMore: !!d.has_more });
     """#
 
     static let followingJS = #"""

@@ -154,6 +154,8 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     @Published var progress: Double = 0
     weak var web: WKWebView?
     private var clickedLogin = false
+    private var filledPhone = false
+    private var filledCode = false
     private var observers: [NSKeyValueObservation] = []
 
     #if DEBUG
@@ -235,6 +237,47 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
                     """
                     webView.evaluateJavaScript(js) { r, _ in DYLiveModel.log("DDLOGIN " + String(describing: r ?? "nil")) }
                 }
+            }
+        }
+        // 自动填手机号 + 点「获取验证码」（DOUDUO_LOGIN_PHONE=手机号）
+        if let phone = ProcessInfo.processInfo.environment["DOUDUO_LOGIN_PHONE"], !phone.isEmpty, !filledPhone {
+            filledPhone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                let js = """
+                (()=>{
+                  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+                  const ins=[...document.querySelectorAll('input')].filter(i=>i.type==='tel'||/手机号|请输入手机/.test(i.placeholder||''));
+                  if(!ins.length) return 'no-input';
+                  setter.call(ins[0],'\(phone)');
+                  ins[0].dispatchEvent(new Event('input',{bubbles:true}));
+                  ins[0].dispatchEvent(new Event('change',{bubbles:true}));
+                  ins[0].blur();
+                  const btn=[...document.querySelectorAll('button,div,span,a')].find(e=>e.childElementCount===0&&e.innerText&&/获取验证码|发送验证码|获取短信/.test(e.innerText.trim()));
+                  if(btn){(btn.closest('button')||btn.parentElement||btn).click();return 'filled+code-sent'}
+                  return 'filled-no-btn:'+ins.length;
+                })()
+                """
+                webView.evaluateJavaScript(js) { r, _ in DYLiveModel.log("DDLOGINFILL " + String(describing: r ?? "nil")) }
+            }
+        }
+        // 自动填验证码 + 点登录（DOUDUO_LOGIN_CODE=6位码）
+        if let code = ProcessInfo.processInfo.environment["DOUDUO_LOGIN_CODE"], !code.isEmpty, !filledCode {
+            filledCode = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                let js = """
+                (()=>{
+                  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+                  const ins=[...document.querySelectorAll('input')].filter(i=>i.type!=='tel'&&(/验证码|code/i.test(i.placeholder||'')||i.maxLength===6));
+                  if(!ins.length) return 'no-code-input';
+                  setter.call(ins[0],'\(code)');
+                  ins[0].dispatchEvent(new Event('input',{bubbles:true}));
+                  ins[0].dispatchEvent(new Event('change',{bubbles:true}));
+                  const btn=[...document.querySelectorAll('button,div,span,a')].find(e=>e.childElementCount===0&&e.innerText&&/^登录$|立即登录/.test(e.innerText.trim().replace(/\\s/g,'')));
+                  if(btn){(btn.closest('button')||btn.parentElement||btn).click();return 'code+login-clicked'}
+                  return 'code-filled-no-btn';
+                })()
+                """
+                webView.evaluateJavaScript(js) { r, _ in DYLiveModel.log("DDLOGINCODE " + String(describing: r ?? "nil")) }
             }
         }
         #endif

@@ -20,12 +20,24 @@ final class DYEmojiStore: ObservableObject {
                 group.addTask {
                     guard let (d, _) = try? await URLSession.shared.data(from: u),
                           let img = UIImage(data: d) else { return (e.displayName, nil) }
-                    return (e.displayName, img)
+                    // 缩到正文行高大小（20pt）：Text 里内联图片不会自动缩放，原图直接塞会撑大整行
+                    return (e.displayName, Self.scaled(img, toSide: 20))
                 }
             }
             for await (name, img) in group {
                 if let img { images[name] = img }
             }
+        }
+    }
+
+    /// 等比缩放到指定边长（pt），供 Text 内联使用
+    nonisolated static func scaled(_ img: UIImage, toSide side: CGFloat) -> UIImage {
+        let ratio = min(side / max(img.size.width, 1), side / max(img.size.height, 1))
+        let size = CGSize(width: max(1, img.size.width * ratio), height: max(1, img.size.height * ratio))
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = UIScreen.main.scale
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            img.draw(in: CGRect(origin: .zero, size: size))
         }
     }
 
