@@ -74,7 +74,7 @@ enum DYListKind: String, CaseIterable, Identifiable {
 private struct DYListPage: Decodable { let status: Int; let items: [DYAweme]; let cursor: String; let hasMore: Bool; let code: Int?; let msg: String? }
 private struct DYDanmakuPage: Decodable { let status: Int; let items: [DYDanmaku] }
 private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let msg: String? }
-private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String? }
+private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String? }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 
@@ -200,7 +200,7 @@ extension DouyinBridge {
     func publishComment(_ awemeID: String, text: String, replyID: String? = nil) async throws -> DYComment {
         let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0"], attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
-        DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-")")
+        DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
         if r.code == 8 { throw DYError.bad("抖音未登录") }
         guard r.status == 200, (r.code ?? 0) == 0, let c = r.comment else {
             throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发送失败（HTTP \(r.status) / \(r.code ?? -1)）")
@@ -243,8 +243,16 @@ extension DouyinBridge {
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', '0'); }
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
-    const d = parse(r.t) || {};
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || (r.s === 200 ? null : (r.t || '').slice(0, 80)), comment: cmap(d.comment), danmakuID: null });
+    const raw = r.t || '', parsed = parse(raw), d = parsed || {};
+    const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
+    // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。
+    const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
+    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys;
+    const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
+      : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
+      : '未收到有效的评论确认结果，请勿连续重发';
+    const msg = d.status_msg || ((!d.comment || d.status_code !== 0 || r.s !== 200) ? fallback : null);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null, diagnostic });
     """#
 
     static let deleteCommentJS = #"""
