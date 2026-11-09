@@ -1044,6 +1044,8 @@ struct DouyinFeedScreen: View {
     private var overlayOpen: Bool { showSearch || showMine || showMessages || authorTarget != nil }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧
     @State private var topNudge: CGFloat = 0
+    /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
+    @State private var topBarWidth: CGFloat?
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1058,7 +1060,9 @@ struct DouyinFeedScreen: View {
                     topBar
                 }
                 .padding(.top, hSize == .regular ? 0 : -80)
-                .frame(maxWidth: .infinity)
+                // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边
+                .frame(width: topBarWidth)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
@@ -1219,10 +1223,14 @@ struct DouyinFeedScreen: View {
     private var layoutRoot: some View {
         GeometryReader { geo in
             let wide = Self.playAreaIsWide(geo)
-            let nudge = DYDuoMetrics.topBarLeftShift(geo)
+            let panelW = sidePanelWidth(geo)
+            // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲
+            let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
+            let barW: CGFloat? = panelW > 0 ? geo.size.width - panelW : nil
             flatArrangement(geo)
-                .onAppear { topNudge = nudge }
+                .onAppear { topNudge = nudge; topBarWidth = barW }
                 .onChange(of: nudge) { _, n in topNudge = n }
+                .onChange(of: barW) { _, v in withAnimation(.snappy) { topBarWidth = v } }
                 .onAppear { feed.screenWide = wide }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
@@ -1259,6 +1267,16 @@ struct DouyinFeedScreen: View {
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
+    /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
+    private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
+        let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
+        let w = geo.size.width, h = geo.size.height
+        let bookFold = fold && w > h
+        let sideBySide = w >= DYDuoMetrics.legacyWideMin || bookFold
+        let showPanel = fold || (showComments && sideBySide && tab == .recommend)
+        return showPanel && sideBySide ? (bookFold ? w * 0.45 : min(380, w * 0.42)) : 0
+    }
+
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
@@ -1268,7 +1286,7 @@ struct DouyinFeedScreen: View {
         let sideBySide = wide || bookFold
         let showPanel = fold || (showComments && sideBySide && tab == .recommend)
 
-        let panelW = showPanel && sideBySide ? (bookFold ? w * 0.45 : min(380, w * 0.42)) : 0
+        let panelW = sidePanelWidth(geo)
         let panelH = tableFold ? h * 0.45 : 0
         let videoW = sideBySide && panelW > 0 ? w - panelW : w
         let videoH = tableFold ? h - panelH : h
@@ -1473,10 +1491,28 @@ struct DouyinFeedScreen: View {
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
     /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
+    /// 自适应：宽度够用原间距；不够先收间距/触摸区，再藏「我的」昵称（只留头像）
     private var topBar: some View {
-        // 触摸区左右各扩 4pt、上下各扩 4pt（图标与字号不动），
-        // spacing 同步收 8/16pt 保持视觉间距与原来完全一致（46 / 37），top padding 上提 4 抵消行高增量。
-        HStack(spacing: topNudge > 0 ? 5 : 14) {
+        ViewThatFits(in: .horizontal) {
+            topBarRow(spacing: topNudge > 0 ? 5 : 14, hPad: 16, showName: true)
+            topBarRow(spacing: 0, hPad: 10, showName: true)
+            topBarRow(spacing: 0, hPad: 8, showName: false)
+            topBarRow(spacing: 0, hPad: 5, showName: false)
+        }
+        .themeShadow(.mediaLabel)
+        .frame(maxWidth: .infinity, alignment: .center)
+        // 整行可点区域随内容高度撑开，避免点在文字上方的极窄条带时落空
+        .frame(minHeight: 54)
+        // 合屏避让：用右侧内缩把居中点推左（small move），绝不把左边的「关注」推出屏幕
+        .padding(.trailing, topNudge)
+        // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
+        // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
+        .padding(.top, hSize == .regular ? 23 : 76)
+    }
+
+    private func topBarRow(spacing: CGFloat, hPad: CGFloat, showName: Bool) -> some View {
+        // 触摸区左右各扩 hPad、上下各扩 14（图标与字号不动）
+        HStack(spacing: spacing) {
             ForEach(DYTab.allCases, id: \.self) { t in
                 Button { selectTab(t) } label: {
                     VStack(spacing: 3) {
@@ -1490,7 +1526,7 @@ struct DouyinFeedScreen: View {
                             .opacity(tab == t ? 1 : 0)
                     }
                     // 文字本身小，撑开触摸区，避免点不中/误判成下拉
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, hPad)
                     .padding(.vertical, 14)
                     .contentShape(Rectangle())
                 }
@@ -1508,14 +1544,14 @@ struct DouyinFeedScreen: View {
                         .frame(width: 16, height: 3)
                         .opacity(0)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, hPad)
                 .padding(.vertical, 14)
                 .contentShape(Rectangle())
                 .overlay(alignment: .topTrailing) {
                     if noticeUnread > 0 {
                         Circle().fill(theme.status.danger.color(for: scheme))
                             .frame(width: 7, height: 7)
-                            .offset(x: -14, y: 10)
+                            .offset(x: -(hPad - 2), y: 10)
                             .allowsHitTesting(false)
                     }
                 }
@@ -1535,28 +1571,22 @@ struct DouyinFeedScreen: View {
                     }
                     .frame(width: 22, height: 22)
                     .clipShape(Circle())
-                    Text(myUser?.name ?? "我的")
-                        .font(.headline.weight(.medium))
-                        .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.85))
-                        .lineLimit(1)
-                        .frame(maxWidth: 62)
+                    if showName {
+                        Text(myUser?.name ?? "我的")
+                            .font(.headline.weight(.medium))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.85))
+                            .lineLimit(1)
+                            .frame(maxWidth: 62)
+                    }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, max(hPad - 2, 4))
                 .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.mine.top")
         }
-        .themeShadow(.mediaLabel)
-        .frame(maxWidth: .infinity, alignment: .center)
-        // 整行可点区域随内容高度撑开，避免点在文字上方的极窄条带时落空
-        .frame(minHeight: 54)
-        // 合屏避让：用右侧内缩把居中点推左（small move），绝不把左边的「关注」推出屏幕
-        .padding(.trailing, topNudge)
-        // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
-        // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
-        .padding(.top, hSize == .regular ? 23 : 76)
+        .fixedSize()
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
