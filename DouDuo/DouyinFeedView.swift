@@ -1427,9 +1427,7 @@ struct DouyinFeedScreen: View {
         .fullScreenCover(isPresented: $showMine) {
             DYMineScreen(bridge: bridge,
                          onLogin: { showMine = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
-                         onAuthor: { a in authorTarget = a.author },
-                         onMessages: { showMine = false
-                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showMessages = true } })
+                         onAuthor: { a in authorTarget = a.author })
         }
         .sheet(item: $authorTarget) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) })
@@ -1462,7 +1460,34 @@ struct DouyinFeedScreen: View {
                 }
                 .buttonStyle(.plain)
             }
-            // 「我的」：独立按钮（不属于 tab 切换），跟在「直播」后面
+            // 「信息」：从「我的」里摘出来的独立入口，跟 tab 同款字体与间距
+            Button { showMessages = true } label: {
+                VStack(spacing: 3) {
+                    Text("信息")
+                        .font(.headline.weight(.medium))
+                        .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
+                        .lineLimit(1).fixedSize()
+                    Capsule()
+                        .fill(theme.media.onMedia.color(for: scheme))
+                        .frame(width: 16, height: 3)
+                        .opacity(0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+                .overlay(alignment: .topTrailing) {
+                    if noticeUnread > 0 {
+                        Circle().fill(theme.status.danger.color(for: scheme))
+                            .frame(width: 7, height: 7)
+                            .offset(x: -14, y: 10)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("douyin.messages.top")
+
+            // 「我的」：独立按钮（不属于 tab 切换）
             Button { showMine = true } label: {
                 HStack(spacing: 5) {
                     CachedAsyncImage(url: myUser?.avatar.flatMap(URL.init(string:))) { img in
@@ -1475,7 +1500,7 @@ struct DouyinFeedScreen: View {
                     .frame(width: 22, height: 22)
                     .clipShape(Circle())
                     Text(myUser?.name ?? "我的")
-                        .font(.subheadline.weight(.medium))
+                        .font(.headline.weight(.medium))
                         .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.85))
                         .lineLimit(1)
                         .frame(maxWidth: 62)
@@ -1755,8 +1780,6 @@ struct DouyinFeedScreen: View {
                 Task { await refreshRecommendations() }
             }
             .disabled(refreshing)
-            Button { showMine = true } label: { Label("我的", systemImage: "person.crop.circle") }
-                .accessibilityIdentifier("douyin.mine")
             Menu {
                 Picker(selection: $feed.shortRatioPortrait) {
                     Text("不限").tag(-1)
