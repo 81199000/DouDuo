@@ -77,8 +77,8 @@ extension DouyinBridge {
         return p.groups
     }
 
-    func notices(group: Int, maxTime: Int) async throws -> (items: [DYNotice], maxTime: Int, hasMore: Bool) {
-        let d = try await call(Self.noticeListJS, args: ["group": String(group), "maxTime": String(maxTime)], attempts: 1)
+    func notices(group: Int, maxTime: Int, markRead: Bool = false) async throws -> (items: [DYNotice], maxTime: Int, hasMore: Bool) {
+        let d = try await call(Self.noticeListJS, args: ["group": String(group), "maxTime": String(maxTime), "markRead": markRead ? "1" : "0"], attempts: 1)
         let p = try JSONDecoder().decode(DYNoticePage.self, from: d)
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
@@ -207,7 +207,7 @@ extension DouyinBridge {
       };
     };
     const r = await req('GET', '/aweme/v1/web/notice/?' + q({
-      is_new_notice: '1', is_mark_read: '0', count: '10', notice_group: String(group), min_time: '0', max_time: String(maxTime || 0)
+      is_new_notice: '1', is_mark_read: String(markRead || '0'), count: '10', notice_group: String(group), min_time: '0', max_time: String(maxTime || 0)
     }));
     const d = parse(r.t) || {};
     const items = (d.notice_list_v2 || d.notice_list || []).map(row);

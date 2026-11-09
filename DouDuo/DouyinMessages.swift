@@ -69,6 +69,7 @@ struct DYMessagesScreen: View {
     let onWeb: (URL) -> Void
 
     @State private var path: [DYMsgRoute] = []
+    @StateObject private var chatModel = DouyinWebModel()
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -118,10 +119,15 @@ struct DYMessagesScreen: View {
                           badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
                           id: "douyin.messages.system") { path.append(.system) }
                     entry(icon: "bubble.left.and.bubble.right.fill", tint: Color(red: 0.20, green: 0.75, blue: 0.55),
-                          title: "私信", subtitle: "在网页版查看会话",
+                          title: "私信记录", subtitle: "下方显示历史会话，点此全屏查看",
                           badge: 0, id: "douyin.messages.chat") {
                         if let u = URL(string: "https://www.douyin.com/chat") { onWeb(u) }
                     }
+                    // 复用已登录网页组件显示真实会话记录，而不是用通知列表冒充私信。
+                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!)
+                        .containerRelativeFrame(.vertical) { height, _ in max(320, height * 0.75) }
+                        .clipped()
+                        .accessibilityIdentifier("douyin.messages.conversations")
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
                             Text(error).font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
@@ -213,6 +219,7 @@ struct DYMessagesScreen: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
+        .accessibilityValue(String(badge))
     }
 
     private func loadRoot() async {
@@ -283,7 +290,18 @@ struct DYNoticeListScreen: View {
             }
         }
         .foregroundStyle(.white)
-        .task(id: group) { await reload(reset: true) }
+        .task(id: group) {
+            if route == .interactive, group == .all {
+                // 只标记进入的互动分组，不用 700 把粉丝/系统一并清掉。
+                do {
+                    _ = try await bridge.notices(group: DYNoticeGroup.comment.rawValue, maxTime: 0, markRead: true)
+                    _ = try await bridge.notices(group: DYNoticeGroup.digg.rawValue, maxTime: 0, markRead: true)
+                } catch {
+                    DYLiveModel.log("DDNOTICE markRead failed: \(error.localizedDescription)")
+                }
+            }
+            await reload(reset: true)
+        }
         .sheet(item: $author) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
                 .presentationDetents([.medium, .large])
@@ -320,6 +338,7 @@ struct DYNoticeListScreen: View {
                     ForEach(visibleItems) { n in
                         Button { Task { await open(n) } } label: { row(n) }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier(n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video")
                         Divider().background(Color.white.opacity(0.08))
                     }
                     if hasMore {
@@ -379,7 +398,7 @@ struct DYNoticeListScreen: View {
         }
         let pageTime = reset ? 0 : maxTime
         do {
-            let page = try await bridge.notices(group: group.rawValue, maxTime: pageTime)
+            let page = try await bridge.notices(group: group.rawValue, maxTime: pageTime, markRead: group != .all)
             guard gen == loadGen else { return }
             if reset { items = page.items } else {
                 let seen = Set(items.map(\.id))

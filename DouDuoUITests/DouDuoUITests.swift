@@ -2,6 +2,40 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testMessageReadAndVideoReturn() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let entry = app.buttons["douyin.messages.interactive"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 35))
+        sleep(12)
+        print("DDUNREAD_BEFORE=\(entry.value ?? "nil")")
+        entry.tap()
+        sleep(12)
+        attach(app, "notice-category")
+        let video = app.buttons.matching(identifier: "douyin.notice.video").firstMatch
+        if video.waitForExistence(timeout: 15) {
+            video.tap()
+            let back = app.buttons["douyin.list.back"].firstMatch
+            XCTAssertTrue(back.waitForExistence(timeout: 25))
+            let like = app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.first { $0.isHittable }
+            if let like { XCTAssertLessThan(back.frame.midY, like.frame.midY) }
+            attach(app, "notice-video-return-above-like")
+            back.tap()
+            sleep(2)
+        }
+        let back = app.buttons["BackButton"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
+        back.tap()
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+        sleep(8)
+        print("DDUNREAD_AFTER=\(entry.value ?? "nil")")
+        XCTAssertEqual(entry.value as? String, "0")
+        XCTAssertTrue(app.webViews.firstMatch.exists)
+        attach(app, "message-read-and-conversations")
+    }
+
+
     /// 只读采样手机上已安装的正式抖音 UI；默认跳过，不能用 DouDuo 页面冒充原版。
     func testOriginalLiveReference() throws {
         guard ProcessInfo.processInfo.environment["DOUDUO_ORIGINAL_REF"] == "1" else {

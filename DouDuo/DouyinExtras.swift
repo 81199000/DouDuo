@@ -695,7 +695,7 @@ struct DYListPlayer: View {
                                         onSearch: {},
                                         onAuthor: { onAuthor(item) },
                                         onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
-                                        bridge: bridge, onToast: { show($0) })
+                                        bridge: bridge, onToast: { show($0) }, onBack: { dismiss() })
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
@@ -707,15 +707,6 @@ struct DYListPlayer: View {
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
 
-                HStack(spacing: 10) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
-                            .frame(width: 40, height: 40).background(Circle().fill(.black.opacity(0.35)))
-                    }
-                    .accessibilityIdentifier("douyin.list.back")
-                    Text(title).font(.headline).foregroundStyle(.white).shadow(radius: 3)
-                }
-                .padding(.leading, 22).padding(.top, 10)
 
                 if let t = toast {
                     Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
