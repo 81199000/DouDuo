@@ -1013,6 +1013,8 @@ struct DouyinFeedScreen: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
+    /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
+    private var overlayOpen: Bool { showSearch || showMine || showMessages || authorTarget != nil }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧
     @State private var topNudge: CGFloat = 0
     @State private var noticeUnread = 0
@@ -1385,9 +1387,9 @@ struct DouyinFeedScreen: View {
     private var feedArea: some View {
         ZStack(alignment: .top) {
             if tab == .live {
-                DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil)
+                DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen)
             } else if tab == .follow {
-                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !showSearch && !showMine && authorTarget == nil,
+                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
                              onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
                              onToast: { showToast($0) },
@@ -1639,7 +1641,7 @@ struct DouyinFeedScreen: View {
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
     private func page(for item: DYAweme) -> some View {
         let extras = AnyView(moreExtrasMenu(item))
-        let active = item.id == currentID && web == nil && tab == .recommend && !showSearch && !showMine && authorTarget == nil
+        let active = item.id == currentID && web == nil && tab == .recommend && !overlayOpen
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
