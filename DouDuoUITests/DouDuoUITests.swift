@@ -2,6 +2,32 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testLiveDiscoveryAndBack() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let discover = app.buttons["live.discover"]
+        XCTAssertTrue(discover.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["live.category.featured"].exists)
+        discover.tap()
+        XCTAssertTrue(app.buttons["live.category.featured"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["live.category.followed"].exists)
+        app.buttons["live.category.nearby"].tap()
+        XCTAssertTrue(app.staticTexts["「同城」暂未接入分区数据，当前继续看精选直播"].exists)
+        discover.tap()
+        XCTAssertFalse(app.buttons["live.category.featured"].exists)
+        let enter = app.buttons.matching(identifier: "live.room.enter").firstMatch
+        XCTAssertTrue(enter.waitForExistence(timeout: 45))
+        enter.tap()
+        let back = app.buttons["live.room.close"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.label.contains("返回"))
+        back.tap()
+        XCTAssertTrue(discover.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.state, .runningForeground)
+        attach(app, "live-discovery-return")
+    }
+
     func testMinePlayCountsAndCachedMessages() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "mine"
@@ -310,7 +336,8 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertEqual(page.frame.maxY, window.maxY, accuracy: 1, "静止时页底必须与窗口底边重合")
             attach(app, "live-page-fill-\(index)")
             if index == 0 {
-                app.swipeUp(velocity: .slow)
+                page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+                    .press(forDuration: 0.05, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
                 let changed = expectation(for: NSPredicate(format: "label != %@", id), evaluatedWith: current)
                 XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 10), .completed)
                 sleep(1)
@@ -347,7 +374,9 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(categories.waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["live.currentID"].label, id, "退房应回到同一个直播预览")
         attach(app, "live-preview-return")
-        app.swipeUp(velocity: .slow)
+        let page = app.otherElements["live.page.\(id)"]
+        page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            .press(forDuration: 0.05, thenDragTo: page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
         let current = app.staticTexts["live.currentID"]
         let changed = expectation(for: NSPredicate(format: "label != %@", id), evaluatedWith: current)
         XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 10), .completed, "上滑应换到相邻房间")

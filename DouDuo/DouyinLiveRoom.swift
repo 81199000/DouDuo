@@ -42,6 +42,9 @@ final class DYLiveModel: ObservableObject {
     private(set) var fetchedAt = Date.distantPast
     @Published var ready = false
     @Published var zone: DYLiveZone?
+    /// 关注的主播里正在开播的（网页版直播首页顶上那排头像，复用同一个接口）
+    @Published var followLive: [DYLiveRoom] = []
+    private var followLiveFetchedAt = Date.distantPast
     @Published var clean = false
     @Published var entered = false
     @Published var muted = false { didSet { vlc.mediaPlayer.audio?.isMuted = muted } }
@@ -184,7 +187,47 @@ final class DYLiveModel: ObservableObject {
     func open(_ room: DYLiveRoom) {
         zone = nil; reset(); rooms = [room]; currentID = room.id; entered = true; fetchedAt = Date()
     }
+
+    /// 「发现更多」里的关注主播：2 分钟节流；未登录或被风控时静默降级为空列表
+    func loadFollowLive(_ bridge: DouyinBridge) async {
+        guard Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
+        followLiveFetchedAt = Date()
+        if let r = try? await bridge.fetchFollowLive() { followLive = r }
+    }
+
+    /// 一级分类「关注」：把整条流换成关注主播的开播列表，仍可上下滑换台
+    func openFollowed(_ bridge: DouyinBridge) {
+        guard !followLive.isEmpty else { return }
+        zone = nil; reset()
+        rooms = followLive; currentID = followLive.first?.id
+        fetchedAt = Date()
+        Self.log("DDLIVE_FOLLOWED count=\(followLive.count)")
+    }
+
+    /// 一级分类「精选」：不论之前是关注列表还是游戏专区，都回到推荐直播流
+    func backToFeatured(_ bridge: DouyinBridge) {
+        zone = nil; reset()
+        Task { await load(bridge, reset: true) }
+    }
 }
+
+/// 直播广场一级分类（对齐抖音网页版：精选 / 关注 / 同城 / 游戏 / 明星 / 聊天 / 唱歌 / 团播 / 颜值）。
+/// 目前只有精选、关注、游戏有真实数据源；其余为占位，点选时给出明确提示而不是静默无反应。
+private enum DYLiveCategoryKind { case featured, followed, gameZones, pending }
+private struct DYLiveCategory: Identifiable {
+    let id: String, name: String, kind: DYLiveCategoryKind
+}
+private let ddLiveCategories: [DYLiveCategory] = [
+    .init(id: "featured", name: "精选", kind: .featured),
+    .init(id: "followed", name: "关注", kind: .followed),
+    .init(id: "nearby", name: "同城", kind: .pending),
+    .init(id: "game", name: "游戏", kind: .gameZones),
+    .init(id: "star", name: "明星", kind: .pending),
+    .init(id: "chat", name: "聊天", kind: .pending),
+    .init(id: "sing", name: "唱歌", kind: .pending),
+    .init(id: "group", name: "团播", kind: .pending),
+    .init(id: "beauty", name: "颜值", kind: .pending),
+]
 
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
 struct DYLiveFeed: View {
@@ -200,6 +243,10 @@ struct DYLiveFeed: View {
     @State private var sending = false
     @State private var sendError: String?
     @State private var showCategories = false
+    /// 「发现更多」：关注主播开播头像 + 一级分类，收起时不占画面（抖音广场页同款信息层）
+    @State private var showDiscover = false
+    @State private var selectedCategory = "featured"
+    @State private var categoryHint: String?
     @State private var scrollID: String?
     @State private var userScrolling = false
     @State private var gestureStartID: String?
@@ -220,12 +267,17 @@ struct DYLiveFeed: View {
                 if model.rooms.isEmpty { emptyState }
                 else { pages }
                 if !model.entered {
-                    VStack {
-                        HStack { categoryButton; Spacer() }
+                    VStack(alignment: .leading, spacing: 0) {
+                        discoverBar
+                        if showDiscover {
+                            discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
+                        }
                         Spacer()
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.horizontal, 18)
                     .padding(.top, hSize == .compact ? 46 : 74)
+                    .animation(.easeInOut(duration: 0.2), value: showDiscover)
                 }
                 #if DEBUG
                 VStack {
@@ -251,6 +303,8 @@ struct DYLiveFeed: View {
             }
             scrollID = model.currentID
             model.play(currentRoom)
+            // 并发拉取关注主播，不占用首播带宽也不阻塞起播
+            Task { await model.loadFollowLive(bridge) }
         }
         .onChange(of: model.currentID) { _, id in
             if let id, scrollID != id { scrollID = id }
@@ -269,13 +323,24 @@ struct DYLiveFeed: View {
             chat.open(id)
         }
         .onChange(of: model.entered) { _, entered in
-            if !entered { inputFocused = false; draft = ""; sendError = nil }
+            if entered { showDiscover = false }
+            else { inputFocused = false; draft = ""; sendError = nil }
+        }
+        .onChange(of: showDiscover) { _, expanded in
+            if expanded { Task { await model.loadFollowLive(bridge) } }
         }
         .onDisappear { scrollEndTask?.cancel(); model.deactivate(); chat.close() }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
         .sheet(isPresented: $showCategories) {
             DYLiveCategories(selection: model.zone) { z in
-                showCategories = false; model.select(z, bridge)
+                showCategories = false
+                model.select(z, bridge)
+                if let z {
+                    selectedCategory = "game"
+                    categoryHint = "已切到「\(z.name)」专区"
+                } else {
+                    selectedCategory = "featured"; categoryHint = nil
+                }
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -290,6 +355,127 @@ struct DYLiveFeed: View {
         }
         .foregroundStyle(foreground).buttonStyle(.plain)
         .accessibilityIdentifier("live.categories")
+    }
+
+    /// 顶部第一行：抖音广场页的「发现更多」展开入口 + 原有分类入口
+    private var discoverBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showDiscover.toggle() }
+            } label: {
+                Label(showDiscover ? "收起" : "发现更多",
+                      systemImage: showDiscover ? "chevron.up" : "chevron.down")
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
+            }
+            .foregroundStyle(foreground).buttonStyle(.plain)
+            .accessibilityIdentifier("live.discover")
+            // 两个入口都靠左：展开内屏的右上角是系统状态栏/前摄区，控件放那里会被盖住
+            categoryButton
+            Spacer(minLength: 8)
+        }
+    }
+
+    private var discoverPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            followedLiveRow
+            categoryStrip
+            if let categoryHint {
+                Text(categoryHint).font(.caption)
+                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+            }
+        }
+        .padding(.top, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 关注的主播里正在开播的：红色直播环 + 头像横排，点一下直接进房
+    private var followedLiveRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle().fill(theme.status.danger.color(for: scheme)).frame(width: 6, height: 6)
+                Text("关注的人正在直播").font(.subheadline.weight(.semibold))
+                Text(model.followLive.isEmpty ? "登录后可查看" : "\(model.followLive.count) 位")
+                    .font(.caption)
+                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+            }
+            if !model.followLive.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        ForEach(model.followLive) { r in
+                            Button { model.open(r) } label: {
+                                VStack(spacing: 5) {
+                                    CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+                                        placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                        .frame(width: 52, height: 52).clipShape(Circle())
+                                        .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2))
+                                        .overlay(alignment: .bottom) {
+                                            Text("直播中").font(.caption2.weight(.bold))
+                                                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                                .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                                .offset(y: 6)
+                                        }
+                                    Text(r.owner).font(.caption2).lineLimit(1).frame(width: 66)
+                                }
+                                .padding(.top, 2)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("live.followed.\(r.id)")
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .foregroundStyle(foreground)
+    }
+
+    /// 一级分类条：精选 / 关注 / 同城 / 游戏 / 明星 / 聊天 / 唱歌 / 团播 / 颜值
+    private var categoryStrip: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("全部分类").font(.subheadline.weight(.semibold))
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(ddLiveCategories) { c in
+                        Button { pickCategory(c) } label: {
+                            Text(c.name)
+                                .font(.subheadline.weight(selectedCategory == c.id ? .semibold : .regular))
+                                .foregroundStyle(foreground)
+                                .padding(.horizontal, 14).frame(height: 34)
+                                .background(Capsule().fill(selectedCategory == c.id
+                                    ? foreground.opacity(0.22)
+                                    : theme.media.chromeFill.color(for: scheme)))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("live.category.\(c.id)")
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .foregroundStyle(foreground)
+    }
+
+    private func pickCategory(_ c: DYLiveCategory) {
+        switch c.kind {
+        case .featured:
+            selectedCategory = c.id; categoryHint = nil
+            model.backToFeatured(bridge)
+        case .followed:
+            guard !model.followLive.isEmpty else {
+                categoryHint = "还没看到关注的主播开播，可到「网页版 / 登录」里登录抖音"; return
+            }
+            selectedCategory = c.id; categoryHint = nil
+            model.openFollowed(bridge)
+        case .gameZones:
+            selectedCategory = c.id
+            categoryHint = "「游戏」下可选具体专区"
+            showCategories = true
+        case .pending:
+            categoryHint = "「\(c.name)」暂未接入分区数据，当前继续看精选直播"
+        }
     }
 
     private var emptyState: some View {
@@ -327,10 +513,24 @@ struct DYLiveFeed: View {
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                if !userScrolling { gestureStartID = model.currentID }
+                if !userScrolling {
+                    gestureStartID = model.currentID
+                    #if DEBUG
+                    DYLiveModel.log("DDLIVE_SCROLL start=\(model.currentID ?? "-") count=\(model.rooms.count)")
+                    #endif
+                }
                 scrollEndTask?.cancel(); userScrolling = true
             }
             .onEnded { value in
+                // 左缘右滑返回：与「我的 / 信息」页 DYEdgeSwipeBack 同一套判定（左缘 30pt 起、右滑 >70pt）。
+                // 刻意复用分页这一个手势，不再叠第二层 simultaneousGesture，避免影响上滑换台。
+                if (model.entered || model.clean),
+                   value.startLocation.x < 30, value.translation.width > 70,
+                   abs(value.translation.height) < abs(value.translation.width) {
+                    if model.clean { model.clean = false } else { model.leaveRoom() }
+                    scrollEndTask?.cancel(); userScrolling = false; gestureStartID = nil
+                    return
+                }
                 if abs(value.translation.width) > 80 && abs(value.translation.width) > abs(value.translation.height) && model.entered {
                     withAnimation(.easeInOut(duration: 0.2)) { model.clean = value.translation.width > 0 }
                 }
@@ -419,7 +619,8 @@ private struct DYLiveRoomPage: View {
                 if !isCurrent {
                     Color.clear.allowsHitTesting(false)
                 } else if model.clean {
-                    VStack { HStack { Spacer(); circle("arrow.uturn.backward", id: "live.room.restore") { model.clean = false } }; Spacer() }
+                    // 与进房态同一套「返回」胶囊，放左上避开右上系统状态栏 / 前摄挖孔
+                    VStack { HStack { backCapsule(action: { model.clean = false }, id: "live.room.restore"); Spacer() }; Spacer() }
                         .contentShape(Rectangle())
                         .onTapGesture { model.clean = false }
                         .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, hSize == .compact ? 64 : 70)
@@ -483,7 +684,11 @@ private struct DYLiveRoomPage: View {
             .frame(width: 36, height: 36).clipShape(Circle())
     }
     private var header: some View {
+        // 直播间唯一的返回键：与「我的 / 信息 / 网页版」页同款标题 + chevron.backward 符号。
+        // 放左上角，右上角留给系统状态栏/前摄挖孔（展开内屏会被系统层盖住）。
+        // 主视图不再挂 NavigationStack / toolbar，Duo 系统侧栏不会再多渲染一颗返回。
         HStack(spacing: 10) {
+            backCapsule(action: model.leaveRoom, id: "live.room.close")
             HStack(spacing: 8) {
                 avatar
                 VStack(alignment: .leading, spacing: 2) {
@@ -492,12 +697,21 @@ private struct DYLiveRoomPage: View {
                 }
             }.padding(.trailing, 12).padding(.leading, 4).padding(.vertical, 4).ddGlassCapsule()
             Spacer(minLength: 8)
-            circle("xmark", id: "live.room.close", action: model.leaveRoom)
         }
     }
-    private func circle(_ name: String, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: name).font(.headline).frame(width: 44, height: 44).ddGlassCircle() }
-            .buttonStyle(.plain).accessibilityIdentifier(id)
+    /// 和 douyin.web.back / douyin.mine.back / douyin.messages.back 同一套返回键语义：
+    /// 「返回」标题 + chevron.backward 符号 + 胶囊底。直播间只保留这一颗，不再叠加系统侧栏返回。
+    private func backCapsule(action: @escaping () -> Void, id: String) -> some View {
+        Button(action: action) {
+            Label("返回", systemImage: "chevron.backward")
+                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                .padding(.horizontal, 14).frame(height: 40)
+                .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+        }
+        .buttonStyle(.plain)
+        .themeShadow(.floatingPanel)
+        .accessibilityIdentifier(id)
     }
 }
 
