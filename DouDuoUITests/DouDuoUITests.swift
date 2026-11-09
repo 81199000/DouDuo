@@ -2,6 +2,39 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testConversationListAndDetail() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 50), app.debugDescription)
+        attach(app, "conversation-native-root")
+        print("DDCHAT_SHOT_ROOT"); sleep(4)
+        let label = row.label
+        print("DDCHAT root rows=\(app.buttons.matching(identifier: "douyin.conversation.row").count)")
+        row.tap()
+        sleep(5)
+        attach(app, "conversation-single-detail")
+        print("DDCHAT_SHOT_DETAIL"); sleep(4)
+        print("DDCHAT_DETAIL\n\(app.debugDescription)\nDDCHAT_DETAIL_END")
+        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        XCTAssertTrue(web.exists)
+        XCTAssertFalse(app.buttons["douyin.messages.interactive"].isHittable)
+        let inputs = web.descendants(matching: .any).matching(NSPredicate(format: "elementType == %d OR elementType == %d", XCUIElement.ElementType.textView.rawValue, XCUIElement.ElementType.textField.rawValue))
+        XCTAssertGreaterThan(inputs.count, 0)
+        if inputs.count > 0 {
+            let input = inputs.firstMatch
+            XCTAssertLessThanOrEqual(input.frame.maxY, app.windows.firstMatch.frame.maxY)
+            input.tap()
+            print("DDCHAT_SHOT_KEYBOARD"); sleep(4)
+        }
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["douyin.messages.interactive"].exists)
+        attach(app, "conversation-return-list")
+        print("DDCHAT returned; original row label length=\(label.count)")
+    }
+
     func testMessageReadAndVideoReturn() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
@@ -31,7 +64,7 @@ final class DouDuoUITests: XCTestCase {
         sleep(8)
         print("DDUNREAD_AFTER=\(entry.value ?? "nil")")
         XCTAssertEqual(entry.value as? String, "0")
-        XCTAssertTrue(app.webViews.firstMatch.exists)
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.conversation.row").firstMatch.waitForExistence(timeout: 15))
         attach(app, "message-read-and-conversations")
     }
 

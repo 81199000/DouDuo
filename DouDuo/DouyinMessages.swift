@@ -2,6 +2,18 @@
 // 全部内容在同一个 ScrollView 里滚动，分类入口不固定在顶部。
 // Duo：返回键走系统 toolbar（自动进右侧竖向侧栏）；根页左缘右滑关闭，二级页系统原生左缘返回上一层。
 import SwiftUI
+import WebKit
+
+private struct DYConversationRow: Identifiable, Decodable {
+    let id: String
+    let name: String
+    let avatar: String?
+    let preview: String
+    let time: String
+    let badge: String
+    let index: String
+    let stranger: Bool
+}
 
 enum DYNoticeGroup: Int, CaseIterable, Identifiable {
     case all = 700
@@ -70,6 +82,9 @@ struct DYMessagesScreen: View {
 
     @State private var path: [DYMsgRoute] = []
     @StateObject private var chatModel = DouyinWebModel()
+    @State private var conversations: [DYConversationRow] = []
+    @State private var selectedChat: DYConversationRow?
+    @State private var chatStatus = "正在加载私信…"
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -79,13 +94,13 @@ struct DYMessagesScreen: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            root
-                .navigationTitle("消息")
+            messageContent
+                .navigationTitle(selectedChat?.name ?? "消息")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     // Duo：返回/关闭走系统 cancellationAction，系统把它放进右侧竖向侧栏
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("返回", systemImage: "chevron.backward", action: onClose)
+                        Button("返回", systemImage: "chevron.backward", action: backFromMessage)
                             .accessibilityIdentifier("douyin.messages.back")
                     }
                 }
@@ -95,11 +110,175 @@ struct DYMessagesScreen: View {
         }
         .preferredColorScheme(.dark)
         .task { await loadRoot() }
+        .task {
+            while !Task.isCancelled {
+                if selectedChat == nil { await readConversations() }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
         .onChange(of: path) { _, p in
             // 从二级页回来：刷新未读角标
             if p.isEmpty { Task { await loadRoot() } }
         }
     }
+
+    /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
+    private var messageContent: some View {
+        GeometryReader { geo in
+          ZStack(alignment: .topLeading) {
+            root
+                .frame(width: geo.size.width, height: geo.size.height)
+                .opacity(selectedChat == nil ? 1 : 0)
+                .allowsHitTesting(selectedChat == nil)
+                .accessibilityHidden(selectedChat != nil)
+            DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!)
+                .frame(width: selectedChat == nil ? 760 : geo.size.width,
+                       height: selectedChat == nil ? 640 : geo.size.height)
+                .opacity(selectedChat == nil ? 0.001 : 1)
+                .allowsHitTesting(selectedChat != nil)
+                .accessibilityHidden(selectedChat == nil)
+                .accessibilityIdentifier("douyin.messages.chat.detail")
+          }
+          .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+        .clipped()
+        .modifier(DYEdgeSwipeBack(action: backFromMessage))
+    }
+
+    private var conversationRows: some View {
+        VStack(spacing: 0) {
+            if conversations.isEmpty {
+                Text(chatStatus).font(.footnote).foregroundStyle(.secondary).padding(20)
+            }
+            ForEach(conversations) { row in
+                Button { Task { await openConversation(row) } } label: {
+                    HStack(spacing: 12) {
+                        CachedAsyncImage(url: row.avatar.flatMap(URL.init(string:))) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
+                        }
+                        .frame(width: 50, height: 50).clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
+                            Text(row.preview).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        VStack(alignment: .trailing, spacing: 7) {
+                            Text(row.time).font(.caption2).foregroundStyle(.secondary)
+                            if !row.badge.isEmpty {
+                                Text(row.badge).font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.red))
+                            }
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.conversation.row")
+            }
+            if !conversations.isEmpty {
+                Button("加载更多会话") {
+                    Task {
+                        _ = try? await chatModel.web?.evaluateJavaScript(Self.scrollConversationsJS)
+                        try? await Task.sleep(for: .milliseconds(500))
+                        await readConversations()
+                    }
+                }
+                .font(.footnote).padding(16)
+            }
+        }
+    }
+
+    private func readConversations() async {
+        guard let web = chatModel.web else { return }
+        do {
+            guard let result = try await web.evaluateJavaScript(Self.conversationsJS) as? String,
+                  let data = result.data(using: .utf8) else { return }
+            let rows = try JSONDecoder().decode([DYConversationRow].self, from: data)
+            if rows.isEmpty {
+                let text = (try? await web.evaluateJavaScript("document.body.innerText")) as? String ?? ""
+                chatStatus = text.contains("验证码登录") ? "私信需要登录，请使用网页版 / 登录" : "正在加载会话；如无记录可稍后重试"
+            } else {
+                let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                let existing = Set(conversations.map(\.id))
+                conversations = rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
+                chatStatus = ""
+            }
+        } catch {
+            chatStatus = "私信加载失败，请稍后重试"
+        }
+    }
+
+    private func openConversation(_ row: DYConversationRow) async {
+        guard let web = chatModel.web,
+              let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
+              let args = String(data: data, encoding: .utf8) else { return }
+        let script = """
+        (() => {
+          const [name, avatar, index, stranger] = \(args);
+          const selector = stranger === '1' ? '[class*="conversationStrangerBoxwrapper"]' : '[data-e2e="conversation-item"]';
+          const rows = [...document.querySelectorAll(selector)];
+          const row = rows.find(e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim()) === name && (!avatar || e.querySelector('img')?.src === avatar));
+          if (!row) return false;
+          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+          let style = document.getElementById('dd-chat-only');
+          if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
+          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
+          window.__wuweiMinWidth = 320;
+          window.__wuweiFixViewport?.();
+          window.dispatchEvent(new Event('resize'));
+          return true;
+        })()
+        """
+        if (try? await web.evaluateJavaScript(script)) as? Bool == true {
+            selectedChat = row
+        } else {
+            chatStatus = "会话位置已变化，正在刷新，请再点一次"
+            await readConversations()
+        }
+    }
+
+    private func backFromMessage() {
+        guard selectedChat != nil else { onClose(); return }
+        selectedChat = nil
+        Task {
+            _ = try? await chatModel.web?.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); window.__wuweiMinWidth=760; window.__wuweiFixViewport?.(); window.dispatchEvent(new Event('resize')); true")
+            await readConversations()
+        }
+    }
+
+    private static let conversationsJS = #"""
+    (() => {
+      const nodes = [...document.querySelectorAll('[data-e2e="conversation-item"], [class*="conversationStrangerBoxwrapper"]')];
+      return JSON.stringify(nodes.map(e => {
+        const txt = s => e.querySelector(s)?.textContent?.trim() || '';
+        const name = txt('[class="conversationConversationItemtitle"]') || e.innerText.split('\n')[0].trim();
+        const avatar = e.querySelector('img')?.src || null;
+        const stranger = e.className.includes('StrangerBox');
+        const preview = txt('[class*="ConversationItemHinttextBox"]') || txt('[class*="ConversationItemDescleft"]');
+        const time = txt('[class*="timeStr"]');
+        const badgeNode = e.querySelector('[class*="badge-count"], [class*="BadgeCount"], [class*="badge-dot"]');
+        const badge = badgeNode ? (badgeNode.textContent.trim() || '•') : '';
+        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge, index: e.closest('[data-index]')?.dataset.index || '', stranger };
+      }).filter(x => x.name));
+    })()
+    """#
+
+    private static let scrollConversationsJS = #"""
+    (() => {
+      const root = document.querySelector('[class*="ConversationListwrapper"]');
+      if (!root) return false;
+      const list = [root, ...root.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 10 && /auto|scroll/.test(getComputedStyle(e).overflowY));
+      if (!list) return false;
+      list.scrollTop += list.clientHeight * 0.8;
+      list.dispatchEvent(new Event('scroll', { bubbles: true }));
+      return true;
+    })()
+    """#
 
     private var root: some View {
         VStack(spacing: 0) {
@@ -118,16 +297,7 @@ struct DYMessagesScreen: View {
                           title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
                           badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
                           id: "douyin.messages.system") { path.append(.system) }
-                    entry(icon: "bubble.left.and.bubble.right.fill", tint: Color(red: 0.20, green: 0.75, blue: 0.55),
-                          title: "私信记录", subtitle: "下方显示历史会话，点此全屏查看",
-                          badge: 0, id: "douyin.messages.chat") {
-                        if let u = URL(string: "https://www.douyin.com/chat") { onWeb(u) }
-                    }
-                    // 复用已登录网页组件显示真实会话记录，而不是用通知列表冒充私信。
-                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!)
-                        .containerRelativeFrame(.vertical) { height, _ in max(320, height * 0.75) }
-                        .clipped()
-                        .accessibilityIdentifier("douyin.messages.conversations")
+                    conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
                             Text(error).font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
@@ -141,7 +311,6 @@ struct DYMessagesScreen: View {
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
-        .modifier(DYEdgeSwipeBack(action: onClose))
     }
 
     @ViewBuilder

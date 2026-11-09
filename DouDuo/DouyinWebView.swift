@@ -25,7 +25,7 @@ enum DouyinWeb {
       window.__wuweiFixViewport = () => {
         const vw = window.__wuweiViewW || window.screen.width;
         const uz = window.__wuweiZoom || 1;
-        const L = Math.round(Math.max(vw / uz, 760));
+        const L = Math.round(Math.max(vw / uz, window.__wuweiMinWidth || 760));
         const sc = (vw / L).toFixed(4);
         const want = `width=${L},initial-scale=${sc},minimum-scale=${sc},maximum-scale=${sc},user-scalable=no,viewport-fit=cover`;
         let m = document.querySelector('meta[name=viewport]');
