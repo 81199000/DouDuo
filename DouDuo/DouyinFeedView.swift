@@ -2148,6 +2148,8 @@ struct DYCommentPanel: View {
     @State private var replyErr: [String: String] = [:]
     @State private var draft = ""
     @State private var replyTo: DYComment?
+    @State private var showEmoji = false
+    @State private var showAt = false
     @State private var sending = false
     @State private var sendErr: String?
     @State private var digged: Set<String> = []
@@ -2237,6 +2239,18 @@ struct DYCommentPanel: View {
                 Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
             }
             HStack(spacing: 8) {
+                Button { showEmoji.toggle() } label: {
+                    Image(systemName: showEmoji ? "keyboard" : "face.smiling")
+                        .font(.body).foregroundStyle(.themeTextSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.comment.emoji")
+                Button { showAt.toggle() } label: {
+                    Image(systemName: "at").font(.body.weight(.medium))
+                        .foregroundStyle(showAt ? theme.accent.color(for: scheme) : .themeTextSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.comment.at")
                 TextField(replyTo == nil ? "说点什么…" : "回复 \(replyTo!.name)", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($inputFocused)
@@ -2252,8 +2266,73 @@ struct DYCommentPanel: View {
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
                 .accessibilityIdentifier("douyin.comment.send")
             }
+            if showEmoji {
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 8), spacing: 6) {
+                        ForEach(DYCommentEmoji.all, id: \.self) { e in
+                            Button { draft += e } label: {
+                                Text(e).font(.system(size: 24))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(height: 132)
+                .accessibilityIdentifier("douyin.comment.emojis")
+            }
+            if showAt {
+                atPanel
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    /// @ 面板：列出这条视频评论区里的人（本地数据，点一下插进输入框）
+    @ViewBuilder
+    private var atPanel: some View {
+        let people = atCandidates
+        VStack(alignment: .leading, spacing: 4) {
+            if people.isEmpty {
+                Text("这条视频还没有可 @ 的人").font(.caption2).foregroundStyle(.themeTextSecondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(people, id: \.id) { u in
+                            Button {
+                                draft += "@\(u.name) "
+                                showAt = false
+                            } label: {
+                                HStack(spacing: 8) {
+                                    CachedAsyncImage(url: u.avatar.flatMap(URL.init(string:))) { img in
+                                        img.resizable().scaledToFill()
+                                    } placeholder: { Color.primary.opacity(0.08) }
+                                    .frame(width: 24, height: 24).clipShape(Circle())
+                                    Text(u.name).font(.footnote).foregroundStyle(.themeTextPrimary).lineLimit(1)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 130)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// @ 候选：评论作者 + 楼中楼作者，去重
+    private var atCandidates: [DYComment] {
+        var seen = Set<String>()
+        var out: [DYComment] = []
+        for c in items {
+            if seen.insert(c.name).inserted { out.append(c) }
+            for r in replies[c.id] ?? [] where seen.insert(r.name).inserted { out.append(r) }
+        }
+        return Array(out.prefix(30))
     }
 
     private func send() async {
@@ -2412,4 +2491,22 @@ struct DYCommentPanel: View {
             hasMore = false
         }
     }
+}
+
+// MARK: - 评论表情
+
+/// 评论输入框的表情面板（纯 emoji，跟着文字一起发，不依赖抖音的表情包接口）
+enum DYCommentEmoji {
+    static let all: [String] = [
+        "😀", "😄", "😁", "😂", "🤣", "😊", "😍", "🥰",
+        "😘", "😎", "🤩", "🥳", "😏", "😅", "😅", "🙃",
+        "😢", "😭", "😤", "😡", "🤬", "😱", "😨", "😰",
+        "🤔", "🤨", "😐", "😑", "🙄", "😴", "🥱", "🤯",
+        "😳", "🥺", "😬", "🤐", "🤫", "🤭", "😷", "🤒",
+        "👍", "👎", "👏", "🙏", "💪", "🤝", "👌", "✌️",
+        "👊", "🫶", "❤️", "💔", "🔥", "🎉", "🎊", "💯",
+        "⭐", "✨", "🌹", "🌸", "🍺", "🍻", "☕", "🧋",
+        "🍜", "🍚", "🍗", "🍰", "🎮", "⚽", "🏀", "🚀",
+        "💰", "🎁", "🐶", "🐱", "🐼", "🦁", "🐸", "🦄"
+    ]
 }
