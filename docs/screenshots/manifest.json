@@ -1,0 +1,77 @@
+{
+  "source": "用户提供的抖Duo录屏目录",
+  "redacted": false,
+  "processing": "HEIC 转 JPEG，保留原始分辨率，不裁剪、不打码",
+  "screenshots": [
+    {
+      "name": "feed",
+      "title": "外屏竖屏播放",
+      "file": "feed.jpg",
+      "source_file": "IMG_5482.HEIC",
+      "width": 1398,
+      "height": 2034,
+      "source_sha256": "035075755acc619184189b112bf1f21e388854a57668412ba2ec8d599e2b3370",
+      "sha256": "93df75afe40557b75638ff8222c355cbdfc4989c4c489dbc6b2fc3dd0589eae8"
+    },
+    {
+      "name": "feed-inner",
+      "title": "内屏竖屏播放",
+      "file": "feed-inner.jpg",
+      "source_file": "IMG_5483.HEIC",
+      "width": 2007,
+      "height": 2853,
+      "source_sha256": "4856cf598ed600976bbca9f4e07456dd9c74e849d4b4cc2322d252884f33818e",
+      "sha256": "4302f12a84c6e5cef7609db54df388af924493b9129aa547f4f69a1048fff6f1"
+    },
+    {
+      "name": "feed-landscape",
+      "title": "内屏横屏播放",
+      "file": "feed-landscape.jpg",
+      "source_file": "IMG_5484.HEIC",
+      "width": 2853,
+      "height": 2007,
+      "source_sha256": "63cc38e521623c35e868c4941da9ce99a4151d742abfec21d3c3ce3c50501d10",
+      "sha256": "32f591b5d6b7347596e2b9088aa89d0b465258a8b26a4a9309ca12d707ae69c6"
+    },
+    {
+      "name": "comments",
+      "title": "横屏侧边评论",
+      "file": "comments.jpg",
+      "source_file": "IMG_5485.HEIC",
+      "width": 2853,
+      "height": 2007,
+      "source_sha256": "a064e44b0b083d123345e371af87846f470bc7ca1cd855aa19e99d09b6230e2f",
+      "sha256": "492c0814529df7011ac775e3a8859ff142b99da97c30a722de1efe715dad5dda"
+    },
+    {
+      "name": "feed-landscape-outer",
+      "title": "外屏横屏播放",
+      "file": "feed-landscape-outer.jpg",
+      "source_file": "IMG_5487.HEIC",
+      "width": 2034,
+      "height": 1398,
+      "source_sha256": "88d22f9a313deb78b16926a11deb227e5959794d95dd34497a720350ee2d5375",
+      "sha256": "8bf7ce86fae247c46acb9f69b02ac174044ac4760c6981e0c1f7b4d1d277c08b"
+    },
+    {
+      "name": "live",
+      "title": "内屏横屏直播",
+      "file": "live.jpg",
+      "source_file": "IMG_5489.HEIC",
+      "width": 2853,
+      "height": 2007,
+      "source_sha256": "daf819e6a6d42ccfa1696ef8636ce1c3c4aec11214dc959061ab5cbdd8656114",
+      "sha256": "bf44c798e524c4707ddbba8c6ebda15e265903f10a543d2a55cb6d8ed3275cf0"
+    },
+    {
+      "name": "live-portrait",
+      "title": "外屏竖屏直播",
+      "file": "live-portrait.jpg",
+      "source_file": "IMG_5490.HEIC",
+      "width": 1398,
+      "height": 2034,
+      "source_sha256": "f59eadb0828557ea33c6171b1fadaff3cbaaaa47155080e570512319906fd489",
+      "sha256": "7e512fc9571b2783680a6621c4cdd5c56b8edaf535c40609768124ad9b7f4b29"
+    }
+  ]
+}

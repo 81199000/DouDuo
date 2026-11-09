@@ -1,0 +1,35 @@
+{
+  "source_article": "https://www.i4.cn/news_detail_38195.html",
+  "images": [
+    {
+      "file": "01-toolbox.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756174833439061553.png",
+      "sha256": "34b73edb7b32562192c3778c8c2af13acb03a1e3d5c1e57d69e785e4b4204029"
+    },
+    {
+      "file": "02-add-ipa.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756176041463029566.png",
+      "sha256": "6695b0c41fc41cf5725fc3ba81103b198409a4a234e5b2e2d7f8dacd3624d7c3"
+    },
+    {
+      "file": "03-apple-id.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756177222620004129.png",
+      "sha256": "d1bc49e9ca458a4811f1374dc339af46bd6bf3bc99638ddbab0bc44eacb8b2ff"
+    },
+    {
+      "file": "04-sign.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756177470318005149.png",
+      "sha256": "79ed03046124538f80cb593863c1d6e200f2b7da0c283cf5a7082b039eb34bf8"
+    },
+    {
+      "file": "05-open-signed-folder.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756177822896087750.png",
+      "sha256": "a701e2c1601d3d774d80654291dd61d429dd1eea7a11bf6d5bf1166d7e79240d"
+    },
+    {
+      "file": "06-install-signed-ipa.png",
+      "source_url": "https://d-image.i4.cn/i4web/image/upload/20250826/1756177883321084544.png",
+      "sha256": "6c2400e813e318d5abe7583f4949264f7c712fd1ce7de8e88cfad5e695d07c8d"
+    }
+  ]
+}
