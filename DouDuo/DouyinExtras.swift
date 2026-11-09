@@ -395,9 +395,22 @@ extension DouyinBridge {
       d = parse(r.t);
     }
     if (!d) return JSON.stringify({ status: r.s === 200 ? 403 : r.s, items: [], cursor: 0, hasMore: false, msg: '抖音没返回回复（网页接口受限）' });
+    const ddImg = o => { const u = o && o.url_list && o.url_list[0]; return u ? { u, w: o.width || 0, h: o.height || 0 } : null; };
+    const ddImages = c => (c.image_list || []).map(x => {
+      const m = ddImg(x.medium_url) || ddImg(x.thumb_url) || ddImg(x.crop_url) || ddImg(x.origin_url);
+      const o = ddImg(x.origin_url) || m;
+      return m ? { thumb: m.u, full: o.u, w: o.w || m.w, h: o.h || m.h } : null;
+    }).filter(Boolean);
+    const ddSticker = c => {
+      const s = c.sticker; if (!s) return null;
+      const st = ddImg(s.static_url) || ddImg(s.animate_url); if (!st) return null;
+      const an = ddImg(s.animate_url) || st;
+      return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
+    };
     const items = (d.comments || []).map(c => ({
       id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
-      digg: c.digg_count || 0, time: c.create_time || 0, replies: 0, ip: c.ip_label || null }));
+      digg: c.digg_count || 0, time: c.create_time || 0, replies: 0, ip: c.ip_label || null,
+      images: ddImages(c), sticker: ddSticker(c) }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, msg: null });
     """#
 }
