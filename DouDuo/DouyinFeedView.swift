@@ -2150,6 +2150,10 @@ struct DYCommentPanel: View {
     @State private var replyTo: DYComment?
     @State private var showEmoji = false
     @State private var showAt = false
+    @State private var emojis: [DYEmoji] = []
+    @State private var friends: [DYFriend] = []
+    @State private var atLoading = false
+    @State private var atError: String?
     @State private var sending = false
     @State private var sendErr: String?
     @State private var digged: Set<String> = []
@@ -2239,13 +2243,21 @@ struct DYCommentPanel: View {
                 Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
             }
             HStack(spacing: 8) {
-                Button { showEmoji.toggle() } label: {
+                Button {
+                    showEmoji.toggle()
+                    showAt = false
+                    if showEmoji, emojis.isEmpty { Task { emojis = await bridge.emojiList() } }
+                } label: {
                     Image(systemName: showEmoji ? "keyboard" : "face.smiling")
-                        .font(.body).foregroundStyle(.themeTextSecondary)
+                        .font(.body).foregroundStyle(showEmoji ? theme.accent.color(for: scheme) : .themeTextSecondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.comment.emoji")
-                Button { showAt.toggle() } label: {
+                Button {
+                    showAt.toggle()
+                    showEmoji = false
+                    if showAt { Task { await loadFriends() } }
+                } label: {
                     Image(systemName: "at").font(.body.weight(.medium))
                         .foregroundStyle(showAt ? theme.accent.color(for: scheme) : .themeTextSecondary)
                 }
@@ -2267,34 +2279,71 @@ struct DYCommentPanel: View {
                 .accessibilityIdentifier("douyin.comment.send")
             }
             if showEmoji {
-                ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 8), spacing: 6) {
-                        ForEach(DYCommentEmoji.all, id: \.self) { e in
-                            Button { draft += e } label: {
-                                Text(e).font(.system(size: 24))
-                            }
-                            .buttonStyle(.plain)
-                        }
+                if emojis.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.mini)
+                        Text("加载表情…").font(.caption2).foregroundStyle(.themeTextSecondary)
                     }
-                    .padding(.vertical, 4)
+                    .frame(height: 60)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 8), spacing: 8) {
+                            ForEach(emojis) { e in
+                                Button { draft += e.displayName } label: {
+                                    CachedAsyncImage(url: e.url.flatMap(URL.init(string:))) { img in
+                                        img.resizable().scaledToFit()
+                                    } placeholder: { Color.clear }
+                                    .frame(width: 30, height: 30)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .frame(height: 150)
+                    .accessibilityIdentifier("douyin.comment.emojis")
                 }
-                .frame(height: 132)
-                .accessibilityIdentifier("douyin.comment.emojis")
             }
             if showAt {
                 atPanel
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+        .task { await DYEmojiStore.shared.load(bridge: bridge) }
     }
 
-    /// @ 面板：列出这条视频评论区里的人（本地数据，点一下插进输入框）
+    /// 拉「我关注的人」给 @ 面板用
+    private func loadFriends() async {
+        guard friends.isEmpty, !atLoading else { return }
+        atLoading = true
+        defer { atLoading = false }
+        do {
+            let r = try await bridge.followingUsers()
+            friends = r.items
+            atError = r.items.isEmpty ? "没拿到关注列表（可能未登录）" : nil
+        } catch {
+            atError = "关注列表加载失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// @ 面板：优先「我关注的人」，拿不到时退回本视频评论区里的人
     @ViewBuilder
     private var atPanel: some View {
-        let people = atCandidates
+        let people: [DYFriend] = friends.isEmpty
+            ? atCandidates.map { DYFriend(name: $0.name, avatar: $0.avatar, secUid: $0.id) }
+            : friends
         VStack(alignment: .leading, spacing: 4) {
-            if people.isEmpty {
-                Text("这条视频还没有可 @ 的人").font(.caption2).foregroundStyle(.themeTextSecondary)
+            if atLoading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("加载关注列表…").font(.caption2).foregroundStyle(.themeTextSecondary)
+                }
+            }
+            if let e = atError, !atLoading {
+                Text(e).font(.caption2).foregroundStyle(.themeTextSecondary)
+            }
+            if people.isEmpty && !atLoading {
+                Text("没有可 @ 的人").font(.caption2).foregroundStyle(.themeTextSecondary)
             } else {
                 ScrollView {
                     VStack(spacing: 0) {
@@ -2368,7 +2417,7 @@ struct DYCommentPanel: View {
                 .frame(width: 32, height: 32).clipShape(Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text(c.name).font(.caption.weight(.semibold)).foregroundStyle(.themeTextSecondary)
-                Text(c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
+                DYEmojiStore.shared.rich(c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Text(DYFormat.time(c.time))

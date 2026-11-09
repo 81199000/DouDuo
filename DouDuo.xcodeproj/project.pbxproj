@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */; };
 		0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */; };
+		10144843E364788B2D3A07C6 /* DouyinEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */; };
 		18EC4F1B223F415D3E4CB8F7 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33BFCEEAF50CAF105B25611 /* UpdateChecker.swift */; };
 		26559796455EB77627AA7093 /* VLCPlayerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */; };
 		2809F9641973A12DAEE3EE32 /* DouyinExpandableTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54934A09C570DF5D3F0042DC /* DouyinExpandableTitle.swift */; };
@@ -69,6 +70,7 @@
 		D66F335DE5A601EA019AD61E /* DouyinExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinExtras.swift; sourceTree = "<group>"; };
 		E8C00A82D0DF6727AA1E57D1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		F08DC47FE80818A237A7BDE3 /* DouyinFeatureProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeatureProbe.swift; sourceTree = "<group>"; };
+		FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinEmojiStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -91,6 +93,7 @@
 				7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */,
 				3047845F7A9772A8895D65E3 /* DouyinBridge+More.swift */,
 				9E79B1B7855114828E14FCBA /* DouyinDuoLayout.swift */,
+				FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */,
 				54934A09C570DF5D3F0042DC /* DouyinExpandableTitle.swift */,
 				D66F335DE5A601EA019AD61E /* DouyinExtras.swift */,
 				F08DC47FE80818A237A7BDE3 /* DouyinFeatureProbe.swift */,
@@ -258,6 +261,7 @@
 				844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */,
 				47623E6242FA5EC16A23DB92 /* DouyinBridge+More.swift in Sources */,
 				D049179D85AB6339BCD12778 /* DouyinDuoLayout.swift in Sources */,
+				10144843E364788B2D3A07C6 /* DouyinEmojiStore.swift in Sources */,
 				2809F9641973A12DAEE3EE32 /* DouyinExpandableTitle.swift in Sources */,
 				85C30C1C9411C32D14761E7A /* DouyinExtras.swift in Sources */,
 				7F8AAD69DE737D7DD8DEBA42 /* DouyinFeatureProbe.swift in Sources */,

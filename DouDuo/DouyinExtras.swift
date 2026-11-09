@@ -28,6 +28,23 @@ struct DYUser: Decodable, Equatable {
     let ip: String?
 }
 
+/// 评论表情（抖音官方表情包）
+struct DYEmoji: Codable, Identifiable, Hashable {
+    var id: String { displayName }
+    let displayName: String      // 形如 [微笑]，发送时就发这个文本
+    let url: String?             // CDN 图片（签名长期有效）
+}
+private struct DYEmojiResp: Decodable { let status: Int; let items: [DYEmoji] }
+
+/// @ 面板里的人（关注的人）
+struct DYFriend: Codable, Identifiable, Hashable {
+    var id: String { secUid.isEmpty ? name : secUid }
+    let name: String
+    let avatar: String?
+    let secUid: String
+}
+private struct DYFriendPage: Decodable { let status: Int; let items: [DYFriend]; let cursor: String; let hasMore: Bool }
+
 /// 抖音热搜一条：pos 为空 = 置顶条
 struct DYHot: Decodable, Equatable {
     let word: String
@@ -122,6 +139,29 @@ extension DouyinBridge {
         }
         #endif
         return r
+    }
+
+    /// 评论表情列表（抖音官方表情包，214 个；displayName 形如 [微笑]，发送时就发这个文本）
+    func emojiList() async -> [DYEmoji] {
+        guard let d = try? await call(Self.emojiJS, args: [:], attempts: 2),
+              let r = try? JSONDecoder().decode(DYEmojiResp.self, from: d) else { return [] }
+        let items = r.items.filter { !$0.displayName.isEmpty }
+        #if DEBUG
+        DYLiveModel.log("DDEMOJI status=\(r.status) n=\(items.count) hasUrl=\(items.filter { $0.url != nil }.count)")
+        #endif
+        return items
+    }
+
+    /// 关注的人（@ 面板用）：先取自己的 sec_uid，再拉 following/list
+    func followingUsers(cursor: String = "0") async throws -> (items: [DYFriend], cursor: String, hasMore: Bool) {
+        let sec = try await selfSecUid()
+        let d = try await call(Self.followingJS, args: ["sec": sec, "cursor": cursor], attempts: 2)
+        let p = try JSONDecoder().decode(DYFriendPage.self, from: d)
+        #if DEBUG
+        DYLiveModel.log("DDFOLLOWING status=\(p.status) n=\(p.items.count) more=\(p.hasMore) first=\(p.items.prefix(3).map(\.name).joined(separator: ","))")
+        #endif
+        if p.status != 200 { throw DYError.blocked("HTTP \(p.status)") }
+        return (p.items, p.cursor, p.hasMore)
     }
 
     /// 搜索：网页接口只给第一页（翻第二页安全 SDK 直接压住不返回，换参数 / search_id 都一样）
@@ -289,6 +329,21 @@ extension DouyinBridge {
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme || x.aweme_info)).filter(Boolean);
     return pack(r, d, arr, d.cursor, d.has_more);
+    """#
+
+    static let emojiJS = #"""
+    const r = await req('GET', '/aweme/v1/web/emoji/list/?' + q({}));
+    const d = parse(r.t) || {};
+    const arr = (d.emoji_list || []).filter(e => e && e.display_name && !e.hide)
+      .map(e => ({ displayName: e.display_name, url: ((e.emoji_url || {}).url_list || [])[0] || null }));
+    return JSON.stringify({ status: r.s, items: arr });
+    """#
+
+    static let followingJS = #"""
+    const r = await req('GET', '/aweme/v1/web/user/following/list/?' + q({ sec_user_id: sec, count: '30', cursor: cursor, offset: cursor, source_type: '1' }));
+    const d = parse(r.t) || {};
+    const arr = (d.followings || []).filter(u => u).map(u => ({ name: u.nickname || '', avatar: first(u.avatar_thumb) || first(u.avatar_medium), secUid: u.sec_uid || '' }));
+    return JSON.stringify({ status: r.s, items: arr, cursor: String(d.cursor || 0), hasMore: !!d.has_more });
     """#
 
     static let searchJS = listTail + #"""
