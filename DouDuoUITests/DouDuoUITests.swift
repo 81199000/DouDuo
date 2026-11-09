@@ -385,6 +385,26 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(current.label, nextID, "停止滑动后不应因布局回写继续乱跳")
     }
 
+    /// 只输入草稿、不点击发送；验证真实隐藏网页就绪后，原生发送按钮才可用。
+    func testLiveComposerReadyWithoutSending() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launchEnvironment["DOUDUO_AUTOLIVEROOM"] = "1"
+        app.launch()
+        let input = app.textFields["live.chat.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 35))
+        let ready = expectation(for: NSPredicate(format: "value == %@", "说点什么…"), evaluatedWith: input)
+        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 65), .completed, "必须等官网真实输入框挂载，不用视频首帧代替")
+        input.tap()
+        input.typeText("LOCAL_ONLY_DO_NOT_SEND")
+        let send = app.buttons["live.chat.send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        XCTAssertTrue(send.isEnabled)
+        XCTAssertEqual(input.value as? String, "LOCAL_ONLY_DO_NOT_SEND")
+        print("DDCOMPOSER_UI ready=true draft-preserved=true send-enabled=true no-send-performed=true")
+        app.terminate()
+    }
+
     /// 真机/模拟器均可跑；计时以 App 的 DDLIVE_READY 日志为准，截图另证是否实际出画。
     func testNativeLivePerformance() throws {
         let app = XCUIApplication()

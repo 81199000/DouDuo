@@ -555,15 +555,15 @@ struct DYLiveFeed: View {
         VStack(alignment: .leading, spacing: 4) {
             if let sendError { Text(sendError).font(.caption).foregroundStyle(theme.status.warning.color(for: scheme)) }
             HStack(spacing: 8) {
-                TextField("说点什么…", text: $draft)
+                TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
                     .font(.subheadline).foregroundStyle(foreground).focused($inputFocused)
                     .submitLabel(.send).onSubmit(sendComment)
                     .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
                     .accessibilityIdentifier("live.chat.input")
                 if !draft.isEmpty {
                     Button(action: sendComment) {
-                        if sending { ProgressView() } else { Text("发送").font(.subheadline.weight(.semibold)) }
-                    }.disabled(sending).accessibilityIdentifier("live.chat.send")
+                        if sending { ProgressView() } else { Text(chat.composerReady ? "发送" : "连接中").font(.subheadline.weight(.semibold)) }
+                    }.disabled(sending || !chat.composerReady).accessibilityIdentifier("live.chat.send")
                 }
             }
         }
@@ -572,11 +572,14 @@ struct DYLiveFeed: View {
     private func sendComment() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
-        guard chatRoom != nil else { sendError = "评论区连接中，稍后再试"; return }
+        guard chatRoom != nil, chat.composerReady else { sendError = "评论区连接中，稍后再试"; return }
         sending = true
+        let target = chatRoom, submittedDraft = draft
         Task {
-            if let error = await chat.send(text) { sendError = error }
-            else { draft = ""; sendError = nil; inputFocused = false }
+            let error = await chat.send(text)
+            guard chatRoom == target else { sending = false; return }
+            if let error { sendError = error }
+            else if draft == submittedDraft { draft = ""; sendError = nil; inputFocused = false }
             sending = false
         }
     }
