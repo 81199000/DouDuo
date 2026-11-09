@@ -214,6 +214,8 @@ struct DYMessagesScreen: View {
     @State private var chatStatus = "正在加载私信…"
     /// 陌生人面板展开时网页会把陌生人都渲染成普通会话行，这期间暂停扫描、退出时重载网页复位
     @State private var scanPaused = false
+    /// 网页可能停在上次「已展开陌生人」的状态（没有聚合入口），进来时复位一次
+    @State private var ensuredCollapsed = false
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -239,6 +241,18 @@ struct DYMessagesScreen: View {
         }
         .preferredColorScheme(.dark)
         .task { await loadRoot() }
+        .task {
+            if let web = chatModel.web, web.url != nil, !ensuredCollapsed {
+                ensuredCollapsed = true
+                let n = (try? await web.evaluateJavaScript("document.querySelectorAll('[class*=\"conversationStrangerBoxwrapper\"]').length")) as? Int ?? 0
+                if n == 0 {
+                    DYLiveModel.log("DDCHAT stranger-panel collapsed? reload")
+                    web.reload()
+                    try? await Task.sleep(for: .milliseconds(2500))
+                    await readConversations()
+                }
+            }
+        }
         .task {
             while !Task.isCancelled {
                 if selectedChat == nil { await readConversations() }
@@ -285,7 +299,7 @@ struct DYMessagesScreen: View {
         strangerConversations.reduce(0) { sum, row in sum + (Int(row.badge) ?? (row.badge.isEmpty ? 0 : 1)) }
     }
     private var strangerSummary: String {
-        guard let first = strangerConversations.first else { return "没有新消息" }
+        guard let first = strangerConversations.first else { return "非好友发来的私信" }
         let who = first.name.isEmpty ? "陌生人" : first.name
         return first.preview.isEmpty ? who : "\(who)：\(first.preview)"
     }
@@ -369,7 +383,19 @@ struct DYMessagesScreen: View {
 
     /// 陌生人会话由网页以「聚合面板」形式提供：全屏展示面板，用户在里面点具体的人
     private func openStrangerPanel() async {
-        guard let agg = conversations.first(where: \.stranger), let web = chatModel.web else { return }
+        guard let web = chatModel.web else { return }
+        var agg = conversations.first(where: \.stranger)
+        if agg == nil {
+            // 网页可能停在上次展开态：重载复位后再抓一次
+            web.reload()
+            try? await Task.sleep(for: .milliseconds(2600))
+            await readConversations()
+            agg = conversations.first(where: \.stranger)
+        }
+        guard let agg else {
+            chatStatus = "陌生人列表还没同步出来，请稍后重试"
+            return
+        }
         // 展开陌生人面板后直接进第一条会话：面板本身是「选择会话」空态，进去才有内容
         switch await DYChatOpener.open(agg, web: web, enterFirst: true) {
         case .opened:
@@ -436,7 +462,10 @@ struct DYMessagesScreen: View {
       const rows = normal.map((e, i) => [e, i, false]).concat(strangers.map((e, i) => [e, i, true]));
       return JSON.stringify(rows.map(([e, idx, stranger]) => {
         const txt = s => e.querySelector(s)?.textContent?.trim() || '';
-        const name = txt('[class="conversationConversationItemtitle"]') || e.innerText.split('\n')[0].trim();
+        // 陌生人聚合项的标题 class 是 conversationStrangerBoxtitle，且 innerText 首行可能为空
+        const name = stranger
+          ? (txt('[class*="StrangerBoxtitle"]') || e.innerText.split('\n').map(s => s.trim()).find(Boolean) || '陌生人消息')
+          : (txt('[class="conversationConversationItemtitle"]') || e.innerText.split('\n')[0].trim());
         const avatar = e.querySelector('img')?.src || null;
         const preview = txt('[class*="ConversationItemHinttextBox"]') || txt('[class*="ConversationItemDescleft"]');
         const time = txt('[class*="timeStr"]');
@@ -476,12 +505,10 @@ struct DYMessagesScreen: View {
                           title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
                           badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
                           id: "douyin.messages.system") { path.append(.system) }
-                    if !strangerConversations.isEmpty {
-                        entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
-                              title: "陌生人消息", subtitle: strangerSummary,
-                              badge: strangerBadge,
-                              id: "douyin.messages.stranger") { Task { await openStrangerPanel() } }
-                    }
+                    entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
+                          title: "陌生人消息", subtitle: strangerSummary,
+                          badge: strangerBadge,
+                          id: "douyin.messages.stranger") { Task { await openStrangerPanel() } }
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
