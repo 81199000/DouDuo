@@ -2,7 +2,7 @@
 // 登录看 status_code（8 = 未登录），不读 cookie。写接口只在用户点按钮时发出，日志打 DDSEND。
 import Foundation
 
-struct DYNotice: Identifiable, Decodable, Equatable {
+struct DYNotice: Identifiable, Codable, Equatable {
     let id: String
     let type: Int
     let time: Double
@@ -13,7 +13,7 @@ struct DYNotice: Identifiable, Decodable, Equatable {
     let cover: String?
     let awemeID: String?
     let author: DYAweme.Author?
-    let hasRead: Bool
+    var hasRead: Bool
 }
 
 struct DYNoticePage: Decodable {
@@ -77,11 +77,12 @@ extension DouyinBridge {
         return p.groups
     }
 
-    func notices(group: Int, maxTime: Int, markRead: Bool = false) async throws -> (items: [DYNotice], maxTime: Int, hasMore: Bool) {
-        let d = try await call(Self.noticeListJS, args: ["group": String(group), "maxTime": String(maxTime), "markRead": markRead ? "1" : "0"], attempts: 1)
+    func notices(group: Int, maxTime: Int, markRead: Bool = false, minTime: Int = 0) async throws -> (items: [DYNotice], maxTime: Int, hasMore: Bool) {
+        let d = try await call(Self.noticeListJS, args: ["group": String(group), "maxTime": String(maxTime), "markRead": markRead ? "1" : "0", "minTime": String(minTime)], attempts: 1)
         let p = try JSONDecoder().decode(DYNoticePage.self, from: d)
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
+        DYLiveModel.log("DDNOTICE_FETCH group=\(group) markRead=\(markRead) min=\(minTime) n=\(p.items.count)")
         return (p.items, p.maxTime, p.hasMore)
     }
 
@@ -207,7 +208,7 @@ extension DouyinBridge {
       };
     };
     const r = await req('GET', '/aweme/v1/web/notice/?' + q({
-      is_new_notice: '1', is_mark_read: String(markRead || '0'), count: '10', notice_group: String(group), min_time: '0', max_time: String(maxTime || 0)
+      is_new_notice: '1', is_mark_read: String(markRead || '0'), count: '10', notice_group: String(group), min_time: String(minTime || 0), max_time: String(maxTime || 0)
     }));
     const d = parse(r.t) || {};
     const items = (d.notice_list_v2 || d.notice_list || []).map(row);

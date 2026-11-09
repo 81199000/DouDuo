@@ -3,8 +3,118 @@
 // Duo：返回键走系统 toolbar（自动进右侧竖向侧栏）；根页左缘右滑关闭，二级页系统原生左缘返回上一层。
 import SwiftUI
 import WebKit
+import CryptoKit
 
-private struct DYConversationRow: Identifiable, Decodable {
+private struct DYCachedNoticePage: Codable {
+    var items: [DYNotice] = []
+    var maxTime = 0
+    var hasMore = true
+}
+
+/// 消息按登录会话分区缓存；只保存会话的哈希，不保存 cookie/token。
+@MainActor
+private final class DYMessageCache {
+    static let shared = DYMessageCache()
+    struct Snapshot: Codable {
+        var pages: [String: DYCachedNoticePage] = [:]
+        var counts: [Int: Int] = [:]
+        var friends: [DYFriend] = []
+        var conversations: [DYConversationRow] = []
+    }
+    var snapshot = Snapshot()
+    let chatModel = DouyinWebModel()
+    private var retainedChatWeb: WKWebView?
+    private var scope = ""
+    private var refreshing = Set<Int>()
+    private var file: URL? {
+        guard !scope.isEmpty else { return nil }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("message-cache-v1", isDirectory: true).appendingPathComponent(scope + ".json")
+    }
+    func prepare() async {
+        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
+        }
+        let identity = cookies.filter { $0.domain.hasSuffix("douyin.com") && ["sessionid", "sessionid_ss", "uid_tt"].contains($0.name) }
+            .sorted { $0.name < $1.name }.map { $0.name + "=" + $0.value }.joined(separator: "|")
+        let next = SHA256.hash(data: Data((identity.isEmpty ? "guest" : identity).utf8)).map { String(format: "%02x", $0) }.joined()
+        guard next != scope else { return }
+        let changingAccount = !scope.isEmpty
+        scope = next
+        snapshot = Snapshot()
+        if let file, let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            snapshot = cached
+        }
+        if changingAccount {
+            chatModel.web?.load(URLRequest(url: URL(string: "https://www.douyin.com/chat")!))
+        }
+    }
+    func retainChat() { retainedChatWeb = chatModel.web }
+    func save() {
+        guard let file, let data = try? JSONEncoder().encode(snapshot) else { return }
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch { DYLiveModel.log("DDMSGCACHE save failed") }
+    }
+    func page(_ group: Int) -> DYCachedNoticePage? { snapshot.pages[String(group)] }
+    func refresh(_ group: Int, bridge: DouyinBridge) async throws -> DYCachedNoticePage {
+        if refreshing.contains(group) { return page(group) ?? DYCachedNoticePage() }
+        refreshing.insert(group)
+        defer { refreshing.remove(group) }
+        let account = scope
+        let old = page(group)
+        let boundary = Int(old?.items.map(\.time).max() ?? 0)
+        let known = Set(old?.items.map(\.id) ?? [])
+        var incoming: [DYNotice] = []
+        var cursor = 0
+        var initialCursor = 0
+        var initialMore = false
+        for batch in 0..<12 {
+            let fresh = try await bridge.notices(group: group, maxTime: cursor, minTime: boundary)
+            guard scope == account else { throw CancellationError() }
+            if batch == 0 { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
+            incoming.append(contentsOf: fresh.items)
+            if !fresh.hasMore || fresh.items.isEmpty || fresh.maxTime == cursor || fresh.items.contains(where: { known.contains($0.id) }) { break }
+            // 没有缓存时只取首页，历史仍由用户下滑分页获取。
+            if old == nil { break }
+            cursor = fresh.maxTime
+        }
+        var byID = Dictionary((old?.items ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for notice in incoming { byID[notice.id] = notice }
+        let merged = Array(byID.values.sorted { $0.time == $1.time ? $0.id > $1.id : $0.time > $1.time }.prefix(500))
+        let result = DYCachedNoticePage(items: merged, maxTime: old?.maxTime ?? initialCursor, hasMore: old?.hasMore ?? initialMore)
+        snapshot.pages[String(group)] = result
+        save()
+        DYLiveModel.log("DDMSGCACHE refresh group=\(group) min=\(boundary) new=\(incoming.filter { !known.contains($0.id) }.count) cached=\(merged.count)")
+        return result
+    }
+    func store(_ page: DYCachedNoticePage, group: Int) { snapshot.pages[String(group)] = page; save() }
+    func markReadAfterExit(_ groups: Set<Int>, bridge: DouyinBridge) async {
+        for group in groups {
+            do {
+                _ = try await bridge.notices(group: group, maxTime: 0, markRead: true)
+                for key in Array(snapshot.pages.keys) {
+                    guard var page = snapshot.pages[key] else { continue }
+                    for i in page.items.indices {
+                        let type = page.items[i].type
+                        if key == String(group) || (group == 2 && type == 31) || (group == 3 && type == 41) || (group == 401 && type == 33) {
+                            page.items[i].hasRead = true
+                        }
+                    }
+                    snapshot.pages[key] = page
+                }
+                DYLiveModel.log("DDNOTICE read-on-exit group=\(group)")
+            } catch { DYLiveModel.log("DDNOTICE read-on-exit failed group=\(group)") }
+        }
+        if let values = try? await bridge.noticeCounts() {
+            snapshot.counts = Dictionary(values.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+        }
+        save()
+    }
+}
+
+private struct DYConversationRow: Identifiable, Codable, Equatable {
     let id: String
     let name: String
     let avatar: String?
@@ -81,7 +191,8 @@ struct DYMessagesScreen: View {
     let onWeb: (URL) -> Void
 
     @State private var path: [DYMsgRoute] = []
-    @StateObject private var chatModel = DouyinWebModel()
+    @StateObject private var chatModel = DYMessageCache.shared.chatModel
+    @State private var viewedGroups: [DYMsgRoute: Set<Int>] = [:]
     @State private var conversations: [DYConversationRow] = []
     @State private var selectedChat: DYConversationRow?
     @State private var chatStatus = "正在加载私信…"
@@ -105,7 +216,7 @@ struct DYMessagesScreen: View {
                     }
                 }
                 .navigationDestination(for: DYMsgRoute.self) { r in
-                    DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb)
+                    DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb, onViewedGroup: { group in viewedGroups[r, default: []].insert(group) })
                 }
         }
         .preferredColorScheme(.dark)
@@ -116,10 +227,17 @@ struct DYMessagesScreen: View {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
-        .onChange(of: path) { _, p in
-            // 从二级页回来：刷新未读角标
-            if p.isEmpty { Task { await loadRoot() } }
+        .onChange(of: path) { old, current in
+            // 只有真正退出分类才标已读；打开视频/作者弹层不算退出分类。
+            guard old.count > current.count, let route = old.last else { return }
+            let seen = viewedGroups.removeValue(forKey: route) ?? []
+            Task {
+                await DYMessageCache.shared.markReadAfterExit(seen, bridge: bridge)
+                counts = DYMessageCache.shared.snapshot.counts
+                recent = DYMessageCache.shared.page(700)?.items ?? recent
+            }
         }
+        .onDisappear { DYMessageCache.shared.retainChat() }
     }
 
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
@@ -131,7 +249,7 @@ struct DYMessagesScreen: View {
                 .opacity(selectedChat == nil ? 1 : 0)
                 .allowsHitTesting(selectedChat == nil)
                 .accessibilityHidden(selectedChat != nil)
-            DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!)
+            DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
                 .frame(width: selectedChat == nil ? 760 : geo.size.width,
                        height: selectedChat == nil ? 640 : geo.size.height)
                 .opacity(selectedChat == nil ? 0.001 : 1)
@@ -205,7 +323,13 @@ struct DYMessagesScreen: View {
             } else {
                 let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
                 let existing = Set(conversations.map(\.id))
-                conversations = rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
+                let merged = rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
+                if merged != conversations {
+                    conversations = merged
+                    DYMessageCache.shared.snapshot.conversations = merged
+                    DYMessageCache.shared.save()
+                }
+                DYMessageCache.shared.retainChat()
                 chatStatus = ""
             }
         } catch {
@@ -395,18 +519,29 @@ struct DYMessagesScreen: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
+        let cache = DYMessageCache.shared
+        await cache.prepare()
+        // 先还原本地数据，不清空列表、不挡着等网络；随后只合并增量。
+        counts = cache.snapshot.counts
+        friends = cache.snapshot.friends
+        recent = cache.page(700)?.items ?? []
+        conversations = cache.snapshot.conversations
+        DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count)")
         if let groups = try? await bridge.noticeCounts() {
             counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+            cache.snapshot.counts = counts
         }
         do {
-            recent = try await bridge.notices(group: DYNoticeGroup.all.rawValue, maxTime: 0).items
+            recent = try await cache.refresh(700, bridge: bridge).items
             error = nil
         } catch {
             if recent.isEmpty { self.error = error.localizedDescription }
         }
         if friends.isEmpty {
             friends = (try? await bridge.followingUsers().items) ?? []
+            cache.snapshot.friends = friends
         }
+        cache.save()
     }
 
     /// 点朋友头像：打开他的主页（网页版）
@@ -422,6 +557,8 @@ struct DYNoticeListScreen: View {
     let bridge: DouyinBridge
     let route: DYMsgRoute
     let onWeb: (URL) -> Void
+    let onViewedGroup: (Int) -> Void
+    @ObservedObject private var emojiStore = DYEmojiStore.shared
 
     @State private var group: DYNoticeGroup
     @State private var items: [DYNotice] = []
@@ -434,11 +571,17 @@ struct DYNoticeListScreen: View {
     @State private var opening = false
     @State private var loadGen = 0
 
-    init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void) {
+    init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void) {
         self.bridge = bridge
         self.route = route
         self.onWeb = onWeb
-        _group = State(initialValue: route.filters[0])
+        self.onViewedGroup = onViewedGroup
+        let group = route.filters[0]
+        _group = State(initialValue: group)
+        let cached = DYMessageCache.shared.page(group.rawValue)
+        _items = State(initialValue: cached?.items ?? [])
+        _maxTime = State(initialValue: cached?.maxTime ?? 0)
+        _hasMore = State(initialValue: cached?.hasMore ?? true)
     }
 
     var body: some View {
@@ -460,17 +603,14 @@ struct DYNoticeListScreen: View {
         }
         .foregroundStyle(.white)
         .task(id: group) {
-            if route == .interactive, group == .all {
-                // 只标记进入的互动分组，不用 700 把粉丝/系统一并清掉。
-                do {
-                    _ = try await bridge.notices(group: DYNoticeGroup.comment.rawValue, maxTime: 0, markRead: true)
-                    _ = try await bridge.notices(group: DYNoticeGroup.digg.rawValue, maxTime: 0, markRead: true)
-                } catch {
-                    DYLiveModel.log("DDNOTICE markRead failed: \(error.localizedDescription)")
-                }
-            }
             await reload(reset: true)
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["DOUDUO_READ_AUDIT"] == "1", let values = try? await bridge.noticeCounts() {
+                DYLiveModel.log("DDREADAUDIT inside-category " + values.map { "\($0.group)=\($0.count)" }.joined(separator: ","))
+            }
+            #endif
         }
+        .task { await emojiStore.load(bridge: bridge) }
         .sheet(item: $author) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
                 .presentationDetents([.medium, .large])
@@ -508,6 +648,12 @@ struct DYNoticeListScreen: View {
                         Button { Task { await open(n) } } label: { row(n) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier(n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video")
+                            .accessibilityValue(n.hasRead ? "已读" : "未读")
+                            .onAppear {
+                                if group != .all { onViewedGroup(group.rawValue) }
+                                else if n.type == 31 { onViewedGroup(2) }
+                                else if n.type == 41 || n.type == 9009 { onViewedGroup(3) }
+                            }
                         Divider().background(Color.white.opacity(0.08))
                     }
                     if hasMore {
@@ -537,7 +683,7 @@ struct DYNoticeListScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(n.name.isEmpty ? "抖音用户" : n.name)
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
+                emojiStore.rich(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
                     .font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
                 Text(DYFormat.time(n.time)).font(.caption2).foregroundStyle(.white.opacity(0.45))
             }
@@ -557,30 +703,38 @@ struct DYNoticeListScreen: View {
         if !reset && (!hasMore || loading) { return }
         loadGen += 1
         let gen = loadGen
+        let requestedGroup = group.rawValue
+        let cache = DYMessageCache.shared
         loading = true
         defer { if gen == loadGen { loading = false } }
         if reset {
-            items = []
-            maxTime = 0
-            hasMore = true
+            let cached = cache.page(requestedGroup)
+            items = cached?.items ?? []
+            maxTime = cached?.maxTime ?? 0
+            hasMore = cached?.hasMore ?? true
             error = nil
         }
-        let pageTime = reset ? 0 : maxTime
         do {
-            let page = try await bridge.notices(group: group.rawValue, maxTime: pageTime, markRead: group != .all)
-            guard gen == loadGen else { return }
-            if reset { items = page.items } else {
+            let page: DYCachedNoticePage
+            if reset {
+                page = try await cache.refresh(requestedGroup, bridge: bridge)
+            } else {
+                let next = try await bridge.notices(group: requestedGroup, maxTime: maxTime)
                 let seen = Set(items.map(\.id))
-                items.append(contentsOf: page.items.filter { !seen.contains($0.id) })
+                page = DYCachedNoticePage(items: items + next.items.filter { !seen.contains($0.id) },
+                                          maxTime: next.maxTime,
+                                          hasMore: next.hasMore && !next.items.isEmpty && next.maxTime != maxTime)
+                cache.store(page, group: requestedGroup)
             }
+            guard gen == loadGen else { return }
+            items = page.items
             maxTime = page.maxTime
-            hasMore = page.hasMore && !page.items.isEmpty && page.maxTime != pageTime
+            hasMore = page.hasMore
             error = nil
-            DYLiveModel.log("DDNOTICE group=\(group.rawValue) n=\(page.items.count) more=\(hasMore) max=\(page.maxTime)")
+            DYLiveModel.log("DDNOTICE group=\(requestedGroup) n=\(items.count) read=deferred-until-exit")
         } catch {
             guard gen == loadGen else { return }
-            if items.isEmpty || reset { self.error = error.localizedDescription }
-            hasMore = false
+            if items.isEmpty { self.error = error.localizedDescription }
             DYLiveModel.log("DDNOTICE error \(error.localizedDescription)")
         }
     }

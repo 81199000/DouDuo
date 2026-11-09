@@ -576,6 +576,7 @@ struct DYGrid: View {
     let error: String?
     let onLoadMore: () -> Void
     let onOpen: (Int) -> Void
+    var showsPlayCount = false
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
 
     var body: some View {
@@ -632,7 +633,11 @@ struct DYGrid: View {
                     if !a.desc.isEmpty {
                         Text(a.desc).font(.caption2).lineLimit(2)
                     }
-                    Label(DYFormat.count(a.stats.digg), systemImage: "heart").font(.caption2.weight(.semibold))
+                    Label(showsPlayCount ? a.stats.play.map(DYFormat.count) ?? "—" : DYFormat.count(a.stats.digg),
+                          systemImage: showsPlayCount ? "play" : "heart")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityLabel(showsPlayCount ? "播放量 \(a.stats.play.map(String.init) ?? "未提供")" : "点赞量 \(a.stats.digg)")
+                        .accessibilityIdentifier(showsPlayCount ? "douyin.grid.playCount" : "douyin.grid.likeCount")
                 }
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.8), radius: 2)
@@ -1083,7 +1088,7 @@ struct DYMineScreen: View {
             .padding(.bottom, 6)
 
             if let m = models[kind] {
-                DYMineList(model: m) { i in
+                DYMineList(model: m, showsPlayCount: kind == .post) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
@@ -1131,10 +1136,11 @@ struct DYMineScreen: View {
 
 private struct DYMineList: View {
     @ObservedObject var model: DYPagedModel
+    var showsPlayCount = false
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount)
     }
 }
 
