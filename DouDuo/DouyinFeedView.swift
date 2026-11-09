@@ -38,7 +38,7 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var awemeType: Int? = nil
 
     struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil }
-    struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int }
+    struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int; var play: Int? = nil }
 
     /// 视频画面高宽比，不是界面方向。界面布局看容器尺寸 / size class。
     var isTallFrame: Bool { height > width * 1.05 }
@@ -637,7 +637,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,
-        stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0 },
+        stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0, play: st.play_count == null ? null : Number(st.play_count) },
         music: (a.music && a.music.title) || '',
         userDigged: a.user_digged ? 1 : 0,
         isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0

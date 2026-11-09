@@ -2,6 +2,33 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testMinePlayCountsAndCachedMessages() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launch()
+        let count = app.descendants(matching: .any).matching(identifier: "douyin.grid.playCount").firstMatch
+        XCTAssertTrue(count.waitForExistence(timeout: 45), app.debugDescription)
+        XCTAssertTrue(count.label.contains("播放量"))
+        XCTAssertFalse(count.label.contains("未提供"), count.label)
+        print("DDMINE_PLAY=\(count.label)")
+        print("DDCHAT_SHOT_MINE"); sleep(4)
+        app.buttons["douyin.mine.back"].tap()
+        app.buttons["douyin.messages.top"].tap()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 40))
+        sleep(4)
+        app.buttons["douyin.messages.back"].tap()
+        app.buttons["douyin.messages.top"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 3), "缓存会话应该直接显示")
+        print("DDCACHE_REOPEN=ready")
+        print("DDCHAT_SHOT_CACHE"); sleep(4)
+        app.terminate()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        XCTAssertTrue(row.waitForExistence(timeout: 8), "冷启动也应从磁盘恢复会话")
+        print("DDCACHE_COLD=ready")
+    }
+
     func testConversationListAndDetail() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
@@ -38,6 +65,7 @@ final class DouDuoUITests: XCTestCase {
     func testMessageReadAndVideoReturn() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launchEnvironment["DOUDUO_READ_AUDIT"] = "1"
         app.launch()
         let entry = app.buttons["douyin.messages.interactive"]
         XCTAssertTrue(entry.waitForExistence(timeout: 35))
@@ -46,6 +74,7 @@ final class DouDuoUITests: XCTestCase {
         entry.tap()
         sleep(12)
         attach(app, "notice-category")
+        print("DDCHAT_SHOT_NOTICE"); sleep(4)
         let video = app.buttons.matching(identifier: "douyin.notice.video").firstMatch
         if video.waitForExistence(timeout: 15) {
             video.tap()

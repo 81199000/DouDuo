@@ -305,8 +305,10 @@ struct DouyinWebContainer: UIViewRepresentable {
     @ObservedObject var model: DouyinWebModel
     let zoom: Double
     let start: URL
+    var reuseExisting = false
 
     func makeUIView(context: Context) -> WKWebView {
+        if reuseExisting, let existing = model.web { return existing }
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()            // 登录态持久化
         cfg.allowsInlineMediaPlayback = true
