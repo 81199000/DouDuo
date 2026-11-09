@@ -40,7 +40,9 @@ struct DYMessagesScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if group == .all { avatarStrip }
             tabs
+            if group == .all { aggregation }
             Divider()
             list
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -69,6 +71,119 @@ struct DYMessagesScreen: View {
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0, onAuthor: { author = $0.author })
         }
+    }
+
+    /// 最近互动的人：从当前通知里去重取头像，做成横排（对齐抖音消息页顶部）
+    private var recentPeople: [DYNotice] {
+        var seen = Set<String>()
+        var out: [DYNotice] = []
+        for n in items where !n.name.isEmpty && n.avatar != nil {
+            if seen.contains(n.name) { continue }
+            seen.insert(n.name)
+            out.append(n)
+            if out.count >= 12 { break }
+        }
+        return out
+    }
+
+    private var avatarStrip: some View {
+        Group {
+            if recentPeople.isEmpty {
+                EmptyView()
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 16) {
+                        ForEach(recentPeople) { p in
+                            Button { Task { await open(p) } } label: {
+                                VStack(spacing: 5) {
+                                    CachedAsyncImage(url: p.avatar.flatMap(URL.init(string:))) { img in
+                                        img.resizable().scaledToFill()
+                                    } placeholder: {
+                                        Circle().fill(Color.white.opacity(0.1))
+                                    }
+                                    .frame(width: 54, height: 54)
+                                    .clipShape(Circle())
+                                    .overlay(Circle().stroke(Color.white.opacity(p.hasRead ? 0.10 : 0.55), lineWidth: p.hasRead ? 1 : 1.6))
+                                    Text(p.name)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.white.opacity(0.8))
+                                        .lineLimit(1)
+                                        .frame(width: 58)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+            }
+        }
+    }
+
+    /// 「全部」页顶部的聚合入口：互动消息 / 粉丝消息 / 系统通知（对齐抖音那三张卡）
+    private var aggregation: some View {
+        VStack(spacing: 0) {
+            aggRow(icon: "heart.fill", tint: Color(red: 0.95, green: 0.30, blue: 0.55),
+                   title: "互动消息", subtitle: interactSummary,
+                   badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0)) {
+                group = .digg
+            }
+            aggRow(icon: "person.fill", tint: Color(red: 0.25, green: 0.55, blue: 0.95),
+                   title: "粉丝消息", subtitle: fansSummary,
+                   badge: counts[DYNoticeGroup.fans.rawValue] ?? 0) {
+                group = .fans
+            }
+            aggRow(icon: "bell.badge.fill", tint: Color(red: 0.55, green: 0.55, blue: 0.60),
+                   title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
+                   badge: counts[DYNoticeGroup.system.rawValue] ?? 0) {
+                group = .system
+            }
+        }
+        .background(Color.white.opacity(0.04))
+    }
+
+    private var interactSummary: String {
+        let hit = items.first { $0.type == 2 || $0.type == 3 }
+        guard let h = hit else { return "没有新互动" }
+        let c = (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0)
+        let who = h.detail.isEmpty ? h.action : "\(h.name) \(h.detail)"
+        return c > 1 ? "\(who) 等\(c)条新消息" : who
+    }
+
+    private var fansSummary: String {
+        guard let h = items.first(where: { $0.type == 401 }) else {
+            return (counts[DYNoticeGroup.fans.rawValue] ?? 0) > 0 ? "有新的粉丝" : "没有新粉丝"
+        }
+        return "\(h.name) 关注了你"
+    }
+
+    private func aggRow(icon: String, tint: Color, title: String, subtitle: String, badge: Int, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(tint).frame(width: 46, height: 46)
+                    Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    Text(subtitle).font(.footnote).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if badge > 0 {
+                    Text(badge > 99 ? "99+" : "\(badge)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.red))
+                }
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.25))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var header: some View {

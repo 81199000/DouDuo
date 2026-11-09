@@ -1013,6 +1013,8 @@ struct DouyinFeedScreen: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
+    /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧
+    @State private var topNudge: CGFloat = 0
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1188,7 +1190,10 @@ struct DouyinFeedScreen: View {
     private var layoutRoot: some View {
         GeometryReader { geo in
             let wide = Self.playAreaIsWide(geo)
+            let nudge = DYDuoMetrics.topBarLeftShift(geo)
             flatArrangement(geo)
+                .onAppear { topNudge = nudge }
+                .onChange(of: nudge) { _, n in topNudge = n }
                 .onAppear { feed.screenWide = wide }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
@@ -1440,7 +1445,7 @@ struct DouyinFeedScreen: View {
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
     /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
     private var topBar: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: topNudge > 0 ? 13 : 22) {
             ForEach(DYTab.allCases, id: \.self) { t in
                 Button { selectTab(t) } label: {
                     VStack(spacing: 3) {
@@ -1514,6 +1519,9 @@ struct DouyinFeedScreen: View {
         }
         .themeShadow(.mediaLabel)
         .frame(maxWidth: .infinity, alignment: .center)
+        // 合屏时前摄挖孔在左上，整排左移让开；用负 leading 抵消居中留白
+        .padding(.leading, topNudge > 0 ? 0 : 0)
+        .offset(x: -topNudge)
         // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
         // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
         .padding(.top, hSize == .regular ? 27 : 80)

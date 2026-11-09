@@ -18,6 +18,23 @@ enum DYDuoMetrics {
         }
         return false
     }
+
+    /// 顶栏左移量：合屏时前摄挖孔压在右上，整排往左让出它的宽度，避免「推荐/直播」被啃掉。
+    /// 只认靠上且靠右的 occlusion；下方/居中的（如外屏下缘）不动顶栏。
+    static func topBarLeftShift(_ proxy: GeometryProxy) -> CGFloat {
+        guard #available(iOS 27.1, *) else { return 0 }
+        let w = proxy.size.width
+        var shift: CGFloat = 0
+        for r in proxy.reservedRegions(kind: .occlusion) where r.isActive {
+            let f = r.frame
+            guard f.height > 1, f.width > 1 else { continue }
+            // 顶部 140pt 内、且位于右半边 → 认定为前摄
+            if f.minY < 140, f.minX > w * 0.5 {
+                shift = max(shift, f.width)
+            }
+        }
+        return min(shift, 56)
+    }
 }
 
 // MARK: - 折痕 / 摄像头：整组小幅平移，不大挪
