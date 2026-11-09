@@ -385,6 +385,27 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(current.label, nextID, "停止滑动后不应因布局回写继续乱跳")
     }
 
+    /// 使用真实作品详情验证声明与时间，不通过标题猜 AI，也不做账号互动。
+    func testVideoMetadataAIAndPublication() throws {
+        for (id, isAI, name) in [("7705789488781932361", true, "ai"), ("7705458913226935590", false, "normal")] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = id
+            app.launch()
+            let current = app.staticTexts["douyin.currentID"]
+            XCTAssertTrue(current.waitForExistence(timeout: 30))
+            let loaded = expectation(for: NSPredicate(format: "label == %@", id), evaluatedWith: current)
+            XCTAssertEqual(XCTWaiter().wait(for: [loaded], timeout: 50), .completed)
+            let metadata = app.staticTexts.matching(identifier: "douyin.video.metadata").firstMatch
+            XCTAssertTrue(metadata.waitForExistence(timeout: 10))
+            XCTAssertTrue(metadata.label.contains("发布"))
+            XCTAssertEqual(metadata.label.contains("作者声明：内容由 AI 生成"), isAI)
+            print("DDMETA_SCREEN:\(name) label=\(metadata.label)")
+            fflush(stdout)
+            sleep(4)
+            app.terminate()
+        }
+    }
+
     /// 只输入草稿、不点击发送；验证真实隐藏网页就绪后，原生发送按钮才可用。
     func testLiveComposerReadyWithoutSending() throws {
         let app = XCUIApplication()
