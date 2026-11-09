@@ -36,6 +36,30 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     let isCollect: Int?
     /// 0=视频 68=图文；上报观看时要带
     var awemeType: Int? = nil
+    /// 作品原始发布时间（Unix 秒）；可选以兼容已保存的旧播放会话。
+    var publishedAt: TimeInterval? = nil
+    /// 保留平台返回的 AI 声明原文；没有标记不代表非 AI。
+    var aiDeclaration: String? = nil
+
+    func publicationText(now: Date = Date()) -> String? {
+        guard let publishedAt, publishedAt.isFinite, publishedAt > 0,
+              publishedAt <= now.timeIntervalSince1970 else { return nil }
+        let age = now.timeIntervalSince1970 - publishedAt
+        if age < 60 { return "刚刚发布" }
+        if age < 3600 { return "\(Int(age / 60))分钟前发布" }
+        if age < 86400 { return "\(Int(age / 3600))小时前发布" }
+        if age < 604800 { return "\(Int(age / 86400))天前发布" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date(timeIntervalSince1970: publishedAt)) + " 发布"
+    }
+
+    func metadataText(now: Date = Date()) -> String? {
+        let parts = [publicationText(now: now), aiDeclaration?.trimmingCharacters(in: .whitespacesAndNewlines)]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     struct Author: Codable, Equatable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int; var play: Int? = nil }
@@ -651,6 +675,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,
+        publishedAt: typeof a.create_time === 'number' && Number.isFinite(a.create_time) && a.create_time > 0 ? a.create_time : null,
+        aiDeclaration: a.risk_infos && typeof a.risk_infos.content === 'string' && /(?:\bAI\b|人工智能)/i.test(a.risk_infos.content) ? (a.risk_infos.content.trim() || null) : null,
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0, play: st.play_count == null ? null : Number(st.play_count) },
         music: (a.music && a.music.title) || '',
         userDigged: a.user_digged ? 1 : 0,
@@ -1133,6 +1159,12 @@ struct DouyinFeedScreen: View {
             if currentID == nil { currentID = feed.items.first?.id }
             focusCurrent()
             #if DEBUG
+            // 用真实作品详情复验元数据显示，不造预览数据、不做账号互动。
+            if let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
+               let item = try? await bridge.awemeDetail(id) {
+                feed.items = [item]; currentID = item.id; scrollID = item.id
+                focusCurrent()
+            }
             let env0 = ProcessInfo.processInfo.environment
             if let d = env0["DOUDUO_LIVEDELAY"], let sec = Double(d) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + sec) { tab = .live }
@@ -1164,6 +1196,15 @@ struct DouyinFeedScreen: View {
                 showComments = true
             }
             #endif
+        }
+        .task(id: currentID) {
+            // 旧会话没有新增字段：只补当前作品元数据，不换播放地址、不丢进度。
+            guard let id = currentID, feed.items.contains(where: { $0.id == id && $0.publishedAt == nil }),
+                  let detail = try? await bridge.awemeDetail(id), !Task.isCancelled,
+                  let index = feed.items.firstIndex(where: { $0.id == id }) else { return }
+            feed.items[index].publishedAt = detail.publishedAt
+            feed.items[index].aiDeclaration = detail.aiDeclaration
+            saveSession()
         }
         .onChange(of: currentID) { old, new in
             // ⚠️ 宽屏（Duo 内屏）首次布局时 ScrollView 会把 scrollPosition 回写成 nil → 没有「当前条」→ 全部不播、上滑也不认。
@@ -2147,6 +2188,14 @@ struct DYVideoPage: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.author")
+            }
+            if let metadata = item.metadataText() {
+                Text(metadata)
+                    .font(.subheadline)
+                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("douyin.video.metadata")
             }
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,

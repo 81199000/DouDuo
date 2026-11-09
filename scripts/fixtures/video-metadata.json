@@ -1,0 +1,81 @@
+{
+  "source": "Real Douyin web metadata; unrelated media/user fields removed",
+  "samples": [
+    {
+      "aweme_id": "7703665230328384802",
+      "desc": "湿弗山野遇真 总裁装乞丐找老公，苏曼乞丐短剧全集，苏曼乞丐短剧假装女朋友50大寿后续，湿弗山野遇真短剧，湿弗山野遇真苏曼，湿弗山野遇真记，乞丐男友竟是集团总裁苏总，总裁女乞丐找老公，集团董事长苏曼伪装",
+      "create_time": 1793651325,
+      "cover_labels": null,
+      "hybrid_label": null,
+      "is_aigc_media": false,
+      "item_aigc_follow_shot": 1,
+      "item_warn_notification": {
+        "content": "",
+        "show": false,
+        "type": 0
+      },
+      "label_top_text": null,
+      "relation_labels": null,
+      "risk_infos": {
+        "content": "作者声明：内容由 AI 生成",
+        "icon_url": "https://p26-safelight.byteimg.com/tos-cn-i-t3x0yrcw7c/user_declaration_16_16_true.png~tplv-t3x0yrcw7c-3.png",
+        "risk_sink": false,
+        "type": 44,
+        "vote": false,
+        "warn": true,
+        "warn_level": 0
+      },
+      "video_labels": null
+    },
+    {
+      "aweme_id": "7705458913226935590",
+      "desc": "天价水果测评 #陈泽 #水果测评",
+      "create_time": 1794066973,
+      "cover_labels": null,
+      "hybrid_label": null,
+      "is_aigc_media": false,
+      "item_aigc_follow_shot": 1,
+      "item_warn_notification": {
+        "content": "",
+        "show": false,
+        "type": 0
+      },
+      "label_top_text": null,
+      "relation_labels": null,
+      "risk_infos": {
+        "content": "作者声明：个人观点，仅供参考",
+        "icon_url": "https://p26-safelight.byteimg.com/tos-cn-i-t3x0yrcw7c/user_declaration_16_16_true.png~tplv-t3x0yrcw7c-3.png",
+        "risk_sink": false,
+        "type": 336,
+        "vote": false,
+        "warn": true,
+        "warn_level": 0
+      },
+      "video_labels": null
+    },
+    {
+      "aweme_id": "7681620123706264873",
+      "desc": "三角洲最贵房卡反应堆总控核心！连开20次！到底能不能赚钱？ #三角洲烽火职业联赛 #三角洲烽火职业联赛夏季赛 #2026dfpl夏季赛#三角洲行动",
+      "create_time": 1788516565,
+      "cover_labels": null,
+      "hybrid_label": null,
+      "is_aigc_media": false,
+      "item_aigc_follow_shot": 1,
+      "item_warn_notification": {
+        "content": "",
+        "show": false,
+        "type": 0
+      },
+      "label_top_text": null,
+      "relation_labels": null,
+      "risk_infos": {
+        "content": "",
+        "risk_sink": false,
+        "type": 0,
+        "vote": false,
+        "warn": false
+      },
+      "video_labels": null
+    }
+  ]
+}
