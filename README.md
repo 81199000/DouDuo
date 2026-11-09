@@ -4,12 +4,36 @@
 
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。
 
+## 界面展示
+
+以下为实际使用截图，保留原始画面，未打码；支持外屏、内屏与横竖屏布局。
+
+### 竖屏播放：外屏 / 内屏
+
 <p align="center">
-  <img src="docs/screenshots/feed.jpg" width="200">
-  <img src="docs/screenshots/search.jpg" width="200">
-  <img src="docs/screenshots/comments.jpg" width="200">
-  <img src="docs/screenshots/live.jpg" width="200">
+  <img src="docs/screenshots/feed.jpg" width="280" alt="外屏竖屏播放">
+  <img src="docs/screenshots/feed-inner.jpg" width="280" alt="内屏竖屏播放">
 </p>
+
+### 内屏横屏播放与侧边评论
+
+![内屏横屏播放](docs/screenshots/feed-landscape.jpg)
+
+![横屏侧边评论](docs/screenshots/comments.jpg)
+
+### 外屏横屏播放
+
+![外屏横屏播放](docs/screenshots/feed-landscape-outer.jpg)
+
+### 直播：内屏横屏 / 外屏竖屏
+
+![内屏横屏直播](docs/screenshots/live.jpg)
+
+<p align="center">
+  <img src="docs/screenshots/live-portrait.jpg" width="320" alt="外屏竖屏直播">
+</p>
+
+[查看截图说明与原图](docs/screenshots/README.md)。
 
 > ⚠️ 非官方项目，仅供个人学习交流，与抖音 / 北京微播视界科技有限公司无关。详见文末[声明](#声明)。
 
@@ -51,24 +75,56 @@
 
 ### 方式一：爱思助手（Windows / Mac，最简单）
 
-1. 电脑安装 [爱思助手](https://www.i4.cn)，用数据线连接 iPhone / iPad，解锁设备并在手机上点「信任此电脑」。先确认爱思助手能识别设备。
-2. 爱思助手 →「工具箱」→「IPA 签名」。
-3. 点击「添加 IPA 文件」，选择发行版附件中的 `DouDuo-x.y.z-unsigned.ipa`（例如 `DouDuo-1.3.7-unsigned.ipa`）。
-4. 选择「使用 Apple ID 签名」→「添加 Apple ID」，在爱思助手内输入 Apple ID 和密码（建议使用专门的小号）。如要求验证码，请在签名工具中完成验证；如要求设备 UDID，选择当前连接设备读取。
-5. 勾选 IPA 和对应 Apple ID →「开始签名」，等待显示「签名成功」；按当前爱思助手界面点击「安装」，或将签名后的 IPA 导入「应用游戏」安装。**未签名原包不能直接安装。**
-6. 手机打开 **设置 → 通用 → VPN 与设备管理**，找到签名使用的 Apple ID / 开发者条目，点「信任」。
-7. 如系统要求，再打开 **设置 → 隐私与安全性 → 开发者模式**，按提示重启并确认启用；随后打开 DouDuo。
+以下配图来自[爱思助手官方 IPA 签名教程](https://www.i4.cn/news_detail_38195.html)；**图中的应用文件名仅为官方示例，实际请选择我们下载的 `DouDuo-1.3.7-unsigned.ipa`**。
 
-> **7 天到期怎么办？** 免费 Apple ID 签名通常 **7 天后过期**，届时可能打不开；重新执行第 2～5 步签名并覆盖安装。尽量使用同一 Apple ID、保持相同应用标识，**不要先卸载旧 App**，以免丢失本地数据。
+#### 1. 连接手机，打开 IPA 签名工具
+
+电脑安装 [爱思助手](https://www.i4.cn)，用数据线连接 iPhone / iPad；解锁设备并点「信任此电脑」，确认电脑能识别设备，再进入 **工具箱 → IPA 签名**。
+
+![爱思助手工具箱中的 IPA 文件签名入口](docs/install/i4/01-toolbox.png)
+
+#### 2. 添加 DouDuo 安装包
+
+点击「添加 IPA 文件」，选择发行版附件中的 `DouDuo-x.y.z-unsigned.ipa`，不要选择源码 ZIP。
+
+![点击添加 IPA 文件](docs/install/i4/02-add-ipa.png)
+
+#### 3. 使用 Apple ID 签名，选择要安装的设备
+
+选择 **使用 Apple ID 签名 → 添加 Apple ID**，在爱思助手内输入 Apple ID 和密码（建议使用专门的小号），并选择当前连接手机的设备标识。签名与所选设备绑定，不要选成其他手机；如要求验证码，请在签名工具中完成验证。
+
+![添加 Apple ID 并选择设备标识](docs/install/i4/03-apple-id.png)
+
+#### 4. 勾选安装包和 Apple ID，开始签名
+
+勾选 DouDuo IPA 与对应 Apple ID，点击「开始签名」，等待状态显示「签名成功」。
+
+![勾选 IPA 和 Apple ID 后签名](docs/install/i4/04-sign.png)
+
+#### 5. 打开签名目录，手动安装已签名 IPA
+
+**签名完成不等于已经安装。** 点击「签名文件保存到」旁边的「打开」，找到新生成的已签名 IPA；它与刚下载的未签名原包可能不在同一个目录。
+
+![打开已签名文件保存目录](docs/install/i4/05-open-signed-folder.png)
+
+在打开的目录中找到已签名 IPA，双击交给爱思助手安装，或从爱思助手的应用管理中导入安装；**不要拿未签名原包直接安装**。
+
+![签名后生成的 IPA 所在目录](docs/install/i4/06-install-signed-ipa.png)
+
+#### 6. 在手机上信任开发者并打开应用
+
+手机打开 **设置 → 通用 → VPN 与设备管理**，找到签名使用的 Apple ID / 开发者条目，点「信任」。如系统要求，再打开 **设置 → 隐私与安全性 → 开发者模式**，按提示重启并确认启用，随后打开 DouDuo。
+
+> **7 天到期怎么办？** 免费 Apple ID 签名通常 **7 天后过期**，届时可能打不开；重复以上签名流程并覆盖安装。尽量使用同一 Apple ID、保持相同应用标识，**不要先卸载旧 App**，以免丢失本地数据。
 >
-> **常见问题**：签名成功但安装失败，先确认手机已解锁、信任电脑，且安装的是签名后的 IPA；打开提示不受信任，检查第 6 步；首次打开受开发者模式限制，检查第 7 步。不同版本爱思助手的按钮名称和位置可能略有不同。
+> **常见问题**：安装失败先检查设备是否选对、手机是否解锁并信任电脑，以及是否使用签名后的 IPA；不受信任或开发者模式提示按第 6 步处理。不同版本爱思助手的按钮名称和位置可能略有不同。
 
 ### 方式二：Sideloadly（Windows / Mac）
 
 1. 安装 [Sideloadly](https://sideloadly.io)（Windows 还需要 iTunes 和 iCloud 的**官网桌面版**，不是微软商店版）
 2. 连接 iPhone，把 IPA 拖进 Sideloadly 窗口
 3. 「Apple account」填你的 Apple ID，点「Start」，按提示输入密码 / 双重认证验证码
-4. 安装后同方式一的第 6、7 步：信任开发者、打开开发者模式
+4. 安装后同方式一的第 6 步：信任开发者、按系统提示打开开发者模式。
 
 > 同样 7 天过期。Sideloadly 支持开启「Automatic refresh」，电脑开着、手机在同一 Wi‑Fi 时会自动续签。
 
@@ -98,7 +154,7 @@ open DouDuo.xcodeproj
 1. 选中 `DouDuo` target →「Signing & Capabilities」→ Team 选你自己的 Apple ID（Xcode → Settings → Accounts 先登录）
 2. 把 Bundle Identifier 改成你自己的（比如 `com.yourname.douduo`），免费账号不能用别人注册过的 ID
 3. 连上 iPhone，选中设备，点 ▶︎ 运行
-4. 手机上信任开发者 + 打开开发者模式（同方式一的第 6、7 步）
+4. 手机上信任开发者 + 按系统提示打开开发者模式（同方式一的第 6 步）
 
 免费账号同样 7 天有效；付费开发者账号（99 美元 / 年）签的一年有效。
 
