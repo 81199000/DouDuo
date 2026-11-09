@@ -297,6 +297,7 @@ struct DYMessagesScreen: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
+                .accessibilityValue(row.stranger ? "stranger" : "friend")
             }
             if !conversations.isEmpty {
                 Button("加载更多会话") {
@@ -337,18 +338,40 @@ struct DYMessagesScreen: View {
         }
     }
 
+    /// 原生列表可能直接从磁盘缓存秒出，而网页还在加载：点之前等 DOM 真有会话项
+    private func waitChatDOM(_ web: WKWebView, timeoutMS: Int = 8000) async -> Bool {
+        let probe = "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
+        var waited = 0
+        while waited < timeoutMS {
+            if let n = (try? await web.evaluateJavaScript(probe)) as? Int, n > 0 { return true }
+            try? await Task.sleep(for: .milliseconds(400))
+            waited += 400
+        }
+        return false
+    }
+
     private func openConversation(_ row: DYConversationRow) async {
-        guard let web = chatModel.web,
-              let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
+        guard let web = chatModel.web else { return }
+        guard await waitChatDOM(web) else {
+            DYLiveModel.log("DDCHAT open miss dom-not-ready name=\(row.name)")
+            chatStatus = "私信页面还没加载好，请稍后重试"
+            return
+        }
+        guard let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
               let args = String(data: data, encoding: .utf8) else { return }
         let script = """
         (() => {
           const [name, avatar, index, stranger] = \(args);
           const selector = stranger === '1' ? '[class*="conversationStrangerBoxwrapper"]' : '[data-e2e="conversation-item"]';
           const rows = [...document.querySelectorAll(selector)];
-          const row = rows.find(e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim()) === name && (!avatar || e.querySelector('img')?.src === avatar));
-          if (!row) return false;
-          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+          const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim());
+          const row = rows.find(e => titleOf(e) === name)
+                   || rows.find(e => titleOf(e).includes(name) || name.includes(titleOf(e)))
+                   || rows[Number(index)];
+          if (!row) return 'miss sel=' + selector + ' n=' + rows.length + ' idx=' + index;
+          // 陌生人条目只挂了 onClick，普通会话是 onMouseDown：按类型派发正确的原生事件
+          row.dispatchEvent(new MouseEvent(stranger === '1' ? 'click' : 'mousedown', { bubbles: true, button: 0 }));
+          row.click?.();
           let style = document.getElementById('dd-chat-only');
           if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
           style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
@@ -358,12 +381,20 @@ struct DYMessagesScreen: View {
           return true;
         })()
         """
-        if (try? await web.evaluateJavaScript(script)) as? Bool == true {
-            selectedChat = row
-        } else {
+        let result = (try? await web.evaluateJavaScript(script))
+        guard (result as? Bool) == true else {
+            DYLiveModel.log("DDCHAT open miss stranger=\(row.stranger) name=\(row.name) idx=\(row.index) r=\(String(describing: result))")
             chatStatus = "会话位置已变化，正在刷新，请再点一次"
             await readConversations()
+            return
         }
+        // 陌生人「聚合项」点开后网页才展开真正的会话列表：等它渲染完再点第一屏里的会话
+        if row.stranger {
+            try? await Task.sleep(for: .milliseconds(600))
+            _ = try? await web.evaluateJavaScript(Self.openFirstStrangerJS)
+        }
+        selectedChat = row
+        DYLiveModel.log("DDCHAT open stranger=\(row.stranger) name=\(row.name)")
     }
 
     private func backFromMessage() {
@@ -375,19 +406,32 @@ struct DYMessagesScreen: View {
         }
     }
 
+    /// 陌生人聚合项展开后，进第一屏里第一个真实会话（没有则停在陌生人列表，也能返回）
+    private static let openFirstStrangerJS = #"""
+    (() => {
+      const row = document.querySelector('[data-e2e="conversation-item"]')
+             || document.querySelector('[class*="conversationStrangerBoxwrapper"] [class*="ConversationItemwrapper"]');
+      if (!row) return false;
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+      return true;
+    })()
+    """#
+
     private static let conversationsJS = #"""
     (() => {
-      const nodes = [...document.querySelectorAll('[data-e2e="conversation-item"], [class*="conversationStrangerBoxwrapper"]')];
-      return JSON.stringify(nodes.map(e => {
+      const normal = [...document.querySelectorAll('[data-e2e="conversation-item"]')];
+      const strangers = [...document.querySelectorAll('[class*="conversationStrangerBoxwrapper"]')];
+      const rows = normal.map((e, i) => [e, i, false]).concat(strangers.map((e, i) => [e, i, true]));
+      return JSON.stringify(rows.map(([e, idx, stranger]) => {
         const txt = s => e.querySelector(s)?.textContent?.trim() || '';
         const name = txt('[class="conversationConversationItemtitle"]') || e.innerText.split('\n')[0].trim();
         const avatar = e.querySelector('img')?.src || null;
-        const stranger = e.className.includes('StrangerBox');
         const preview = txt('[class*="ConversationItemHinttextBox"]') || txt('[class*="ConversationItemDescleft"]');
         const time = txt('[class*="timeStr"]');
         const badgeNode = e.querySelector('[class*="badge-count"], [class*="BadgeCount"], [class*="badge-dot"]');
         const badge = badgeNode ? (badgeNode.textContent.trim() || '•') : '';
-        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge, index: e.closest('[data-index]')?.dataset.index || '', stranger };
+        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge, index: String(idx), stranger };
       }).filter(x => x.name));
     })()
     """#

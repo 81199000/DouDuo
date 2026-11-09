@@ -1447,7 +1447,9 @@ struct DouyinFeedScreen: View {
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
     /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
     private var topBar: some View {
-        HStack(spacing: topNudge > 0 ? 13 : 22) {
+        // 触摸区左右各扩 4pt、上下各扩 4pt（图标与字号不动），
+        // spacing 同步收 8/16pt 保持视觉间距与原来完全一致（46 / 37），top padding 上提 4 抵消行高增量。
+        HStack(spacing: topNudge > 0 ? 5 : 14) {
             ForEach(DYTab.allCases, id: \.self) { t in
                 Button { selectTab(t) } label: {
                     VStack(spacing: 3) {
@@ -1461,8 +1463,8 @@ struct DouyinFeedScreen: View {
                             .opacity(tab == t ? 1 : 0)
                     }
                     // 文字本身小，撑开触摸区，避免点不中/误判成下拉
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1479,8 +1481,8 @@ struct DouyinFeedScreen: View {
                         .frame(width: 16, height: 3)
                         .opacity(0)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
                 .contentShape(Rectangle())
                 .overlay(alignment: .topTrailing) {
                     if noticeUnread > 0 {
@@ -1512,8 +1514,8 @@ struct DouyinFeedScreen: View {
                         .lineLimit(1)
                         .frame(maxWidth: 62)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1521,11 +1523,13 @@ struct DouyinFeedScreen: View {
         }
         .themeShadow(.mediaLabel)
         .frame(maxWidth: .infinity, alignment: .center)
+        // 整行可点区域随内容高度撑开，避免点在文字上方的极窄条带时落空
+        .frame(minHeight: 54)
         // 合屏避让：用右侧内缩把居中点推左（small move），绝不把左边的「关注」推出屏幕
         .padding(.trailing, topNudge)
         // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
         // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
-        .padding(.top, hSize == .regular ? 27 : 80)
+        .padding(.top, hSize == .regular ? 23 : 76)
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {

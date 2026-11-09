@@ -29,6 +29,70 @@ final class DouDuoUITests: XCTestCase {
         print("DDCACHE_COLD=ready")
     }
 
+    func testTopBarHitEdges() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let info = app.buttons["douyin.messages.top"]
+        XCTAssertTrue(info.waitForExistence(timeout: 40))
+        // 点按钮边缘（不是文字中心）验证放大后的触摸区真的生效
+        func tapEdge(_ el: XCUIElement, dx: CGFloat, dy: CGFloat) {
+            let c = el.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy))
+            c.tap()
+        }
+        let live = app.buttons.matching(NSPredicate(format: "label == '直播'")).firstMatch
+        XCTAssertTrue(live.exists)
+        tapEdge(live, dx: 0.5, dy: 0.94)
+        sleep(4)
+        print("DDHIT after-live-edge tab-\(app.staticTexts["live.currentID"].exists)")
+        attach(app, "hit-live-edge")
+        tapEdge(info, dx: 0.5, dy: 0.94)
+        XCTAssertTrue(app.buttons["douyin.messages.back"].waitForExistence(timeout: 20), app.debugDescription)
+        print("DDHIT info-bottom-edge ok")
+        app.buttons["douyin.messages.back"].tap()
+        let mine = app.buttons["douyin.mine.top"]
+        tapEdge(mine, dx: 0.5, dy: 0.94)
+        XCTAssertTrue(app.buttons["douyin.mine.back"].waitForExistence(timeout: 20), app.debugDescription)
+        print("DDHIT mine-bottom-edge ok")
+        app.buttons["douyin.mine.back"].tap()
+        let recommend = app.buttons.matching(NSPredicate(format: "label == '推荐'")).firstMatch
+        tapEdge(recommend, dx: 0.5, dy: 0.94)
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 25))
+        sleep(3)
+        print("DDHIT recommend-restored id=\(current.label)")
+        attach(app, "hit-recommend-edge")
+    }
+
+    func testStrangerConversationOpens() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row")
+        XCTAssertTrue(row.firstMatch.waitForExistence(timeout: 50), app.debugDescription)
+        let stranger = row.allElementsBoundByIndex.first { ($0.value as? String) == "stranger" }
+        guard let stranger else {
+            print("DDSTRANGER none-listed")
+            return
+        }
+        print("DDSTRANGER tap=\(stranger.label)")
+        stranger.tap()
+        sleep(6)
+        attach(app, "stranger-chat")
+        print("DDCHAT_SHOT_STRANGER")
+        print("DDSTRANGER detailTree\n\(app.debugDescription.prefix(6000))\nDDSTRANGER_END")
+        assertChatInputVisible(app)
+        attach(app, "stranger-chat")
+    }
+
+    /// 单会话页必须能看到输入框（聊天内容不是纯静态图片）
+    private func assertChatInputVisible(_ app: XCUIApplication) {
+        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        let inputs = web.descendants(matching: .any).matching(NSPredicate(format: "elementType == %d OR elementType == %d", XCUIElement.ElementType.textView.rawValue, XCUIElement.ElementType.textField.rawValue))
+        XCTAssertGreaterThan(inputs.count, 0)
+        let box = inputs.firstMatch
+        XCTAssertLessThanOrEqual(box.frame.maxY, web.frame.maxY + 1)
+    }
+
     func testConversationListAndDetail() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
