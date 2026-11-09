@@ -70,6 +70,17 @@ struct DYComment: Identifiable, Decodable, Equatable {
     let ip: String?
     /// 这条评论在账号里是否已赞。缺字段当未赞。
     var userDigged: Int? = nil
+    /// 评论配图（image_list）与表情包贴纸（sticker），缺字段为空
+    var images: [DYCommentImage]? = nil
+    var sticker: DYCommentImage? = nil
+}
+
+/// 评论里的一张图：缩略图用于列表，原图用于点开全屏
+struct DYCommentImage: Decodable, Equatable, Hashable {
+    let thumb: String
+    let full: String
+    let w: Double
+    let h: Double
 }
 
 struct DYLiveRoom: Identifiable, Decodable, Equatable {
@@ -399,6 +410,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor)])
         let p = try JSONDecoder().decode(DYCommentPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
+        let withImg = p.items.filter { !($0.images ?? []).isEmpty }.count
+        let withStk = p.items.filter { $0.sticker != nil }.count
+        if withImg + withStk > 0 { DYLiveModel.log("DDCOMMENTIMG aweme=\(id) n=\(p.items.count) images=\(withImg) stickers=\(withStk)") }
         return (p.items, p.cursor, p.hasMore, p.total)
     }
 
@@ -676,9 +690,22 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const r = await req('GET', '/aweme/v1/web/comment/list/?' + new URLSearchParams(P).toString());
     const d = parse(r.t);
     if (!d) return JSON.stringify({ status: r.s, items: [], cursor: 0, hasMore: false, total: 0, msg: 'blocked' });
+    const ddImg = o => { const u = o && o.url_list && o.url_list[0]; return u ? { u, w: o.width || 0, h: o.height || 0 } : null; };
+    const ddImages = c => (c.image_list || []).map(x => {
+      const m = ddImg(x.medium_url) || ddImg(x.thumb_url) || ddImg(x.crop_url) || ddImg(x.origin_url);
+      const o = ddImg(x.origin_url) || m;
+      return m ? { thumb: m.u, full: o.u, w: o.w || m.w, h: o.h || m.h } : null;
+    }).filter(Boolean);
+    const ddSticker = c => {
+      const s = c.sticker; if (!s) return null;
+      const st = ddImg(s.static_url) || ddImg(s.animate_url); if (!st) return null;
+      const an = ddImg(s.animate_url) || st;
+      return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
+    };
     const items = (d.comments || []).map(c => ({
       id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
-      digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0
+      digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0,
+      images: ddImages(c), sticker: ddSticker(c)
     }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, total: d.total || 0, msg: null });
     """#
@@ -2500,8 +2527,11 @@ struct DYCommentPanel: View {
                 .frame(width: 32, height: 32).clipShape(Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text(c.name).font(.caption.weight(.semibold)).foregroundStyle(.themeTextSecondary)
-                DYEmojiStore.shared.rich(c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !c.text.isEmpty {
+                    DYEmojiStore.shared.rich(c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                DYCommentMedia(comment: c)
                 HStack(spacing: 8) {
                     Text(DYFormat.time(c.time))
                     if let ip = c.ip, !ip.isEmpty { Text(ip) }
@@ -2641,4 +2671,94 @@ enum DYCommentEmoji {
         "🍜", "🍚", "🍗", "🍰", "🎮", "⚽", "🏀", "🚀",
         "💰", "🎁", "🐶", "🐱", "🐼", "🦁", "🐸", "🦄"
     ]
+}
+
+// MARK: - 评论配图 / 表情包贴纸
+
+/// 评论里的图片与贴纸：缩略图按原比例限高显示，点开全屏横滑看原图（同图集用 TabView 分页）
+struct DYCommentMedia: View {
+    let comment: DYComment
+    @State private var viewer: DYCommentViewerTarget?
+
+    private var pics: [DYCommentImage] { comment.images ?? [] }
+
+    var body: some View {
+        content.fullScreenCover(item: $viewer) { t in DYCommentImageViewer(target: t) }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 6) { media }
+    }
+
+    @ViewBuilder
+    private var media: some View {
+        if let s = comment.sticker {
+            // 贴纸：表情包尺寸，不放大
+            thumb(s, maxSide: 96)
+                .onTapGesture { viewer = DYCommentViewerTarget(images: [s], start: 0) }
+                .accessibilityIdentifier("douyin.comment.sticker")
+        }
+        if !pics.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(Array(pics.prefix(3).enumerated()), id: \.offset) { i, img in
+                    thumb(img, maxSide: pics.count == 1 ? 160 : 96)
+                        .overlay(alignment: .bottomTrailing) {
+                            if i == 2, pics.count > 3 {
+                                Text("+\(pics.count - 3)").font(.caption.weight(.bold)).foregroundStyle(.white)
+                                    .padding(4).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
+                                    .padding(4)
+                            }
+                        }
+                        .onTapGesture { viewer = DYCommentViewerTarget(images: pics, start: i) }
+                }
+            }
+            .accessibilityIdentifier("douyin.comment.images")
+        }
+    }
+
+    private func thumb(_ img: DYCommentImage, maxSide: CGFloat) -> some View {
+        let ratio = (img.w > 0 && img.h > 0) ? img.w / img.h : 1
+        let w = ratio >= 1 ? maxSide : maxSide * ratio
+        let h = ratio >= 1 ? maxSide / ratio : maxSide
+        return CachedAsyncImage(url: URL(string: img.thumb)) { i in i.resizable().scaledToFill() }
+            placeholder: { Color.primary.opacity(0.08) }
+            .frame(width: max(w, 44), height: max(h, 44))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+    }
+}
+
+struct DYCommentViewerTarget: Identifiable {
+    let id = UUID()
+    let images: [DYCommentImage]
+    let start: Int
+}
+
+struct DYCommentImageViewer: View {
+    let target: DYCommentViewerTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var page = 0
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            TabView(selection: $page) {
+                ForEach(Array(target.images.enumerated()), id: \.offset) { i, img in
+                    CachedAsyncImage(url: URL(string: img.full)) { v in v.resizable().scaledToFit() }
+                        placeholder: { ProgressView().tint(.white) }
+                        .tag(i)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: target.images.count > 1 ? .always : .never))
+            .ignoresSafeArea()
+            .onTapGesture { dismiss() }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                    .frame(width: 44, height: 44).background(Circle().fill(.black.opacity(0.4)))
+            }
+            .padding(16)
+            .accessibilityIdentifier("douyin.comment.viewer.close")
+        }
+        .onAppear { page = target.start }
+    }
 }

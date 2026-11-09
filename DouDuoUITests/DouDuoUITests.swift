@@ -70,49 +70,102 @@ final class DouDuoUITests: XCTestCase {
         app.launch()
         let entry = app.buttons["douyin.messages.stranger"]
         XCTAssertTrue(entry.waitForExistence(timeout: 50), app.debugDescription)
-        // 首页会话列表里不应混陌生人
         let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 30))
         let mixed = rows.allElementsBoundByIndex.filter { ($0.value as? String) == "stranger" }
-        XCTAssertEqual(mixed.count, 0, "陌生人会话不该平铺在首页列表")
-        print("DDSTRANGERCAT entry=\(entry.value ?? "-") friendRows=\(rows.count)")
+        XCTAssertEqual(mixed.count, 0, "陌生人不该平铺在首页列表")
+        // 等预读把陌生人真实未读回填到入口角标（采集完整列表要十几秒）
+        let filled = NSPredicate(format: "value != '0' AND value != '1'")
+        _ = XCTWaiter().wait(for: [expectation(for: filled, evaluatedWith: entry)], timeout: 60)
+        print("DDSTRANGERCAT entryBadge=\(entry.value ?? "-") friendRows=\(rows.count)")
         print("DDCHAT_SHOT_HOME"); sleep(3)
+
         entry.tap()
-        // 打开全屏网页私信页：里面能看到完整会话列表（含陌生人），可以自己点人
-        let web = app.webViews.firstMatch
-        XCTAssertTrue(web.waitForExistence(timeout: 30), app.debugDescription)
-        sleep(8)
-        print("DDSTRANGERCAT web=\(web.frame)")
+        let srows = app.buttons.matching(identifier: "douyin.stranger.row")
+        XCTAssertTrue(srows.firstMatch.waitForExistence(timeout: 25), app.debugDescription)
+        print("DDSTRANGERCAT list=\(srows.count)")
+        print("DDCHAT_SHOT_STRANGERLIST"); sleep(3)
+
+        // 点最后一个人：网页里它在虚拟列表可视区外，验证滚动寻找 + 进的就是他本人
+        XCTAssertGreaterThan(srows.count, 11, "陌生人列表没采全（虚拟列表只读到可视区）")
+        // 原生列表滚到底，取最下面一个可点的人
+        for _ in 0..<6 { app.swipeUp(velocity: .fast) }
+        sleep(1)
+        let visible = srows.allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(visible.isEmpty)
+        let pick = visible.last!
+        let who = pick.label.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? ""
+        print("DDSTRANGERCAT pick=\(who)")
+        pick.tap()
+        let detail = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        XCTAssertTrue(detail.waitForExistence(timeout: 25))
+        sleep(4)
+        let title = app.navigationBars.firstMatch.identifier
+        print("DDSTRANGERCAT navTitle=\(title)")
+        XCTAssertEqual(title, who, "进的会话不是点的那个人")
+        XCTAssertGreaterThan(detail.frame.width, 800, "聊天页没铺满：\(detail.frame)")
         print("DDCHAT_SHOT_STRANGERCHAT"); sleep(3)
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+
+        // 第一个人 = 主列表里我没关注的单聊（网页没放进陌生人面板），也要能点进本人
+        entry.tap()
+        XCTAssertTrue(srows.firstMatch.waitForExistence(timeout: 25))
+        let first = srows.firstMatch
+        let who2 = first.label.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? ""
+        print("DDSTRANGERCAT pick2=\(who2)")
+        first.tap()
+        XCTAssertTrue(detail.waitForExistence(timeout: 25))
+        sleep(4)
+        let title2 = app.navigationBars.firstMatch.identifier
+        print("DDSTRANGERCAT navTitle2=\(title2)")
+        XCTAssertEqual(title2, who2)
+        print("DDCHAT_SHOT_STRANGERCHAT2"); sleep(3)
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
     }
 
-    func testStrangerConversationOpens() throws {
+    func testCommentImages() throws {
         let app = XCUIApplication()
-        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
         app.launch()
-        let row = app.buttons.matching(identifier: "douyin.conversation.row")
-        XCTAssertTrue(row.firstMatch.waitForExistence(timeout: 50), app.debugDescription)
-        let stranger = row.allElementsBoundByIndex.first { ($0.value as? String) == "stranger" }
-        guard let stranger else {
-            print("DDSTRANGER none-listed")
-            return
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 40))
+        sleep(4)
+        // 在推荐流里逐条打开评论，找带图/贴纸的评论；评论面板关掉再翻下一条
+        for n in 0..<15 {
+            let btn = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            guard let btn else { app.swipeUp(); sleep(3); continue }
+            btn.tap()
+            sleep(5)
+            let img = app.descendants(matching: .any).matching(identifier: "douyin.comment.images").firstMatch
+            let stk = app.descendants(matching: .any).matching(identifier: "douyin.comment.sticker").firstMatch
+            if img.exists || stk.exists {
+                let hit = img.exists ? img : stk
+                print("DDCOMMENTIMG found video#\(n) kind=\(img.exists ? "image" : "sticker")")
+                // 在评论面板内滚动（不是整个 app，否则会翻走视频）
+                let panel = app.scrollViews.allElementsBoundByIndex.first { $0.frame.minX > app.windows.firstMatch.frame.width * 0.5 } ?? app.scrollViews.allElementsBoundByIndex.last
+                var tries = 0
+                while !hit.isHittable && tries < 12 {
+                    panel?.swipeUp(velocity: .slow)
+                    tries += 1
+                }
+                print("DDCOMMENTIMG frame=\(hit.frame) hittable=\(hit.isHittable)")
+                print("DDCHAT_SHOT_COMMENTIMG"); sleep(3)
+                hit.tap()
+                let close = app.buttons["douyin.comment.viewer.close"]
+                XCTAssertTrue(close.waitForExistence(timeout: 10), "点图没打开全屏查看")
+                sleep(3)
+                print("DDCHAT_SHOT_COMMENTVIEWER"); sleep(3)
+                close.tap()
+                return
+            }
+            // 关评论：再点一次评论按钮（宽屏侧栏）或下滑（sheet）
+            if btn.isHittable { btn.tap() } else { app.swipeDown(velocity: .fast) }
+            sleep(2)
+            app.swipeUp()
+            sleep(4)
         }
-        print("DDSTRANGER tap=\(stranger.label)")
-        stranger.tap()
-        sleep(6)
-        attach(app, "stranger-chat")
-        print("DDCHAT_SHOT_STRANGER")
-        print("DDSTRANGER detailTree\n\(app.debugDescription.prefix(6000))\nDDSTRANGER_END")
-        assertChatInputVisible(app)
-        attach(app, "stranger-chat")
-    }
-
-    /// 单会话页必须能看到输入框（聊天内容不是纯静态图片）
-    private func assertChatInputVisible(_ app: XCUIApplication) {
-        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
-        let inputs = web.descendants(matching: .any).matching(NSPredicate(format: "elementType == %d OR elementType == %d", XCUIElement.ElementType.textView.rawValue, XCUIElement.ElementType.textField.rawValue))
-        XCTAssertGreaterThan(inputs.count, 0)
-        let box = inputs.firstMatch
-        XCTAssertLessThanOrEqual(box.frame.maxY, web.frame.maxY + 1)
+        XCTFail("翻了15条视频都没遇到带图/贴纸的评论")
     }
 
     func testConversationListAndDetail() throws {

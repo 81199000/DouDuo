@@ -17,6 +17,47 @@ final class DYMessageCache: ObservableObject {
     static let shared = DYMessageCache()
     /// 当前打开的会话；root 与「陌生人消息」二级页共用同一份状态
     @Published var selectedChat: DYConversationRow?
+    /// 陌生人二级列表（网页展开陌生人面板后读出的每个人）与总未读
+    @Published var strangerRows: [DYConversationRow] = []
+    @Published var strangerUnread: Int?
+    /// 主列表里「我没关注」的单聊：抖音网页把它们混在普通会话里，按官方 App 归到陌生人
+    @Published var unfollowedRows: [DYConversationRow] = []
+    /// sec_uid → follow_status（0 未关注 / 1 已关注 / 2 互关），落盘让下次进来分类不闪
+    @Published var follow: [String: Int] = (UserDefaults.standard.dictionary(forKey: "dd_follow_status_v1") as? [String: Int]) ?? [:]
+    private var followChecked = Set<String>()
+
+    func isUnfollowed(_ row: DYConversationRow) -> Bool {
+        guard !row.stranger, row.kind == 1, let sec = row.sec, !sec.isEmpty else { return false }
+        return follow[sec] == 0
+    }
+
+    /// 查单聊对方的关注关系；每次启动每人只查一次（关注关系可能变）
+    func resolveFollow(_ secs: [String]) async {
+        let need = Array(Set(secs.filter { !$0.isEmpty && !followChecked.contains($0) }))
+        guard !need.isEmpty, let web = chatModel.web else { return }
+        need.forEach { followChecked.insert($0) }
+        let js = """
+        const out = {};
+        await Promise.all(secs.map(async s => {
+          try {
+            const r = await fetch('/aweme/v1/web/user/profile/other/?device_platform=webapp&aid=6383&sec_user_id=' + encodeURIComponent(s), { credentials: 'include' });
+            const u = (JSON.parse(await r.text()) || {}).user || {};
+            if (typeof u.follow_status === 'number') out[s] = u.follow_status;
+          } catch (e) {}
+        }));
+        return JSON.stringify(out);
+        """
+        guard let str = try? await web.callAsyncJavaScript(js, arguments: ["secs": need], contentWorld: .page) as? String,
+              let d = str.data(using: .utf8),
+              let m = try? JSONDecoder().decode([String: Int].self, from: d) else {
+            need.forEach { followChecked.remove($0) }
+            return
+        }
+        need.filter { m[$0] == nil }.forEach { followChecked.remove($0) }
+        follow.merge(m) { _, new in new }
+        UserDefaults.standard.set(follow, forKey: "dd_follow_status_v1")
+        DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count)")
+    }
     struct Snapshot: Codable {
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
@@ -124,7 +165,12 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
     let time: String
     let badge: String
     let index: String
+    /// true = 行在网页「陌生人面板」里（打开时要先展开面板）
     let stranger: Bool
+    /// 网页 IM 会话类型：1 单聊 / 2 群聊
+    var kind: Int?
+    /// 单聊对方 sec_uid，用来查关注关系
+    var sec: String?
 }
 
 enum DYNoticeGroup: Int, CaseIterable, Identifiable {
@@ -212,12 +258,6 @@ struct DYMessagesScreen: View {
     @ObservedObject private var cache = DYMessageCache.shared
     private var selectedChat: DYConversationRow? { cache.selectedChat }
     @State private var chatStatus = "正在加载私信…"
-    /// 陌生人面板展开时网页会把陌生人都渲染成普通会话行，这期间暂停扫描、退出时重载网页复位
-    @State private var scanPaused = false
-    /// 网页可能停在上次「已展开陌生人」的状态（没有聚合入口），进来时复位一次
-    @State private var ensuredCollapsed = false
-    /// 陌生人/私信列表：直接全屏打开网页私信页（自带会话列表，可点任何人）
-    @State private var showChatWeb = false
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -238,21 +278,27 @@ struct DYMessagesScreen: View {
                     }
                 }
                 .navigationDestination(for: DYMsgRoute.self) { r in
-                    DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb, onViewedGroup: { group in viewedGroups[r, default: []].insert(group) })
+                    if r == .stranger {
+                        DYStrangerListScreen()
+                    } else {
+                        DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb, onViewedGroup: { group in viewedGroups[r, default: []].insert(group) })
+                    }
                 }
         }
         .preferredColorScheme(.dark)
         .task { await loadRoot() }
         .task {
-            if let web = chatModel.web, web.url != nil, !ensuredCollapsed {
-                ensuredCollapsed = true
-                let n = (try? await web.evaluateJavaScript("document.querySelectorAll('[class*=\"conversationStrangerBoxwrapper\"]').length")) as? Int ?? 0
-                if n == 0 {
-                    DYLiveModel.log("DDCHAT stranger-panel collapsed? reload")
-                    web.reload()
-                    try? await Task.sleep(for: .milliseconds(2500))
-                    await readConversations()
+            // 预读陌生人面板：入口角标显示真实未读、二级页秒开
+            try? await Task.sleep(for: .seconds(3))
+            // 网页首屏可能还没挂上，最多等 ~20s
+            for _ in 0..<10 {
+                if let web = chatModel.web, let rows = await DYChatOpener.strangerRows(web) {
+                    cache.strangerRows = rows
+                    cache.strangerUnread = rows.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+                    DYLiveModel.log("DDSTRANGER preload rows=\(rows.count) unread=\(cache.strangerUnread ?? 0)")
+                    break
                 }
+                try? await Task.sleep(for: .seconds(2))
             }
         }
         .task {
@@ -272,9 +318,6 @@ struct DYMessagesScreen: View {
             }
         }
         .onDisappear { DYMessageCache.shared.retainChat() }
-        .fullScreenCover(isPresented: $showChatWeb) {
-            DouyinWebScreen(start: URL(string: "https://www.douyin.com/chat")!)
-        }
     }
 
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
@@ -301,14 +344,18 @@ struct DYMessagesScreen: View {
     }
 
     private var strangerBadge: Int {
-        strangerConversations.reduce(0) { sum, row in sum + (Int(row.badge) ?? (row.badge.isEmpty ? 0 : 1)) }
+        let panel = cache.strangerUnread ?? strangerConversations.reduce(0) { $0 + (Int($1.badge) ?? 0) }
+        return panel + unfollowedConversations.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
     }
     private var strangerSummary: String {
-        guard let first = strangerConversations.first else { return "非好友发来的私信" }
-        let who = first.name.isEmpty ? "陌生人" : first.name
-        return first.preview.isEmpty ? who : "\(who)：\(first.preview)"
+        if let first = unfollowedConversations.first ?? cache.strangerRows.first {
+            return first.preview.isEmpty ? first.name : "\(first.name)：\(first.preview)"
+        }
+        guard let box = strangerConversations.first else { return "非好友发来的私信" }
+        return box.preview.isEmpty ? "非好友发来的私信" : box.preview
     }
-    private var friendConversations: [DYConversationRow] { conversations.filter { !$0.stranger } }
+    private var friendConversations: [DYConversationRow] { conversations.filter { !$0.stranger && !cache.isUnfollowed($0) } }
+    private var unfollowedConversations: [DYConversationRow] { conversations.filter { cache.isUnfollowed($0) } }
     private var strangerConversations: [DYConversationRow] { conversations.filter(\.stranger) }
 
     private var conversationRows: some View {
@@ -361,7 +408,7 @@ struct DYMessagesScreen: View {
     }
 
     private func readConversations() async {
-        guard !scanPaused, let web = chatModel.web else { return }
+        guard let web = chatModel.web else { return }
         do {
             guard let result = try await web.evaluateJavaScript(Self.conversationsJS) as? String,
                   let data = result.data(using: .utf8) else { return }
@@ -380,35 +427,12 @@ struct DYMessagesScreen: View {
                 }
                 DYMessageCache.shared.retainChat()
                 chatStatus = ""
+                await cache.resolveFollow(conversations.compactMap { $0.kind == 1 ? $0.sec : nil })
+                let unfollowed = unfollowedConversations
+                if unfollowed != cache.unfollowedRows { cache.unfollowedRows = unfollowed }
             }
         } catch {
             chatStatus = "私信加载失败，请稍后重试"
-        }
-    }
-
-    /// 陌生人会话由网页以「聚合面板」形式提供：全屏展示面板，用户在里面点具体的人
-    private func openStrangerPanel() async {
-        guard let web = chatModel.web else { return }
-        var agg = conversations.first(where: \.stranger)
-        if agg == nil {
-            // 网页可能停在上次展开态：重载复位后再抓一次
-            web.reload()
-            try? await Task.sleep(for: .milliseconds(2600))
-            await readConversations()
-            agg = conversations.first(where: \.stranger)
-        }
-        guard let agg else {
-            chatStatus = "陌生人列表还没同步出来，请稍后重试"
-            return
-        }
-        // 只展开陌生人面板并保留会话列表，由用户自己选人（自动进第一条会串到别人的群）
-        switch await DYChatOpener.open(agg, web: web, enterFirst: false, hideList: false) {
-        case .opened:
-            scanPaused = true
-            cache.selectedChat = agg
-            DYLiveModel.log("DDCHAT open stranger-panel name=\(agg.name)")
-        case .notReady: chatStatus = "私信页面还没加载好，请稍后重试"
-        case .notFound: chatStatus = "陌生人列表还没准备好，请稍后重试"
         }
     }
 
@@ -436,47 +460,45 @@ struct DYMessagesScreen: View {
         guard cache.selectedChat != nil else { onClose(); return }
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
-        scanPaused = false
         Task {
             if let web = chatModel.web {
                 await DYChatOpener.restoreList(web)
-                // 陌生人面板展开后 DOM 结构变了，重载一次让它回到「聚合项」形态
-                if wasStranger { web.reload() }
+                if wasStranger { await DYChatOpener.collapseStranger(web) }
             }
-            try? await Task.sleep(for: .milliseconds(wasStranger ? 1800 : 200))
             await readConversations()
         }
     }
 
     /// 陌生人聚合项展开后，进第一屏里第一个真实会话（没有则停在陌生人列表，也能返回）
-    private static let openFirstStrangerJS = #"""
-    (() => {
-      const row = document.querySelector('[data-e2e="conversation-item"]')
-             || document.querySelector('[class*="conversationStrangerBoxwrapper"] [class*="ConversationItemwrapper"]');
-      if (!row) return false;
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
-      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
-      return true;
-    })()
-    """#
-
+    /// 主列表：普通会话 + 陌生人聚合项。陌生人二级面板（StrangerConversationList）里的行不算主列表
     private static let conversationsJS = #"""
     (() => {
-      const normal = [...document.querySelectorAll('[data-e2e="conversation-item"]')];
-      const strangers = [...document.querySelectorAll('[class*="conversationStrangerBoxwrapper"]')];
-      const rows = normal.map((e, i) => [e, i, false]).concat(strangers.map((e, i) => [e, i, true]));
+      const inStranger = e => !!e.closest('[class*="StrangerConversationList"]');
+      const badgeOf = e => {
+        const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"], [class*="badge-count"]');
+        if (b && b.textContent.trim()) return b.textContent.trim();
+        return e.querySelector('[class*="UnReadCount"], [class*="badge-dot"]') ? '•' : '';
+      };
+      const convOf = e => {
+        const k = Object.keys(e).find(k => k.startsWith('__reactFiber'));
+        let f = k ? e[k] : null;
+        for (let i = 0; f && i < 6; i++, f = f.return) if (f.memoizedProps?.conversation) return f.memoizedProps.conversation;
+        return null;
+      };
+      const normal = [...document.querySelectorAll('[data-e2e="conversation-item"]')].filter(e => !inStranger(e));
+      const box = document.querySelector('[class*="conversationStrangerBoxwrapper"]');
+      const rows = normal.map((e, i) => [e, i, false]).concat(box ? [[box, 0, true]] : []);
       return JSON.stringify(rows.map(([e, idx, stranger]) => {
         const txt = s => e.querySelector(s)?.textContent?.trim() || '';
-        // 陌生人聚合项的标题 class 是 conversationStrangerBoxtitle，且 innerText 首行可能为空
         const name = stranger
-          ? (txt('[class*="StrangerBoxtitle"]') || e.innerText.split('\n').map(s => s.trim()).find(Boolean) || '陌生人消息')
+          ? (txt('[class*="StrangerBoxtitle"]') || '陌生人消息')
           : (txt('[class="conversationConversationItemtitle"]') || e.innerText.split('\n')[0].trim());
         const avatar = e.querySelector('img')?.src || null;
-        const preview = txt('[class*="ConversationItemHinttextBox"]') || txt('[class*="ConversationItemDescleft"]');
-        const time = txt('[class*="timeStr"]');
-        const badgeNode = e.querySelector('[class*="badge-count"], [class*="BadgeCount"], [class*="badge-dot"]');
-        const badge = badgeNode ? (badgeNode.textContent.trim() || '•') : '';
-        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge, index: String(idx), stranger };
+        const preview = txt('[class*="HinttextBox"]') || txt('[class*="StrangerBoxdesc"]') || txt('[class*="ConversationItemDescleft"]');
+        const time = txt('[class*="timeStr"]') || txt('[class*="TimeStr"]');
+        const c = stranger ? null : convOf(e);
+        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge: badgeOf(e), index: String(idx), stranger,
+                 kind: c ? Number(c.type) : null, sec: c?.toParticipantSecUserId || null };
       }).filter(x => x.name));
     })()
     """#
@@ -513,7 +535,7 @@ struct DYMessagesScreen: View {
                     entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
                           title: "陌生人消息", subtitle: strangerSummary,
                           badge: strangerBadge,
-                          id: "douyin.messages.stranger") { showChatWeb = true }
+                          id: "douyin.messages.stranger") { path.append(.stranger) }
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
@@ -855,86 +877,308 @@ struct DYNoticeListScreen: View {
 
 // MARK: - 打开会话（root 与陌生人二级页共用）
 
+/// 私信走网页：普通会话在主列表（onMouseDown 选中）；陌生人先点「陌生人消息」聚合项（React onClick）
+/// 展开 StrangerConversationList 面板，面板里每个人同样是 conversation-item（onMouseDown）。
 @MainActor
 enum DYChatOpener {
     enum Result { case opened, notReady, notFound }
 
-    /// 原生列表可能由磁盘缓存秒出而网页还没渲染：先等 DOM 真有会话项
-    static func waitDOM(_ web: WKWebView, strangerOnly: Bool = false, timeoutMS: Int = 12000) async -> Bool {
-        // 陌生人聚合项比普通会话晚渲染，单独等它，否则会拿到空列表
-        let probe = strangerOnly
-            ? "document.querySelectorAll('[class*=\"conversationStrangerBoxwrapper\"]').length"
-            : "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
+    /// 网页私信页只有一个：预读陌生人（展开→采集→收起）和打开会话不能交错，
+    /// 否则预读收起面板时会把刚选中的会话清掉（表现为聊天页一片空白）。
+    private static var busy: Task<Void, Never>?
+    private static func exclusive<T>(_ work: @escaping @MainActor () async -> T) async -> T {
+        while let running = busy { await running.value; if busy == running { busy = nil } }
+        var result: T?
+        let t = Task { @MainActor in result = await work() }
+        busy = t
+        await t.value
+        if busy == t { busy = nil }
+        return result!
+    }
+    /// 有会话正在打开/显示时，预读直接跳过
+    static var chatVisible = false
+
+    static func waitFor(_ web: WKWebView, _ selector: String, timeoutMS: Int = 12000) async -> Bool {
+        let probe = "document.querySelectorAll(" + jsString(selector) + ").length"
         var waited = 0
         while waited < timeoutMS {
-            // 页面还在加载时先别查，查到的 0 会被误判成「没有会话」
-            if !web.isLoading, let n = (try? await web.evaluateJavaScript(probe)) as? Int, n > 0 { return true }
-            try? await Task.sleep(for: .milliseconds(400))
-            waited += 400
+            // 页面加载中查到的 0 会被误判成「没有会话」
+            // evaluateJavaScript 的数字回来是 NSNumber（可能桥成 Double），统一按 NSNumber 取
+            if !web.isLoading, let n = (try? await web.evaluateJavaScript(probe)) as? NSNumber, n.intValue > 0 { return true }
+            try? await Task.sleep(for: .milliseconds(300))
+            waited += 300
         }
         return false
     }
 
-    static func open(_ row: DYConversationRow, web: WKWebView, enterFirst: Bool = true, hideList: Bool = true) async -> Result {
-        guard await waitDOM(web, strangerOnly: row.stranger) else { return .notReady }
-        guard let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
-              let args = String(data: data, encoding: .utf8) else { return .notFound }
-        let script = """
-        (() => {
-          const [name, avatar, index, stranger] = \(args);
-          const selector = stranger === '1' ? '[class*="conversationStrangerBoxwrapper"]' : '[data-e2e="conversation-item"]';
-          const rows = [...document.querySelectorAll(selector)];
-          const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim());
-          // 陌生人只有「陌生人消息」这一个聚合项，标题 class 与普通会话不同（StrangerBoxtitle），直接取它
-          const row = stranger === '1'
-            ? (rows[0] || null)
-            : (rows.find(e => titleOf(e) === name)
-               || rows.find(e => titleOf(e).includes(name) || name.includes(titleOf(e)))
-               || rows[Number(index)]);
-          if (!row) return 'miss sel=' + selector + ' n=' + rows.length + ' idx=' + index;
-          // 陌生人条目只挂了 onClick，普通会话是 onMouseDown：按类型派发正确的原生事件
-          row.dispatchEvent(new MouseEvent(stranger === '1' ? 'click' : 'mousedown', { bubbles: true, button: 0 }));
-          let style = document.getElementById('dd-chat-only');
-          if (hideList) {
-            if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
-            style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
-            window.__wuweiMinWidth = 320;
-          } else {
-            style && style.remove();
-            window.__wuweiMinWidth = 760;
+    /// 展开陌生人面板、采集全部陌生人会话后收起。nil = 网页还没就绪 / 找不到陌生人入口
+    static func strangerRows(_ web: WKWebView) async -> [DYConversationRow]? {
+        await exclusive { await strangerRowsUnlocked(web) }
+    }
+
+    private static func strangerRowsUnlocked(_ web: WKWebView) async -> [DYConversationRow]? {
+        if chatVisible { return nil }
+        guard await waitFor(web, "[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]") else { return nil }
+        let shown = ((try? await web.callAsyncJavaScript(openStrangerPanelJS, arguments: [:], contentWorld: .page)) as? NSNumber)?.intValue ?? 0
+        guard shown > 0 else { DYLiveModel.log("DDSTRANGER panel not opened"); return [] }
+        let json = try? await web.callAsyncJavaScript(collectStrangerJS, arguments: [:], contentWorld: .page) as? String
+        DYLiveModel.log("DDSTRANGER panel shown=\(shown) collectedBytes=\(json?.count ?? -1)")
+        await collapseStranger(web)
+        guard let json, let data = json.data(using: .utf8),
+              let rows = try? JSONDecoder().decode([DYConversationRow].self, from: data) else { return [] }
+        return rows
+    }
+
+    /// 打开一个会话：普通会话在主列表里找；陌生人在展开后的陌生人面板里找。按名字+头像精确匹配，不按位置猜。
+    static func open(_ row: DYConversationRow, web: WKWebView) async -> Result {
+        await exclusive {
+            let r = await openUnlocked(row, web: web)
+            if case .opened = r { chatVisible = true }
+            return r
+        }
+    }
+
+    private static func openUnlocked(_ row: DYConversationRow, web: WKWebView) async -> Result {
+        let scope = row.stranger ? "[class*=\"StrangerConversationList\"] " : ""
+        if row.stranger {
+            guard await waitFor(web, "[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]") else { return .notReady }
+            let shown = ((try? await web.callAsyncJavaScript(openStrangerPanelJS, arguments: [:], contentWorld: .page)) as? NSNumber)?.intValue ?? 0
+            guard shown > 0 else { return .notFound }
+        } else {
+            await collapseStranger(web)
+        }
+        guard await waitFor(web, scope + "[data-e2e=\"conversation-item\"]") else { return .notReady }
+        let script = #"""
+          const inStranger = e => !!e.closest('[class*="StrangerConversationList"]');
+          const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent || '').trim();
+          const find = () => {
+            const rows = [...document.querySelectorAll('[data-e2e="conversation-item"]')].filter(e => (stranger === '1') === inStranger(e));
+            return rows.find(e => titleOf(e) === name && (!avatar || e.querySelector('img')?.src === avatar)) || rows.find(e => titleOf(e) === name);
+          };
+          let row = find();
+          // 虚拟列表：不在可视区就逐屏往下找
+          if (!row) {
+            const wrap = document.querySelector(stranger === '1' ? '[class*="StrangerConversationListlistWrapper"]' : '[class*="ConversationListwrapper"]');
+            const sc = wrap && [wrap, ...wrap.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5);
+            if (sc) {
+              sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+              for (let i = 0; i < 40 && !row; i++) {
+                await new Promise(r => setTimeout(r, 200));
+                row = find();
+                if (row || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2) break;
+                sc.scrollTop += Math.max(200, sc.clientHeight * 0.8);
+                sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+              }
+            }
           }
+          if (!row) return 'miss';
+          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+          let style = document.getElementById('dd-chat-only');
+          if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
+          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
+          window.__wuweiMinWidth = 320;
           window.__wuweiFixViewport?.();
           window.dispatchEvent(new Event('resize'));
-          return true;
-        })()
-        """
-        if (try? await web.evaluateJavaScript(script)) as? Bool == true {
-            // 陌生人「聚合项」点开后网页才展开真正的会话列表：等它渲染完再点第一屏里的会话
-            if row.stranger {
-                try? await Task.sleep(for: .milliseconds(600))
-                if enterFirst { _ = try? await web.evaluateJavaScript(openFirstStrangerJS) }
-            }
-            return .opened
-        }
-        DYLiveModel.log("DDCHAT opener miss name=\(row.name) idx=\(row.index) stranger=\(row.stranger)")
+          return 'ok';
+        """#
+        let r = try? await web.callAsyncJavaScript(script, arguments: ["name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0"], contentWorld: .page)
+        if (r as? String) == "ok" { return .opened }
+        DYLiveModel.log("DDCHAT opener miss name=\(row.name) stranger=\(row.stranger) r=\(String(describing: r))")
         return .notFound
     }
 
     static func restoreList(_ web: WKWebView) async {
+        chatVisible = false
         _ = try? await web.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); window.__wuweiMinWidth=760; window.__wuweiFixViewport?.(); window.dispatchEvent(new Event('resize')); true")
     }
 
-    /// 陌生人聚合项展开后，进第一屏里第一个真实会话
-    private static let openFirstStrangerJS = #"""
+    private static func jsString(_ s: String) -> String {
+        let d = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        return String(String(data: d, encoding: .utf8)!.dropFirst().dropLast())
+    }
+
+    /// 收起陌生人面板（面板头部「‹ 陌生人消息」挂的 React onClick），回到主会话列表
+    static let collapseStrangerJS = #"""
     (() => {
-      const row = document.querySelector('[data-e2e="conversation-item"]')
-             || document.querySelector('[class*="conversationStrangerBoxwrapper"] [class*="ConversationItemwrapper"]');
-      if (!row) return false;
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
-      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
-      return true;
+      const h = document.querySelector('[class*="StrangerConversationListhead"]');
+      if (!h) return 'closed';
+      const k = Object.keys(h).find(k => k.startsWith('__reactProps'));
+      if (k && h[k].onClick) { h[k].onClick({ stopPropagation(){}, preventDefault(){}, currentTarget: h, target: h }); return 'react'; }
+      h.click(); return 'click';
     })()
     """#
+
+    static func collapseStranger(_ web: WKWebView) async {
+        _ = try? await web.evaluateJavaScript(collapseStrangerJS)
+        try? await Task.sleep(for: .milliseconds(300))
+    }
+
+    /// 主列表是虚拟列表，「陌生人消息」聚合项可能不在可视区：先从顶部逐屏找到它，再调 React onClick 展开。
+    /// 展开后等行数稳定（隐藏的网页渲染慢，首屏常常只有 1 行）。返回 true = 面板已展开且有行。
+    static let openStrangerPanelJS = #"""
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const rowSel = '[class*="StrangerConversationList"] [data-e2e="conversation-item"]';
+    if (!document.querySelector(rowSel)) {
+      const findBox = () => document.querySelector('[class*="conversationStrangerBoxwrapper"]');
+      let box = findBox();
+      if (!box) {
+        const wrap = document.querySelector('[class*="ConversationListwrapper"]');
+        const sc = wrap && [wrap, ...wrap.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5);
+        if (sc) {
+          sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll', { bubbles: true })); await sleep(250);
+          for (let i = 0; i < 40 && !(box = findBox()); i++) {
+            if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2) break;
+            sc.scrollTop += Math.max(200, sc.clientHeight * 0.8);
+            sc.dispatchEvent(new Event('scroll', { bubbles: true })); await sleep(250);
+          }
+        }
+      }
+      if (!box) return false;
+      const k = Object.keys(box).find(k => k.startsWith('__reactProps'));
+      if (k && box[k].onClick) box[k].onClick({ stopPropagation(){}, preventDefault(){}, currentTarget: box, target: box }); else box.click();
+    }
+    // 冷启动时面板先只挂第一行、几秒后才补齐：至少等 3s，且行数连续 2s 不变
+    let last = -1, stable = 0, waited = 0;
+    while (waited < 12000) {
+      const n = document.querySelectorAll(rowSel).length;
+      stable = (n > 0 && n === last) ? stable + 1 : 0; last = n;
+      if (stable >= 7 && waited >= 3000) break;
+      await sleep(300); waited += 300;
+    }
+    return last;
+    """#
+
+    /// 逐屏滚动虚拟列表采集全部陌生人会话（callAsyncJavaScript 函数体，可 await）
+    private static let collectStrangerJS = #"""
+    const sel = '[class*="StrangerConversationList"] [data-e2e="conversation-item"]';
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const wrap = document.querySelector('[class*="StrangerConversationListlistWrapper"]');
+    const sc = wrap && [wrap, ...wrap.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5);
+    const seen = new Map();
+    let order = 0;
+    const grab = () => document.querySelectorAll(sel).forEach(e => {
+      const txt = s => e.querySelector(s)?.textContent?.trim() || '';
+      const name = txt('[class="conversationConversationItemtitle"]');
+      if (!name) return;
+      const avatar = e.querySelector('img')?.src || null;
+      const id = 's|' + name + '|' + (avatar || '');
+      if (seen.has(id)) return;
+      const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"]');
+      const badge = b && b.textContent.trim() ? b.textContent.trim() : (e.querySelector('[class*="UnReadCount"]') ? '•' : '');
+      const y = e.getBoundingClientRect().top + (sc ? sc.scrollTop : 0);
+      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), badge, index: '0', stranger: true, _y: y, _o: order++ });
+    });
+    grab();
+    if (sc) {
+      sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll', { bubbles: true })); await sleep(250); grab();
+      for (let i = 0; i < 80; i++) {
+        if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2) {
+          // 到底了：等网页懒加载下一页，高度不再增长才算真到底
+          const h = sc.scrollHeight; let grew = false;
+          for (let w = 0; w < 4; w++) { await sleep(400); if (sc.scrollHeight > h) { grew = true; break; } }
+          if (!grew) break;
+        }
+        sc.scrollTop += Math.max(200, sc.clientHeight * 0.8);
+        sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await sleep(250); grab();
+      }
+      sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+    }
+    const rows = [...seen.values()].sort((a, b) => a._y - b._y || a._o - b._o)
+      .map((r, i) => { delete r._y; delete r._o; r.index = String(i); return r; });
+    return JSON.stringify(rows);
+    """#
+}
+
+// MARK: - 陌生人消息（原生二级页）
+
+struct DYStrangerListScreen: View {
+    @ObservedObject private var cache = DYMessageCache.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var status = "正在读取陌生人消息…"
+    @State private var opening: String?
+
+    /// 先放主列表里「我没关注」的人（较新），再放网页陌生人面板里的人
+    private var allRows: [DYConversationRow] {
+        let ids = Set(cache.unfollowedRows.map(\.id))
+        return cache.unfollowedRows + cache.strangerRows.filter { !ids.contains($0.id) }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if allRows.isEmpty {
+                    Text(status).font(.footnote).foregroundStyle(.white.opacity(0.6)).padding(28)
+                }
+                ForEach(allRows) { row in
+                    Button { Task { await open(row) } } label: { line(row) }
+                        .buttonStyle(.plain)
+                        .disabled(opening != nil)
+                        .accessibilityIdentifier("douyin.stranger.row")
+                }
+            }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .foregroundStyle(.white)
+        .navigationTitle(DYMsgRoute.stranger.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay { if opening != nil { ProgressView().tint(.white) } }
+        .task { await refresh() }
+    }
+
+    private func refresh() async {
+        guard let web = cache.chatModel.web else { status = "私信页面还没加载好"; return }
+        guard let rows = await DYChatOpener.strangerRows(web) else {
+            DYLiveModel.log("DDSTRANGER rows=nil (box not ready)")
+            status = "私信页面还没加载好，请稍后重试"; return
+        }
+        cache.strangerRows = rows
+        cache.strangerUnread = rows.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+        if rows.isEmpty { status = "暂无陌生人消息" }
+        DYLiveModel.log("DDSTRANGER rows=\(rows.count) unread=\(cache.strangerUnread ?? 0)")
+    }
+
+    private func line(_ row: DYConversationRow) -> some View {
+        HStack(spacing: 12) {
+            CachedAsyncImage(url: row.avatar.flatMap(URL.init(string:))) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
+            }
+            .frame(width: 50, height: 50).clipShape(Circle())
+            VStack(alignment: .leading, spacing: 5) {
+                Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
+                Text(row.preview).font(.footnote).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 7) {
+                Text(row.time).font(.caption2).foregroundStyle(.white.opacity(0.45))
+                if !row.badge.isEmpty {
+                    Text(row.badge).font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.red))
+                }
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+
+    /// 选中这个人 → 回消息根页，由根页全屏显示网页聊天；返回时回到消息根页
+    private func open(_ row: DYConversationRow) async {
+        guard let web = cache.chatModel.web else { return }
+        opening = row.id
+        defer { opening = nil }
+        switch await DYChatOpener.open(row, web: web) {
+        case .opened:
+            cache.selectedChat = row
+            dismiss()
+        case .notReady: status = "私信页面还没加载好，请稍后重试"
+        case .notFound:
+            status = "这条会话位置变了，已刷新列表，请再点一次"
+            await refresh()
+        }
+    }
 }
 
 /// 根页（fullScreenCover）没有导航栈可退，用左缘右滑关闭
