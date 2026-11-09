@@ -1,0 +1,101 @@
+{
+  "app_version": "1.3.7",
+  "build": "53",
+  "simulator": "iPhone Duo / iOS 27.2",
+  "display": 3,
+  "source_commit": "fb60020fcb37eb8d6bfbfa230e172fdb2a5dacad",
+  "redacted": false,
+  "screenshots": [
+    {
+      "name": "mine",
+      "file": "mine.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "4947f5e1cbc373a6c4d4b57745ad84f0aa31d96b7148eafe81581efb7018bd41"
+    },
+    {
+      "name": "messages",
+      "file": "messages.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "04cb70b72e32c63ae8f40c43c3e6f0da3275d89a7e729335a9252c9763ce4455"
+    },
+    {
+      "name": "strangers",
+      "file": "strangers.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "5dcc808bbb7f534817888bfed5c060fd523c7b4ca31de5a32f8aa7510ac27afb"
+    },
+    {
+      "name": "feed",
+      "file": "feed.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "5e3c82c1146bc92f3c72f605052344d30121025e82a4ab5f36a851fa9d2ad1ea"
+    },
+    {
+      "name": "comments",
+      "file": "comments.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "7a2681af110a920c775bbc63351578d8d9604fb4881bd93498522f43e3f04cb6"
+    },
+    {
+      "name": "emoji",
+      "file": "emoji.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "8ba767b8805925fd2281f7d7f32d77f64ed0c6a6414fe16d9c835b84b31e19f8"
+    },
+    {
+      "name": "mentions",
+      "file": "mentions.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "0cdfdb0646cd4896ad97a62a827f0cc4bc1616ed2e9cd2676de7bf0c3028268c"
+    },
+    {
+      "name": "live",
+      "file": "live.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "5b3a98bc7913e3ac663c169d67914ef0c99679797316deeacb0120801fb93367"
+    },
+    {
+      "name": "live-discovery",
+      "file": "live-discovery.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "8fc116b0ebfe0919e8c554a78dfa5374a5e2b1cbe4725a5853b6bef21d53410d"
+    },
+    {
+      "name": "live-categories",
+      "file": "live-categories.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "c107f70f8fe9bd018684f51f65ca5260f6c48297ead74ddbdeb989daaf6080c1"
+    },
+    {
+      "name": "live-room",
+      "file": "live-room.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "54feb9789c0b1721c66fbbae93376ef1a3b97879d7b153d13a18e150cb8300e3"
+    },
+    {
+      "name": "search",
+      "file": "search.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "b8e2df273cebab478ba3128b845ac589e29f1db718e5dfe51a8f2c3b7cef647d"
+    },
+    {
+      "name": "settings",
+      "file": "settings.jpg",
+      "width": 2853,
+      "height": 2007,
+      "sha256": "adc7b5c3d7cdc74aeacc9babc3593727d7a343e1f572a0a3a3ca46e85efa81f5"
+    }
+  ]
+}
