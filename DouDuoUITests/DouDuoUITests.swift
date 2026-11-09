@@ -125,6 +125,32 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
     }
 
+    func testTopBarFollowsCommentPanel() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(3)
+        let mine = app.buttons["douyin.mine.top"]
+        XCTAssertTrue(mine.waitForExistence(timeout: 10))
+        let before = mine.frame
+        let btn = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(btn)
+        btn!.tap()
+        sleep(3)
+        let close = app.buttons.matching(NSPredicate(format: "label == '关闭' OR identifier == 'douyin.comments.close'")).firstMatch
+        let after = mine.frame
+        let win = app.windows.firstMatch.frame
+        print("DDTOPBAR before=\(before) after=\(after) win=\(win)")
+        print("DDCHAT_SHOT_TOPBAR_COMMENTS"); sleep(3)
+        // 评论栏 = 右侧 min(380, 42%)，顶栏最右的「我的」必须落在视频区里
+        let panelW = min(380, win.width * 0.42)
+        XCTAssertLessThanOrEqual(after.maxX, win.width - panelW + 1, "顶栏没跟视频缩到左边")
+        XCTAssertTrue(mine.isHittable)
+        mine.tap()
+        XCTAssertTrue(app.navigationBars.firstMatch.waitForExistence(timeout: 10), "我的按钮点不中")
+        _ = close
+    }
+
     func testCommentImages() throws {
         let app = XCUIApplication()
         app.launch()
