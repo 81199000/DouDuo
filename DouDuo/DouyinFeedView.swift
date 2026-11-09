@@ -1519,9 +1519,8 @@ struct DouyinFeedScreen: View {
         }
         .themeShadow(.mediaLabel)
         .frame(maxWidth: .infinity, alignment: .center)
-        // 合屏时前摄挖孔在左上，整排左移让开；用负 leading 抵消居中留白
-        .padding(.leading, topNudge > 0 ? 0 : 0)
-        .offset(x: -topNudge)
+        // 合屏避让：用右侧内缩把居中点推左（small move），绝不把左边的「关注」推出屏幕
+        .padding(.trailing, topNudge)
         // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
         // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
         .padding(.top, hSize == .regular ? 27 : 80)
