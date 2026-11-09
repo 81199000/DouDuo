@@ -5,7 +5,7 @@ import SwiftUI
 import WebKit
 import CryptoKit
 
-private struct DYCachedNoticePage: Codable {
+struct DYCachedNoticePage: Codable {
     var items: [DYNotice] = []
     var maxTime = 0
     var hasMore = true
@@ -13,8 +13,10 @@ private struct DYCachedNoticePage: Codable {
 
 /// 消息按登录会话分区缓存；只保存会话的哈希，不保存 cookie/token。
 @MainActor
-private final class DYMessageCache {
+final class DYMessageCache: ObservableObject {
     static let shared = DYMessageCache()
+    /// 当前打开的会话；root 与「陌生人消息」二级页共用同一份状态
+    @Published var selectedChat: DYConversationRow?
     struct Snapshot: Codable {
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
@@ -29,7 +31,7 @@ private final class DYMessageCache {
     private var file: URL? {
         guard !scope.isEmpty else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("message-cache-v1", isDirectory: true).appendingPathComponent(scope + ".json")
+            .appendingPathComponent("message-cache-v2", isDirectory: true).appendingPathComponent(scope + ".json")
     }
     func prepare() async {
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
@@ -114,7 +116,7 @@ private final class DYMessageCache {
     }
 }
 
-private struct DYConversationRow: Identifiable, Codable, Equatable {
+struct DYConversationRow: Identifiable, Codable, Equatable {
     let id: String
     let name: String
     let avatar: String?
@@ -146,13 +148,25 @@ enum DYNoticeGroup: Int, CaseIterable, Identifiable {
 
 /// 消息二级页
 enum DYMsgRoute: Hashable {
-    case interactive, fans, system
+    case interactive, fans, system, stranger
 
     var title: String {
         switch self {
         case .interactive: "互动消息"
         case .fans: "粉丝消息"
         case .system: "系统通知"
+        case .stranger: "陌生人消息"
+        }
+    }
+    var isNotice: Bool { self != .stranger }
+
+    /// 退出分类要标已读的服务端分组号
+    var readGroups: [Int] {
+        switch self {
+        case .interactive: [2, 3]
+        case .fans: [401]
+        case .system: [961]
+        case .stranger: []
         }
     }
 
@@ -162,6 +176,7 @@ enum DYMsgRoute: Hashable {
         case .interactive: [.all, .comment, .digg]
         case .fans: [.fans]
         case .system: [.system]
+        case .stranger: []
         }
     }
 
@@ -194,8 +209,11 @@ struct DYMessagesScreen: View {
     @StateObject private var chatModel = DYMessageCache.shared.chatModel
     @State private var viewedGroups: [DYMsgRoute: Set<Int>] = [:]
     @State private var conversations: [DYConversationRow] = []
-    @State private var selectedChat: DYConversationRow?
+    @ObservedObject private var cache = DYMessageCache.shared
+    private var selectedChat: DYConversationRow? { cache.selectedChat }
     @State private var chatStatus = "正在加载私信…"
+    /// 陌生人面板展开时网页会把陌生人都渲染成普通会话行，这期间暂停扫描、退出时重载网页复位
+    @State private var scanPaused = false
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -263,12 +281,23 @@ struct DYMessagesScreen: View {
         .modifier(DYEdgeSwipeBack(action: backFromMessage))
     }
 
+    private var strangerBadge: Int {
+        strangerConversations.reduce(0) { sum, row in sum + (Int(row.badge) ?? (row.badge.isEmpty ? 0 : 1)) }
+    }
+    private var strangerSummary: String {
+        guard let first = strangerConversations.first else { return "没有新消息" }
+        let who = first.name.isEmpty ? "陌生人" : first.name
+        return first.preview.isEmpty ? who : "\(who)：\(first.preview)"
+    }
+    private var friendConversations: [DYConversationRow] { conversations.filter { !$0.stranger } }
+    private var strangerConversations: [DYConversationRow] { conversations.filter(\.stranger) }
+
     private var conversationRows: some View {
         VStack(spacing: 0) {
             if conversations.isEmpty {
                 Text(chatStatus).font(.footnote).foregroundStyle(.secondary).padding(20)
             }
-            ForEach(conversations) { row in
+            ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
                     HStack(spacing: 12) {
                         CachedAsyncImage(url: row.avatar.flatMap(URL.init(string:))) { image in
@@ -299,7 +328,7 @@ struct DYMessagesScreen: View {
                 .accessibilityIdentifier("douyin.conversation.row")
                 .accessibilityValue(row.stranger ? "stranger" : "friend")
             }
-            if !conversations.isEmpty {
+            if !friendConversations.isEmpty {
                 Button("加载更多会话") {
                     Task {
                         _ = try? await chatModel.web?.evaluateJavaScript(Self.scrollConversationsJS)
@@ -313,7 +342,7 @@ struct DYMessagesScreen: View {
     }
 
     private func readConversations() async {
-        guard let web = chatModel.web else { return }
+        guard !scanPaused, let web = chatModel.web else { return }
         do {
             guard let result = try await web.evaluateJavaScript(Self.conversationsJS) as? String,
                   let data = result.data(using: .utf8) else { return }
@@ -338,70 +367,52 @@ struct DYMessagesScreen: View {
         }
     }
 
-    /// 原生列表可能直接从磁盘缓存秒出，而网页还在加载：点之前等 DOM 真有会话项
-    private func waitChatDOM(_ web: WKWebView, timeoutMS: Int = 8000) async -> Bool {
-        let probe = "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
-        var waited = 0
-        while waited < timeoutMS {
-            if let n = (try? await web.evaluateJavaScript(probe)) as? Int, n > 0 { return true }
-            try? await Task.sleep(for: .milliseconds(400))
-            waited += 400
+    /// 陌生人会话由网页以「聚合面板」形式提供：全屏展示面板，用户在里面点具体的人
+    private func openStrangerPanel() async {
+        guard let agg = conversations.first(where: \.stranger), let web = chatModel.web else { return }
+        // 展开陌生人面板后直接进第一条会话：面板本身是「选择会话」空态，进去才有内容
+        switch await DYChatOpener.open(agg, web: web, enterFirst: true) {
+        case .opened:
+            scanPaused = true
+            cache.selectedChat = agg
+            DYLiveModel.log("DDCHAT open stranger-panel name=\(agg.name)")
+        case .notReady: chatStatus = "私信页面还没加载好，请稍后重试"
+        case .notFound: chatStatus = "陌生人列表还没准备好，请稍后重试"
         }
-        return false
     }
 
     private func openConversation(_ row: DYConversationRow) async {
         guard let web = chatModel.web else { return }
-        guard await waitChatDOM(web) else {
-            DYLiveModel.log("DDCHAT open miss dom-not-ready name=\(row.name)")
-            chatStatus = "私信页面还没加载好，请稍后重试"
-            return
+        var result = await DYChatOpener.open(row, web: web)
+        if case .notReady = result {
+            try? await Task.sleep(for: .milliseconds(1500))
+            result = await DYChatOpener.open(row, web: web)
         }
-        guard let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
-              let args = String(data: data, encoding: .utf8) else { return }
-        let script = """
-        (() => {
-          const [name, avatar, index, stranger] = \(args);
-          const selector = stranger === '1' ? '[class*="conversationStrangerBoxwrapper"]' : '[data-e2e="conversation-item"]';
-          const rows = [...document.querySelectorAll(selector)];
-          const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim());
-          const row = rows.find(e => titleOf(e) === name)
-                   || rows.find(e => titleOf(e).includes(name) || name.includes(titleOf(e)))
-                   || rows[Number(index)];
-          if (!row) return 'miss sel=' + selector + ' n=' + rows.length + ' idx=' + index;
-          // 陌生人条目只挂了 onClick，普通会话是 onMouseDown：按类型派发正确的原生事件
-          row.dispatchEvent(new MouseEvent(stranger === '1' ? 'click' : 'mousedown', { bubbles: true, button: 0 }));
-          row.click?.();
-          let style = document.getElementById('dd-chat-only');
-          if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
-          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
-          window.__wuweiMinWidth = 320;
-          window.__wuweiFixViewport?.();
-          window.dispatchEvent(new Event('resize'));
-          return true;
-        })()
-        """
-        let result = (try? await web.evaluateJavaScript(script))
-        guard (result as? Bool) == true else {
-            DYLiveModel.log("DDCHAT open miss stranger=\(row.stranger) name=\(row.name) idx=\(row.index) r=\(String(describing: result))")
+        switch result {
+        case .opened:
+            cache.selectedChat = row
+            DYLiveModel.log("DDCHAT open stranger=\(row.stranger) name=\(row.name)")
+        case .notReady:
+            chatStatus = "私信页面还没加载好，请稍后重试"
+            DYLiveModel.log("DDCHAT open miss dom-not-ready name=\(row.name)")
+        case .notFound:
             chatStatus = "会话位置已变化，正在刷新，请再点一次"
             await readConversations()
-            return
         }
-        // 陌生人「聚合项」点开后网页才展开真正的会话列表：等它渲染完再点第一屏里的会话
-        if row.stranger {
-            try? await Task.sleep(for: .milliseconds(600))
-            _ = try? await web.evaluateJavaScript(Self.openFirstStrangerJS)
-        }
-        selectedChat = row
-        DYLiveModel.log("DDCHAT open stranger=\(row.stranger) name=\(row.name)")
     }
 
     private func backFromMessage() {
-        guard selectedChat != nil else { onClose(); return }
-        selectedChat = nil
+        guard cache.selectedChat != nil else { onClose(); return }
+        let wasStranger = cache.selectedChat?.stranger == true
+        cache.selectedChat = nil
+        scanPaused = false
         Task {
-            _ = try? await chatModel.web?.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); window.__wuweiMinWidth=760; window.__wuweiFixViewport?.(); window.dispatchEvent(new Event('resize')); true")
+            if let web = chatModel.web {
+                await DYChatOpener.restoreList(web)
+                // 陌生人面板展开后 DOM 结构变了，重载一次让它回到「聚合项」形态
+                if wasStranger { web.reload() }
+            }
+            try? await Task.sleep(for: .milliseconds(wasStranger ? 1800 : 200))
             await readConversations()
         }
     }
@@ -465,6 +476,12 @@ struct DYMessagesScreen: View {
                           title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
                           badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
                           id: "douyin.messages.system") { path.append(.system) }
+                    if !strangerConversations.isEmpty {
+                        entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
+                              title: "陌生人消息", subtitle: strangerSummary,
+                              badge: strangerBadge,
+                              id: "douyin.messages.stranger") { Task { await openStrangerPanel() } }
+                    }
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
@@ -557,6 +574,7 @@ struct DYMessagesScreen: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
         .accessibilityValue(String(badge))
+        .accessibilityLabel(title)
     }
 
     private func loadRoot() async {
@@ -569,7 +587,6 @@ struct DYMessagesScreen: View {
         counts = cache.snapshot.counts
         friends = cache.snapshot.friends
         recent = cache.page(700)?.items ?? []
-        conversations = cache.snapshot.conversations
         DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count)")
         if let groups = try? await bridge.noticeCounts() {
             counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
@@ -620,7 +637,7 @@ struct DYNoticeListScreen: View {
         self.route = route
         self.onWeb = onWeb
         self.onViewedGroup = onViewedGroup
-        let group = route.filters[0]
+        let group = route.filters.first ?? .all
         _group = State(initialValue: group)
         let cached = DYMessageCache.shared.page(group.rawValue)
         _items = State(initialValue: cached?.items ?? [])
@@ -647,6 +664,8 @@ struct DYNoticeListScreen: View {
         }
         .foregroundStyle(.white)
         .task(id: group) {
+            // 进哪个分类就记下它对应的服务端分组，退出时一起标已读（评论+赞同属互动）
+            route.readGroups.forEach { onViewedGroup($0) }
             await reload(reset: true)
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_READ_AUDIT"] == "1", let values = try? await bridge.noticeCounts() {
@@ -693,11 +712,6 @@ struct DYNoticeListScreen: View {
                             .buttonStyle(.plain)
                             .accessibilityIdentifier(n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video")
                             .accessibilityValue(n.hasRead ? "已读" : "未读")
-                            .onAppear {
-                                if group != .all { onViewedGroup(group.rawValue) }
-                                else if n.type == 31 { onViewedGroup(2) }
-                                else if n.type == 41 || n.type == 9009 { onViewedGroup(3) }
-                            }
                         Divider().background(Color.white.opacity(0.08))
                     }
                     if hasMore {
@@ -805,6 +819,83 @@ struct DYNoticeListScreen: View {
 }
 
 // MARK: - 公共部件
+
+
+// MARK: - 打开会话（root 与陌生人二级页共用）
+
+@MainActor
+enum DYChatOpener {
+    enum Result { case opened, notReady, notFound }
+
+    /// 原生列表可能由磁盘缓存秒出而网页还没渲染：先等 DOM 真有会话项
+    static func waitDOM(_ web: WKWebView, timeoutMS: Int = 12000) async -> Bool {
+        let probe = "document.querySelectorAll('[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]').length"
+        var waited = 0
+        while waited < timeoutMS {
+            // 页面还在加载时先别查，查到的 0 会被误判成「没有会话」
+            if !web.isLoading, let n = (try? await web.evaluateJavaScript(probe)) as? Int, n > 0 { return true }
+            try? await Task.sleep(for: .milliseconds(400))
+            waited += 400
+        }
+        return false
+    }
+
+    static func open(_ row: DYConversationRow, web: WKWebView, enterFirst: Bool = true) async -> Result {
+        guard await waitDOM(web) else { return .notReady }
+        guard let data = try? JSONEncoder().encode([row.name, row.avatar ?? "", row.index, row.stranger ? "1" : "0"]),
+              let args = String(data: data, encoding: .utf8) else { return .notFound }
+        let script = """
+        (() => {
+          const [name, avatar, index, stranger] = \(args);
+          const selector = stranger === '1' ? '[class*="conversationStrangerBoxwrapper"]' : '[data-e2e="conversation-item"]';
+          const rows = [...document.querySelectorAll(selector)];
+          const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent?.trim() || e.innerText.split('\\n')[0].trim());
+          // 陌生人只有「陌生人消息」这一个聚合项，标题 class 与普通会话不同（StrangerBoxtitle），直接取它
+          const row = stranger === '1'
+            ? (rows[0] || null)
+            : (rows.find(e => titleOf(e) === name)
+               || rows.find(e => titleOf(e).includes(name) || name.includes(titleOf(e)))
+               || rows[Number(index)]);
+          if (!row) return 'miss sel=' + selector + ' n=' + rows.length + ' idx=' + index;
+          // 陌生人条目只挂了 onClick，普通会话是 onMouseDown：按类型派发正确的原生事件
+          row.dispatchEvent(new MouseEvent(stranger === '1' ? 'click' : 'mousedown', { bubbles: true, button: 0 }));
+          let style = document.getElementById('dd-chat-only');
+          if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
+          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
+          window.__wuweiMinWidth = 320;
+          window.__wuweiFixViewport?.();
+          window.dispatchEvent(new Event('resize'));
+          return true;
+        })()
+        """
+        if (try? await web.evaluateJavaScript(script)) as? Bool == true {
+            // 陌生人「聚合项」点开后网页才展开真正的会话列表：等它渲染完再点第一屏里的会话
+            if row.stranger {
+                try? await Task.sleep(for: .milliseconds(600))
+                if enterFirst { _ = try? await web.evaluateJavaScript(openFirstStrangerJS) }
+            }
+            return .opened
+        }
+        DYLiveModel.log("DDCHAT opener miss name=\(row.name) idx=\(row.index) stranger=\(row.stranger)")
+        return .notFound
+    }
+
+    static func restoreList(_ web: WKWebView) async {
+        _ = try? await web.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); window.__wuweiMinWidth=760; window.__wuweiFixViewport?.(); window.dispatchEvent(new Event('resize')); true")
+    }
+
+    /// 陌生人聚合项展开后，进第一屏里第一个真实会话
+    private static let openFirstStrangerJS = #"""
+    (() => {
+      const row = document.querySelector('[data-e2e="conversation-item"]')
+             || document.querySelector('[class*="conversationStrangerBoxwrapper"] [class*="ConversationItemwrapper"]');
+      if (!row) return false;
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+      return true;
+    })()
+    """#
+}
 
 /// 根页（fullScreenCover）没有导航栈可退，用左缘右滑关闭
 struct DYEdgeSwipeBack: ViewModifier {
