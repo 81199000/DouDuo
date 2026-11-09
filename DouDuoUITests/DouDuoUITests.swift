@@ -2,6 +2,99 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    /// 仓库功能截图：只导航和读取，不点赞、收藏、发评论或私信。
+    func testReleaseScreenshotsFeedAndComments() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 40))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != '-'"), evaluatedWith: current)], timeout: 50), .completed)
+        sleep(7)
+        attach(app, "release-feed")
+        let comments = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(comments)
+        comments?.tap()
+        XCTAssertTrue(app.buttons["douyin.comment.emoji"].waitForExistence(timeout: 20))
+        sleep(7)
+        attach(app, "release-comments")
+        app.buttons["douyin.comment.emoji"].tap()
+        XCTAssertTrue(app.scrollViews["douyin.comment.emojis"].waitForExistence(timeout: 15))
+        sleep(5)
+        attach(app, "release-emoji")
+        app.buttons["douyin.comment.at"].tap()
+        sleep(7)
+        attach(app, "release-mentions")
+    }
+
+    func testReleaseScreenshotsSearchAndSettings() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "search"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let field = app.textFields["douyin.search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30))
+        sleep(8)
+        field.tap()
+        field.typeText("风景\n")
+        sleep(12)
+        attach(app, "release-search")
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "DOUDUO_OPEN")
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        sleep(7)
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(more)
+        more?.tap()
+        XCTAssertTrue(app.buttons["设置"].firstMatch.waitForExistence(timeout: 5))
+        app.buttons["设置"].firstMatch.tap()
+        sleep(3)
+        attach(app, "release-settings")
+    }
+
+    func testReleaseScreenshotsAccountAndMessages() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.buttons["douyin.mine.back"].waitForExistence(timeout: 30))
+        sleep(12)
+        attach(app, "release-mine")
+        app.buttons["douyin.mine.back"].tap()
+        app.buttons["douyin.messages.top"].tap()
+        XCTAssertTrue(app.buttons["douyin.messages.stranger"].waitForExistence(timeout: 30))
+        sleep(18)
+        attach(app, "release-messages")
+        app.buttons["douyin.messages.stranger"].tap()
+        sleep(8)
+        attach(app, "release-strangers")
+    }
+
+    func testReleaseScreenshotsLive() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let enter = app.buttons.matching(identifier: "live.room.enter").firstMatch
+        XCTAssertTrue(enter.waitForExistence(timeout: 45))
+        sleep(8)
+        attach(app, "release-live")
+        app.buttons["live.discover"].tap()
+        sleep(6)
+        attach(app, "release-live-discovery")
+        app.buttons["live.categories"].tap()
+        XCTAssertTrue(app.buttons["英雄联盟"].waitForExistence(timeout: 5))
+        attach(app, "release-live-categories")
+        app.buttons["live.categories.close"].tap()
+        app.buttons["live.discover"].tap()
+        enter.tap()
+        XCTAssertTrue(app.buttons["live.room.close"].waitForExistence(timeout: 10))
+        sleep(8)
+        attach(app, "release-live-room")
+    }
+
     func testLiveDiscoveryAndBack() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
@@ -968,6 +1061,12 @@ final class DouDuoUITests: XCTestCase {
     }
 
     private func attach(_ app: XCUIApplication, _ name: String) {
+        if name.hasPrefix("release-") {
+            // Duo 的 XCTest 截图可能取到未点亮的另一块屏；主机按标记用 simctl 指定活动显示面截图。
+            print("DDCAPTURE:\(name)")
+            fflush(stdout)
+            sleep(4)
+        }
         let a = XCTAttachment(screenshot: app.screenshot()); a.name = name; a.lifetime = .keepAlways; add(a)
     }
 }

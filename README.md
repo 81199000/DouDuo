@@ -4,12 +4,18 @@
 
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。
 
+## 最新功能截图
+
+**v1.3.7（53）· iPhone Duo 模拟器内屏实拍 · 未打码**
+
 <p align="center">
-  <img src="docs/screenshots/feed.jpg" width="200">
-  <img src="docs/screenshots/search.jpg" width="200">
-  <img src="docs/screenshots/comments.jpg" width="200">
-  <img src="docs/screenshots/live.jpg" width="200">
+  <img src="docs/screenshots/feed.jpg" width="400" alt="推荐播放">
+  <img src="docs/screenshots/comments.jpg" width="400" alt="侧边评论">
+  <img src="docs/screenshots/messages.jpg" width="400" alt="新版消息中心">
+  <img src="docs/screenshots/live-discovery.jpg" width="400" alt="直播发现与关注主播">
 </p>
+
+[查看全部 13 张功能截图](docs/screenshots/README.md)：推荐、评论、表情、@ 用户、搜索、个人页、消息、陌生人消息、直播预览、直播发现、游戏分类、直播间、设置。
 
 > ⚠️ 非官方项目，仅供个人学习交流，与抖音 / 北京微播视界科技有限公司无关。详见文末[声明](#声明)。
 
