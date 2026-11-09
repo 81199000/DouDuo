@@ -2236,6 +2236,7 @@ struct DYCommentPanel: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if showAt { atPanel }
             if let r = replyTo {
                 HStack {
                     Text("回复 @\(r.name)").font(.caption).foregroundStyle(.themeTextSecondary).lineLimit(1)
@@ -2309,9 +2310,6 @@ struct DYCommentPanel: View {
                     .accessibilityIdentifier("douyin.comment.emojis")
                 }
             }
-            if showAt {
-                atPanel
-            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .task { await DYEmojiStore.shared.load(bridge: bridge) }
@@ -2337,42 +2335,45 @@ struct DYCommentPanel: View {
         let people: [DYFriend] = friends.isEmpty
             ? atCandidates.map { DYFriend(name: $0.name, avatar: $0.avatar, secUid: $0.id) }
             : friends
+        // 跟抖音一致：输入框上方一排头像 + 昵称，横滑
         VStack(alignment: .leading, spacing: 4) {
             if atLoading {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
-                    Text("加载关注列表…").font(.caption2).foregroundStyle(.themeTextSecondary)
+                    Text("加载朋友…").font(.caption2).foregroundStyle(.themeTextSecondary)
                 }
-            }
-            if let e = atError, !atLoading {
-                Text(e).font(.caption2).foregroundStyle(.themeTextSecondary)
-            }
-            if people.isEmpty && !atLoading {
-                Text("没有可 @ 的人").font(.caption2).foregroundStyle(.themeTextSecondary)
+                .padding(.vertical, 8)
+            } else if people.isEmpty {
+                Text(atError ?? "没有可 @ 的人").font(.caption2).foregroundStyle(.themeTextSecondary)
+                    .padding(.vertical, 8)
             } else {
-                ScrollView {
-                    VStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 18) {
                         ForEach(people, id: \.id) { u in
                             Button {
                                 draft += "@\(u.name) "
                                 showAt = false
+                                inputFocused = true
                             } label: {
-                                HStack(spacing: 8) {
+                                VStack(spacing: 5) {
                                     CachedAsyncImage(url: u.avatar.flatMap(URL.init(string:))) { img in
                                         img.resizable().scaledToFill()
                                     } placeholder: { Color.primary.opacity(0.08) }
-                                    .frame(width: 24, height: 24).clipShape(Circle())
-                                    Text(u.name).font(.footnote).foregroundStyle(.themeTextPrimary).lineLimit(1)
-                                    Spacer()
+                                    .frame(width: 50, height: 50).clipShape(Circle())
+                                    Text(u.name)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.themeTextPrimary)
+                                        .lineLimit(1)
+                                        .frame(width: 56)
                                 }
-                                .padding(.vertical, 4)
-                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
                     }
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 6)
                 }
-                .frame(maxHeight: 130)
+                .frame(height: 92)
             }
         }
         .padding(.top, 2)
