@@ -1067,6 +1067,8 @@ struct DouyinFeedScreen: View {
         }
         // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
         .ignoresSafeArea(edges: [.top, .horizontal])
+        // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
+        // 主视图不挂 NavigationStack / toolbar，避免 Duo 系统侧栏再渲染一个重复的返回按钮。
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
         .task {
             guard !initialized else { return }
@@ -1083,6 +1085,18 @@ struct DouyinFeedScreen: View {
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
+            // 真机验收用：DOUDUO_STARTLIVE=1 + DOUDUO_AUTOLIVEROOM=1 直接进房，省去手点。
+            if ProcessInfo.processInfo.environment["DOUDUO_AUTOLIVEROOM"] == "1" {
+                Task { @MainActor in
+                    var waited = 0
+                    while live.rooms.isEmpty, waited < 24 {
+                        try? await Task.sleep(for: .milliseconds(500))
+                        waited += 1
+                    }
+                    try? await Task.sleep(for: .milliseconds(800))
+                    if !live.entered, !live.rooms.isEmpty { live.enterRoom() }
+                }
+            }
             #endif
             Task { myUser = try? await bridge.selfProfile() }
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
