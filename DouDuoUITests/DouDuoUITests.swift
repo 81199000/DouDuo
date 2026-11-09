@@ -25,7 +25,8 @@ final class DouDuoUITests: XCTestCase {
         app.terminate()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
         app.launch()
-        XCTAssertTrue(row.waitForExistence(timeout: 8), "冷启动也应从磁盘恢复会话")
+        // 会话列表按设计是实时从网页抓（只有通知/计数走缓存），冷启动等它连上即可
+        XCTAssertTrue(row.waitForExistence(timeout: 40), "冷启动后会话列表没拉起来")
         print("DDCACHE_COLD=ready")
     }
 
@@ -61,6 +62,30 @@ final class DouDuoUITests: XCTestCase {
         sleep(3)
         print("DDHIT recommend-restored id=\(current.label)")
         attach(app, "hit-recommend-edge")
+    }
+
+    func testStrangerCategory() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let entry = app.buttons["douyin.messages.stranger"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 50), app.debugDescription)
+        // 首页会话列表里不应再混陌生人
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        let mixed = rows.allElementsBoundByIndex.filter { ($0.value as? String) == "stranger" }
+        XCTAssertEqual(mixed.count, 0, "陌生人会话不该平铺在首页列表")
+        print("DDSTRANGERCAT entry=\(entry.value ?? "-") friendRows=\(rows.count)")
+        print("DDCHAT_SHOT_HOME"); sleep(3)
+        entry.tap()
+        // 陌生人面板直接在网页里全屏展示
+        let detail = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        XCTAssertTrue(detail.waitForExistence(timeout: 25))
+        sleep(4)
+        XCTAssertGreaterThan(detail.frame.width, 800, "陌生人面板没铺满：\(detail.frame)")
+        print("DDSTRANGERCAT opened=\(detail.frame)")
+        print("DDCHAT_SHOT_STRANGERCHAT"); sleep(3)
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
     }
 
     func testStrangerConversationOpens() throws {
@@ -154,9 +179,10 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
         back.tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 8))
-        sleep(8)
+        sleep(10)
+        // 退出分类只把看过的互动类（评论/赞）标已读；粉丝/系统仍可能有未读，所以看这个入口的角标
         print("DDUNREAD_AFTER=\(entry.value ?? "nil")")
-        XCTAssertEqual(entry.value as? String, "0")
+        XCTAssertEqual(entry.value as? String, "0", "退出互动分类后它的未读应清零")
         XCTAssertTrue(app.buttons.matching(identifier: "douyin.conversation.row").firstMatch.waitForExistence(timeout: 15))
         attach(app, "message-read-and-conversations")
     }
