@@ -12,11 +12,13 @@ struct DYLiveMsg: Identifiable, Equatable {
 @MainActor
 final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var messages: [DYLiveMsg] = []
+    @Published private(set) var composerReady = false
     let web: WKWebView
     private var timer: Timer?
     private var room: String?
     private var seq = 0
     private var ticks = 0
+    private var generation = UUID()
 
     override init() {
         let cfg = WKWebViewConfiguration()
@@ -33,7 +35,9 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
 
     func open(_ webRid: String) {
         guard !webRid.isEmpty, webRid != room else { return }
+        generation = UUID()
         room = webRid
+        composerReady = false
         messages = []
         ticks = 0
         web.load(URLRequest(url: URL(string: "https://live.douyin.com/\(webRid)")!))
@@ -43,54 +47,105 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
         }
     }
 
-    /// 直播间发言：填写网页自己的输入框并提交；不伪造本地「我」消息。
+    /// 在官网编辑器提交，并等待 /webcast/room/chat/ 的真实业务确认；不自动重试。
     func send(_ text: String) async -> String? {
         guard let targetRoom = room else { return "评论区连接中，请稍后再试" }
-        let lit = (try? String(data: JSONSerialization.data(withJSONObject: [text]), encoding: .utf8))
-            .map { String($0.dropFirst().dropLast()) } ?? "\"\""
+        let token = generation
         do {
-            let r = try await web.evaluateJavaScript(Self.sendJS.replacingOccurrences(of: "__DD_TEXT_JSON__", with: lit))
-            guard room == targetRoom else { return "直播间已切换，请在当前直播间重新输入" }
-            let s = (r as? String) ?? "invalid-result"
-            DYLiveModel.log("DDSEND live \(s)")
-            switch s {
-            case "clicked": return nil // 仅表示网页已接受点击；实际聊天只读网页回显。
-            case "loading": return "评论区尚未加载好或暂未提供输入框，请稍后重试；这不代表未登录"
-            case "disabled": return "直播间当前暂不能发言，请在网页版查看限制提示"
-            case "no-send": return "未找到直播间发送按钮，请在网页版查看"
-            default: return "未能提交直播发言，输入内容已保留"
-            }
+            let raw = try await web.callAsyncJavaScript(Self.sendJS, arguments: ["text": text], contentWorld: .page)
+            guard room == targetRoom, generation == token else { return "直播间已切换，原发言结果未确认，请勿连续重发" }
+            guard let string = raw as? String, let data = string.data(using: .utf8),
+                  let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let state = result["state"] as? String else { return "未收到发言确认，请勿连续重发" }
+            DYLiveModel.log("DDSEND live state=\(state) code=\(result["code"] ?? "-") messageID=\(result["messageID"] ?? "-")")
+            if state == "sent" { return nil }
+            return result["message"] as? String ?? "直播发言尚未确认，输入内容已保留，请勿连续重发"
         } catch {
             DYLiveModel.log("DDSEND live javascript-error")
-            return "直播网页执行失败，输入内容已保留，请重新进入直播间后再试"
+            return "直播网页执行失败，发言结果未确认，请勿连续重发"
         }
     }
 
-    // 唯一占位符不可与 TEXTAREA 等 JS 标识符重名；只允许显式、可用的发送按钮。
-    static let sendJS = #"""
+    static let composerReadyJS = #"""
     (() => {
-      const box = document.querySelector('textarea, [contenteditable="true"]');
-      if (!box) return 'loading';
-      if (box.disabled || box.readOnly || box.getAttribute?.('aria-disabled') === 'true') return 'disabled';
-      box.focus();
-      if (box.tagName === 'TEXTAREA') {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, __DD_TEXT_JSON__);
-      } else {
-        box.innerText = __DD_TEXT_JSON__;
-      }
-      box.dispatchEvent(new InputEvent('input', { bubbles: true, data: __DD_TEXT_JSON__, inputType: 'insertText' }));
-      box.dispatchEvent(new Event('change', { bubbles: true }));
-      const btn = [...document.querySelectorAll('[class*="send"], button')].find(b => /发送/.test(b.innerText || '') || /send-btn|sendBtn|send_btn/i.test(String(b.className)));
-      if (!btn) return 'no-send';
-      if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return 'disabled';
-      btn.click();
-      return 'clicked';
+      const box = document.querySelector('[data-e2e="live-chatting"] [contenteditable="true"], textarea, [contenteditable="true"]');
+      return !!box && !box.disabled && !box.readOnly && box.getAttribute('aria-disabled') !== 'true';
     })()
+    """#
+
+    static let sendJS = #"""
+    return await (async () => {
+      const box = document.querySelector('[data-e2e="live-chatting"] [contenteditable="true"], textarea, [contenteditable="true"]');
+      const fail = (state, message) => JSON.stringify({ state, message });
+      if (!box) return fail('loading', '评论区连接中，请等待输入框加载完成');
+      if (box.disabled || box.readOnly || box.getAttribute('aria-disabled') === 'true') return fail('disabled', '直播间暂不能发言，请查看官网限制提示');
+      if (window.__ddLiveSending) return fail('busy', '上一条直播发言仍在确认中，请勿重复提交');
+      window.__ddLiveSending = true;
+      let resolveAck, finished = false;
+      const ack = new Promise(resolve => { resolveAck = resolve; });
+      const finish = result => { if (!finished) { finished = true; resolveAck(result); } };
+      const isChat = url => { try { return new URL(url, location.href).pathname.replace(/\/$/, '') === '/webcast/room/chat'; } catch { return false; } };
+      const capture = (url, http, body) => {
+        if (!isChat(url)) return;
+        let d; try { d = JSON.parse(body); } catch { return; }
+        const data = d.data || {}, messageID = data.msg_id_str || data.msg_id || data.id;
+        if (http === 200 && d.status_code === 0 && messageID) {
+          finish({ state: 'sent', code: 0, messageID: String(messageID) });
+        } else if (typeof d.status_code === 'number' && d.status_code !== 0) {
+          finish({ state: 'rejected', code: d.status_code, message: data.prompts || data.message || d.status_msg || '直播平台拒绝了发言' });
+        }
+      };
+      const oldSend = XMLHttpRequest.prototype.send, oldFetch = window.fetch;
+      function observeSend(...args) {
+        this.addEventListener('load', () => { try { capture(this.responseURL, this.status, this.responseText); } catch {} }, { once: true });
+        return oldSend.apply(this, args);
+      }
+      async function observeFetch(...args) {
+        const r = await oldFetch.apply(this, args);
+        if (isChat(r.url)) { try { capture(r.url, r.status, await r.clone().text()); } catch {} }
+        return r;
+      }
+      XMLHttpRequest.prototype.send = observeSend;
+      window.fetch = observeFetch;
+      const timer = setTimeout(() => finish({ state: 'unconfirmed', message: '未收到直播平台确认，请先查看聊天记录，勿连续重发' }), 10000);
+      try {
+        box.focus();
+        if (box.tagName === 'TEXTAREA') {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, text);
+          box.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+          box.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          // Slate/EditorKit 必须走原生编辑事务；修改 innerText 不会同步官网编辑器模型。
+          const range = document.createRange(); range.selectNodeContents(box);
+          const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+          if (!document.execCommand('insertText', false, text)) return fail('compose-error', '官网编辑器未接受输入，内容已保留');
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const actual = (box.tagName === 'TEXTAREA' ? box.value : box.innerText) || '';
+        if (actual.replace(/\u200b/g, '').trim() !== text.trim()) return fail('compose-error', '官网输入内容未同步，已取消提交');
+        const button = [...document.querySelectorAll('[class*="send"], button')].find(b => /发送/.test(b.innerText || '') || /send-btn|sendBtn|send_btn/i.test(String(b.className)));
+        if (button && box.getAttribute('data-slate-editor') !== 'true') {
+          if (button.disabled || button.getAttribute('aria-disabled') === 'true') return fail('disabled', '直播间暂不能发言，请查看官网限制提示');
+          button.click();
+        } else {
+          // 已在真实官网验证：该编辑器无发送按钮，Enter 会走官网签名与业务请求。
+          for (const type of ['keydown', 'keypress', 'keyup']) box.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: 13, bubbles: true, cancelable: true, composed: true }));
+        }
+        return JSON.stringify(await ack);
+      } finally {
+        clearTimeout(timer);
+        if (XMLHttpRequest.prototype.send === observeSend) XMLHttpRequest.prototype.send = oldSend;
+        if (window.fetch === observeFetch) window.fetch = oldFetch;
+        window.__ddLiveSending = false;
+      }
+    })();
     """#
 
     func close() {
         timer?.invalidate(); timer = nil
+        generation = UUID()
         room = nil
+        composerReady = false
         messages = []
         web.stopLoading()
         web.loadHTMLString("", baseURL: nil)
@@ -104,13 +159,19 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
 
     private func poll() {
         ticks += 1
-        web.evaluateJavaScript(Self.pollJS) { [weak self] r, _ in
-            guard let self, let arr = r as? [[String]] else { return }
+        let token = generation
+        let script = "({items: \(Self.pollJS), ready: \(Self.composerReadyJS)})"
+        web.evaluateJavaScript(script) { [weak self] r, _ in
+            guard let self, self.generation == token, let payload = r as? [String: Any],
+                  let arr = payload["items"] as? [[String]] else { return }
+            let ready = payload["ready"] as? Bool ?? false
+            if self.composerReady != ready { DYLiveModel.log("DDCHAT composerReady=\(ready)") }
+            self.composerReady = ready
             if self.ticks % 10 == 1 {
                 DYLiveModel.log("DDCHAT tick=\(self.ticks) new=\(arr.count) first=\(arr.first?.joined(separator: "：") ?? "-")")
                 #if DEBUG
-                if arr.isEmpty {
-                    self.web.evaluateJavaScript(Self.diagJS) { d, _ in DYLiveModel.log("DDCHAT diag \(String(describing: d ?? "nil").prefix(900))") }
+                if arr.isEmpty || ProcessInfo.processInfo.environment["DOUDUO_CHATPROBE"] == "1" {
+                    self.web.evaluateJavaScript(Self.diagJS) { d, _ in DYLiveModel.log("DDCHAT diag \(String(describing: d ?? "nil").prefix(3200))") }
                 }
                 #endif
             }
@@ -139,7 +200,9 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
       const cls = {};
       document.querySelectorAll('[class]').forEach(e => String(e.className).split(/\s+/).forEach(c => { if (/chat|comment|msg|message|barrage|danmu/i.test(c)) cls[c] = (cls[c] || 0) + 1; }));
       const txt = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 300);
-      return 'url=' + location.href + ' title=' + document.title + ' cls=' + JSON.stringify(cls).slice(0, 500) + ' txt=' + txt;
+      const inputs = [...document.querySelectorAll('textarea,input,[contenteditable],[role="textbox"]')].map(e => ({tag:e.tagName,ce:e.getAttribute('contenteditable'),role:e.getAttribute('role'),cls:String(e.className).slice(0,100),disabled:!!e.disabled,editable:e.isContentEditable}));
+      const buttons = [...document.querySelectorAll('[class*="send"],button')].filter(b => /发送/.test(b.innerText || '') || /send-btn|sendBtn|send_btn/i.test(String(b.className))).map(b => ({tag:b.tagName,cls:String(b.className),disabled:!!b.disabled,aria:b.getAttribute('aria-disabled')}));
+      return 'url=' + location.origin + location.pathname + ' title=' + document.title + ' inputs=' + JSON.stringify(inputs).slice(0,650) + ' buttons=' + JSON.stringify(buttons).slice(0,450) + ' cls=' + JSON.stringify(cls).slice(0,100) + ' txt=' + txt.slice(0,80);
     })()
     """#
 
