@@ -1952,7 +1952,6 @@ struct DYVideoPage: View {
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
-    @State private var saving = false
     @State private var showDanmakuInput = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
@@ -2101,21 +2100,6 @@ struct DYVideoPage: View {
         }
     }
 
-    private func save() {
-        guard !saving else { return }
-        saving = true
-        onToast?("正在保存…")
-        Task {
-            do {
-                try await DYSaver.save(item)
-                onToast?(item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册")
-            } catch {
-                onToast?("保存失败：\(error.localizedDescription)")
-            }
-            saving = false
-        }
-    }
-
     /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2207,13 +2191,6 @@ struct DYVideoPage: View {
                 ShareLink(item: item.webURL) {
                     Label("转发", systemImage: "arrowshape.turn.up.right")
                 }
-                Button {
-                    save()
-                } label: {
-                    Label(saving ? "保存中…" : "下载", systemImage: "arrow.down.to.line")
-                }
-                .disabled(saving)
-                .accessibilityIdentifier("douyin.save")
                 if item.images.isEmpty, bridge != nil {
                     Button {
                         showDanmakuInput = true
