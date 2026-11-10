@@ -357,16 +357,6 @@ struct DYLiveFeed: View {
         }
     }
 
-    private var categoryButton: some View {
-        Button { showCategories = true } label: {
-            Label("游戏专区", systemImage: "line.3.horizontal.decrease")
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
-        }
-        .foregroundStyle(foreground).buttonStyle(.plain)
-        .accessibilityIdentifier("live.categories")
-    }
-
     /// 顶部第一行：抖音广场页的「发现更多」展开入口 + 原有分类入口
     private var discoverBar: some View {
         HStack(spacing: 10) {
@@ -380,8 +370,7 @@ struct DYLiveFeed: View {
             }
             .foregroundStyle(foreground).buttonStyle(.plain)
             .accessibilityIdentifier("live.discover")
-            // 两个入口都靠左：展开内屏的右上角是系统状态栏/前摄区，控件放那里会被盖住
-            categoryButton
+            // 靠左避开 Duo 内屏的系统状态栏 / 前摄区。
             Spacer(minLength: 8)
         }
     }
