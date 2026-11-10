@@ -69,10 +69,16 @@ final class DouDuoUITests: XCTestCase {
         let panel = app.otherElements["douyin.forward.panel"]
         XCTAssertGreaterThan(panel.frame.minY, app.frame.height * 0.1)
         XCTAssertLessThan(panel.frame.maxY, app.frame.height * 0.9)
+        let contactIDs = (1...9).map { "douyin.forward.contact.layout-fixture-\($0)" }
+        let visibleBefore = Set(contactIDs.filter { app.buttons[$0].isHittable })
         let start = contact.coordinate(withNormalizedOffset: CGVector(dx: 3.7, dy: 0.3))
         let end = contact.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.3))
         start.press(forDuration: 0.05, thenDragTo: end)
-        XCTAssertTrue(app.buttons["douyin.forward.contact.layout-fixture-5"].isHittable)
+        // 惯性可停在3–6或6–9，验“新联系人变为可点”，不把固定第5项当滚动终点。
+        let scrolled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            contactIDs.contains { !visibleBefore.contains($0) && app.buttons[$0].isHittable }
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [scrolled], timeout: 5), .completed)
         app.buttons["douyin.forward.close"].tap()
         XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
         print("DDFORWARD_LAYOUT: synthetic-only; floating-frame; horizontal-scroll; confirmation-cancelled; real-sends=0")
