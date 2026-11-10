@@ -160,8 +160,16 @@ struct PlayerPage: View {
     @State private var lastPreviewAt: Double = 0
     @State private var holdAnchor: Double = 0
     @State private var rateBoost = false
-    /// 锁定倍速（「更多」菜单里选的）：长按 2 倍速松手、换视频、重新起播都回到它
-    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
+    /// 设置里选的速度（全局、持久化）：所有视频都按它播
+    @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
+    /// 长按下滑锁定的 2 倍速：只锁当前这条视频，滑到下一条自动回到设置速度
+    @State private var lockedBoost = false
+
+    /// 当前实际速度：本视频锁了 2 倍就 2 倍，否则跟设置走
+    private var effectiveRate: Double { lockedBoost ? 2 : playbackRate }
+    private func rateText(_ r: Double) -> String {
+        r == r.rounded() ? String(format: "%.0f×", r) : String(format: "%g×", r)
+    }
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
     @State private var endObserver: NSObjectProtocol?
@@ -232,14 +240,24 @@ struct PlayerPage: View {
                 Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
                     .allowsHitTesting(false)
             }
-            // 只在长按时出现：没锁定 → 下滑锁定；已锁定 → 上滑恢复 1 倍
-            if rateBoost {
-                Label(lockedRate == 2 ? "2 倍速 · 上滑恢复" : "2 倍速播放中 · 下滑锁定", systemImage: "forward.fill")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.white)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(.black.opacity(0.45)))
-                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 70 * ui)
-                    .allowsHitTesting(false)
+            // 常驻倍速角标：只要不是 1 倍就一直显示；长按时再提示「下滑锁定 / 上滑取消」
+            if effectiveRate != 1 || rateBoost {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(rateText(effectiveRate)).font(.caption.weight(.bold)).monospacedDigit()
+                        .accessibilityIdentifier("douyin.rateBadge")
+                    if rateBoost {
+                        Text(lockedBoost ? "上滑取消倍速" : "下滑锁定倍速")
+                            .font(.system(size: 9)).opacity(0.85)
+                    } else if lockedBoost {
+                        Text("已锁定本条 · 长按上滑取消").font(.system(size: 9)).opacity(0.85)
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(Capsule().fill(.black.opacity(0.45)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 14).padding(.top, 66 * ui)
+                .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .bottom) {
@@ -269,13 +287,15 @@ struct PlayerPage: View {
             player?.isMuted = m
             vlc?.mediaPlayer.audio?.isMuted = m
         }
-        // 设置里改播放速度：立刻应用到当前播放器（暂停时等下次播放再按 0.25s 轮询对齐）
-        .onChange(of: lockedRate) { _, rate in
-            guard !rateBoost else { return }
-            if let v = vlc { v.setRate(Float(rate)) }
-            else if let p = player, isPlaying { p.rate = Float(rate) }
+        // 设置里改播放速度 = 明确要这个速度：撤掉本条的长按锁定，当前视频立刻生效
+        .onChange(of: playbackRate) { _, newRate in
+            if !rateBoost { lockedBoost = false }
+            let target = rateBoost ? 2 : newRate
+            if let v = vlc { v.setRate(Float(target)) }
+            else if let p = player, isPlaying { p.rate = Float(target) }
         }
         .onChange(of: isActive) { _, active in
+            if !active { lockedBoost = false }   // 滑走就解锁：只锁「当前这条」
             if active { bindRemote() }
             if let v = vlc {
                 if active { v.mediaPlayer.audio?.isMuted = muted; v.mediaPlayer.play(); isPlaying = true }
@@ -314,17 +334,20 @@ struct PlayerPage: View {
             onDoubleTap: { _, _ in onDoubleTap?() },
             onLongPress: { pressing in
                 if let v = vlc {
-                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(lockedRate)); rateBoost = false }
+                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(effectiveRate)); rateBoost = false }
                     return
                 }
                 guard let p = player else { return }
                 if pressing { p.rate = 2; rateBoost = true }
-                else if rateBoost { p.rate = isPlaying ? Float(lockedRate) : 0; rateBoost = false }
+                else if rateBoost { p.rate = isPlaying ? Float(effectiveRate) : 0; rateBoost = false }
             },
-            onLongPressLock: { lockedRate = 2 },
+            // 下滑：锁住本条视频的 2 倍速（不写设置、不影响下一条）
+            onLongPressLock: { lockedBoost = true },
+            // 上滑：立刻取消倍速，回到设置里的速度
             onLongPressUnlock: {
-                lockedRate = 1; rateBoost = false
-                if let v = vlc { v.setRate(1) } else { player?.rate = isPlaying ? 1 : 0 }
+                lockedBoost = false; rateBoost = false
+                if let v = vlc { v.setRate(Float(playbackRate)) }
+                else { player?.rate = isPlaying ? Float(playbackRate) : 0 }
             },
             onSeekBegan: {
                 guard duration > 0 else { return }
@@ -786,7 +809,7 @@ struct PlayerPage: View {
             refreshNowPlaying(pos)
             if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
             dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate))
-            if !rateBoost, v.isPlaying, v.mediaPlayer.rate != Float(lockedRate) { v.setRate(Float(lockedRate)) }
+            if !rateBoost, v.isPlaying, v.mediaPlayer.rate != Float(effectiveRate) { v.setRate(Float(effectiveRate)) }
             if v.duration > 0 { duration = v.duration }
         }
         v.onEnd = { [weak v] in
@@ -812,7 +835,7 @@ struct PlayerPage: View {
                 dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
                 refreshNowPlaying(t.seconds)
                 // 锁定倍速：play()/换播放器都会回到 1 倍，每 0.25s 拉回选定速度
-                if !rateBoost, p.rate > 0, p.rate != Float(lockedRate) { p.rate = Float(lockedRate) }
+                if !rateBoost, p.rate > 0, p.rate != Float(effectiveRate) { p.rate = Float(effectiveRate) }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
                 // 头部缓存 → 在线流：提前预热，到点直接交接（不等 ended，避免尾部没数据干等）
                 if let h = headEndSeconds, h > 0, !continued {
@@ -881,7 +904,10 @@ struct PlayerPage: View {
         }
         c.changePlaybackRateCommand.supportedPlaybackRates = [0.75, 1, 1.25, 1.5, 2]
         on(c.changePlaybackRateCommand) { e in
-            if let e = e as? MPChangePlaybackRateCommandEvent { lockedRate = Double(e.playbackRate) }
+            if let e = e as? MPChangePlaybackRateCommandEvent {
+                // 锁屏/控制中心改的速度算「本条视频」：不污染设置里的全局速度
+                if e.playbackRate >= 2 { lockedBoost = true } else { lockedBoost = false; playbackRate = Double(e.playbackRate) }
+            }
         }
         lastNowPlaying = -10
         refreshNowPlaying(now())
@@ -897,7 +923,7 @@ struct PlayerPage: View {
             MPMediaItemPropertyTitle: title.isEmpty ? "DouDuo" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: t,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? lockedRate : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? effectiveRate : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
         ]
     }
@@ -912,7 +938,7 @@ struct PlayerPage: View {
     }
 
     private func seekTo(_ pos: Double) {
-        dmClock.sync(pos, playing: isPlaying, rate: rateBoost ? 2 : 1)
+        dmClock.sync(pos, playing: isPlaying, rate: rateBoost || lockedBoost ? 2 : playbackRate)
         if let v = vlc { v.seekTo(pos); current = pos; return }
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)

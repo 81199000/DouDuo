@@ -1063,8 +1063,8 @@ struct DouyinFeedScreen: View {
     @State private var topNudge: CGFloat = 0
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
     @State private var topBarWidth: CGFloat?
-    /// 播放速度（设置 → 播放设置 → 播放速度）：长按 2 倍速松手、换视频都回到它
-    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
+    /// 播放速度（设置 → 播放设置 → 播放速度）：全局速度，长按锁定只作用于单条视频，不写这里
+    @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
@@ -1504,7 +1504,7 @@ struct DouyinFeedScreen: View {
             Text(currentID ?? "-").font(.caption2).opacity(0.01)
                 .accessibilityIdentifier("douyin.currentID")
                 .allowsHitTesting(false)
-            Text(String(format: "%g", lockedRate)).font(.caption2).opacity(0.01)
+            Text(String(format: "%g", playbackRate)).font(.caption2).opacity(0.01)
                 .accessibilityIdentifier("douyin.rate")
                 .allowsHitTesting(false)
             #endif
@@ -1884,9 +1884,9 @@ struct DouyinFeedScreen: View {
                     Menu {
                         ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
                             Button {
-                                lockedRate = r
+                                playbackRate = r
                             } label: {
-                                if abs(lockedRate - r) < 0.01 {
+                                if abs(playbackRate - r) < 0.01 {
                                     Label(rateTitle(r), systemImage: "checkmark")
                                 } else {
                                     Text(rateTitle(r))

@@ -384,35 +384,62 @@ final class DouDuoUITests: XCTestCase {
         _ = close
     }
 
-    /// 长按下滑锁定 2 倍速；设置 → 播放设置 → 播放速度 能改回指定速度。
+    /// 倍速两条线互不污染：设置是全局速度（当前视频立刻生效），长按下滑锁的 2 倍只锁本条、上滑取消。
     func testPlaybackRateLockedByLongPressDownAndSetting() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
         sleep(3)
-        let rate = app.staticTexts["douyin.rate"]
-        XCTAssertTrue(rate.waitForExistence(timeout: 10))
+        let setting = app.staticTexts["douyin.rate"]
+        XCTAssertTrue(setting.waitForExistence(timeout: 10))
 
-        // 先经设置把速度归 1（锁定倍速会持久化，上一次测试可能留在 2）
+        // 1. 设置里回到正常速度：不显示倍速角标
         openSpeedMenu(app)
         XCTAssertTrue(app.buttons["正常速度"].waitForExistence(timeout: 5))
         app.buttons["正常速度"].tap()
-        XCTAssertTrue(wait(label: "1", on: rate, timeout: 8), "设置里选正常速度应回到 1 倍，当前 \(rate.label)")
+        XCTAssertTrue(wait(label: "1", on: setting, timeout: 8), "设置应是 1 倍，当前 \(setting.label)")
+        sleep(1)
+        XCTAssertNil(visibleBadge(app), "1 倍速不该显示角标")
 
-        // 长按 0.9s 后向下拖 18% 屏高，再停住 0.4s 让手势结算，最后松手
+        // 2. 长按下滑：锁定本条 2 倍（松手后常驻角标），且不写进设置
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.40))
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.58))
         start.press(forDuration: 0.9, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.4)
-        XCTAssertTrue(wait(label: "2", on: rate, timeout: 8), "长按下滑应锁定 2 倍速，当前 \(rate.label)")
-        attach(app, "rate-locked-2x")
+        XCTAssertTrue(waitBadge(app, "2×", timeout: 8), "长按下滑应锁定 2 倍，当前 \(visibleBadge(app)?.label ?? "无角标")")
+        XCTAssertEqual(setting.label, "1", "长按锁定不能改设置里的全局速度")
+        attach(app, "rate-locked-2x-badge")
 
-        // 再从设置改成 1.5 倍速
+        // 3. 设置改成 1.5 倍：当前这条立刻变 1.5×（不用换视频）
         openSpeedMenu(app)
         XCTAssertTrue(app.buttons["1.5 倍速"].waitForExistence(timeout: 5))
         app.buttons["1.5 倍速"].tap()
-        XCTAssertTrue(wait(label: "1.5", on: rate, timeout: 8), "设置里选 1.5 倍速应生效，当前 \(rate.label)")
-        attach(app, "rate-1-5x")
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "设置改 1.5 倍当前视频应立刻生效，当前 \(visibleBadge(app)?.label ?? "无角标")")
+        XCTAssertEqual(setting.label, "1.5")
+        attach(app, "rate-1-5x-badge")
+
+        // 4. 长按上滑：取消 2 倍，回到设置的 1.5 倍
+        let up = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.24))
+        start.press(forDuration: 0.9, thenDragTo: up, withVelocity: .slow, thenHoldForDuration: 0.4)
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "上滑应取消倍速，当前 \(visibleBadge(app)?.label ?? "无角标")")
+        attach(app, "rate-cancelled")
+    }
+
+    /// 分页里每页都挂了角标，只取屏幕上那个
+    private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
+        let f = app.frame
+        return app.staticTexts.matching(identifier: "douyin.rateBadge").allElementsBoundByIndex.first {
+            $0.frame.midY > f.minY && $0.frame.midY < f.maxY && $0.frame.midX > f.minX && $0.frame.midX < f.maxX
+        }
+    }
+
+    private func waitBadge(_ app: XCUIApplication, _ label: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let b = visibleBadge(app), b.label == label { return true }
+            usleep(200_000)
+        }
+        return false
     }
 
     /// 更多 → 设置 → 播放设置 → 播放速度
@@ -428,7 +455,6 @@ final class DouDuoUITests: XCTestCase {
         app.buttons["播放设置"].tap()
         XCTAssertTrue(app.buttons["播放速度"].waitForExistence(timeout: 5), "播放设置里应有「播放速度」")
         app.buttons["播放速度"].tap()
-        attach(app, "settings-playback-speed")
     }
 
     private func wait(label: String, on element: XCUIElement, timeout: TimeInterval) -> Bool {
