@@ -2202,7 +2202,7 @@ struct DYVideoPage: View {
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
-            VStack(spacing: 2) {
+            VStack(spacing: 6) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
@@ -2210,7 +2210,7 @@ struct DYVideoPage: View {
                          tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 8)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
