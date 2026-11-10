@@ -271,9 +271,22 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     (() => {
       const P = HTMLMediaElement.prototype;
       P.play = function () { try { this.muted = true; this.pause(); } catch (e) {} return Promise.resolve(); };
-      const kill = () => document.querySelectorAll('video,audio').forEach(v => { try { v.muted = true; v.pause(); v.removeAttribute('autoplay'); v.preload = 'none'; } catch (e) {} });
-      document.addEventListener('DOMContentLoaded', kill);
-      new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+      const V = HTMLVideoElement.prototype;
+      // 签名页绝不能占用原生全屏播放器；部分网站会直接请求全屏而不调用 play()。
+      V.webkitEnterFullscreen = V.webkitEnterFullScreen = function () {};
+      for (const key of ['requestFullscreen', 'webkitRequestFullscreen', 'webkitRequestFullScreen']) {
+        Element.prototype[key] = function () { return Promise.resolve(); };
+      }
+      const kill = () => document.querySelectorAll('video,audio').forEach(v => { try {
+        v.muted = true; v.pause(); v.removeAttribute('autoplay'); v.preload = 'none';
+        v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+      } catch (e) {} });
+      const observe = () => {
+        kill();
+        if (document.documentElement) new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+      };
+      document.addEventListener('DOMContentLoaded', observe);
+      if (document.documentElement) observe();
     })();
     """
 
@@ -743,6 +756,7 @@ private struct DouyinBridgeHost: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let v = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         v.isUserInteractionEnabled = false
+        v.accessibilityElementsHidden = true
         v.alpha = 0.01
         v.clipsToBounds = true
         bridge.web.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)

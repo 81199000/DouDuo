@@ -232,6 +232,8 @@ struct DYLiveChatHost: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let v = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         v.clipsToBounds = true
+        v.isUserInteractionEnabled = false
+        v.accessibilityElementsHidden = true
         chat.web.alpha = 0.01
         v.addSubview(chat.web)
         return v

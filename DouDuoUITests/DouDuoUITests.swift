@@ -12,8 +12,9 @@ final class DouDuoUITests: XCTestCase {
         discover.tap()
         XCTAssertTrue(app.buttons["live.category.featured"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["live.category.followed"].exists)
-        app.buttons["live.category.nearby"].tap()
-        XCTAssertTrue(app.staticTexts["「同城」暂未接入分区数据，当前继续看精选直播"].exists)
+        XCTAssertFalse(app.buttons["live.category.nearby"].exists)
+        app.buttons["live.category.chat"].tap()
+        XCTAssertEqual(app.buttons["live.category.chat"].value as? String, "已选择")
         discover.tap()
         XCTAssertFalse(app.buttons["live.category.featured"].exists)
         let enter = app.buttons.matching(identifier: "live.room.enter").firstMatch
@@ -26,6 +27,59 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(discover.waitForExistence(timeout: 5))
         XCTAssertEqual(app.state, .runningForeground)
         attach(app, "live-discovery-return")
+    }
+
+    func testLiveVerifiedCategories() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let discover = app.buttons["live.discover"]
+        XCTAssertTrue(discover.waitForExistence(timeout: 30))
+        let initial = expectation(for: NSPredicate(format: "label BEGINSWITH 'featured|' AND NOT label BEGINSWITH 'featured|0|' AND label ENDSWITH '|loaded'"), evaluatedWith: app.staticTexts["live.source"])
+        XCTAssertEqual(XCTWaiter().wait(for: [initial], timeout: 40), .completed)
+        discover.tap()
+        print("DDCATEGORY_SCREEN:before"); fflush(stdout); sleep(3)
+        for id in ["nearby", "star", "group", "beauty", "sing"] {
+            XCTAssertFalse(app.buttons["live.category.\(id)"].exists)
+        }
+        let strip = app.scrollViews["live.categoryStrip"]
+        let source = app.staticTexts["live.source"]
+        for (id, partition) in [("chat", "101"), ("music", "102"), ("anime", "104"), ("dance", "105"), ("culture", "106"), ("life", "107"), ("exercise", "108")] {
+            let button = app.buttons["live.category.\(id)"]
+            for _ in 0..<4 {
+                if strip.frame.intersection(app.windows.firstMatch.frame).insetBy(dx: -1, dy: -1).contains(button.frame) { break }
+                strip.swipeLeft()
+            }
+            if !button.isHittable { print("DDCATEGORY_SCREEN:blocked"); fflush(stdout); sleep(3) }
+            XCTAssertTrue(button.isHittable, id)
+            button.tap()
+            let loaded = expectation(for: NSPredicate { _, _ in
+                let parts = source.label.split(separator: "|").map(String.init)
+                return parts.count == 3 && parts[0] == partition && (Int(parts[1]) ?? 0) > 0 && parts[2] == "loaded"
+            }, evaluatedWith: source)
+            XCTAssertEqual(XCTWaiter().wait(for: [loaded], timeout: 40), .completed, id)
+            XCTAssertEqual(button.value as? String, "已选择")
+            print("DDCATEGORY_VERIFIED:\(id) source=\(source.label)")
+        }
+        print("DDCATEGORY_SCREEN:all"); fflush(stdout); sleep(4)
+        for _ in 0..<4 {
+            if strip.frame.intersection(app.windows.firstMatch.frame).contains(app.buttons["live.category.game"].frame) { break }
+            strip.swipeRight()
+        }
+        app.buttons["live.category.game"].tap()
+        XCTAssertTrue(app.buttons["live.categories.close"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["英雄联盟"].exists)
+        app.buttons["live.categories.close"].tap()
+        let game = expectation(for: NSPredicate(format: "label BEGINSWITH '103|' AND NOT label BEGINSWITH '103|0|' AND label ENDSWITH '|loaded'"), evaluatedWith: source)
+        XCTAssertEqual(XCTWaiter().wait(for: [game], timeout: 40), .completed)
+        for _ in 0..<4 {
+            if strip.frame.intersection(app.windows.firstMatch.frame).contains(app.buttons["live.category.featured"].frame) { break }
+            strip.swipeRight()
+        }
+        app.buttons["live.category.featured"].tap()
+        let featured = expectation(for: NSPredicate(format: "label BEGINSWITH 'featured|' AND NOT label BEGINSWITH 'featured|0|' AND label ENDSWITH '|loaded'"), evaluatedWith: source)
+        XCTAssertEqual(XCTWaiter().wait(for: [featured], timeout: 40), .completed)
     }
 
     func testMinePlayCountsAndCachedMessages() throws {
