@@ -2,6 +2,45 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    /// 菜单与官网分享面板：仅打开、查看、关闭，绝不点击朋友或发送。
+    func testMenuCleanupAndFriendForwardWithoutSending() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        let query = app.buttons.matching(identifier: "douyin.more")
+        XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 40))
+        func openMore() {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
+            (query.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? query.firstMatch).tap()
+        }
+        openMore()
+        XCTAssertFalse(app.buttons["竖屏占比"].exists)
+        XCTAssertFalse(app.buttons["自动连播"].exists)
+        XCTAssertFalse(app.buttons["静音"].exists)
+        XCTAssertTrue(app.buttons["刷新推荐"].exists)
+        attach(app, "menu-cleanup-root")
+        app.buttons["设置"].tap()
+        XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["缓存管理"].exists)
+        attach(app, "menu-cleanup-settings")
+        openMore()
+        let share = app.buttons["douyin.forward.menu"]
+        if share.exists { share.tap() } else { app.buttons["转发"].tap() }
+        let friends = app.buttons["转发给抖音朋友"]
+        XCTAssertTrue(friends.waitForExistence(timeout: 5))
+        XCTAssertTrue(friends.isEnabled)
+        friends.tap()
+        let close = app.buttons["douyin.forward.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        let ready = app.staticTexts.matching(NSPredicate(format: "label CONTAINS '请先在下方登录' OR label CONTAINS '使用抖音官方分享面板'" )).firstMatch
+        XCTAssertTrue(ready.waitForExistence(timeout: 45), app.debugDescription)
+        attach(app, "friend-forward-official-panel-no-send")
+        close.tap()
+        XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
+        print("DDFORWARD_UI: official-panel-opened-and-closed; no-recipient-selected; no-send")
+    }
+
     func testVideoDanmakuSettings() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
