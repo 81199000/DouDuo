@@ -28,6 +28,7 @@
 		844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */; };
 		85C30C1C9411C32D14761E7A /* DouyinExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66F335DE5A601EA019AD61E /* DouyinExtras.swift */; };
 		AAF87B9A920594ED30D856E2 /* DouyinCommentApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */; };
+		AF2F0EB751A5DBBC824C6357 /* DouyinPeopleCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */; };
 		B072D11672770FB4836781C5 /* PlayerGestureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67D760242AE376C515972D58 /* PlayerGestureView.swift */; };
 		B68211E3E80797D1FA1E1C10 /* DouyinLoginProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */; };
 		B6C12A97D054814FFFCCE8A0 /* DouyinVideoCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */; };
@@ -48,6 +49,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinPeopleCache.swift; sourceTree = "<group>"; };
 		008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinVideoCache.swift; sourceTree = "<group>"; };
 		016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinMessages.swift; sourceTree = "<group>"; };
 		247A523C254CDEF946BEA5A1 /* DouyinForwardPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinForwardPanel.swift; sourceTree = "<group>"; };
@@ -113,6 +115,7 @@
 				CE510B8A54EF604B236B9FF8 /* DouyinLiveRoom.swift */,
 				C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */,
 				016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */,
+				001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */,
 				366286F958759FA9BE49695E /* DouyinRelatedSearch.swift */,
 				883B76D790E10A3E7DDFCE0D /* DouyinRelations.swift */,
 				008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */,
@@ -285,6 +288,7 @@
 				4FD061DC405BE48E593970FD /* DouyinLiveRoom.swift in Sources */,
 				B68211E3E80797D1FA1E1C10 /* DouyinLoginProbe.swift in Sources */,
 				0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */,
+				AF2F0EB751A5DBBC824C6357 /* DouyinPeopleCache.swift in Sources */,
 				74B67BFBE35241CE256E7D36 /* DouyinRelatedSearch.swift in Sources */,
 				CF72544EC26ADDD1E56D739C /* DouyinRelations.swift in Sources */,
 				B6C12A97D054814FFFCCE8A0 /* DouyinVideoCache.swift in Sources */,

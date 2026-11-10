@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct DYForwardContact: Identifiable, Decodable, Equatable {
+struct DYForwardContact: Identifiable, Codable, Equatable {
     let id: String
     let name: String
     let avatar: String?
