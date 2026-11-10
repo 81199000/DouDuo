@@ -1530,30 +1530,15 @@ struct DYForwardOfficialScreen: View {
           const p = node.memoizedProps || {};
           if (p.shareStore && p.shareStore.awemeInfo) store = p.shareStore;
           if (Array.isArray(p.value?.mixedList)) list = p.value.mixedList;
-          if (typeof p.confirmSharee === 'function') confirm = p.confirmSharee;
+          // ShareeList给行组件的同名包装会吞掉第四参；只选拥有业务回执的列表层。
+          if (typeof p.confirmSharee === 'function' && typeof p.closeBoard === 'function' &&
+              typeof p.handleShareSuccess === 'function' && typeof p.handleShareError === 'function') confirm = p.confirmSharee;
           if (node.child) stack.push(node.child);
           if (node !== root && node.sibling) stack.push(node.sibling);
         }
         if (!store || !list || !confirm) return {state: 'not-ready'};
         if (identifier(store.awemeInfo.awemeId) !== expected) return {state: 'wrong-work'};
         return {state: list.length ? 'ready' : 'empty', store, list, confirm};
-      }
-      let cachedReceiptSDK = null, receiptProbe = 0;
-      function receiptSDK() {
-        if (cachedReceiptSDK) return cachedReceiptSDK;
-        const chunks = window.webpackChunkdouyin_web;
-        if (!chunks || typeof chunks.push !== 'function') return null;
-        try {
-          // 只取得已随官网加载的SDK；不加载其他脚本或构造发送请求。
-          chunks.push([['dd-native-forward-receipt-' + (++receiptProbe)], {}, require => {
-            if (!require.m?.['232543'] || !require.m?.['487897']) return;
-            const sdk = require('232543').ImSdk, types = require('487897').pp;
-            if (typeof sdk?.onEvent !== 'function' || typeof sdk?.offEvent !== 'function' || typeof sdk?.getConversationById !== 'function') return;
-            const cards = [types?.SHARE_AWEME, types?.SHARE_PHOTOS, types?.ARTICLE].filter(v => typeof v === 'number');
-            if (cards.length) cachedReceiptSDK = {sdk, cards: new Set(cards)};
-          }]);
-        } catch (e) {}
-        return cachedReceiptSDK;
       }
       window.__ddNativeForward = {
         read(expected) {
@@ -1574,32 +1559,18 @@ struct DYForwardOfficialScreen: View {
           if (!user) return {state: 'missing-recipient'};
           return await new Promise(resolve => {
             let complete = false;
-            const started = Date.now(), receipt = receiptSDK();
+            const started = Date.now();
             const finish = (state, source) => {
               if (complete) return;
               complete = true; clearTimeout(timer);
-              try { receipt?.sdk.offEvent('IM_SEND_MSG', onReceipt); } catch (e) {}
               resolve({state, source, elapsed_ms: String(Date.now() - started)});
-            };
-            const onReceipt = event => {
-              try {
-                const message = event?.message;
-                if (!message || !receipt.cards.has(message.type)) return;
-                const content = JSON.parse(message.content);
-                if (identifier(content.itemId) !== expected) return;
-                const conversation = receipt.sdk.getConversationById(message.conversationId);
-                const peer = kind(user) === 2 ? identifier(message.conversationId) : identifier(conversation?.toParticipantUserId);
-                if (peer !== identifier(user.uid)) return;
-                const success = event.res?.success;
-                finish(success === true ? 'sent' : success === false ? 'rejected' : 'unconfirmed', 'sdk-event');
-              } catch (e) {}
             };
             const timer = setTimeout(() => finish('unconfirmed', 'timeout'), 20000);
             try {
-              receipt?.sdk.onEvent('IM_SEND_MSG', onReceipt);
               const pending = snapshot.confirm(user, kind(user) === 2 ? 'group' : 'user', snapshot.list,
                 response => finish(response?.success === true ? 'sent' : response?.success === false ? 'rejected' : 'unconfirmed', 'callback'));
-              // 部分官网confirmSharee不消费第四参；Promise完成只代表函数返回，不是发送成功。
+              // 精确列表层的第四参由官方afterSend/onSendFinished调用，兼容新旧SDK。
+              // Promise完成只代表函数返回，不是发送成功。
               Promise.resolve(pending).catch(() => finish('unconfirmed', 'exception'));
             } catch (e) { finish('unconfirmed', 'exception'); }
           });

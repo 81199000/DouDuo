@@ -11,23 +11,19 @@ const work = '7705789488781932361';
 const alice = {uid:'1234567890123456789', nickname:'测试朋友', remark_name:'测试备注', avatar_thumb:{url_list:['https://example.invalid/avatar']},type:1};
 const group = {uid:'2234567890123456789', nickname:'测试群',type:2};
 function fixture(options={}) {
-  const sends = [], timers = [], listeners = new Set();
+  const sends = [], timers = [];
   const list = options.list || [alice,group];
-  const sdk = {
-    onEvent(name,fn) { assert.equal(name,'IM_SEND_MSG');listeners.add(fn); },
-    offEvent(name,fn) { assert.equal(name,'IM_SEND_MSG');listeners.delete(fn); },
-    getConversationById(id) { return {id,toParticipantUserId: options.wrongPeer ? 'other-peer' : alice.uid}; }
-  };
   const confirm = (...args) => {
     sends.push(args);
     if(options.throw) throw Error('synthetic');
-    if(options.sdkOnly) {
-      const target = args[0];
-      const event = {message:{type:options.receiptType || 8,conversationId:target.type===2 ? target.uid : 'test-private-conversation',content:JSON.stringify({itemId:options.wrongWork ? 'other-work' : work})},res:{success:options.success!==false}};
-      for(const fn of [...listeners]) fn(event);
-    } else if(!options.timeout) args[3]({success: options.success !== false});
+    if(options.promiseOnly) return Promise.resolve({success:true});
+    if(!options.timeout) args[3](options.response || {success: options.success !== false});
   };
-  const leaf = {memoizedProps:{confirmSharee:confirm}};
+  // Matches official 5818.51a09ac4.js: list props own closeBoard/success/error;
+  // deeper contact rows install a wrapper that discards the caller's fourth argument.
+  const leaf = {memoizedProps:{confirmSharee:confirm,closeBoard:()=>{},handleShareSuccess:()=>{},handleShareError:()=>{}}};
+  if(options.noListOwner) delete leaf.memoizedProps.closeBoard;
+  if(options.rowWrapper) leaf.child = {memoizedProps:{user:alice,confirmSharee:(user,kind)=>confirm(user,kind,list,()=>{})}};
   const provider = {memoizedProps:{value:{mixedList:list}}, child:leaf};
   const row = {memoizedProps:{shareStore:{awemeInfo:{awemeId: options.storeWork || work}}},child:provider};
   const root = {memoizedProps:{},child:row};
@@ -37,13 +33,8 @@ function fixture(options={}) {
   const c = {window:{},location:{hostname: options.hostname || 'www.douyin.com',pathname:'/video/'+work},
     document:{querySelector:()=>options.missing ? null : panel},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout:()=>{}};
-  if(options.sdkOnly) c.window.webpackChunkdouyin_web = {push(chunk) {
-    // Enum values verified read-only from the live official 487897.pp exports.
-    const require = id => id === '232543' ? {ImSdk:sdk} : {pp:{SHARE_AWEME:8,SHARE_PHOTOS:77,ARTICLE:168}};
-    require.m = {'232543':true,'487897':true};chunk[2](require);
-  }};
   vm.runInNewContext(bridge,c);
-  return {api:c.window.__ddNativeForward,sends,timers,panel,root,listeners};
+  return {api:c.window.__ddNativeForward,sends,timers,panel,root};
 }
 (async()=>{
   let total = 0;
@@ -95,26 +86,24 @@ function fixture(options={}) {
     f.panel.__reactFiber$fixture=stale;
     assert.equal(f.api.read(work).items.length,2);assert.equal(f.sends.length,0);
   });
-  await check('SDK receipt resolves success without an unsupported fourth callback or timeout',async()=>{
-    const f=fixture({sdkOnly:true}), pending=f.api.send(work,'1|'+alice.uid);
-    await Promise.resolve();await Promise.resolve();
-    f.timers.forEach(fn=>fn());
-    const r=await pending;assert.equal(r.state,'sent');assert.equal(r.source,'sdk-event');
-    assert.equal(f.sends.length,1);assert.equal(f.listeners.size,0);
+  await check('Promise resolution without business callback never claims success',async()=>{
+    const f=fixture({promiseOnly:true}), pending=f.api.send(work,'1|'+alice.uid);
+    await Promise.resolve();await Promise.resolve();f.timers.forEach(fn=>fn());
+    assert.equal((await pending).state,'unconfirmed');assert.equal(f.sends.length,1);
   });
-  await check('SDK receipt matches group conversation and explicit rejection',async()=>{
-    for(const success of [true,false]) {
-      const f=fixture({sdkOnly:true,success}), pending=f.api.send(work,'2|'+group.uid);
-      await Promise.resolve();f.timers.forEach(fn=>fn());
-      assert.equal((await pending).state,success?'sent':'rejected');assert.equal(f.listeners.size,0);
-    }
+  await check('missing success field is unconfirmed, not a false failure or success',async()=>{
+    const f=fixture({response:{statusCode:0}}), result=await f.api.send(work,'1|'+alice.uid);
+    assert.equal(result.state,'unconfirmed');assert.equal(result.source,'callback');
   });
-  await check('unrelated peer, work or non-card receipt cannot confirm success',async()=>{
-    for(const options of [{wrongPeer:true},{wrongWork:true},{receiptType:7}]) {
-      const f=fixture({sdkOnly:true,...options}), pending=f.api.send(work,'1|'+alice.uid);
-      await Promise.resolve();f.timers.forEach(fn=>fn());
-      assert.equal((await pending).state,'unconfirmed');assert.equal(f.sends.length,1);assert.equal(f.listeners.size,0);
-    }
+  await check('unrecognised callback owner fails closed without sending through row wrapper',async()=>{
+    const f=fixture({noListOwner:true,rowWrapper:true});
+    assert.equal((await f.api.send(work,'1|'+alice.uid)).state,'not-ready');assert.equal(f.sends.length,0);
+  });
+  await check('official row wrapper cannot overwrite the list callback owner',async()=>{
+    const f=fixture({rowWrapper:true}), pending=f.api.send(work,'1|'+alice.uid);
+    await Promise.resolve();f.timers.forEach(fn=>fn());
+    const result=await pending;assert.equal(result.state,'sent');assert.equal(result.source,'callback');
+    assert.equal(f.sends.length,1);
   });
   console.log(`Native forward bridge: ${total} synthetic tests passed; real sends=0`);
 })().catch(e=>{console.error(e);process.exitCode=1;});
