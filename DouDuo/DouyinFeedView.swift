@@ -1063,6 +1063,8 @@ struct DouyinFeedScreen: View {
     @State private var topNudge: CGFloat = 0
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
     @State private var topBarWidth: CGFloat?
+    /// 顶栏在屏幕坐标里的下沿：关注页直播条按它贴顶栏，不靠写死常量猜安全区。
+    @State private var topBarBottom: CGFloat = 0
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1080,8 +1082,12 @@ struct DouyinFeedScreen: View {
                 // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边
                 .frame(width: topBarWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: DYTopBarBottomKey.self, value: g.frame(in: .global).maxY)
+                })
             }
         }
+        .onPreferenceChange(DYTopBarBottomKey.self) { topBarBottom = $0 }
         // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
         .ignoresSafeArea(edges: [.top, .horizontal])
         // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
@@ -1479,7 +1485,8 @@ struct DouyinFeedScreen: View {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen)
             } else if tab == .follow {
-                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
+                DYFollowFeed(bridge: bridge, insets: insets, stripTop: topBarBottom,
+                             active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
                              onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
                              onToast: { showToast($0) },
@@ -2827,4 +2834,10 @@ struct DYCommentImageViewer: View {
         }
         .onAppear { page = target.start }
     }
+}
+
+/// 顶栏下沿（屏幕坐标），供关注页把直播条贴在菜单正下方。
+private struct DYTopBarBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

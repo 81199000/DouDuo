@@ -1484,6 +1484,8 @@ enum DYFollowLiveStripPolicy {
 struct DYFollowFeed: View {
     let bridge: DouyinBridge
     let insets: EdgeInsets
+    /// 顶栏下沿（屏幕坐标）；0 表示还没测到，用几何兜底。
+    var stripTop: CGFloat = 0
     let active: Bool
     let onAuthor: (DYAweme) -> Void
     let onLogin: () -> Void
@@ -1562,7 +1564,7 @@ struct DYFollowFeed: View {
                     if liveStripExpanded { liveRow } else { livePill }
                     #endif
                 }
-                .padding(.top, (hSize == .regular ? 20 : 80) + 52)
+                .padding(.top, followStripTop)
                 .animation(.easeOut(duration: 0.22), value: liveStripExpanded)
             }
         }
@@ -1607,6 +1609,13 @@ struct DYFollowFeed: View {
         }
         #endif
         if let r = try? await bridge.fetchFollowLive() { liveNow = r }
+    }
+
+    /// 直播条贴顶栏下沿：顶栏在 regular 下贴 23pt、compact 下因外层 -80 偏移实际贴 4pt 上沿，行高 54。
+    /// 两种形态共用同一基准，展开/收起不会上下跳。
+    private var followStripTop: CGFloat {
+        let barBottom = stripTop > 0 ? stripTop : (hSize == .regular ? CGFloat(23 + 54) : CGFloat(54 - 4))
+        return barBottom + 8
     }
 
     /// 收起态：一行「N 个直播」胶囊，点一下重新展开头像排。
