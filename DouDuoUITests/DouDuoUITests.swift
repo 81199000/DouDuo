@@ -399,10 +399,14 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertLessThan(like.frame.midY, comment.frame.midY)
         XCTAssertLessThan(comment.frame.midY, collect.frame.midY, "评论应在收藏之上")
         XCTAssertLessThan(collect.frame.midY, search.frame.midY)
-        XCTAssertLessThanOrEqual(comment.frame.minY - like.frame.maxY, 3, "点赞与评论间距应收紧")
-        XCTAssertLessThanOrEqual(collect.frame.minY - comment.frame.maxY, 3, "评论与收藏间距应收紧")
+        let likeToComment = comment.frame.minY - like.frame.maxY
+        let commentToCollect = collect.frame.minY - comment.frame.maxY
+        for gap in [likeToComment, commentToCollect] {
+            XCTAssertGreaterThanOrEqual(gap, 3, "图标间隙不能挤在一起")
+            XCTAssertLessThanOrEqual(gap, 12, "图标间隙不能过松")
+        }
         attach(app, "rail-comment-above-collect")
-        print("DDRAIL: order=like,comment,collect,search; tight-gaps")
+        print("DDRAIL: order=like,comment,collect,search; gaps=\(likeToComment)/\(commentToCollect)")
     }
 
     func testCommentImages() throws {
