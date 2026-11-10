@@ -1215,7 +1215,9 @@ struct DYForwardPresentation: ViewModifier {
     @State private var showing = false
     func body(content: Content) -> some View {
         content.environment(\.dyForwardAction, { showing = true })
-            .fullScreenCover(isPresented: $showing) { DYForwardScreen(item: item) }
+            .fullScreenCover(isPresented: $showing) {
+                DYForwardScreen(item: item).presentationBackground(.clear)
+            }
     }
 }
 
@@ -1225,19 +1227,116 @@ struct DYForwardMenu: View {
     let foreground: Color
     @Environment(\.dyForwardAction) private var showFriends
     var body: some View {
-        Menu {
-            Button("转发给抖音朋友", systemImage: "person.2") { showFriends?() }
-                .disabled(showFriends == nil)
-                .accessibilityIdentifier("douyin.forward.friends")
-            ShareLink(item: item.webURL) { Label("分享至其他应用", systemImage: "square.and.arrow.up") }
-        } label: {
+        Button { showFriends?() } label: {
             Label("转发", systemImage: "arrowshape.turn.up.right")
         }
+        .disabled(showFriends == nil)
         .accessibilityIdentifier("douyin.forward.menu")
     }
 }
 
+/// 原生转发浮层；官网仅作后台数据与发送桥，登录时才显式进入官网。
 struct DYForwardScreen: View {
+    let item: DYAweme
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    @StateObject private var model = DYForwardWebModel(nativeOnly: true)
+    @State private var selected: DYForwardContact?
+    @State private var showContacts = false
+    @State private var groupsOnly = false
+    @State private var query = ""
+    @State private var showLogin = false
+    @State private var showOtherApps = false
+
+    private var actions: [DYForwardPanelAction] {
+        var result: [DYForwardPanelAction] = []
+        if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信", symbol: "paperplane.fill")) }
+        if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
+        result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
+        result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
+        if model.loginRequired { result.append(.init(id: "login", title: "登录抖音", symbol: "person.crop.circle")) }
+        else if !model.loading && model.contacts.isEmpty { result.append(.init(id: "retry", title: "重新加载", symbol: "arrow.clockwise")) }
+        return result
+    }
+    private var visibleContacts: [DYForwardContact] {
+        model.contacts.filter { (!groupsOnly || $0.kind == 2) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
+    }
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                theme.media.strongScrim.color(for: scheme).opacity(0.24).ignoresSafeArea()
+                    .onTapGesture { if !model.sending { dismiss() } }
+                DYNativeForwardPanel(contacts: model.contacts, loading: model.loading || model.sending,
+                                     status: model.message, actions: actions,
+                                     onContact: { if !model.sending { selected = $0 } },
+                                     onAction: perform, onClose: { if !model.sending { dismiss() } })
+                    .frame(width: max(0, min(560, geo.size.width - 32)))
+                // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
+                if !model.layoutFixture {
+                    DYForwardWebContainer(model: model, url: item.webURL)
+                        .frame(width: 760, height: 640)
+                        .frame(width: 1, height: 1).clipped().opacity(0.001)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .interactiveDismissDisabled(model.sending)
+        .alert("确认转发", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
+            if let target = selected {
+                Button("发送") { selected = nil; Task { await model.send(to: target) } }
+                Button("取消", role: .cancel) { selected = nil }
+            }
+        } message: { Text("将当前作品发送给“\(selected?.name ?? "")”？") }
+        .sheet(isPresented: $showContacts) {
+            NavigationStack {
+                List(visibleContacts) { contact in
+                    Button {
+                        showContacts = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { selected = contact }
+                    } label: {
+                        HStack {
+                            CachedAsyncImage(url: contact.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+                                placeholder: { Image(systemName: contact.kind == 2 ? "person.2.circle" : "person.circle") }
+                                .frame(width: 44, height: 44).clipShape(Circle())
+                            Text(contact.name).foregroundStyle(.themeTextPrimary)
+                        }
+                    }
+                }
+                .searchable(text: $query, prompt: "搜索已加载的朋友或群")
+                .navigationTitle(groupsOnly ? "选择群聊" : "选择朋友")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showContacts = false } } }
+            }
+        }
+        .sheet(isPresented: $showLogin, onDismiss: { model.web?.reload() }) { DYForwardOfficialScreen(item: item) }
+        .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
+        .onAppear { DDPlayback.shared.pauseAll() }
+        .onDisappear {
+            model.stop()
+            if UIApplication.shared.applicationState == .active { DDPlayback.shared.resumeAll() }
+        }
+    }
+    private func perform(_ action: String) {
+        guard !model.sending else { return }
+        switch action {
+        case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
+        case "copy": UIPasteboard.general.url = item.webURL; model.message = "链接已复制"
+        case "other": showOtherApps = true
+        case "login": showLogin = true
+        case "retry": model.web?.reload()
+        default: break
+        }
+    }
+}
+
+private struct DYForwardSystemShare: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: [url], applicationActivities: nil) }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+struct DYForwardOfficialScreen: View {
     let item: DYAweme
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = DYForwardWebModel()
@@ -1279,8 +1378,51 @@ struct DYForwardScreen: View {
     @Published var message = "正在打开抖音官方分享面板…"
     @Published var loading = true
     @Published var fullPage = false
+    @Published var contacts: [DYForwardContact] = []
+    @Published var loginRequired = false
+    @Published var sending = false
+    let nativeOnly: Bool
+    let layoutFixture: Bool
+    var expectedID = ""
     weak var web: WKWebView?
     private var opening: Task<Void, Never>?
+    init(nativeOnly: Bool = false) {
+        self.nativeOnly = nativeOnly
+        #if DEBUG && targetEnvironment(simulator)
+        self.layoutFixture = nativeOnly && ProcessInfo.processInfo.environment["DOUDUO_FORWARD_LAYOUT_FIXTURE"] == "1"
+        #else
+        self.layoutFixture = false
+        #endif
+        super.init()
+        #if DEBUG && targetEnvironment(simulator)
+        if layoutFixture {
+            contacts = (1...9).map { .init(id: "layout-fixture-\($0)", name: "合成测试\($0)", avatar: nil, kind: $0 == 9 ? 2 : 1) }
+            loading = false; message = "合成布局测试（不会发送消息）"
+        }
+        #endif
+    }
+
+    private struct Snapshot: Decodable { let state: String; let items: [DYForwardContact] }
+    func send(to contact: DYForwardContact) async {
+        guard !layoutFixture else { message = "合成布局测试：未发送任何消息"; return }
+        guard !sending, contacts.contains(contact), let web else { return }
+        sending = true; message = "正在转发…"
+        defer { sending = false }
+        do {
+            let raw = try await web.callAsyncJavaScript(
+                "return JSON.stringify(await window.__ddNativeForward.send(expected, recipient));",
+                arguments: ["expected": expectedID, "recipient": contact.id], contentWorld: .page) as? String
+            let data = raw?.data(using: .utf8)
+            let response = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
+            switch response?["state"] {
+            case "sent": message = "已转发给“\(contact.name)”"
+            case "rejected": message = "抖音未接受本次转发，请到消息中核对"
+            case "not-ready", "wrong-work", "missing-recipient": message = "当前作品或朋友列表已变化，请重新打开转发"
+            default: message = "发送未确认，请到抖音消息核对，勿重复发送"
+            }
+            DYLiveModel.log("DDFORWARD send=\(response?["state"] ?? "unconfirmed")")
+        } catch { message = "发送未确认，请到抖音消息核对，勿重复发送" }
+    }
 
     func stop() { opening?.cancel(); opening = nil; web?.stopLoading() }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { openPanel() }
@@ -1299,7 +1441,8 @@ struct DYForwardScreen: View {
     private func openPanel() {
         opening?.cancel()
         guard !fullPage else { return }
-        loading = true
+        loading = true; contacts = []; loginRequired = false
+        message = nativeOnly ? "正在加载分享联系人…" : "正在打开抖音官方分享面板…"
         opening = Task { [weak self] in
             for _ in 0..<80 {
                 guard !Task.isCancelled, let self, let web = self.web else { return }
@@ -1307,10 +1450,27 @@ struct DYForwardScreen: View {
                    let data = raw.data(using: .utf8),
                    let response = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                    let state = response["state"], state == "ready" || state == "login" {
-                    self.loading = false
-                    self.message = state == "login" ? "请先在下方登录抖音，再选择朋友" : "使用抖音官方分享面板；请核对朋友后再发送"
-                    DYLiveModel.log("DDFORWARD panel=\(state)")
-                    return
+                    if self.nativeOnly {
+                        if state == "login" {
+                            self.contacts = []; self.loginRequired = true; self.loading = false
+                            self.message = "登录抖音后显示可转发的朋友"
+                            return
+                        }
+                        if let json = try? await web.callAsyncJavaScript("return JSON.stringify(window.__ddNativeForward.read(expected));", arguments: ["expected": self.expectedID], contentWorld: .page) as? String,
+                           let bytes = json.data(using: .utf8), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: bytes),
+                           snapshot.state == "ready" || snapshot.state == "empty" {
+                            if self.contacts != snapshot.items { self.contacts = snapshot.items }
+                            self.loginRequired = false; self.loading = false
+                            self.message = snapshot.items.isEmpty ? "官网暂无可读取的分享联系人" : "选择朋友转发当前作品"
+                            DYLiveModel.log("DDFORWARD native-contacts=\(snapshot.items.count)")
+                            return
+                        }
+                    } else {
+                        self.loading = false
+                        self.message = state == "login" ? "请先在下方登录抖音，再选择朋友" : "使用抖音官方分享面板；请核对朋友后再发送"
+                        DYLiveModel.log("DDFORWARD panel=\(state)")
+                        return
+                    }
                 }
                 try? await Task.sleep(for: .milliseconds(350))
             }
@@ -1336,6 +1496,75 @@ struct DYForwardScreen: View {
            ["http", "https"].contains(url.scheme?.lowercased() ?? "") { webView.load(URLRequest(url: url)) }
         return nil
     }
+
+    /// 原生层只读官网联系人；发送复用官网ShareeList.confirmSharee及其业务回执。
+    static let nativeBridgeJS = #"""
+    (() => {
+      const identifier = value => {
+        if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+        return null;
+      };
+      const kind = user => user.type === 2 || user.type === 'group' ? 2 : 1;
+      const key = user => { const id = identifier(user.uid); return id ? kind(user) + '|' + id : null; };
+      function inspect(expected) {
+        if (location.hostname !== 'www.douyin.com' || location.pathname.replace(/\/$/, '') !== '/video/' + expected) return {state: 'wrong-work'};
+        const panel = document.querySelector('[data-e2e="video-share-container"]');
+        if (!panel) return {state: 'not-ready'};
+        if (/登录后分享|扫码登录|登录其他账号/.test(panel.textContent || '')) return {state: 'login'};
+        const fiberKey = Object.keys(panel).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+        let root = fiberKey && panel[fiberKey];
+        if (root) {
+          let top = root, depth = 0;
+          while (top.return && depth++ < 100) top = top.return;
+          if (top.stateNode?.current && top.stateNode.current !== top && root.alternate) root = root.alternate;
+        }
+        const stack = root ? [root] : [], seen = new Set();
+        let store = null, list = null, confirm = null;
+        while (stack.length && seen.size < 5000) {
+          const node = stack.pop(); if (!node || seen.has(node)) continue; seen.add(node);
+          const p = node.memoizedProps || {};
+          if (p.shareStore && p.shareStore.awemeInfo) store = p.shareStore;
+          if (Array.isArray(p.value?.mixedList)) list = p.value.mixedList;
+          if (typeof p.confirmSharee === 'function') confirm = p.confirmSharee;
+          if (node.child) stack.push(node.child);
+          if (node !== root && node.sibling) stack.push(node.sibling);
+        }
+        if (!store || !list || !confirm) return {state: 'not-ready'};
+        if (identifier(store.awemeInfo.awemeId) !== expected) return {state: 'wrong-work'};
+        return {state: list.length ? 'ready' : 'empty', store, list, confirm};
+      }
+      window.__ddNativeForward = {
+        read(expected) {
+          const snapshot = inspect(expected), items = [], seen = new Set();
+          for (const user of snapshot.list || []) {
+            const id = key(user), name = user.remark_name || user.nickname;
+            if (!id || seen.has(id) || typeof name !== 'string' || !name.trim()) continue;
+            seen.add(id);
+            const avatar = user.avatar_thumb?.url_list?.[0];
+            items.push({id, name, avatar: typeof avatar === 'string' ? avatar : null, kind: kind(user)});
+          }
+          return {state: snapshot.state, items};
+        },
+        async send(expected, recipient) {
+          const snapshot = inspect(expected);
+          if (snapshot.state !== 'ready') return {state: snapshot.state};
+          const user = snapshot.list.find(user => key(user) === recipient);
+          if (!user) return {state: 'missing-recipient'};
+          return await new Promise(resolve => {
+            let complete = false;
+            const finish = result => { if (!complete) { complete = true; clearTimeout(timer); resolve(result); } };
+            const timer = setTimeout(() => finish({state: 'unconfirmed'}), 20000);
+            try {
+              const pending = snapshot.confirm(user, kind(user) === 2 ? 'group' : 'user', snapshot.list,
+                response => finish({state: response?.success === true ? 'sent' : 'rejected'}));
+              Promise.resolve(pending).catch(() => finish({state: 'unconfirmed'}));
+            } catch (e) { finish({state: 'unconfirmed'}); }
+          });
+        }
+      };
+    })()
+    """#
 
     /// 仅触发官网分享入口的 hover，不点击朋友或发送按钮，也不把打开面板当成发送成功。
     static let openPanelJS = #"""
@@ -1384,6 +1613,8 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         config.websiteDataStore = .default()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = .all
+        config.userContentController.addUserScript(WKUserScript(source: DYForwardWebModel.nativeBridgeJS,
+                                                               injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         config.userContentController.addUserScript(WKUserScript(source: #"""
         (() => {
           const media = HTMLMediaElement.prototype;
@@ -1399,6 +1630,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         let web = WKWebView(frame: .zero, configuration: config)
         web.customUserAgent = DouyinWeb.userAgent
         web.navigationDelegate = model; web.uiDelegate = model; model.web = web
+        model.expectedID = url.lastPathComponent
         #if DEBUG
         web.isInspectable = true
         #endif

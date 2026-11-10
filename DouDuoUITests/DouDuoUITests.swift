@@ -27,18 +27,55 @@ final class DouDuoUITests: XCTestCase {
         openMore()
         let share = app.buttons["douyin.forward.menu"]
         if share.exists { share.tap() } else { app.buttons["转发"].tap() }
-        let friends = app.buttons["转发给抖音朋友"]
-        XCTAssertTrue(friends.waitForExistence(timeout: 5))
-        XCTAssertTrue(friends.isEnabled)
-        friends.tap()
         let close = app.buttons["douyin.forward.close"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))
-        let ready = app.staticTexts.matching(NSPredicate(format: "label CONTAINS '请先在下方登录' OR label CONTAINS '使用抖音官方分享面板'" )).firstMatch
+        let panel = app.otherElements["douyin.forward.panel"]
+        XCTAssertTrue(panel.exists)
+        XCTAssertFalse(app.navigationBars["转发给抖音朋友"].exists, "转发主界面不能退回全屏网页")
+        XCTAssertTrue(app.staticTexts["分享给"].exists)
+        let ready = app.staticTexts.matching(NSPredicate(format: "label CONTAINS '登录抖音后显示' OR label CONTAINS '选择朋友转发当前作品' OR label CONTAINS '官网暂无可读取'" )).firstMatch
         XCTAssertTrue(ready.waitForExistence(timeout: 45), app.debugDescription)
-        attach(app, "friend-forward-official-panel-no-send")
+        XCTAssertTrue(app.buttons["douyin.forward.action.copy"].exists)
+        XCTAssertTrue(app.buttons["douyin.forward.action.other"].exists)
+        app.buttons["douyin.forward.action.copy"].tap()
+        XCTAssertTrue(app.staticTexts["链接已复制"].waitForExistence(timeout: 5))
+        attach(app, "friend-forward-native-floating-panel-no-send")
         close.tap()
         XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
-        print("DDFORWARD_UI: official-panel-opened-and-closed; no-recipient-selected; no-send")
+        print("DDFORWARD_UI: native-panel-opened-and-closed; no-recipient-selected; no-send")
+    }
+
+    /// 明确标注的模拟器合成联系人，只验证布局/横滑/取消确认，不连接发送桥。
+    func testNativeForwardLayoutWithSyntheticContacts() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launchEnvironment["DOUDUO_FORWARD_LAYOUT_FIXTURE"] = "1"
+        app.launch()
+        let query = app.buttons.matching(identifier: "douyin.more")
+        XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 40))
+        (query.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? query.firstMatch).tap()
+        let share = app.buttons["douyin.forward.menu"]
+        if share.exists { share.tap() } else { app.buttons["转发"].tap() }
+        let contact = app.buttons["douyin.forward.contact.layout-fixture-1"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["合成布局测试（不会发送消息）"].exists)
+        XCTAssertTrue(app.buttons["douyin.forward.action.private"].exists)
+        XCTAssertTrue(app.buttons["douyin.forward.action.groups"].exists)
+        attach(app, "friend-forward-native-SYNTHETIC-layout-no-send")
+        contact.tap()
+        XCTAssertTrue(app.alerts["确认转发"].waitForExistence(timeout: 5))
+        app.alerts.buttons["取消"].tap()
+        let panel = app.otherElements["douyin.forward.panel"]
+        XCTAssertGreaterThan(panel.frame.minY, app.frame.height * 0.1)
+        XCTAssertLessThan(panel.frame.maxY, app.frame.height * 0.9)
+        let start = contact.coordinate(withNormalizedOffset: CGVector(dx: 3.7, dy: 0.3))
+        let end = contact.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.3))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(app.buttons["douyin.forward.contact.layout-fixture-5"].isHittable)
+        app.buttons["douyin.forward.close"].tap()
+        XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 5))
+        print("DDFORWARD_LAYOUT: synthetic-only; floating-frame; horizontal-scroll; confirmation-cancelled; real-sends=0")
     }
 
     func testVideoDanmakuSettings() throws {
