@@ -384,6 +384,27 @@ final class DouDuoUITests: XCTestCase {
         _ = close
     }
 
+    /// 右侧栏顺序与间距：评论在收藏之上，且相邻图标间距收紧。
+    func testRailCommentAboveCollectWithTightSpacing() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(3)
+        let like = app.buttons["douyin.like"].firstMatch
+        let comment = app.buttons["douyin.comments"].firstMatch
+        let collect = app.buttons["douyin.collect"].firstMatch
+        let search = app.buttons["douyin.search"].firstMatch
+        for item in [like, comment, collect, search] { XCTAssertTrue(item.waitForExistence(timeout: 10)) }
+        XCTAssertLessThan(like.frame.midY, comment.frame.midY)
+        XCTAssertLessThan(comment.frame.midY, collect.frame.midY, "评论应在收藏之上")
+        XCTAssertLessThan(collect.frame.midY, search.frame.midY)
+        XCTAssertLessThanOrEqual(comment.frame.minY - like.frame.maxY, 3, "点赞与评论间距应收紧")
+        XCTAssertLessThanOrEqual(collect.frame.minY - comment.frame.maxY, 3, "评论与收藏间距应收紧")
+        attach(app, "rail-comment-above-collect")
+        print("DDRAIL: order=like,comment,collect,search; tight-gaps")
+    }
+
     func testCommentImages() throws {
         let app = XCUIApplication()
         app.launch()

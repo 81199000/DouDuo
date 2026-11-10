@@ -2187,9 +2187,9 @@ struct DYVideoPage: View {
         .themeShadow(.mediaLabel)
     }
 
-    /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 收藏 / 评论，数字在图标下），下方单独一颗「更多」圆按钮
+    /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 评论 / 收藏 / 搜索，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             if let onBack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.backward")
@@ -2202,15 +2202,15 @@ struct DYVideoPage: View {
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
-            VStack(spacing: 7) {
+            VStack(spacing: 2) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
+                railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                          tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
-                railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
             }
-            .padding(.vertical, 9)
+            .padding(.vertical, 7)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
@@ -2232,7 +2232,7 @@ struct DYVideoPage: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: railWidth, height: text.isEmpty ? 44 : 56)
+            .frame(width: railWidth, height: text.isEmpty ? 44 : 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
