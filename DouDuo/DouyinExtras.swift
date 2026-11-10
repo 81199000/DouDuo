@@ -496,12 +496,17 @@ fileprivate enum DYDanmakuPolicy {
 
 /// 共用在推荐、关注、搜索等视频的更多菜单，不给巨型视频页新增状态。
 struct DYDanmakuOptions: View {
+    var onSend: (() -> Void)? = nil
     @AppStorage("douyin_danmaku_v1") private var enabled = true
     @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
     @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
 
     var body: some View {
         Menu {
+            if let onSend {
+                Button("发弹幕", systemImage: "text.bubble", action: onSend)
+                    .accessibilityIdentifier("douyin.danmaku.open")
+            }
             Toggle("显示弹幕", isOn: $enabled)
                 .accessibilityIdentifier("douyin.danmaku.enabled")
             Picker("弹幕密度", selection: $density) {
@@ -512,7 +517,7 @@ struct DYDanmakuOptions: View {
                 .accessibilityIdentifier("douyin.danmaku.deduplicate")
             Text("显示区域：屏幕上方 1/3")
         } label: {
-            Label("弹幕设置 · \((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)", systemImage: "text.bubble")
+            Label("弹幕 · \((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)", systemImage: "text.bubble")
         }
         .accessibilityIdentifier("douyin.danmaku.settings")
         .accessibilityValue("\((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)，去重\(deduplicate ? "开启" : "关闭")")

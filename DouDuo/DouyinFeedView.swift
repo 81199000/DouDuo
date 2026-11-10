@@ -876,9 +876,8 @@ final class DYFeedModel: ObservableObject {
     @Published var isLoggedIn = false
     private var hasMore = true
 
-    /// 竖屏占比（拿手机竖着看时）：-1 = 不限（网页推荐原样，约八成横屏）；30/50/70；100 = 只看竖屏。
-    /// 网页推荐里竖屏偏少，按比例从拉到的视频里挑；多出来的先放进候选池，下次直接用，不浪费。
-    @AppStorage("douyin_portrait_ratio_v1") var portraitRatio = 70
+    /// 推荐方向固定目标由 targetRatio 给出，不读取旧版方向偏好。
+    /// 候选池保留暂未排入的素材；素材不足仍允许放宽，横屏限定除外。
     /// 竖屏播放时「短视频」的目标占比（0–100）
     @AppStorage("douyin_short_ratio_portrait_v1") var shortRatioPortrait = 70
     /// 横屏播放时「短视频」的目标占比（0–100）
@@ -897,31 +896,11 @@ final class DYFeedModel: ObservableObject {
     /// 短视频判定：3 分钟内（网页推荐里 60 秒内的几乎为 0，用 3 分钟才凑得出占比）
     static func isShort(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= 180 }
 
-    init() {
-        // 旧版「只看竖屏」开着的，迁移成 100%
-        let d = UserDefaults.standard
-        if d.object(forKey: "douyin_portrait_ratio_v1") == nil, d.bool(forKey: "douyin_portrait_only_v2") {
-            d.set(100, forKey: "douyin_portrait_ratio_v1")
-        }
-    }
-
     static func isPortrait(_ a: DYAweme) -> Bool { !a.images.isEmpty || a.isTallFrame }
 
-    /// 目标竖屏比例；nil = 不限
+    /// 固定竖屏目标；横屏限定优先，不依赖任何历史方向偏好或迁移。
     var targetRatio: Double? {
-        if screenWide && landscapeWhenWide { return 0 }
-        return portraitRatio < 0 ? nil : Double(min(portraitRatio, 100)) / 100
-    }
-
-    var mixLabel: String {
-        if screenWide && landscapeWhenWide { return "横屏中：只放横屏" }
-        let short = screenWide ? shortRatioLandscape : shortRatioPortrait
-        let shortText = short < 0 ? "短视频不限" : (short >= 100 ? "只短视频" : "短视频 \(short)%")
-        switch portraitRatio {
-        case ..<0: return "竖横不限 · \(shortText)"
-        case 100...: return "只看竖屏 · \(shortText)"
-        default: return "竖屏 \(portraitRatio)% · \(shortText)"
-        }
+        screenWide && landscapeWhenWide ? 0 : 0.7
     }
 
     /// 从候选池按比例往列表里排最多 maxN 条；relaxed = 比例凑不齐时也照原顺序放（别让列表断粮）
@@ -931,7 +910,7 @@ final class DYFeedModel: ObservableObject {
         while n < maxN, !pool.isEmpty {
             var idx: Int?
             var wantPortrait: Bool?
-            if let r = targetRatio, !relaxed {
+            if let r = targetRatio, !relaxed || r == 0 {
                 // 均匀穿插（类似 Bresenham）：每条攒 r 份「竖屏额度」，满 1 份就放竖屏，例如 70% → 竖横竖竖横竖竖…
                 wantPortrait = r >= 1 ? true : r <= 0 ? false : (mixCredit + r >= 1)
                 idx = pickIndex(wantPortrait: wantPortrait!, wantShort: wantedShort())
@@ -1027,13 +1006,12 @@ final class DYFeedModel: ObservableObject {
                 pool.append(contentsOf: fresh)
                 hasMore = r.hasMore || !r.items.isEmpty
                 added += fill(want - added)
-                if targetRatio == nil { break }
             }
-            // 比例凑不齐（例如竖屏太少）：不是「只看竖屏/只看横屏」就照原顺序补，别让列表断粮
+            // 素材不足时放宽固定目标，但不放宽横屏限定。
             if added == 0, let r = targetRatio, r > 0, r < 1 { added += fill(want, relaxed: true) }
             trimPool()
             DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(targetRatio.map { String(format: "%.2f", $0) } ?? "free") wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
-            error = (items.isEmpty && added == 0) ? (targetRatio == 1 ? "暂时没刷到竖屏视频，可在「更多 → 竖屏占比」里调低或登录后再试" : "暂时没刷到推荐，登录后或稍后再试") : nil
+            error = (items.isEmpty && added == 0) ? "暂时没刷到推荐，登录后或稍后再试" : nil
         } catch {
             if items.isEmpty { self.error = error.localizedDescription }
         }
@@ -1071,7 +1049,7 @@ struct DouyinFeedScreen: View {
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
-    /// 顶栏「我的」按钮用的账号信息（头像 + 昵称）
+    /// 顶栏「我的」按钮用的账号头像
     @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
@@ -1235,7 +1213,6 @@ struct DouyinFeedScreen: View {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
-        .onChange(of: feed.portraitRatio) { _, _ in remixUpcoming() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
@@ -1326,7 +1303,7 @@ struct DouyinFeedScreen: View {
     private func remixUpcoming() {
         guard tab == .recommend || !feed.items.isEmpty else { return }
         feed.remix(after: currentIndex)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) mode=\(feed.mixLabel) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
+        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
         if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
         lastFeedPull = .distantPast
         focusCurrent()
@@ -1559,13 +1536,13 @@ struct DouyinFeedScreen: View {
 
     /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
     /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
-    /// 自适应：宽度够用原间距；不够先收间距/触摸区，再藏「我的」昵称（只留头像）
+    /// 自适应仅收紧间距；消息与头像入口始终保留最小触摸区。
     private var topBar: some View {
         ViewThatFits(in: .horizontal) {
-            topBarRow(spacing: topNudge > 0 ? 5 : 14, hPad: 16, showName: true)
-            topBarRow(spacing: 0, hPad: 10, showName: true)
-            topBarRow(spacing: 0, hPad: 8, showName: false)
-            topBarRow(spacing: 0, hPad: 5, showName: false)
+            topBarRow(spacing: topNudge > 0 ? 5 : 14, hPad: 16)
+            topBarRow(spacing: 0, hPad: 10)
+            topBarRow(spacing: 0, hPad: 8)
+            topBarRow(spacing: 0, hPad: 5)
         }
         .themeShadow(.mediaLabel)
         .frame(maxWidth: .infinity, alignment: .center)
@@ -1578,7 +1555,7 @@ struct DouyinFeedScreen: View {
         .padding(.top, hSize == .regular ? 23 : 76)
     }
 
-    private func topBarRow(spacing: CGFloat, hPad: CGFloat, showName: Bool) -> some View {
+    private func topBarRow(spacing: CGFloat, hPad: CGFloat) -> some View {
         // 触摸区左右各扩 hPad、上下各扩 14（图标与字号不动）
         HStack(spacing: spacing) {
             ForEach(DYTab.allCases, id: \.self) { t in
@@ -1600,20 +1577,14 @@ struct DouyinFeedScreen: View {
                 }
                 .buttonStyle(.plain)
             }
-            // 「信息」：从「我的」里摘出来的独立入口，跟 tab 同款字体与间距
+            // 消息只留图标，未读红点仍独立显示。
             Button { showMessages = true } label: {
-                VStack(spacing: 3) {
-                    Text("信息")
-                        .font(.headline.weight(.medium))
-                        .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
-                        .lineLimit(1).fixedSize()
-                    Capsule()
-                        .fill(theme.media.onMedia.color(for: scheme))
-                        .frame(width: 16, height: 3)
-                        .opacity(0)
-                }
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.headline.weight(.medium))
+                    .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
                 .padding(.horizontal, hPad)
                 .padding(.vertical, 14)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
                 .overlay(alignment: .topTrailing) {
                     if noticeUnread > 0 {
@@ -1625,6 +1596,7 @@ struct DouyinFeedScreen: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("消息")
             .accessibilityIdentifier("douyin.messages.top")
 
             // 「我的」：独立按钮（不属于 tab 切换）
@@ -1639,19 +1611,14 @@ struct DouyinFeedScreen: View {
                     }
                     .frame(width: 22, height: 22)
                     .clipShape(Circle())
-                    if showName {
-                        Text(myUser?.name ?? "我的")
-                            .font(.headline.weight(.medium))
-                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.85))
-                            .lineLimit(1)
-                            .frame(maxWidth: 62)
-                    }
                 }
                 .padding(.horizontal, max(hPad - 2, 4))
                 .padding(.vertical, 12)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("我的")
             .accessibilityIdentifier("douyin.mine.top")
         }
         .fixedSize()
@@ -1893,75 +1860,73 @@ struct DouyinFeedScreen: View {
         }
     }
 
-    /// 「更多」后半段（推荐流注入）：播放偏好一组、常用入口一组、低频设置收进「设置」子菜单
+    /// 当前作品操作留在第一层，全局偏好统一收进设置。
     @ViewBuilder
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
-        Section("播放") {
-            Picker(selection: $feed.portraitRatio) {
-                Text("不限（网页原样）").tag(-1)
-                Text("竖屏 30%").tag(30)
-                Text("竖屏 50%").tag(50)
-                Text("竖屏 70%").tag(70)
-                Text("只看竖屏").tag(100)
-            } label: {
-                Label("竖屏占比", systemImage: "rectangle.portrait.on.rectangle.portrait")
-                Text(feed.mixLabel)
-            }
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("douyin.mix")
-            Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
-            Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
-        }
         Section {
             Button("刷新推荐", systemImage: "arrow.clockwise") {
                 Task { await refreshRecommendations() }
             }
             .disabled(refreshing)
             Menu {
-                Picker(selection: $feed.shortRatioPortrait) {
-                    Text("不限").tag(-1)
-                    Text("短视频 30%").tag(30)
-                    Text("短视频 50%").tag(50)
-                    Text("短视频 70%").tag(70)
-                    Text("只看短视频").tag(100)
-                } label: { Label("竖屏短视频占比（3 分钟内）", systemImage: "rectangle.portrait") }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("douyin.short.portrait")
-                Picker(selection: $feed.shortRatioLandscape) {
-                    Text("不限").tag(-1)
-                    Text("短视频 30%").tag(30)
-                    Text("短视频 50%").tag(50)
-                    Text("短视频 70%").tag(70)
-                    Text("只看短视频").tag(100)
-                } label: { Label("横屏短视频占比（3 分钟内）", systemImage: "rectangle") }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("douyin.short.landscape")
-                Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
-                    .accessibilityIdentifier("douyin.landscape.only")
-                Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
-                Picker(selection: $cacheCount) {
-                    Text("5 条").tag(5)
-                    Text("10 条").tag(10)
-                    Text("20 条").tag(20)
-                    Text("50 条").tag(50)
-                    Text("100 条").tag(100)
-                    Text("关闭").tag(0)
-                } label: { Label("预缓存视频", systemImage: "arrow.down.circle") }
-                .pickerStyle(.menu)
-                Button("清除视频缓存", systemImage: "trash") {
-                    Task {
-                        let b = await DYVideoCache.shared.clear()
-                        showToast("已清除 \(b / 1024 / 1024) MB")
-                        focusCurrent()
+                Menu {
+                    Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+                    Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
+                    Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
+                } label: { Label("播放设置", systemImage: "play.circle") }
+                Menu {
+                    Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
+                        .accessibilityIdentifier("douyin.landscape.only")
+                    Menu {
+                        Picker(selection: $feed.shortRatioPortrait) {
+                            Text("不限").tag(-1)
+                            Text("短视频 30%").tag(30)
+                            Text("短视频 50%").tag(50)
+                            Text("短视频 70%").tag(70)
+                            Text("只看短视频").tag(100)
+                        } label: { Label("竖屏短视频占比（3 分钟内）", systemImage: "rectangle.portrait") }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("douyin.short.portrait")
+                        Picker(selection: $feed.shortRatioLandscape) {
+                            Text("不限").tag(-1)
+                            Text("短视频 30%").tag(30)
+                            Text("短视频 50%").tag(50)
+                            Text("短视频 70%").tag(70)
+                            Text("只看短视频").tag(100)
+                        } label: { Label("横屏短视频占比（3 分钟内）", systemImage: "rectangle") }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("douyin.short.landscape")
+                    } label: { Label("高级筛选", systemImage: "line.3.horizontal.decrease") }
+                } label: { Label("内容偏好", systemImage: "slider.horizontal.3") }
+                Menu {
+                    Picker(selection: $cacheCount) {
+                        Text("5 条").tag(5)
+                        Text("10 条").tag(10)
+                        Text("20 条").tag(20)
+                        Text("50 条").tag(50)
+                        Text("100 条").tag(100)
+                        Text("关闭").tag(0)
+                    } label: { Label("预缓存数量", systemImage: "arrow.down.circle") }
+                    .pickerStyle(.menu)
+                    Button("清除视频缓存", systemImage: "trash") {
+                        Task {
+                            let b = await DYVideoCache.shared.clear()
+                            showToast("已清除 \(b / 1024 / 1024) MB")
+                            focusCurrent()
+                        }
                     }
-                }
-                Button("网页版 / 登录", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
-                Button {
-                    UIApplication.shared.open(DDUpdateChecker.repoURL)
-                } label: {
-                    Label("关于（GitHub 开源仓库）", systemImage: "info.circle")
-                }
-                .accessibilityIdentifier("douyin.about")
+                } label: { Label("缓存管理", systemImage: "internaldrive") }
+                Menu {
+                    Button("官网 / 登录（备用入口）", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
+                } label: { Label("账号与登录", systemImage: "person.crop.circle") }
+                Menu {
+                    Button {
+                        UIApplication.shared.open(DDUpdateChecker.repoURL)
+                    } label: {
+                        Label("开源仓库", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    .accessibilityIdentifier("douyin.about")
+                } label: { Label("关于", systemImage: "info.circle") }
             } label: {
                 Label("设置", systemImage: "gearshape")
             }
@@ -2274,14 +2239,12 @@ struct DYVideoPage: View {
         .accessibilityIdentifier(id)
     }
 
-    /// 「更多」：顶部一排图标（转发 / 下载 / 发弹幕）→ 不感兴趣 → 推荐流注入的播放偏好与设置
+    /// 「更多」：转发 / 下载快捷入口 → 不感兴趣 → 弹幕 → 刷新推荐 / 设置。
     @ViewBuilder
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
             ControlGroup {
-                ShareLink(item: item.webURL) {
-                    Label("转发", systemImage: "arrowshape.turn.up.right")
-                }
+                DYForwardMenu(item: item, bridge: bridge, foreground: fg)
                 Button {
                     save()
                 } label: {
@@ -2289,21 +2252,17 @@ struct DYVideoPage: View {
                 }
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
-                if item.images.isEmpty, bridge != nil {
-                    Button {
-                        showDanmakuInput = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
-                    } label: {
-                        Label("发弹幕", systemImage: "text.bubble")
-                    }
-                    .accessibilityIdentifier("douyin.danmaku.open")
-                }
             }
             if let onDislike {
                 Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }
                     .accessibilityIdentifier("douyin.dislike")
             }
-            if item.images.isEmpty { DYDanmakuOptions() }
+            if item.images.isEmpty {
+                DYDanmakuOptions(onSend: bridge == nil ? nil : {
+                    showDanmakuInput = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
+                })
+            }
             moreExtras
         } label: {
             Image(systemName: "ellipsis")
@@ -2317,6 +2276,7 @@ struct DYVideoPage: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .accessibilityIdentifier("douyin.more")
+        .modifier(DYForwardPresentation(item: item))
     }
 
 }

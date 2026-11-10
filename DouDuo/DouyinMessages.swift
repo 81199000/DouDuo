@@ -1197,6 +1197,217 @@ struct DYEdgeSwipeBack: ViewModifier {
     }
 }
 
+// MARK: - 当前作品转发给抖音朋友
+
+private struct DYForwardActionKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+private extension EnvironmentValues {
+    var dyForwardAction: (() -> Void)? {
+        get { self[DYForwardActionKey.self] }
+        set { self[DYForwardActionKey.self] = newValue }
+    }
+}
+
+/// 状态挂在稳定的菜单外层，而不是会随原生菜单关闭而销毁的条目里。
+struct DYForwardPresentation: ViewModifier {
+    let item: DYAweme
+    @State private var showing = false
+    func body(content: Content) -> some View {
+        content.environment(\.dyForwardAction, { showing = true })
+            .fullScreenCover(isPresented: $showing) { DYForwardScreen(item: item) }
+    }
+}
+
+struct DYForwardMenu: View {
+    let item: DYAweme
+    let bridge: DouyinBridge?
+    let foreground: Color
+    @Environment(\.dyForwardAction) private var showFriends
+    var body: some View {
+        Menu {
+            Button("转发给抖音朋友", systemImage: "person.2") { showFriends?() }
+                .disabled(showFriends == nil)
+                .accessibilityIdentifier("douyin.forward.friends")
+            ShareLink(item: item.webURL) { Label("分享至其他应用", systemImage: "square.and.arrow.up") }
+        } label: {
+            Label("转发", systemImage: "arrowshape.turn.up.right")
+        }
+        .accessibilityIdentifier("douyin.forward.menu")
+    }
+}
+
+struct DYForwardScreen: View {
+    let item: DYAweme
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model = DYForwardWebModel()
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack {
+                    if model.loading { ProgressView() }
+                    Text(model.message).font(.footnote).foregroundStyle(.themeTextSecondary)
+                    Spacer(minLength: 0)
+                }
+                .padding()
+                .accessibilityIdentifier("douyin.forward.status")
+                DYForwardWebContainer(model: model, url: item.webURL)
+                    .accessibilityIdentifier("douyin.forward.web")
+            }
+            .background(GlassBackground())
+            .navigationTitle("转发给抖音朋友")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }.accessibilityIdentifier("douyin.forward.close")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(model.fullPage ? "返回分享" : "完整官网") { model.toggleFullPage() }
+                }
+            }
+        }
+        .onAppear { DDPlayback.shared.pauseAll() }
+        .onDisappear {
+            model.stop()
+            if UIApplication.shared.applicationState == .active { DDPlayback.shared.resumeAll() }
+        }
+    }
+}
+
+/// 由官网已加载的分享组件处理选人、登录、签名与视频卡片协议；不拼造私信请求。
+@MainActor final class DYForwardWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    @Published var message = "正在打开抖音官方分享面板…"
+    @Published var loading = true
+    @Published var fullPage = false
+    weak var web: WKWebView?
+    private var opening: Task<Void, Never>?
+
+    func stop() { opening?.cancel(); opening = nil; web?.stopLoading() }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { openPanel() }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail() }
+    private func fail() { loading = false; message = "官网加载失败，请关闭后重试" }
+    func toggleFullPage() {
+        fullPage.toggle()
+        if fullPage {
+            opening?.cancel()
+            web?.evaluateJavaScript("document.getElementById('dd-forward-focus')?.remove()")
+            message = "抖音官网：请核对朋友后再发送"
+            loading = false
+        } else { openPanel() }
+    }
+    private func openPanel() {
+        opening?.cancel()
+        guard !fullPage else { return }
+        loading = true
+        opening = Task { [weak self] in
+            for _ in 0..<80 {
+                guard !Task.isCancelled, let self, let web = self.web else { return }
+                if let raw = try? await web.evaluateJavaScript(Self.openPanelJS) as? String,
+                   let data = raw.data(using: .utf8),
+                   let response = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+                   let state = response["state"], state == "ready" || state == "login" {
+                    self.loading = false
+                    self.message = state == "login" ? "请先在下方登录抖音，再选择朋友" : "使用抖音官方分享面板；请核对朋友后再发送"
+                    DYLiveModel.log("DDFORWARD panel=\(state)")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(350))
+            }
+            guard !Task.isCancelled, let self else { return }
+            if let diag = try? await self.web?.evaluateJavaScript("JSON.stringify({path:location.pathname,entries:[...document.querySelectorAll('[data-e2e]')].map(e=>e.getAttribute('data-e2e')).filter(s=>/share/.test(s)),props:(()=>{const e=document.querySelector('[data-e2e=video-player-share]');const k=e&&Object.keys(e).find(k=>k.startsWith('__reactProps'));return k?Object.keys(e[k]):[]})(),panel:!!document.querySelector('[data-e2e=video-share-container]')})") as? String {
+                DYLiveModel.log("DDFORWARD diag=\(diag)")
+            }
+            self.loading = false
+            self.message = "暂未打开官网分享面板，可点“完整官网”手动打开"
+            DYLiveModel.log("DDFORWARD panel=unavailable")
+        }
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard let url = action.request.url, ["http", "https", "about", "blob", "data"].contains(url.scheme?.lowercased() ?? "") else {
+            decisionHandler(.cancel); return
+        }
+        decisionHandler(WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2) ?? .allow)
+    }
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url,
+           ["http", "https"].contains(url.scheme?.lowercased() ?? "") { webView.load(URLRequest(url: url)) }
+        return nil
+    }
+
+    /// 仅触发官网分享入口的 hover，不点击朋友或发送按钮，也不把打开面板当成发送成功。
+    static let openPanelJS = #"""
+    (() => {
+      const result = state => JSON.stringify({state});
+      if (location.hostname !== 'www.douyin.com' || !/^\/video\/\d+\/?$/.test(location.pathname)) return result('wrong-page');
+      const entry = document.querySelector('[data-e2e="video-share-icon-container"]') || document.querySelector('[data-e2e="video-player-share"]');
+      if (!entry) return result('loading');
+      let panel = document.querySelector('[data-e2e="video-share-container"]');
+      if (!panel || !panel.textContent.trim()) {
+        for (let node = entry, depth = 0; node && depth < 5; node = node.parentElement, depth++) {
+          const key = Object.keys(node).find(k => k.startsWith('__reactProps'));
+          const hover = key && node[key] && node[key].onMouseEnter;
+          if (typeof hover !== 'function') continue;
+          hover({currentTarget: node, target: entry, preventDefault(){}, stopPropagation(){}});
+          return result('loading');
+        }
+        return result('loading');
+      }
+      if (!document.getElementById('dd-forward-focus')) {
+        const style = document.createElement('style'); style.id = 'dd-forward-focus';
+        style.textContent = `
+          body { margin: 0 !important; overflow: hidden !important; }
+          body * { visibility: hidden !important; }
+          [data-dd-forward-ancestor] { transform: none !important; filter: none !important; overflow: visible !important; contain: none !important; }
+          [data-e2e="video-share-container"], [data-e2e="video-share-container"] * { visibility: visible !important; }
+          [data-e2e="video-share-container"] { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483000 !important; overflow: auto !important; }
+          [data-e2e="video-share-container"] > div { display: flex !important; width: 100% !important; max-width: 100% !important; min-width: 0 !important; min-height: 100% !important; box-sizing: border-box !important; }
+        `;
+        document.head.appendChild(style);
+        for (let n = panel.parentElement; n && n !== document.body; n = n.parentElement) {
+          n.setAttribute('data-dd-forward-ancestor', '');
+        }
+      }
+      const text = panel.textContent || '';
+      return result(/登录后分享|扫码登录|登录其他账号/.test(text) ? 'login' : 'ready');
+    })()
+    """#
+}
+
+private struct DYForwardWebContainer: UIViewRepresentable {
+    @ObservedObject var model: DYForwardWebModel
+    let url: URL
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = .all
+        config.userContentController.addUserScript(WKUserScript(source: #"""
+        (() => {
+          const media = HTMLMediaElement.prototype;
+          media.play = function(){ this.muted = true; try { this.pause() } catch(e){} return Promise.resolve() };
+          const fix = () => {
+            let meta = document.querySelector('meta[name=viewport]');
+            if (!meta && document.head) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta) }
+            if (meta) meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover';
+          };
+          document.addEventListener('DOMContentLoaded', fix); fix();
+        })()
+        """#, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.customUserAgent = DouyinWeb.userAgent
+        web.navigationDelegate = model; web.uiDelegate = model; model.web = web
+        #if DEBUG
+        web.isInspectable = true
+        #endif
+        web.load(URLRequest(url: url))
+        return web
+    }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
 private struct DYMessagePlay: Identifiable {
     let id = UUID()
     let item: DYAweme
