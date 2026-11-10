@@ -1464,10 +1464,10 @@ private struct DYAuthorPlay: Identifiable {
     let index: Int
 }
 
-// MARK: - 关注页直播推荐条策略
+// MARK: - 直播页推荐条策略
 
-/// 关注页顶部「直播中」头像排的展开/收起规则。
-/// 官方行为：进入关注页展开提醒，用户上滑换到下一条时收成「N 个直播」胶囊，点胶囊再展开。
+/// 直播页顶部「直播中」头像排的展开/收起规则。
+/// 官方行为：进入直播页展开提醒，用户上滑换直播间时收成「N 个直播」胶囊，点胶囊再展开。
 enum DYFollowLiveStripPolicy {
     /// 首屏落位（old == nil）或仍在同一条时都不收起；只有真正从一条换到另一条才算上滑。
     static func shouldCollapse(old: String?, new: String?, expanded: Bool) -> Bool {
@@ -1479,13 +1479,79 @@ enum DYFollowLiveStripPolicy {
     static func pillTitle(count: Int) -> String { "\(count) 个直播" }
 }
 
+/// 直播页顶部的「关注主播正在直播」：进入展开一排头像，上滑换直播间后收成「N 个直播」胶囊。
+/// 数据来自 bridge.fetchFollowLive（直播页 model.followLive 同一来源），点头像直接进房。
+struct DYFollowLiveStrip: View {
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    let rooms: [DYLiveRoom]
+    let expanded: Bool
+    let onOpen: (DYLiveRoom) -> Void
+    let onExpand: () -> Void
+
+    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
+
+    var body: some View {
+        if expanded { row } else { pill }
+    }
+
+    private var row: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 12) {
+                ForEach(rooms) { r in
+                    Button { onOpen(r) } label: {
+                        VStack(spacing: 4) {
+                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                                placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                .frame(width: 54, height: 54).clipShape(Circle())
+                                .padding(2)
+                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
+                                .overlay(alignment: .bottom) {
+                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(foreground)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                        .offset(y: 6)
+                                }
+                            Text(r.owner).font(.caption2).foregroundStyle(foreground).lineLimit(1).frame(width: 68)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("live.strip.\(r.id)")
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .scrollIndicators(.hidden)
+        .themeShadow(.mediaLabel)
+        .accessibilityIdentifier("live.follow.strip")
+    }
+
+    private var pill: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.24)) { onExpand() }
+        } label: {
+            HStack(spacing: 4) {
+                Text(DYFollowLiveStripPolicy.pillTitle(count: rooms.count)).font(.caption.weight(.bold))
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+            }
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+            .overlay(Capsule().stroke(foreground.opacity(0.22), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("live.follow.pill")
+        .themeShadow(.mediaLabel)
+    }
+}
+
 // MARK: - 关注流
 
 struct DYFollowFeed: View {
     let bridge: DouyinBridge
     let insets: EdgeInsets
-    /// 顶栏下沿（屏幕坐标）；0 表示还没测到，用几何兜底。
-    var stripTop: CGFloat = 0
     let active: Bool
     let onAuthor: (DYAweme) -> Void
     let onLogin: () -> Void
@@ -1494,15 +1560,6 @@ struct DYFollowFeed: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @State private var liveNow: [DYLiveRoom] = []
-    /// 进入关注页先展开直播推荐条，上滑换到下一个视频就收成一颗「N 个直播」胶囊，点开可再看。
-    @State private var liveStripExpanded = true
-    #if DEBUG && targetEnvironment(simulator)
-    /// 仅模拟器布局截图用：强制显示收起态，App Store/真机产物里不存在。
-    private var layoutForceCollapsed: Bool {
-        ProcessInfo.processInfo.environment["DOUDUO_FOLLOW_LIVE_FORCE_COLLAPSED"] == "1"
-    }
-    #endif
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
     @State private var currentID: String?
     @State private var preloader = DYPreloader()
@@ -1555,19 +1612,6 @@ struct DYFollowFeed: View {
                 .ignoresSafeArea()
             }
         }
-        .overlay(alignment: .top) {
-            if !liveNow.isEmpty {
-                Group {
-                    #if DEBUG && targetEnvironment(simulator)
-                    if liveStripExpanded && !layoutForceCollapsed { liveRow } else { livePill }
-                    #else
-                    if liveStripExpanded { liveRow } else { livePill }
-                    #endif
-                }
-                .padding(.top, followStripTop)
-                .animation(.easeOut(duration: 0.22), value: liveStripExpanded)
-            }
-        }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -1575,99 +1619,17 @@ struct DYFollowFeed: View {
             }
         }
         .task {
-            Task { await loadLiveNow() }
             if m.items.isEmpty { await m.loadMore() }
             if currentID == nil { currentID = m.items.first?.id }
         }
         .onChange(of: currentID) { old, new in
             if new == nil, let old, m.items.contains(where: { $0.id == old }) { currentID = old; return }
-            // 用户上滑换到下一条就收起推荐条；首屏落位（old == nil）不算上滑。
-            if DYFollowLiveStripPolicy.shouldCollapse(old: old, new: new, expanded: liveStripExpanded) {
-                withAnimation(.easeOut(duration: 0.2)) { liveStripExpanded = false }
-            }
             guard let i = m.items.firstIndex(where: { $0.id == new }) else { return }
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
-        .onChange(of: active) { _, a in
-            if !a { preloader.clear() } else {
-                liveStripExpanded = true
-                Task { await loadLiveNow() }
-            }
-        }
+        .onChange(of: active) { _, a in if !a { preloader.clear() } }
         .onDisappear { preloader.clear() }
-    }
-
-    private func loadLiveNow() async {
-        #if DEBUG && targetEnvironment(simulator)
-        if ProcessInfo.processInfo.environment["DOUDUO_FOLLOW_LIVE_FIXTURE"] == "1" {
-            liveNow = (0..<8).map { i in
-                DYLiveRoom(id: "fixture-\(i)", webRid: "0", title: "", owner: "合成主播\(i + 1)",
-                           avatar: nil, cover: nil, viewers: "0", hls: [:], portrait: true)
-            }
-            return
-        }
-        #endif
-        if let r = try? await bridge.fetchFollowLive() { liveNow = r }
-    }
-
-    /// 直播条贴顶栏下沿：顶栏在 regular 下贴 23pt、compact 下因外层 -80 偏移实际贴 4pt 上沿，行高 54。
-    /// 两种形态共用同一基准，展开/收起不会上下跳。
-    private var followStripTop: CGFloat {
-        let barBottom = stripTop > 0 ? stripTop : (hSize == .regular ? CGFloat(23 + 54) : CGFloat(54 - 4))
-        return barBottom + 8
-    }
-
-    /// 收起态：一行「N 个直播」胶囊，点一下重新展开头像排。
-    private var livePill: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.24)) { liveStripExpanded = true }
-        } label: {
-            HStack(spacing: 4) {
-                Text(DYFollowLiveStripPolicy.pillTitle(count: liveNow.count)).font(.caption.weight(.bold))
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(theme.media.onMedia.color(for: scheme))
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
-            .overlay(Capsule().stroke(theme.media.onMedia.color(for: scheme).opacity(0.22), lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("douyin.follow.livePill")
-        .themeShadow(.mediaLabel)
-    }
-
-    /// 顶部「直播中」头像：跟抖音关注页一样，点了直接进这个主播的直播间
-    private var liveRow: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 14) {
-                ForEach(liveNow) { r in
-                    Button { onLive(r) } label: {
-                        VStack(spacing: 4) {
-                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                                placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                .frame(width: 58, height: 58).clipShape(Circle())
-                                .padding(3)
-                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
-                                .overlay(alignment: .bottom) {
-                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(theme.media.onMedia.color(for: scheme))
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
-                                        .offset(y: 6)
-                                }
-                            Text(r.owner).font(.caption2).foregroundStyle(theme.media.onMedia.color(for: scheme)).lineLimit(1).frame(width: 70)
-                                .padding(.top, 4)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-        }
-        .scrollIndicators(.hidden)
-        .padding(.trailing, insets.trailing)
-        .themeShadow(.mediaLabel)
     }
 
     private func like(_ id: String, force: Bool?) {

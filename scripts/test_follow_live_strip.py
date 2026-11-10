@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""编译真实的关注页直播条策略（Foundation-only）并跑合成用例。
+"""编译真实的直播页直播推荐条策略（Foundation-only）并跑合成用例。
 
 Run: python3 scripts/test_follow_live_strip.py -v
 不联网、不开模拟器、不装 App；Swift 中间产物放仓库下临时目录。
@@ -13,8 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "DouDuo" / "DouyinExtras.swift"
-START = "// MARK: - 关注页直播推荐条策略"
-END = "// MARK: - 关注流"
+START = "// MARK: - 直播页推荐条策略"
+END = "/// 直播页顶部的「关注主播正在直播」"
 
 HARNESS = r'''
 func emit(_ value: Any) {
