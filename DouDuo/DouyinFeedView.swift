@@ -1070,7 +1070,6 @@ struct DouyinFeedScreen: View {
     @State private var showSearch = false
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
-    @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var showMine = false
     /// 顶栏「我的」按钮用的账号信息（头像 + 昵称）
     @State private var myUser: DYUser?
@@ -1912,7 +1911,6 @@ struct DouyinFeedScreen: View {
             .accessibilityIdentifier("douyin.mix")
             Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
             Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
-            Toggle(isOn: $danmakuOn) { Label("显示弹幕", systemImage: "text.bubble") }
         }
         Section {
             Button("刷新推荐", systemImage: "arrow.clockwise") {
@@ -2305,6 +2303,7 @@ struct DYVideoPage: View {
                 Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }
                     .accessibilityIdentifier("douyin.dislike")
             }
+            if item.images.isEmpty { DYDanmakuOptions() }
             moreExtras
         } label: {
             Image(systemName: "ellipsis")

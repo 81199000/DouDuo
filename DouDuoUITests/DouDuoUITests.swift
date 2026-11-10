@@ -2,12 +2,79 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testVideoDanmakuSettings() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        // 仅在测试进程内生成明确标记的压力弹幕，不向平台发消息。
+        app.launchEnvironment["DOUDUO_DM_STRESS"] = "1"
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        let moreQuery = app.buttons.matching(identifier: "douyin.more")
+        func moreButton() -> XCUIElement {
+            moreQuery.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? moreQuery.firstMatch
+        }
+        XCTAssertTrue(moreQuery.firstMatch.waitForExistence(timeout: 40))
+        sleep(4)
+        attach(app, "video-danmaku-upper-third-synthetic-stress")
+        func openMore() {
+            // Picker / Toggle 的原生菜单可能留在父菜单；先在左侧菜单外收起。
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
+            moreButton().tap()
+        }
+        func openSettings() {
+            openMore()
+            let settings = app.buttons["douyin.danmaku.settings"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.tap()
+        }
+        for title in ["稀疏", "密集", "标准"] {
+            openSettings()
+            let option = app.buttons[title]
+            if !option.exists { app.buttons["douyin.danmaku.density"].tap() }
+            XCTAssertTrue(option.waitForExistence(timeout: 5))
+            option.tap()
+            openMore()
+            let settings = app.buttons["douyin.danmaku.settings"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            XCTAssertTrue(settings.label.contains(title), settings.debugDescription)
+            attach(app, "video-danmaku-density-\(title)")
+            // 点击内容区收起菜单，避免下一轮误点。
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
+        }
+        openSettings()
+        // UIKit 原生菜单不透传 Toggle 的 identifier，以实际按钮标题和勾选态验收。
+        let toggle = app.buttons["10秒内重复去重"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        let before = toggle.isSelected
+        toggle.tap()
+        if !toggle.exists { openSettings() }
+        XCTAssertNotEqual(toggle.isSelected, before)
+        toggle.tap() // 恢复用户原去重设置。
+        print("DD_DANMAKU_SETTINGS: density=standard; dedup-toggle=verified")
+    }
+
+    func testLiveStandaloneGameEntryRemoved() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launch()
+        let discover = app.buttons["live.discover"]
+        XCTAssertTrue(discover.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["live.categories"].exists)
+        XCTAssertFalse(app.buttons["游戏专区"].exists)
+        attach(app, "live-standalone-game-entry-removed")
+        discover.tap()
+        XCTAssertTrue(app.buttons["live.category.game"].waitForExistence(timeout: 5))
+        print("DD_GAME_ENTRY: standalone=removed; game-category=preserved")
+    }
+
     func testLiveDiscoveryAndBack() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
         app.launch()
         let discover = app.buttons["live.discover"]
         XCTAssertTrue(discover.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["live.categories"].exists)
+        XCTAssertFalse(app.buttons["游戏专区"].exists)
         XCTAssertFalse(app.buttons["live.category.featured"].exists)
         discover.tap()
         XCTAssertTrue(app.buttons["live.category.featured"].waitForExistence(timeout: 5))
@@ -403,13 +470,16 @@ final class DouDuoUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
         app.launch()
-        let categories = app.buttons["live.categories"]
-        XCTAssertTrue(categories.waitForExistence(timeout: 15), "分类应收成一个按钮")
+        let categories = app.buttons["live.discover"]
+        XCTAssertTrue(categories.waitForExistence(timeout: 15), "发现更多应收成一个按钮")
+        XCTAssertFalse(app.buttons["live.categories"].exists, "单独游戏专区入口已移除")
         XCTAssertFalse(app.buttons["英雄联盟"].exists, "分类不能常驻")
         categories.tap()
+        app.buttons["live.category.game"].tap()
         XCTAssertTrue(app.buttons["英雄联盟"].waitForExistence(timeout: 5))
         attach(app, "live-category-picker")
         app.buttons["live.categories.close"].tap()
+        categories.tap()
         let enter = app.buttons.matching(identifier: "live.room.enter").firstMatch
         XCTAssertTrue(enter.waitForExistence(timeout: 30))
         XCTAssertTrue(enter.isHittable)

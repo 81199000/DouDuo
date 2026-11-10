@@ -32,6 +32,11 @@ print("Actual category registry passed")
             p.write_text(swift)
             subprocess.run(["swift", str(p)], check=True, capture_output=True, text=True)
 
+    def test_removed_standalone_game_entry(self):
+        self.assertNotIn('Label("游戏专区"', SOURCE)
+        self.assertNotIn('.accessibilityIdentifier("live.categories")', SOURCE)
+        self.assertIn('.accessibilityIdentifier("live.discover")', SOURCE)
+
     def test_no_placeholder_or_recommendation_fallback(self):
         self.assertNotIn("case .pending:", SOURCE)
         self.assertIn("case .partition(let zone):", SOURCE)
