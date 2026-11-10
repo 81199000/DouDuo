@@ -1420,8 +1420,12 @@ struct DYForwardOfficialScreen: View {
             case "not-ready", "wrong-work", "missing-recipient": message = "当前作品或朋友列表已变化，请重新打开转发"
             default: message = "发送未确认，请到抖音消息核对，勿重复发送"
             }
-            DYLiveModel.log("DDFORWARD send=\(response?["state"] ?? "unconfirmed")")
-        } catch { message = "发送未确认，请到抖音消息核对，勿重复发送" }
+            DYLiveModel.log("DDFORWARD send=\(response?["state"] ?? "unconfirmed") source=\(response?["source"] ?? "unknown") elapsed_ms=\(response?["elapsed_ms"] ?? "unknown")")
+        } catch {
+            message = "发送未确认，请到抖音消息核对，勿重复发送"
+            let failure = error as NSError
+            DYLiveModel.log("DDFORWARD send=unconfirmed source=webkit code=\(failure.code)")
+        }
     }
 
     func stop() { opening?.cancel(); opening = nil; web?.stopLoading() }
@@ -1534,6 +1538,23 @@ struct DYForwardOfficialScreen: View {
         if (identifier(store.awemeInfo.awemeId) !== expected) return {state: 'wrong-work'};
         return {state: list.length ? 'ready' : 'empty', store, list, confirm};
       }
+      let cachedReceiptSDK = null, receiptProbe = 0;
+      function receiptSDK() {
+        if (cachedReceiptSDK) return cachedReceiptSDK;
+        const chunks = window.webpackChunkdouyin_web;
+        if (!chunks || typeof chunks.push !== 'function') return null;
+        try {
+          // 只取得已随官网加载的SDK；不加载其他脚本或构造发送请求。
+          chunks.push([['dd-native-forward-receipt-' + (++receiptProbe)], {}, require => {
+            if (!require.m?.['232543'] || !require.m?.['487897']) return;
+            const sdk = require('232543').ImSdk, types = require('487897').pp;
+            if (typeof sdk?.onEvent !== 'function' || typeof sdk?.offEvent !== 'function' || typeof sdk?.getConversationById !== 'function') return;
+            const cards = [types?.SHARE_AWEME, types?.SHARE_PHOTOS, types?.ARTICLE].filter(v => typeof v === 'number');
+            if (cards.length) cachedReceiptSDK = {sdk, cards: new Set(cards)};
+          }]);
+        } catch (e) {}
+        return cachedReceiptSDK;
+      }
       window.__ddNativeForward = {
         read(expected) {
           const snapshot = inspect(expected), items = [], seen = new Set();
@@ -1553,13 +1574,34 @@ struct DYForwardOfficialScreen: View {
           if (!user) return {state: 'missing-recipient'};
           return await new Promise(resolve => {
             let complete = false;
-            const finish = result => { if (!complete) { complete = true; clearTimeout(timer); resolve(result); } };
-            const timer = setTimeout(() => finish({state: 'unconfirmed'}), 20000);
+            const started = Date.now(), receipt = receiptSDK();
+            const finish = (state, source) => {
+              if (complete) return;
+              complete = true; clearTimeout(timer);
+              try { receipt?.sdk.offEvent('IM_SEND_MSG', onReceipt); } catch (e) {}
+              resolve({state, source, elapsed_ms: String(Date.now() - started)});
+            };
+            const onReceipt = event => {
+              try {
+                const message = event?.message;
+                if (!message || !receipt.cards.has(message.type)) return;
+                const content = JSON.parse(message.content);
+                if (identifier(content.itemId) !== expected) return;
+                const conversation = receipt.sdk.getConversationById(message.conversationId);
+                const peer = kind(user) === 2 ? identifier(message.conversationId) : identifier(conversation?.toParticipantUserId);
+                if (peer !== identifier(user.uid)) return;
+                const success = event.res?.success;
+                finish(success === true ? 'sent' : success === false ? 'rejected' : 'unconfirmed', 'sdk-event');
+              } catch (e) {}
+            };
+            const timer = setTimeout(() => finish('unconfirmed', 'timeout'), 20000);
             try {
+              receipt?.sdk.onEvent('IM_SEND_MSG', onReceipt);
               const pending = snapshot.confirm(user, kind(user) === 2 ? 'group' : 'user', snapshot.list,
-                response => finish({state: response?.success === true ? 'sent' : 'rejected'}));
-              Promise.resolve(pending).catch(() => finish({state: 'unconfirmed'}));
-            } catch (e) { finish({state: 'unconfirmed'}); }
+                response => finish(response?.success === true ? 'sent' : response?.success === false ? 'rejected' : 'unconfirmed', 'callback'));
+              // 部分官网confirmSharee不消费第四参；Promise完成只代表函数返回，不是发送成功。
+              Promise.resolve(pending).catch(() => finish('unconfirmed', 'exception'));
+            } catch (e) { finish('unconfirmed', 'exception'); }
           });
         }
       };
