@@ -1510,6 +1510,9 @@ struct DYFollowFeed: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(m.items) { item in
+                            // 直播中头像放在第一条视频的顶部、视频往下让（同抖音关注页）；滑到下一条就跟着滚走
+                            let withLive = !liveNow.isEmpty && item.id == m.items.first?.id
+                            ZStack(alignment: .top) {
                             DYVideoPage(item: item, isCurrent: active && item.id == currentID, insets: insets,
                                         resume: resume[item.id], liked: liked.contains(item.id) || item.userDigged == 1,
                                         collected: collected.contains(item.id) || item.isCollect == 1,
@@ -1518,6 +1521,9 @@ struct DYFollowFeed: View {
                                         onSearch: {},
                                         onAuthor: { onAuthor(item) }, onSavePosition: { resume[item.id] = $0 },
                                         preloader: preloader, bridge: bridge, onToast: onToast)
+                                .padding(.top, withLive ? liveBandHeight : 0)
+                            if withLive { liveRow.padding(.top, liveRowTop) }
+                            }
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
@@ -1529,9 +1535,6 @@ struct DYFollowFeed: View {
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
             }
-        }
-        .overlay(alignment: .top) {
-            if !liveNow.isEmpty { liveRow.padding(.top, (hSize == .regular ? 20 : 80) + 52) }
         }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
@@ -1553,6 +1556,10 @@ struct DYFollowFeed: View {
         .onChange(of: active) { _, a in if !a { preloader.clear() } else { Task { await loadLiveNow() } } }
         .onDisappear { preloader.clear() }
     }
+
+    /// 顶栏（关注/推荐/直播）下面开始放头像；头像行大约 104pt 高，视频整体往下让出这一块
+    private var liveRowTop: CGFloat { (hSize == .regular ? 20 : 80) + 52 }
+    private var liveBandHeight: CGFloat { liveRowTop + 104 }
 
     private func loadLiveNow() async {
         if let r = try? await bridge.fetchFollowLive() { liveNow = r }

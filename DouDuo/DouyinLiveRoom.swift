@@ -48,6 +48,23 @@ final class DYLiveModel: ObservableObject {
     private var followedOnly = false
     @Published var clean = false
     @Published var entered = false
+    /// 「发现更多」面板展开（在挑直播间）：不播任何直播，免得后台挂着一个还在出声
+    var browsing = false
+    /// 手动选的清晰度（nil = 自动，用抖音给的默认）；全局记住，换直播间也沿用
+    @Published var quality: String? = UserDefaults.standard.string(forKey: "douyin_live_quality_v1")
+    /// 这个直播间有的清晰度，高到低
+    var qualityOptions: [String] {
+        let have = Set((roomRef?.liveStreams ?? []).map(\.quality))
+        return ["ORIGION", "FULL_HD1", "HD1", "SD1", "SD2"].filter(have.contains)
+    }
+    static func qualityName(_ q: String) -> String {
+        ["ORIGION": "原画", "FULL_HD1": "蓝光", "HD1": "超清", "SD1": "高清", "SD2": "标清"][q] ?? q
+    }
+    func setQuality(_ q: String?) {
+        quality = q
+        UserDefaults.standard.set(q, forKey: "douyin_live_quality_v1")
+        retry()
+    }
     @Published var muted = false { didSet { vlc.mediaPlayer.audio?.isMuted = muted } }
     let vlc = VLCPlayerController()
     private var requestGeneration = UUID()
@@ -122,9 +139,13 @@ final class DYLiveModel: ObservableObject {
         guard let room else { return }
         if loadedRoom == room.id, vlc.mediaPlayer.media != nil { return }
         roomRef = room
-        guard visible, DDPlayback.shared.appIsActive else { return }
+        guard !browsing, visible, DDPlayback.shared.appIsActive else { return }
         loadedRoom = room.id
         sources = room.liveStreams
+        // 选了清晰度就把它排最前，起不来才退回其他档
+        if let q = quality, sources.contains(where: { $0.quality == q }) {
+            sources = sources.filter { $0.quality == q } + sources.filter { $0.quality != q }
+        }
         startCurrentSource()
     }
 
@@ -278,6 +299,7 @@ struct DYLiveFeed: View {
                         discoverBar
                         if showDiscover {
                             discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
+                                .background(Color.black.ignoresSafeArea())
                         }
                         Spacer()
                     }
@@ -336,7 +358,9 @@ struct DYLiveFeed: View {
             else { inputFocused = false; draft = ""; sendError = nil }
         }
         .onChange(of: showDiscover) { _, expanded in
-            if expanded { Task { await model.loadFollowLive(bridge) } }
+            model.browsing = expanded
+            if expanded { model.stop(); Task { await model.loadFollowLive(bridge) } }
+            else { model.play(currentRoom) }
         }
         .onDisappear { scrollEndTask?.cancel(); model.deactivate(); chat.close() }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
@@ -376,16 +400,58 @@ struct DYLiveFeed: View {
     }
 
     private var discoverPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            followedLiveRow
-            categoryStrip
-            if let categoryHint {
-                Text(categoryHint).font(.caption)
-                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                followedLiveRow
+                categoryStrip
+                if let categoryHint {
+                    Text(categoryHint).font(.caption)
+                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                }
+                roomGrid
+            }
+            .padding(.top, 14).padding(.bottom, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// 当前分类的直播间列表（同网页版「更多直播」）：点哪个就看哪个，不用一个个上滑找
+    private var roomGrid: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(model.rooms.isEmpty ? (model.loading ? "加载中…" : "暂时没有直播") : "选一个直播间")
+                .font(.subheadline.weight(.semibold))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+                ForEach(model.rooms) { r in
+                    Button {
+                        model.currentID = r.id
+                        withAnimation(.easeInOut(duration: 0.2)) { showDiscover = false }
+                    } label: {
+                        ZStack(alignment: .bottomLeading) {
+                            CachedAsyncImage(url: r.cover.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+                                placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                .frame(maxWidth: .infinity).aspectRatio(4 / 3, contentMode: .fit).clipped()
+                            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(r.title.isEmpty ? r.owner : r.title).font(.caption.weight(.semibold)).lineLimit(2)
+                                HStack {
+                                    Text(r.owner).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text(r.viewers)
+                                }.font(.caption2).opacity(0.85)
+                            }
+                            .foregroundStyle(.white).padding(8)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(foreground.opacity(r.id == model.currentID ? 0.9 : 0), lineWidth: 2))
+                    }
+                    .buttonStyle(.plain)
+                    .onAppear { if r.id == model.rooms.last?.id { Task { await model.load(bridge) } } }   // 滑到底接着加载
+                }
             }
         }
-        .padding(.top, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(foreground)
     }
 
     /// 关注的主播里正在开播的：红色直播环 + 头像横排，点一下直接进房
@@ -641,6 +707,13 @@ private struct DYLiveRoomPage: View {
                                 Menu {
                                     Button("清屏", systemImage: "rectangle") { model.clean = true }
                                     Toggle("静音", systemImage: "speaker.slash", isOn: $model.muted)
+                                    Menu("清晰度", systemImage: "sparkles.tv") {
+                                        Picker("清晰度", selection: Binding(get: { model.quality ?? "" },
+                                                                         set: { model.setQuality($0.isEmpty ? nil : $0) })) {
+                                            Text("自动").tag("")
+                                            ForEach(model.qualityOptions, id: \.self) { Text(DYLiveModel.qualityName($0)).tag($0) }
+                                        }
+                                    }
                                     Button("重新连接", systemImage: "arrow.clockwise", action: model.retry)
                                     Button("官网互动（礼物）", systemImage: "safari") { onWeb(room.webURL) }
                                 } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddGlassCircle() }

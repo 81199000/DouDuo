@@ -1986,6 +1986,8 @@ struct DYVideoPage: View {
     @State private var danmakuLoaded = false
     @State private var saving = false
     @State private var showDanmakuInput = false
+    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
@@ -2258,6 +2260,13 @@ struct DYVideoPage: View {
                     .accessibilityIdentifier("douyin.dislike")
             }
             if item.images.isEmpty {
+                // 锁定倍速：选了之后每个视频都按这个速度放，直到改回正常
+                Picker("倍速", selection: $lockedRate) {
+                    ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
+                        Text(r == 1 ? "正常速度" : String(format: "%g 倍速", r)).tag(r)
+                    }
+                }
+                Toggle("后台播放（听书）", systemImage: "headphones", isOn: $bgPlay)
                 DYDanmakuOptions(onSend: bridge == nil ? nil : {
                     showDanmakuInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }

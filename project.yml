@@ -42,7 +42,8 @@ targets:
       properties:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        # 不做后台播放：抖音类短视频退出/切后台就该停声，给了 audio 后台模式反而会继续响
+        # 后台播放：默认仍是切后台就停声；只有「更多」菜单里打开「后台播放」才会继续响（代码里按开关判断）
+        UIBackgroundModes: [audio]
   DouDuoUITests:
     type: bundle.ui-testing
     platform: iOS
