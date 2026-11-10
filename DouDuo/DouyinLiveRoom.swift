@@ -252,6 +252,8 @@ struct DYLiveFeed: View {
     @State private var showCategories = false
     /// 「发现更多」：关注主播开播头像 + 一级分类，收起时不占画面（抖音广场页同款信息层）
     @State private var showDiscover = false
+    /// 顶部「关注主播正在直播」：进直播页展开，上滑换直播间收成胶囊，点胶囊再展开。
+    @State private var stripExpanded = true
     @State private var selectedCategory = "featured"
     @State private var categoryHint: String?
     @State private var scrollID: String?
@@ -264,6 +266,20 @@ struct DYLiveFeed: View {
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
     private var currentRoom: DYLiveRoom? { model.rooms.first { $0.id == model.currentID } }
     private var chatRoom: String? { model.entered && model.ready && danmakuOn ? currentRoom?.webRid : nil }
+    /// 顶部头像排的数据源；真机取 model.followLive，模拟器可用合成数据验布局。
+    private var stripRooms: [DYLiveRoom] {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["DOUDUO_LIVE_FOLLOW_FIXTURE"] == "1" { return Self.fixtureRooms }
+        #endif
+        return model.followLive
+    }
+    #if DEBUG && targetEnvironment(simulator)
+    /// 仅模拟器布局测试：合成 8 个直播间，不连网、不进房。
+    private static let fixtureRooms: [DYLiveRoom] = (0..<8).map { i in
+        DYLiveRoom(id: "fixture-\(i)", webRid: "0", title: "", owner: "合成主播\(i + 1)",
+                   avatar: nil, cover: nil, viewers: "0", hls: [:], portrait: true)
+    }
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -276,6 +292,13 @@ struct DYLiveFeed: View {
                 if !model.entered {
                     VStack(alignment: .leading, spacing: 0) {
                         discoverBar
+                        if !stripRooms.isEmpty {
+                            DYFollowLiveStrip(rooms: stripRooms, expanded: stripExpanded,
+                                              onOpen: { model.open($0) },
+                                              onExpand: { stripExpanded = true })
+                                .padding(.top, 10)
+                                .animation(.easeOut(duration: 0.22), value: stripExpanded)
+                        }
                         if showDiscover {
                             discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
                         }
@@ -304,7 +327,7 @@ struct DYLiveFeed: View {
         .background(DYLiveChatHost(chat: chat).frame(width: 1, height: 1).allowsHitTesting(false))
         .onAppear { if active { model.activate() } }
         .onChange(of: active) { _, value in
-            if value { model.activate() } else { model.deactivate() }
+            if value { stripExpanded = true; model.activate() } else { model.deactivate() }
         }
         .task {
             if model.rooms.isEmpty || Date().timeIntervalSince(model.fetchedAt) > 60 {
@@ -315,7 +338,10 @@ struct DYLiveFeed: View {
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
         }
-        .onChange(of: model.currentID) { _, id in
+        .onChange(of: model.currentID) { old, id in
+            if DYFollowLiveStripPolicy.shouldCollapse(old: old, new: id, expanded: stripExpanded) {
+                withAnimation(.easeOut(duration: 0.2)) { stripExpanded = false }
+            }
             if let id, scrollID != id { scrollID = id }
             draft = ""; sendError = nil; inputFocused = false
             model.play(currentRoom)
