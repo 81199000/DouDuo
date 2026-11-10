@@ -5,7 +5,7 @@ import SwiftUI
 import WebKit
 import CryptoKit
 
-struct DYCachedNoticePage: Codable {
+struct DYCachedNoticePage: Codable, Equatable {
     var items: [DYNotice] = []
     var maxTime = 0
     var hasMore = true
@@ -23,7 +23,7 @@ final class DYMessageCache: ObservableObject {
     /// 主列表里「我没关注」的单聊：抖音网页把它们混在普通会话里，按官方 App 归到陌生人
     @Published var unfollowedRows: [DYConversationRow] = []
     /// sec_uid → follow_status（0 未关注 / 1 已关注 / 2 互关），落盘让下次进来分类不闪
-    @Published var follow: [String: Int] = (UserDefaults.standard.dictionary(forKey: "dd_follow_status_v1") as? [String: Int]) ?? [:]
+    @Published var follow: [String: Int] = [:]
     private var followChecked = Set<String>()
 
     func isUnfollowed(_ row: DYConversationRow) -> Bool {
@@ -35,6 +35,7 @@ final class DYMessageCache: ObservableObject {
     func resolveFollow(_ secs: [String]) async {
         let need = Array(Set(secs.filter { !$0.isEmpty && !followChecked.contains($0) }))
         guard !need.isEmpty, let web = chatModel.web else { return }
+        let account = scope
         need.forEach { followChecked.insert($0) }
         let js = """
         const out = {};
@@ -50,12 +51,13 @@ final class DYMessageCache: ObservableObject {
         guard let str = try? await web.callAsyncJavaScript(js, arguments: ["secs": need], contentWorld: .page) as? String,
               let d = str.data(using: .utf8),
               let m = try? JSONDecoder().decode([String: Int].self, from: d) else {
-            need.forEach { followChecked.remove($0) }
+            if scope == account { need.forEach { followChecked.remove($0) } }
             return
         }
+        guard scope == account else { return }
         need.filter { m[$0] == nil }.forEach { followChecked.remove($0) }
         follow.merge(m) { _, new in new }
-        UserDefaults.standard.set(follow, forKey: "dd_follow_status_v1")
+        snapshot.follow = follow; save()
         DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count)")
     }
     struct Snapshot: Codable {
@@ -63,12 +65,18 @@ final class DYMessageCache: ObservableObject {
         var counts: [Int: Int] = [:]
         var friends: [DYFriend] = []
         var conversations: [DYConversationRow] = []
+        var follow: [String: Int]?
+        var friendCursor: String?
+        var friendHasMore: Bool?
     }
     var snapshot = Snapshot()
     let chatModel = DouyinWebModel()
     private var retainedChatWeb: WKWebView?
-    private var scope = ""
-    private var refreshing = Set<Int>()
+    @Published private(set) var scope = ""
+    var accountScope: String { scope }
+    private var refreshing = Set<String>()
+    private var friendsRefreshing = Set<String>()
+    private var lastSavedData: Data?
     private var file: URL? {
         guard !scope.isEmpty else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
@@ -81,31 +89,40 @@ final class DYMessageCache: ObservableObject {
         let identity = cookies.filter { $0.domain.hasSuffix("douyin.com") && ["sessionid", "sessionid_ss", "uid_tt"].contains($0.name) }
             .sorted { $0.name < $1.name }.map { $0.name + "=" + $0.value }.joined(separator: "|")
         let next = SHA256.hash(data: Data((identity.isEmpty ? "guest" : identity).utf8)).map { String(format: "%02x", $0) }.joined()
-        guard next != scope else { return }
+        guard next != scope else { DYPeopleCache.shared.activate(scope: scope); return }
         let changingAccount = !scope.isEmpty
         scope = next
-        snapshot = Snapshot()
+        snapshot = Snapshot(); lastSavedData = nil
         if let file, let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            snapshot = cached
+            snapshot = cached; lastSavedData = data
+        }
+        selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
+        follow = snapshot.follow ?? [:]; followChecked = []
+        DYPeopleCache.shared.activate(scope: scope)
+        if !DYPeopleCache.shared.hasFriendsSnapshot && !snapshot.friends.isEmpty {
+            DYPeopleCache.shared.mergeFriends(snapshot.friends, scope: scope)
         }
         if changingAccount {
-            chatModel.web?.load(URLRequest(url: URL(string: "https://www.douyin.com/chat")!))
+            // 丢弃旧账号的DOM，避免新scope误读取旧页面；视图用scope作为实例ID重建。
+            chatModel.web?.stopLoading(); chatModel.web = nil; retainedChatWeb = nil
         }
     }
     func retainChat() { retainedChatWeb = chatModel.web }
     func save() {
-        guard let file, let data = try? JSONEncoder().encode(snapshot) else { return }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        guard let file, let data = try? encoder.encode(snapshot), data != lastSavedData else { return }
         do {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            lastSavedData = data
         } catch { DYLiveModel.log("DDMSGCACHE save failed") }
     }
     func page(_ group: Int) -> DYCachedNoticePage? { snapshot.pages[String(group)] }
     func refresh(_ group: Int, bridge: DouyinBridge) async throws -> DYCachedNoticePage {
-        if refreshing.contains(group) { return page(group) ?? DYCachedNoticePage() }
-        refreshing.insert(group)
-        defer { refreshing.remove(group) }
-        let account = scope
+        let account = scope, key = scope + "|" + String(group)
+        if refreshing.contains(key) { return page(group) ?? DYCachedNoticePage() }
+        refreshing.insert(key)
+        defer { refreshing.remove(key) }
         let old = page(group)
         let boundary = Int(old?.items.map(\.time).max() ?? 0)
         let known = Set(old?.items.map(\.id) ?? [])
@@ -127,8 +144,7 @@ final class DYMessageCache: ObservableObject {
         for notice in incoming { byID[notice.id] = notice }
         let merged = Array(byID.values.sorted { $0.time == $1.time ? $0.id > $1.id : $0.time > $1.time }.prefix(500))
         let result = DYCachedNoticePage(items: merged, maxTime: old?.maxTime ?? initialCursor, hasMore: old?.hasMore ?? initialMore)
-        snapshot.pages[String(group)] = result
-        save()
+        if page(group) != result { snapshot.pages[String(group)] = result; save() }
         DYLiveModel.log("DDMSGCACHE refresh group=\(group) min=\(boundary) new=\(incoming.filter { !known.contains($0.id) }.count) cached=\(merged.count)")
         return result
     }
@@ -409,28 +425,39 @@ struct DYMessagesScreen: View {
 
     private func readConversations() async {
         guard let web = chatModel.web else { return }
+        let account = DYMessageCache.shared.accountScope
+        guard !account.isEmpty else { return }
         do {
+            _ = try? await web.callAsyncJavaScript("window.__ddAccountScope = scope;", arguments: ["scope": account], contentWorld: .page)
             guard let result = try await web.evaluateJavaScript(Self.conversationsJS) as? String,
                   let data = result.data(using: .utf8) else { return }
-            let rows = try JSONDecoder().decode([DYConversationRow].self, from: data)
-            if rows.isEmpty {
-                let text = (try? await web.evaluateJavaScript("document.body.innerText")) as? String ?? ""
-                chatStatus = text.contains("验证码登录") ? "私信需要登录，请使用网页版 / 登录" : "正在加载会话；如无记录可稍后重试"
-            } else {
-                let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-                let existing = Set(conversations.map(\.id))
-                let merged = rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
-                if merged != conversations {
-                    conversations = merged
-                    DYMessageCache.shared.snapshot.conversations = merged
-                    DYMessageCache.shared.save()
+            let delta = try JSONDecoder().decode(ConversationDelta.self, from: data)
+            guard DYMessageCache.shared.accountScope == account else { return }
+            if delta.items.isEmpty {
+                if conversations.isEmpty && delta.visible == 0 {
+                    let text = (try? await web.evaluateJavaScript("document.body.innerText")) as? String ?? ""
+                    chatStatus = text.contains("验证码登录") ? "私信需要登录，请使用网页版 / 登录" : "正在加载会话；如无记录可稍后重试"
+                } else {
+                    chatStatus = ""
                 }
-                DYMessageCache.shared.retainChat()
-                chatStatus = ""
-                await cache.resolveFollow(conversations.compactMap { $0.kind == 1 ? $0.sec : nil })
-                let unfollowed = unfollowedConversations
-                if unfollowed != cache.unfollowedRows { cache.unfollowedRows = unfollowed }
+                _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
+                return
             }
+            let updated = Dictionary(delta.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let existing = Set(conversations.map(\.id))
+            let merged = delta.items.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
+            if merged != conversations {
+                conversations = merged
+                DYMessageCache.shared.snapshot.conversations = merged
+                DYMessageCache.shared.save()
+            }
+            // 合并成功才推进网页差异基线；失败或换账号时下次仍会重发这些行。
+            _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
+            DYMessageCache.shared.retainChat()
+            chatStatus = ""
+            await cache.resolveFollow(conversations.compactMap { $0.kind == 1 ? $0.sec : nil })
+            let unfollowed = unfollowedConversations
+            if unfollowed != cache.unfollowedRows { cache.unfollowedRows = unfollowed }
         } catch {
             chatStatus = "私信加载失败，请稍后重试"
         }
@@ -473,6 +500,7 @@ struct DYMessagesScreen: View {
     /// 主列表：普通会话 + 陌生人聚合项。陌生人二级面板（StrangerConversationList）里的行不算主列表
     private static let conversationsJS = #"""
     (() => {
+      const accountScope = window.__ddAccountScope || '';
       const inStranger = e => !!e.closest('[class*="StrangerConversationList"]');
       const badgeOf = e => {
         const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"], [class*="badge-count"]');
@@ -488,7 +516,7 @@ struct DYMessagesScreen: View {
       const normal = [...document.querySelectorAll('[data-e2e="conversation-item"]')].filter(e => !inStranger(e));
       const box = document.querySelector('[class*="conversationStrangerBoxwrapper"]');
       const rows = normal.map((e, i) => [e, i, false]).concat(box ? [[box, 0, true]] : []);
-      return JSON.stringify(rows.map(([e, idx, stranger]) => {
+      const extracted = rows.map(([e, idx, stranger]) => {
         const txt = s => e.querySelector(s)?.textContent?.trim() || '';
         const name = stranger
           ? (txt('[class*="StrangerBoxtitle"]') || '陌生人消息')
@@ -497,11 +525,39 @@ struct DYMessagesScreen: View {
         const preview = txt('[class*="HinttextBox"]') || txt('[class*="StrangerBoxdesc"]') || txt('[class*="ConversationItemDescleft"]');
         const time = txt('[class*="timeStr"]') || txt('[class*="TimeStr"]');
         const c = stranger ? null : convOf(e);
-        return { id: name + '|' + (avatar || '') + '|' + stranger, name, avatar, preview, time, badge: badgeOf(e), index: String(idx), stranger,
+        const id = stranger ? 'stranger-aggregate' : typeof c?.id === 'string' && c.id ? 'conversation:' + c.id : name + '|' + (avatar || '') + '|' + stranger;
+        return { id, name, avatar, preview, time, badge: badgeOf(e), index: String(idx), stranger,
                  kind: c ? Number(c.type) : null, sec: c?.toParticipantSecUserId || null };
-      }).filter(x => x.name));
+      }).filter(x => x.name);
+      let state = window.__ddConversationDelta;
+      if (!state || state.scope !== accountScope) state = window.__ddConversationDelta = {
+        scope: accountScope, baseline: new Map(), sequence: 0, nonce: Date.now() + '-' + Math.random(), pending: null
+      };
+      const pending = new Map(state.baseline), changed = [];
+      for (const row of extracted) {
+        const fingerprint = JSON.stringify(row);
+        if (state.baseline.get(row.id) !== fingerprint) changed.push(row);
+        pending.set(row.id, fingerprint);
+      }
+      const revision = state.nonce + ':' + (++state.sequence);
+      state.pending = {revision, rows: pending};
+      return JSON.stringify({items: changed, revision, visible: extracted.length});
     })()
     """#
+
+    /// 只有原生层成功合并后才推进差异基线；异常、换账号、乱序ACK不能吞掉更新。
+    private static let conversationsAckJS = #"""
+    const state = window.__ddConversationDelta;
+    if (!state?.pending || state.pending.revision !== revision) return false;
+    state.baseline = state.pending.rows; state.pending = null;
+    return true;
+    """#
+
+    private struct ConversationDelta: Decodable {
+        let items: [DYConversationRow]
+        let revision: String
+        let visible: Int
+    }
 
     private static let scrollConversationsJS = #"""
     (() => {
@@ -639,9 +695,10 @@ struct DYMessagesScreen: View {
         await cache.prepare()
         // 先还原本地数据，不清空列表、不挡着等网络；随后只合并增量。
         counts = cache.snapshot.counts
-        friends = cache.snapshot.friends
+        friends = DYPeopleCache.shared.hasFriendsSnapshot ? DYPeopleCache.shared.friends : cache.snapshot.friends
+        if conversations != cache.snapshot.conversations { conversations = cache.snapshot.conversations }
         recent = cache.page(700)?.items ?? []
-        DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count)")
+        DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count) friends=\(friends.count)")
         if let groups = try? await bridge.noticeCounts() {
             counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
             cache.snapshot.counts = counts
@@ -652,9 +709,16 @@ struct DYMessagesScreen: View {
         } catch {
             if recent.isEmpty { self.error = error.localizedDescription }
         }
-        if friends.isEmpty {
-            friends = (try? await bridge.followingUsers().items) ?? []
-            cache.snapshot.friends = friends
+        if !DYPeopleCache.shared.hasFriendsSnapshot {
+            // 朋友没有增量游标：整份只取一次并落盘，之后进消息页不再重拉。
+            let fetched = (try? await bridge.followingUsers().items) ?? []
+            if !fetched.isEmpty {
+                DYPeopleCache.shared.mergeFriends(fetched, scope: cache.accountScope, complete: true)
+                friends = DYPeopleCache.shared.friends
+                cache.snapshot.friends = friends
+            }
+        } else if friends != DYPeopleCache.shared.friends {
+            friends = DYPeopleCache.shared.friends
         }
         cache.save()
     }
@@ -1241,7 +1305,8 @@ struct DYForwardScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @StateObject private var model = DYForwardWebModel(nativeOnly: true)
+    @StateObject private var model = DYForwardWebModel.cachedNative
+    @State private var accountPrepared = false
     @State private var selected: DYForwardContact?
     @State private var showContacts = false
     @State private var groupsOnly = false
@@ -1267,14 +1332,15 @@ struct DYForwardScreen: View {
             ZStack {
                 theme.media.strongScrim.color(for: scheme).opacity(0.24).ignoresSafeArea()
                     .onTapGesture { if !model.sending { dismiss() } }
-                DYNativeForwardPanel(contacts: model.contacts, loading: model.loading || model.sending,
-                                     status: model.message, actions: actions,
+                DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
+                                     status: accountPrepared ? model.message : "正在恢复朋友缓存…", actions: accountPrepared ? actions : [],
                                      onContact: { if !model.sending { selected = $0 } },
                                      onAction: perform, onClose: { if !model.sending { dismiss() } })
                     .frame(width: max(0, min(560, geo.size.width - 32)))
                 // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
-                if !model.layoutFixture {
+                if accountPrepared && !model.layoutFixture {
                     DYForwardWebContainer(model: model, url: item.webURL)
+                        .id(model.accountScope)
                         .frame(width: 760, height: 640)
                         .frame(width: 1, height: 1).clipped().opacity(0.001)
                         .allowsHitTesting(false).accessibilityHidden(true)
@@ -1285,7 +1351,7 @@ struct DYForwardScreen: View {
         .interactiveDismissDisabled(model.sending)
         .alert("确认转发", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
             if let target = selected {
-                Button("发送") { selected = nil; Task { await model.send(to: target) } }
+                Button("发送") { selected = nil; Task { await model.send(to: target, itemURL: item.webURL) } }
                 Button("取消", role: .cancel) { selected = nil }
             }
         } message: { Text("将当前作品发送给“\(selected?.name ?? "")”？") }
@@ -1309,13 +1375,21 @@ struct DYForwardScreen: View {
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showContacts = false } } }
             }
         }
-        .sheet(isPresented: $showLogin, onDismiss: { model.web?.reload() }) { DYForwardOfficialScreen(item: item) }
+        .sheet(isPresented: $showLogin, onDismiss: { Task { await restorePeople() } }) { DYForwardOfficialScreen(item: item) }
         .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
+        .task { await restorePeople() }
         .onAppear { DDPlayback.shared.pauseAll() }
         .onDisappear {
-            model.stop()
+            // 缓存模型持有同一个只读官网上下文；下次打开无需重建SDK/重新拉整份朋友。
             if UIApplication.shared.applicationState == .active { DDPlayback.shared.resumeAll() }
         }
+    }
+    private func restorePeople() async {
+        if model.layoutFixture { accountPrepared = true; return }
+        accountPrepared = false
+        await DYMessageCache.shared.prepare()
+        model.restorePeople(scope: DYMessageCache.shared.accountScope)
+        accountPrepared = true
     }
     private func perform(_ action: String) {
         guard !model.sending else { return }
@@ -1375,6 +1449,8 @@ struct DYForwardOfficialScreen: View {
 
 /// 由官网已加载的分享组件处理选人、登录、签名与视频卡片协议；不拼造私信请求。
 @MainActor final class DYForwardWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    static let cachedNative = DYForwardWebModel(nativeOnly: true)
+    @Published private(set) var accountScope = ""
     @Published var message = "正在打开抖音官方分享面板…"
     @Published var loading = true
     @Published var fullPage = false
@@ -1385,6 +1461,11 @@ struct DYForwardOfficialScreen: View {
     let layoutFixture: Bool
     var expectedID = ""
     weak var web: WKWebView?
+    var retainedWeb: WKWebView?
+    private var readyForSend = false
+    private var bridgeFailed = false
+    private var navigationGeneration = UUID()
+    private var lastRemoteRefresh: Date?
     private var opening: Task<Void, Never>?
     init(nativeOnly: Bool = false) {
         self.nativeOnly = nativeOnly
@@ -1402,16 +1483,56 @@ struct DYForwardOfficialScreen: View {
         #endif
     }
 
-    private struct Snapshot: Decodable { let state: String; let items: [DYForwardContact] }
-    func send(to contact: DYForwardContact) async {
+    func restorePeople(scope: String) {
+        if accountScope != scope {
+            stop(); web?.navigationDelegate = nil; retainedWeb = nil; web = nil
+            navigationGeneration = UUID(); accountScope = scope
+            readyForSend = false; bridgeFailed = false; sending = false; lastRemoteRefresh = nil; expectedID = ""
+        }
+        let cache = DYPeopleCache.shared
+        cache.activate(scope: scope)
+        if contacts != cache.contacts { contacts = cache.contacts }
+        loading = !cache.hasContactsSnapshot
+        message = cache.hasContactsSnapshot ? "已恢复朋友缓存，后台同步变化" : "正在加载分享联系人…"
+        DYLiveModel.log("DDPEOPLE restore contacts=\(contacts.count) warm=\(retainedWeb != nil)")
+        if let web {
+            // 官网没有好友变更游标：温上下文仅本地差异扫描，最多每5分钟后台校准一次来源快照。
+            if lastRemoteRefresh.map({ Date().timeIntervalSince($0) >= 300 }) ?? true { web.reload() }
+            else { openPanel() }
+        }
+    }
+    private struct Snapshot: Decodable {
+        let state: String; let items: [DYForwardContact]
+        let isDelta: Bool?; let removed: [String]?; let revision: String?
+    }
+    func send(to contact: DYForwardContact, itemURL: URL) async {
         guard !layoutFixture else { message = "合成布局测试：未发送任何消息"; return }
-        guard !sending, contacts.contains(contact), let web else { return }
-        sending = true; message = "正在转发…"
-        defer { sending = false }
+        guard !sending, contacts.contains(where: { $0.id == contact.id }) else { return }
+        let account = accountScope, target = itemURL.lastPathComponent
+        sending = true; message = "正在准备转发…"
+        defer { if accountScope == account { sending = false } }
+        let deadline = Date().addingTimeInterval(40)
+        while web == nil && Date() < deadline {
+            guard !Task.isCancelled, accountScope == account else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let web, accountScope == account else { return }
+        if expectedID != target || web.url?.path != itemURL.path {
+            readyForSend = false; bridgeFailed = false; loginRequired = false; expectedID = target
+            web.load(URLRequest(url: itemURL))
+        }
+        while !readyForSend && Date() < deadline && !loginRequired && !bridgeFailed {
+            guard !Task.isCancelled, accountScope == account, expectedID == target else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard accountScope == account, expectedID == target else { return }
+        guard readyForSend else { message = loginRequired ? "请先登录抖音，尚未发送" : "转发组件尚未就绪，尚未发送，请稍后重试"; return }
+        message = "正在转发…"
         do {
             let raw = try await web.callAsyncJavaScript(
                 "return JSON.stringify(await window.__ddNativeForward.send(expected, recipient));",
                 arguments: ["expected": expectedID, "recipient": contact.id], contentWorld: .page) as? String
+            guard accountScope == account, expectedID == target else { return }
             let data = raw?.data(using: .utf8)
             let response = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
             switch response?["state"] {
@@ -1422,6 +1543,7 @@ struct DYForwardOfficialScreen: View {
             }
             DYLiveModel.log("DDFORWARD send=\(response?["state"] ?? "unconfirmed") source=\(response?["source"] ?? "unknown") elapsed_ms=\(response?["elapsed_ms"] ?? "unknown")")
         } catch {
+            guard accountScope == account, expectedID == target else { return }
             message = "发送未确认，请到抖音消息核对，勿重复发送"
             let failure = error as NSError
             DYLiveModel.log("DDFORWARD send=unconfirmed source=webkit code=\(failure.code)")
@@ -1429,10 +1551,26 @@ struct DYForwardOfficialScreen: View {
     }
 
     func stop() { opening?.cancel(); opening = nil; web?.stopLoading() }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { openPanel() }
+    /// 温启动：网页仍在上一条作品且分享组件已就绪，只做一次差异扫描，不重新加载页面。
+    func warmPanel() {
+        guard let web, web.url?.lastPathComponent == expectedID else { return }
+        openPanel()
+    }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navigationGeneration = UUID(); readyForSend = false; bridgeFailed = false; opening?.cancel()
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView.url?.lastPathComponent == expectedID else { return }
+        lastRemoteRefresh = Date(); openPanel()
+    }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail() }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail() }
-    private func fail() { loading = false; message = "官网加载失败，请关闭后重试" }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code != NSURLErrorCancelled { fail() }
+    }
+    private func fail() {
+        readyForSend = false; bridgeFailed = true; loading = false
+        message = contacts.isEmpty ? "官网加载失败，请关闭后重试" : "已显示朋友缓存，后台同步暂时失败"
+    }
     func toggleFullPage() {
         fullPage.toggle()
         if fullPage {
@@ -1445,28 +1583,44 @@ struct DYForwardOfficialScreen: View {
     private func openPanel() {
         opening?.cancel()
         guard !fullPage else { return }
-        loading = true; contacts = []; loginRequired = false
-        message = nativeOnly ? "正在加载分享联系人…" : "正在打开抖音官方分享面板…"
+        loading = nativeOnly ? !DYPeopleCache.shared.hasContactsSnapshot : true
+        loginRequired = false; bridgeFailed = false
+        if !sending { message = nativeOnly && !contacts.isEmpty ? "已显示朋友缓存，后台同步变化" : nativeOnly ? "正在加载分享联系人…" : "正在打开抖音官方分享面板…" }
+        let generation = navigationGeneration, account = accountScope, work = expectedID
         opening = Task { [weak self] in
             for _ in 0..<80 {
-                guard !Task.isCancelled, let self, let web = self.web else { return }
+                guard !Task.isCancelled, let self, let web = self.web,
+                      self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
                 if let raw = try? await web.evaluateJavaScript(Self.openPanelJS) as? String,
                    let data = raw.data(using: .utf8),
                    let response = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                    let state = response["state"], state == "ready" || state == "login" {
+                    guard !Task.isCancelled, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
                     if self.nativeOnly {
                         if state == "login" {
-                            self.contacts = []; self.loginRequired = true; self.loading = false
-                            self.message = "登录抖音后显示可转发的朋友"
+                            self.readyForSend = false; self.loginRequired = true; self.loading = false
+                            self.message = self.contacts.isEmpty ? "登录抖音后显示可转发的朋友" : "已显示朋友缓存，登录抖音后可转发"
                             return
                         }
-                        if let json = try? await web.callAsyncJavaScript("return JSON.stringify(window.__ddNativeForward.read(expected));", arguments: ["expected": self.expectedID], contentWorld: .page) as? String,
+                        if let json = try? await web.callAsyncJavaScript("return JSON.stringify(window.__ddNativeForward.read(expected, true));", arguments: ["expected": work], contentWorld: .page) as? String,
                            let bytes = json.data(using: .utf8), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: bytes),
                            snapshot.state == "ready" || snapshot.state == "empty" {
-                            if self.contacts != snapshot.items { self.contacts = snapshot.items }
-                            self.loginRequired = false; self.loading = false
-                            self.message = snapshot.items.isEmpty ? "官网暂无可读取的分享联系人" : "选择朋友转发当前作品"
-                            DYLiveModel.log("DDFORWARD native-contacts=\(snapshot.items.count)")
+                            guard !Task.isCancelled, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
+                            let cache = DYPeopleCache.shared
+                            guard cache.scope == account else { return }
+                            if snapshot.isDelta == true, let removed = snapshot.removed, !removed.isEmpty {
+                                let deleted = Set(removed)
+                                cache.mergeContacts(cache.contacts.filter { !deleted.contains($0.id) } + snapshot.items, scope: account, complete: true)
+                            } else {
+                                cache.mergeContacts(snapshot.items, scope: account, complete: snapshot.isDelta != true)
+                            }
+                            if self.contacts != cache.contacts { self.contacts = cache.contacts }
+                            self.loginRequired = false; self.loading = false; self.readyForSend = true
+                            if !self.sending { self.message = self.contacts.isEmpty ? "官网暂无可读取的分享联系人" : "选择朋友转发当前作品" }
+                            if let revision = snapshot.revision {
+                                _ = try? await web.callAsyncJavaScript("return window.__ddNativeForward.ack(revision);", arguments: ["revision": revision], contentWorld: .page)
+                            }
+                            DYLiveModel.log("DDFORWARD native-contacts=\(self.contacts.count) changed=\(snapshot.items.count) removed=\(snapshot.removed?.count ?? 0)")
                             return
                         }
                     } else {
@@ -1478,12 +1632,13 @@ struct DYForwardOfficialScreen: View {
                 }
                 try? await Task.sleep(for: .milliseconds(350))
             }
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
             if let diag = try? await self.web?.evaluateJavaScript("JSON.stringify({path:location.pathname,entries:[...document.querySelectorAll('[data-e2e]')].map(e=>e.getAttribute('data-e2e')).filter(s=>/share/.test(s)),props:(()=>{const e=document.querySelector('[data-e2e=video-player-share]');const k=e&&Object.keys(e).find(k=>k.startsWith('__reactProps'));return k?Object.keys(e[k]):[]})(),panel:!!document.querySelector('[data-e2e=video-share-container]')})") as? String {
                 DYLiveModel.log("DDFORWARD diag=\(diag)")
             }
-            self.loading = false
-            self.message = "暂未打开官网分享面板，可点“完整官网”手动打开"
+            guard !Task.isCancelled, self.navigationGeneration == generation, self.accountScope == account else { return }
+            self.loading = false; self.readyForSend = false; self.bridgeFailed = true
+            self.message = self.nativeOnly ? (self.contacts.isEmpty ? "朋友同步暂未就绪，请稍后重试" : "已显示朋友缓存，后台同步暂未完成") : "暂未打开官网分享面板，可点“完整官网”手动打开"
             DYLiveModel.log("DDFORWARD panel=unavailable")
         }
     }
@@ -1540,8 +1695,10 @@ struct DYForwardOfficialScreen: View {
         if (identifier(store.awemeInfo.awemeId) !== expected) return {state: 'wrong-work'};
         return {state: list.length ? 'ready' : 'empty', store, list, confirm};
       }
+      let peopleBaseline = new Map(), peopleHasBaseline = false, peopleSequence = 0, peoplePending = null;
+      const peopleNonce = Date.now() + '-' + Math.random();
       window.__ddNativeForward = {
-        read(expected) {
+        read(expected, incremental = false) {
           const snapshot = inspect(expected), items = [], seen = new Set();
           for (const user of snapshot.list || []) {
             const id = key(user), name = user.remark_name || user.nickname;
@@ -1550,7 +1707,18 @@ struct DYForwardOfficialScreen: View {
             const avatar = user.avatar_thumb?.url_list?.[0];
             items.push({id, name, avatar: typeof avatar === 'string' ? avatar : null, kind: kind(user)});
           }
-          return {state: snapshot.state, items};
+          if (!incremental || !['ready','empty'].includes(snapshot.state)) return {state: snapshot.state, items};
+          const current = new Map(items.map(row => [row.id, JSON.stringify(row)]));
+          const changed = peopleHasBaseline ? items.filter(row => peopleBaseline.get(row.id) !== current.get(row.id)) : items;
+          const removed = peopleHasBaseline ? [...peopleBaseline.keys()].filter(id => !current.has(id)) : [];
+          const revision = peopleNonce + ':' + (++peopleSequence);
+          peoplePending = {revision, rows: current};
+          return {state: snapshot.state, items: changed, removed, isDelta: peopleHasBaseline, revision};
+        },
+        ack(revision) {
+          if (!peoplePending || peoplePending.revision !== revision) return false;
+          peopleBaseline = peoplePending.rows; peopleHasBaseline = true; peoplePending = null;
+          return true;
         },
         async send(expected, recipient) {
           const snapshot = inspect(expected);
@@ -1622,6 +1790,18 @@ private struct DYForwardWebContainer: UIViewRepresentable {
     @ObservedObject var model: DYForwardWebModel
     let url: URL
     func makeUIView(context: Context) -> WKWebView {
+        // 复用上次打开时的只读官网上下文：朋友数据与安全SDK都不必重新加载。
+        if let existing = model.retainedWeb {
+            model.web = existing
+            existing.navigationDelegate = model; existing.uiDelegate = model
+            if existing.url?.lastPathComponent != url.lastPathComponent {
+                model.expectedID = url.lastPathComponent
+                existing.load(URLRequest(url: url))
+            } else {
+                model.warmPanel()
+            }
+            return existing
+        }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.allowsInlineMediaPlayback = true
@@ -1648,9 +1828,15 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         web.isInspectable = true
         #endif
         web.load(URLRequest(url: url))
+        model.retainedWeb = web
         return web
     }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        if uiView.url?.lastPathComponent != url.lastPathComponent, model.expectedID != url.lastPathComponent {
+            model.expectedID = url.lastPathComponent
+            uiView.load(URLRequest(url: url))
+        }
+    }
 }
 
 private struct DYMessagePlay: Identifiable {

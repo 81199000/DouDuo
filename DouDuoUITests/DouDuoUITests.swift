@@ -21,6 +21,10 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["刷新推荐"].exists)
         attach(app, "menu-cleanup-root")
         app.buttons["设置"].tap()
+        // 原生 Menu 子菜单偶发被动画吞掉一次点击：重开一次菜单再点，仍以真实控件存在为验收。
+        if !app.buttons["播放设置"].waitForExistence(timeout: 3) && app.buttons["设置"].exists {
+            app.buttons["设置"].tap()
+        }
         XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["缓存管理"].exists)
         attach(app, "menu-cleanup-settings")

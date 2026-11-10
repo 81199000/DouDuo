@@ -105,5 +105,18 @@ function fixture(options={}) {
     const result=await pending;assert.equal(result.state,'sent');assert.equal(result.source,'callback');
     assert.equal(f.sends.length,1);
   });
+  await check('contact scan sends only changes after native ACK',()=>{
+    const f=fixture(), first=f.api.read(work,true);assert.equal(first.items.length,2);
+    assert.equal(f.api.ack(first.revision),true);
+    assert.equal(f.api.read(work,true).items.length,0);
+    const saved=alice.nickname;alice.nickname='合成改名';const mark=alice.remark_name;alice.remark_name='合成新备注';
+    const changed=f.api.read(work,true);assert.equal(changed.items.length,1);assert.equal(changed.items[0].id,'1|'+alice.uid);
+    alice.nickname=saved;alice.remark_name=mark;
+  });
+  await check('contact ACK is transactional and removals are explicit',()=>{
+    const list=[alice,group],f=fixture({list});const first=f.api.read(work,true), second=f.api.read(work,true);
+    assert.equal(second.items.length,2);assert.equal(f.api.ack(first.revision),false);f.api.ack(second.revision);
+    list.pop();const removed=f.api.read(work,true);assert.equal(removed.items.length,0);assert.equal(removed.removed[0],'2|'+group.uid);
+  });
   console.log(`Native forward bridge: ${total} synthetic tests passed; real sends=0`);
 })().catch(e=>{console.error(e);process.exitCode=1;});
