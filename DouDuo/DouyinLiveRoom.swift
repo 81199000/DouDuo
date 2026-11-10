@@ -45,6 +45,7 @@ final class DYLiveModel: ObservableObject {
     /// 关注的主播里正在开播的（网页版直播首页顶上那排头像，复用同一个接口）
     @Published var followLive: [DYLiveRoom] = []
     private var followLiveFetchedAt = Date.distantPast
+    private var followedOnly = false
     @Published var clean = false
     @Published var entered = false
     @Published var muted = false { didSet { vlc.mediaPlayer.audio?.isMuted = muted } }
@@ -96,7 +97,7 @@ final class DYLiveModel: ObservableObject {
     }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
-        guard !loading else { return }
+        guard !loading, !followedOnly else { return }
         let generation = requestGeneration, requestedZone = zone
         let start = ProcessInfo.processInfo.systemUptime
         loading = true
@@ -175,12 +176,13 @@ final class DYLiveModel: ObservableObject {
         loadedRoom = nil; vlc.stop(); ready = false
     }
     func reset() {
+        followedOnly = false
         requestGeneration = UUID(); loading = false
         stop(); rooms = []; currentID = nil; error = nil; playbackError = nil
         entered = false; clean = false
     }
     func select(_ z: DYLiveZone?, _ bridge: DouyinBridge) {
-        guard z != zone else { return }
+        guard z != zone || rooms.isEmpty else { return }
         zone = z; reset()
         Task { await load(bridge, reset: true) }
     }
@@ -200,6 +202,7 @@ final class DYLiveModel: ObservableObject {
         guard !followLive.isEmpty else { return }
         zone = nil; reset()
         rooms = followLive; currentID = followLive.first?.id
+        followedOnly = true // 关注列表到末尾不能混入推荐直播。
         fetchedAt = Date()
         Self.log("DDLIVE_FOLLOWED count=\(followLive.count)")
     }
@@ -211,22 +214,26 @@ final class DYLiveModel: ObservableObject {
     }
 }
 
-/// 直播广场一级分类（对齐抖音网页版：精选 / 关注 / 同城 / 游戏 / 明星 / 聊天 / 唱歌 / 团播 / 颜值）。
-/// 目前只有精选、关注、游戏有真实数据源；其余为占位，点选时给出明确提示而不是静默无反应。
-private enum DYLiveCategoryKind { case featured, followed, gameZones, pending }
+/// 仅展示已核验真实来源的分类；游戏仍可进一步选择具体专区。
+private enum DYLiveCategoryKind {
+    case featured, followed, gameZones
+    case partition(DYLiveZone)
+}
 private struct DYLiveCategory: Identifiable {
-    let id: String, name: String, kind: DYLiveCategoryKind
+    let id: String, name: String
+    let kind: DYLiveCategoryKind
 }
 private let ddLiveCategories: [DYLiveCategory] = [
     .init(id: "featured", name: "精选", kind: .featured),
     .init(id: "followed", name: "关注", kind: .followed),
-    .init(id: "nearby", name: "同城", kind: .pending),
     .init(id: "game", name: "游戏", kind: .gameZones),
-    .init(id: "star", name: "明星", kind: .pending),
-    .init(id: "chat", name: "聊天", kind: .pending),
-    .init(id: "sing", name: "唱歌", kind: .pending),
-    .init(id: "group", name: "团播", kind: .pending),
-    .init(id: "beauty", name: "颜值", kind: .pending),
+    .init(id: "chat", name: "聊天", kind: .partition(.init(id: "101", type: "4", name: "聊天"))),
+    .init(id: "music", name: "音乐", kind: .partition(.init(id: "102", type: "4", name: "音乐"))),
+    .init(id: "anime", name: "二次元", kind: .partition(.init(id: "104", type: "4", name: "二次元"))),
+    .init(id: "dance", name: "舞蹈", kind: .partition(.init(id: "105", type: "4", name: "舞蹈"))),
+    .init(id: "culture", name: "文化", kind: .partition(.init(id: "106", type: "4", name: "文化"))),
+    .init(id: "life", name: "生活", kind: .partition(.init(id: "107", type: "4", name: "生活"))),
+    .init(id: "exercise", name: "运动", kind: .partition(.init(id: "108", type: "4", name: "运动"))),
 ]
 
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
@@ -284,6 +291,8 @@ struct DYLiveFeed: View {
                     Text(model.currentID ?? "-").accessibilityIdentifier("live.currentID")
                     Text(String(format: "%.1f", model.vlc.current)).accessibilityIdentifier("live.time")
                     Text(model.ready ? "1" : "0").accessibilityIdentifier("live.status")
+                    Text("\(model.zone?.id ?? "featured")|\(model.rooms.count)|\(model.loading ? "loading" : "loaded")")
+                        .accessibilityIdentifier("live.source")
                 }.font(.caption2).opacity(0.01).allowsHitTesting(false)
                 #endif
             }
@@ -334,11 +343,12 @@ struct DYLiveFeed: View {
         .sheet(isPresented: $showCategories) {
             DYLiveCategories(selection: model.zone) { z in
                 showCategories = false
-                model.select(z, bridge)
                 if let z {
+                    model.select(z, bridge)
                     selectedCategory = "game"
                     categoryHint = "已切到「\(z.name)」专区"
                 } else {
+                    model.backToFeatured(bridge)
                     selectedCategory = "featured"; categoryHint = nil
                 }
             }
@@ -349,7 +359,7 @@ struct DYLiveFeed: View {
 
     private var categoryButton: some View {
         Button { showCategories = true } label: {
-            Label(model.zone?.name ?? "分类", systemImage: "line.3.horizontal.decrease")
+            Label("游戏专区", systemImage: "line.3.horizontal.decrease")
                 .font(.subheadline.weight(.medium))
                 .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
         }
@@ -432,7 +442,7 @@ struct DYLiveFeed: View {
         .foregroundStyle(foreground)
     }
 
-    /// 一级分类条：精选 / 关注 / 同城 / 游戏 / 明星 / 聊天 / 唱歌 / 团播 / 颜值
+    /// 一级分类条：只显示有真实列表接口的入口，横向滚动容纳窄屏。
     private var categoryStrip: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("全部分类").font(.subheadline.weight(.semibold))
@@ -450,10 +460,12 @@ struct DYLiveFeed: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("live.category.\(c.id)")
+                        .accessibilityValue(selectedCategory == c.id ? "已选择" : "未选择")
                     }
                 }
             }
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier("live.categoryStrip")
         }
         .foregroundStyle(foreground)
     }
@@ -471,10 +483,12 @@ struct DYLiveFeed: View {
             model.openFollowed(bridge)
         case .gameZones:
             selectedCategory = c.id
+            model.select(DYLiveZone(id: "103", type: "4", name: "游戏"), bridge)
             categoryHint = "「游戏」下可选具体专区"
             showCategories = true
-        case .pending:
-            categoryHint = "「\(c.name)」暂未接入分区数据，当前继续看精选直播"
+        case .partition(let zone):
+            selectedCategory = c.id; categoryHint = nil
+            model.select(zone, bridge)
         }
     }
 
