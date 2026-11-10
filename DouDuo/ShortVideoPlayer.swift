@@ -269,6 +269,12 @@ struct PlayerPage: View {
             player?.isMuted = m
             vlc?.mediaPlayer.audio?.isMuted = m
         }
+        // 设置里改播放速度：立刻应用到当前播放器（暂停时等下次播放再按 0.25s 轮询对齐）
+        .onChange(of: lockedRate) { _, rate in
+            guard !rateBoost else { return }
+            if let v = vlc { v.setRate(Float(rate)) }
+            else if let p = player, isPlaying { p.rate = Float(rate) }
+        }
         .onChange(of: isActive) { _, active in
             if active { bindRemote() }
             if let v = vlc {

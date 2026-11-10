@@ -43,7 +43,8 @@ struct PlayerGestureView: UIViewRepresentable {
 
         let long = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.handleLong(_:)))
         long.minimumPressDuration = 0.5
-        long.allowableMovement = 12     // 手指移动超 12pt（横滑/竖滑）→ 长按取消，让位给 pan/分页
+        // 长按期间要能跟手指：上/下滑 50pt 才判定锁定/解锁（原来 12pt 就取消长按，导致锁不上 2 倍速）
+        long.allowableMovement = .greatestFiniteMagnitude
         long.delegate = c
         c.long = long
 
@@ -106,6 +107,7 @@ struct PlayerGestureView: UIViewRepresentable {
                 }
             case .ended, .cancelled, .failed:
                 frozenScroll?.panGestureRecognizer.isEnabled = true; frozenScroll = nil
+                pressLocked = false
                 parent.onLongPress(false)
             default: break
             }

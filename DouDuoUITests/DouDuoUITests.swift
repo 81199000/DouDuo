@@ -384,6 +384,58 @@ final class DouDuoUITests: XCTestCase {
         _ = close
     }
 
+    /// 长按下滑锁定 2 倍速；设置 → 播放设置 → 播放速度 能改回指定速度。
+    func testPlaybackRateLockedByLongPressDownAndSetting() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(3)
+        let rate = app.staticTexts["douyin.rate"]
+        XCTAssertTrue(rate.waitForExistence(timeout: 10))
+
+        // 先经设置把速度归 1（锁定倍速会持久化，上一次测试可能留在 2）
+        openSpeedMenu(app)
+        XCTAssertTrue(app.buttons["正常速度"].waitForExistence(timeout: 5))
+        app.buttons["正常速度"].tap()
+        XCTAssertTrue(wait(label: "1", on: rate, timeout: 8), "设置里选正常速度应回到 1 倍，当前 \(rate.label)")
+
+        // 长按 0.9s 后向下拖 18% 屏高，再停住 0.4s 让手势结算，最后松手
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.40))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.58))
+        start.press(forDuration: 0.9, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.4)
+        XCTAssertTrue(wait(label: "2", on: rate, timeout: 8), "长按下滑应锁定 2 倍速，当前 \(rate.label)")
+        attach(app, "rate-locked-2x")
+
+        // 再从设置改成 1.5 倍速
+        openSpeedMenu(app)
+        XCTAssertTrue(app.buttons["1.5 倍速"].waitForExistence(timeout: 5))
+        app.buttons["1.5 倍速"].tap()
+        XCTAssertTrue(wait(label: "1.5", on: rate, timeout: 8), "设置里选 1.5 倍速应生效，当前 \(rate.label)")
+        attach(app, "rate-1-5x")
+    }
+
+    /// 更多 → 设置 → 播放设置 → 播放速度
+    private func openSpeedMenu(_ app: XCUIApplication) {
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(more.isEmpty, "当前页没有可点的「更多」")
+        more[0].tap()
+        if !app.buttons["设置"].waitForExistence(timeout: 4) { more[0].tap() }
+        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 5))
+        app.buttons["设置"].tap()
+        if !app.buttons["播放设置"].waitForExistence(timeout: 3), app.buttons["设置"].exists { app.buttons["设置"].tap() }
+        XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
+        app.buttons["播放设置"].tap()
+        XCTAssertTrue(app.buttons["播放速度"].waitForExistence(timeout: 5), "播放设置里应有「播放速度」")
+        app.buttons["播放速度"].tap()
+        attach(app, "settings-playback-speed")
+    }
+
+    private func wait(label: String, on element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let exp = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
+    }
+
     /// 右侧栏顺序与间距：评论在收藏之上，且相邻图标间距收紧。
     func testRailCommentAboveCollectWithTightSpacing() throws {
         let app = XCUIApplication()

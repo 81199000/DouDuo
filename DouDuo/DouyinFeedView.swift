@@ -1063,6 +1063,9 @@ struct DouyinFeedScreen: View {
     @State private var topNudge: CGFloat = 0
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
     @State private var topBarWidth: CGFloat?
+    /// 播放速度（设置 → 播放设置 → 播放速度）：长按 2 倍速松手、换视频都回到它
+    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1497,9 +1500,12 @@ struct DouyinFeedScreen: View {
                     .accessibilityIdentifier("douyin.toast")
             }
             #if DEBUG
-            // UI 测试锚点：当前视频 id
+            // UI 测试锚点：当前视频 id / 当前锁定倍速
             Text(currentID ?? "-").font(.caption2).opacity(0.01)
                 .accessibilityIdentifier("douyin.currentID")
+                .allowsHitTesting(false)
+            Text(String(format: "%g", lockedRate)).font(.caption2).opacity(0.01)
+                .accessibilityIdentifier("douyin.rate")
                 .allowsHitTesting(false)
             #endif
         }
@@ -1853,6 +1859,8 @@ struct DouyinFeedScreen: View {
         }
     }
 
+    private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
+
     private func showToast(_ s: String) {
         feed.toast = s
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
@@ -1873,6 +1881,23 @@ struct DouyinFeedScreen: View {
                     Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
                     Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
+                    Menu {
+                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
+                            Button {
+                                lockedRate = r
+                            } label: {
+                                if abs(lockedRate - r) < 0.01 {
+                                    Label(rateTitle(r), systemImage: "checkmark")
+                                } else {
+                                    Text(rateTitle(r))
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("播放速度", systemImage: "speedometer")
+                    }
+                    .accessibilityIdentifier("douyin.playback.speed")
+                    Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
                 } label: { Label("播放设置", systemImage: "play.circle") }
                 Menu {
                     Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
@@ -1986,8 +2011,6 @@ struct DYVideoPage: View {
     @State private var danmakuLoaded = false
     @State private var saving = false
     @State private var showDanmakuInput = false
-    @AppStorage("douyin_rate_v1") private var lockedRate = 1.0
-    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
@@ -2260,13 +2283,6 @@ struct DYVideoPage: View {
                     .accessibilityIdentifier("douyin.dislike")
             }
             if item.images.isEmpty {
-                // 锁定倍速：选了之后每个视频都按这个速度放，直到改回正常
-                Picker("倍速", selection: $lockedRate) {
-                    ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
-                        Text(r == 1 ? "正常速度" : String(format: "%g 倍速", r)).tag(r)
-                    }
-                }
-                Toggle("后台播放（听书）", systemImage: "headphones", isOn: $bgPlay)
                 DYDanmakuOptions(onSend: bridge == nil ? nil : {
                     showDanmakuInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
