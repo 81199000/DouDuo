@@ -1464,6 +1464,21 @@ private struct DYAuthorPlay: Identifiable {
     let index: Int
 }
 
+// MARK: - 关注页直播推荐条策略
+
+/// 关注页顶部「直播中」头像排的展开/收起规则。
+/// 官方行为：进入关注页展开提醒，用户上滑换到下一条时收成「N 个直播」胶囊，点胶囊再展开。
+enum DYFollowLiveStripPolicy {
+    /// 首屏落位（old == nil）或仍在同一条时都不收起；只有真正从一条换到另一条才算上滑。
+    static func shouldCollapse(old: String?, new: String?, expanded: Bool) -> Bool {
+        guard expanded, let old, let new else { return false }
+        return old != new
+    }
+
+    /// 展开态的胶囊文案。
+    static func pillTitle(count: Int) -> String { "\(count) 个直播" }
+}
+
 // MARK: - 关注流
 
 struct DYFollowFeed: View {
@@ -1478,6 +1493,14 @@ struct DYFollowFeed: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @State private var liveNow: [DYLiveRoom] = []
+    /// 进入关注页先展开直播推荐条，上滑换到下一个视频就收成一颗「N 个直播」胶囊，点开可再看。
+    @State private var liveStripExpanded = true
+    #if DEBUG && targetEnvironment(simulator)
+    /// 仅模拟器布局截图用：强制显示收起态，App Store/真机产物里不存在。
+    private var layoutForceCollapsed: Bool {
+        ProcessInfo.processInfo.environment["DOUDUO_FOLLOW_LIVE_FORCE_COLLAPSED"] == "1"
+    }
+    #endif
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
     @State private var currentID: String?
     @State private var preloader = DYPreloader()
@@ -1531,7 +1554,17 @@ struct DYFollowFeed: View {
             }
         }
         .overlay(alignment: .top) {
-            if !liveNow.isEmpty { liveRow.padding(.top, (hSize == .regular ? 20 : 80) + 52) }
+            if !liveNow.isEmpty {
+                Group {
+                    #if DEBUG && targetEnvironment(simulator)
+                    if liveStripExpanded && !layoutForceCollapsed { liveRow } else { livePill }
+                    #else
+                    if liveStripExpanded { liveRow } else { livePill }
+                    #endif
+                }
+                .padding(.top, (hSize == .regular ? 20 : 80) + 52)
+                .animation(.easeOut(duration: 0.22), value: liveStripExpanded)
+            }
         }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
@@ -1546,16 +1579,54 @@ struct DYFollowFeed: View {
         }
         .onChange(of: currentID) { old, new in
             if new == nil, let old, m.items.contains(where: { $0.id == old }) { currentID = old; return }
+            // 用户上滑换到下一条就收起推荐条；首屏落位（old == nil）不算上滑。
+            if DYFollowLiveStripPolicy.shouldCollapse(old: old, new: new, expanded: liveStripExpanded) {
+                withAnimation(.easeOut(duration: 0.2)) { liveStripExpanded = false }
+            }
             guard let i = m.items.firstIndex(where: { $0.id == new }) else { return }
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
-        .onChange(of: active) { _, a in if !a { preloader.clear() } else { Task { await loadLiveNow() } } }
+        .onChange(of: active) { _, a in
+            if !a { preloader.clear() } else {
+                liveStripExpanded = true
+                Task { await loadLiveNow() }
+            }
+        }
         .onDisappear { preloader.clear() }
     }
 
     private func loadLiveNow() async {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["DOUDUO_FOLLOW_LIVE_FIXTURE"] == "1" {
+            liveNow = (0..<8).map { i in
+                DYLiveRoom(id: "fixture-\(i)", webRid: "0", title: "", owner: "合成主播\(i + 1)",
+                           avatar: nil, cover: nil, viewers: "0", hls: [:], portrait: true)
+            }
+            return
+        }
+        #endif
         if let r = try? await bridge.fetchFollowLive() { liveNow = r }
+    }
+
+    /// 收起态：一行「N 个直播」胶囊，点一下重新展开头像排。
+    private var livePill: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.24)) { liveStripExpanded = true }
+        } label: {
+            HStack(spacing: 4) {
+                Text(DYFollowLiveStripPolicy.pillTitle(count: liveNow.count)).font(.caption.weight(.bold))
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+            }
+            .foregroundStyle(theme.media.onMedia.color(for: scheme))
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+            .overlay(Capsule().stroke(theme.media.onMedia.color(for: scheme).opacity(0.22), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.follow.livePill")
+        .themeShadow(.mediaLabel)
     }
 
     /// 顶部「直播中」头像：跟抖音关注页一样，点了直接进这个主播的直播间
