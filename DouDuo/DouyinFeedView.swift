@@ -2005,6 +2005,18 @@ enum DYTab: CaseIterable { case follow, recommend, live
 struct DYVideoPage: View {
     @Environment(\.horizontalSizeClass) private var hSize
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
+    private var actionColumnWidth: CGFloat { 54 }
+    private var chromeSidePadding: CGFloat { 12 }
+    // Full-bleed ancestors may report zero safe-area insets. Read the app's
+    // foreground key window as a fallback, never a guessed device/rail width.
+    private var systemColumnInset: CGFloat {
+        let windowInset = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
+        return max(insets.trailing, windowInset)
+    }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -2109,11 +2121,14 @@ struct DYVideoPage: View {
                 info(fg)
                 Spacer(minLength: 0)
                 actions(fg)
+                    .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
+                        isRegular: hSize == .regular, trailingInset: systemColumnInset,
+                        columnWidth: actionColumnWidth, outerPadding: chromeSidePadding))
                     .modifier(DYRailReservedNudge())
                     .offset(x: hSize == .compact ? -9 : 0)
                     .padding(.bottom, item.images.isEmpty ? 56 : 0)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, chromeSidePadding)
             .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
         }
         .overlay(alignment: .bottom) {
@@ -2263,7 +2278,7 @@ struct DYVideoPage: View {
             .padding(.vertical, 8)
             .frame(width: railWidth)
             .ddGlassCapsule()
-            .frame(width: 54) // 保留列中心，与右侧系统信号栏竖直对齐
+            .frame(width: actionColumnWidth)
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
