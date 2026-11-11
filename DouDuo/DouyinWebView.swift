@@ -160,26 +160,8 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     private var filledCode = false
     private var observers: [NSKeyValueObservation] = []
 
-    #if DEBUG
-    private var cmdTimer: Timer?
-    #endif
-
     func attach(_ wv: WKWebView) {
         web = wv
-        #if DEBUG
-        // 调试遥控：往 Documents/dd-cmd.js 写一段 JS，网页版里执行，结果写 dd-cmd.out（只在 DEBUG，模拟器调试用）
-        cmdTimer?.invalidate()
-        cmdTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let f = dir.appendingPathComponent("dd-cmd.js")
-            guard let js = try? String(contentsOf: f, encoding: .utf8) else { return }
-            try? FileManager.default.removeItem(at: f)
-            self?.web?.evaluateJavaScript(js) { r, e in
-                let out = "\(r.map { String(describing: $0) } ?? "nil") \(e.map { String(describing: $0) } ?? "")"
-                try? out.write(to: dir.appendingPathComponent("dd-cmd.out"), atomically: true, encoding: .utf8)
-            }
-        }
-        #endif
         observers = [
             wv.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
                 let p = w.estimatedProgress
@@ -320,24 +302,31 @@ private let ddVideoTapHookJS = #"""
   if (window.__ddVideoTapHook) return; window.__ddVideoTapHook = 1;
   const post = (o) => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
   const findID = (root) => {
-    const a = root.querySelector('a[href*="/video/"]');
-    if (a) { const m = a.href.match(/\/video\/(\d+)/); if (m) return m[1]; }
-    // 属性里的长数字（aweme id 一般 15~25 位；时间戳才 10 位，不会误伤）
-    for (const el of [root, ...root.querySelectorAll('*')]) {
-      for (const attr of el.attributes || []) {
-        if (/^\d{15,25}$/.test(attr.value)) return attr.value;
-      }
-    }
-    // React props / fiber 向上找
-    for (let n = root, d = 0; n && d < 10; n = n.parentElement, d++) {
+    // Verified IM ShareAweme payload: message.parsedContent (aweType=800).
+    // Never infer an aweme ID from a user/message ID or an arbitrary DOM attribute.
+    const fromMessage = message => {
+      try {
+        const payload = message.parsedContent || JSON.parse(message.content || 'null');
+        const id = payload?.itemId;
+        return Number(payload?.aweType) === 800 && typeof id === 'string' && /^\d{15,25}$/.test(id) ? id : null;
+      } catch (_) { return null; }
+    };
+    const seen = new Set();
+    for (let n = root, d = 0; n && d < 12; n = n.parentElement, d++) {
       for (const k of Object.keys(n)) {
-        if (!k.startsWith('__reactProps') && !k.startsWith('__reactFiber')) continue;
-        const p = n[k];
-        const mp = p && p.memoizedProps ? p.memoizedProps : p;
-        const cands = [mp?.item?.awemeId, mp?.item?.aweme_id, mp?.data?.awemeId, mp?.data?.aweme_id,
-                       mp?.awemeId, mp?.aweme_id, mp?.itemId, mp?.item?.itemId, mp?.video?.awemeId];
-        for (const c of cands) { if (c && String(c).length > 5) return String(c); }
+        if (k.startsWith('__reactProps')) {
+          const message = n[k]?.message;
+          if (message) return fromMessage(message);
+        }
+        if (!k.startsWith('__reactFiber') && !k.startsWith('__reactInternalInstance')) continue;
+        for (let f = n[k], depth = 0; f && depth < 24 && !seen.has(f); f = f.return, depth++) {
+          seen.add(f);
+          const message = f.memoizedProps?.message;
+          // Stop at this card's nearest message. Never read a sibling/conversation payload.
+          if (message) return fromMessage(message);
+        }
       }
+      if (n.matches?.('[data-e2e="message-item"]')) break;
     }
     return null;
   };
@@ -363,30 +352,8 @@ private let ddVideoTapHookJS = #"""
         post({type: 'video', id: id});
         return;
       }
-      // 抽不到：把祖先类名链 + 全链长数字扫描结果回传，用来迭代选择器
-      let chain = [];
-      for (let n = media, d = 0; n && n !== pane && d < 10; n = n.parentElement, d++) {
-        chain.push(String(n.className || n.tagName).split(' ')[0].slice(0, 40));
-      }
-      let wideID = null;
-      for (let n = media, d = 0; n && n !== pane && d < 5; n = n.parentElement, d++) {
-        for (const el of [n, ...Array.from(n.children || [])]) {
-          for (const attr of el.attributes || []) {
-            if (/^\d{15,25}$/.test(attr.value)) { wideID = attr.value; break; }
-          }
-          if (wideID) break;
-        }
-        if (wideID) break;
-      }
-      if (wideID) {
-        ev.preventDefault(); ev.stopPropagation();
-        console.log('DDVIDEOTAP widejump ' + wideID);
-        post({type: 'video', id: wideID});
-        return;
-      }
-      const slim = (card.outerHTML || '').slice(0, 600);
-      console.log('DDVIDEOTAP miss ' + chain.join(' > ') + ' | ' + slim);
-      post({type: 'video-miss', html: chain.join(' > ') + ' || ' + slim});
+      // Leave unsupported cards to the official web UI; don't guess an ID.
+      post({type: 'video-miss', html: 'shared-video-payload-unavailable'});
     } catch (e) {}
   }, true);
 })();
