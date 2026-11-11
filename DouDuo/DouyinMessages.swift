@@ -199,6 +199,39 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
     var sec: String?
 }
 
+extension DYConversationRow {
+    /// 网页相对时间文案（现在 / N分钟前 / N小时前 / 昨天 / MM-DD / YYYY-MM-DD）解析成可比较时间戳，只用于排序，精度到天足够
+    var sortTime: Double {
+        let t = time.trimmingCharacters(in: .whitespaces)
+        let now = Date().timeIntervalSince1970
+        if t.isEmpty { return 0 }
+        if t == "现在" { return now }
+        if t == "昨天" { return now - 86_400 }
+        if t.hasSuffix("分钟前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 60 }
+        if t.hasSuffix("小时前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 3600 }
+        if t.contains("-") {
+            let comps = t.split(separator: "-").compactMap { Int($0) }
+            if comps.count == 2, (1...12).contains(comps[0]), (1...31).contains(comps[1]) {
+                var cal = Calendar.current
+                var c = DateComponents()
+                c.year = cal.component(.year, from: Date()); c.month = comps[0]; c.day = comps[1]
+                var dt = cal.date(from: c) ?? Date()
+                if dt.timeIntervalSince1970 - now > 86_400 { c.year! -= 1; dt = cal.date(from: c) ?? dt } // 跨年：按去年算
+                return dt.timeIntervalSince1970
+            }
+            if comps.count == 3 {
+                var c = DateComponents(); c.year = comps[0]; c.month = comps[1]; c.day = comps[2]
+                return Calendar.current.date(from: c)?.timeIntervalSince1970 ?? 0
+            }
+        }
+        return 0
+    }
+    /// 新消息在上；同时间按 id 稳定排序
+    static func byTimeDesc(_ a: DYConversationRow, _ b: DYConversationRow) -> Bool {
+        a.sortTime != b.sortTime ? a.sortTime > b.sortTime : a.id < b.id
+    }
+}
+
 enum DYNoticeGroup: Int, CaseIterable, Identifiable {
     case all = 700
     case comment = 2
@@ -455,7 +488,9 @@ struct DYMessagesScreen: View {
             }
             let updated = Dictionary(delta.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let existing = Set(conversations.map(\.id))
-            let merged = delta.items.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 }
+            // 按最后消息时间倒序：有新信息的朋友排最上面
+            let merged = (delta.items.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
+                .sorted(by: DYConversationRow.byTimeDesc)
             if merged != conversations {
                 conversations = merged
                 DYMessageCache.shared.snapshot.conversations = merged
@@ -706,7 +741,9 @@ struct DYMessagesScreen: View {
         // 先还原本地数据，不清空列表、不挡着等网络；随后只合并增量。
         counts = cache.snapshot.counts
         friends = DYPeopleCache.shared.hasFriendsSnapshot ? DYPeopleCache.shared.friends : cache.snapshot.friends
-        if conversations != cache.snapshot.conversations { conversations = cache.snapshot.conversations }
+        if conversations != cache.snapshot.conversations {
+            conversations = cache.snapshot.conversations.sorted(by: DYConversationRow.byTimeDesc)
+        }
         recent = cache.page(700)?.items ?? []
         DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count) friends=\(friends.count)")
         if let groups = try? await bridge.noticeCounts() {
