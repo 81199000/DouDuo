@@ -1,10 +1,8 @@
 <p align="center">
-  <img src="docs/brand/app-icon.png" width="128" alt="DouDuo 图标">
+  <img src="docs/brand/app-icon.png" width="128" alt="douduo icon">
 </p>
 
-<h1 align="center">DouDuo · 抖Duo</h1>
-
-<p align="center">适配 iPhone Duo（折叠屏）/ iPad / 横屏的第三方抖音客户端</p>
+<h1 align="center">douduo</h1>
 
 界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
