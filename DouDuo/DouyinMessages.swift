@@ -200,28 +200,50 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
 }
 
 extension DYConversationRow {
-    /// 网页相对时间文案（现在 / N分钟前 / N小时前 / 昨天 / MM-DD / YYYY-MM-DD）解析成可比较时间戳，只用于排序，精度到天足够
+    /// 网页时间文案解析成可比较时间戳，只用于排序。实测格式：
+    /// 今天「15:46」/ 昨天「昨天 20:26」/ 今年「03/31」/ 更早「2025/01/23」，另兼容 现在 / N分钟前 / N小时前 / MM-DD
     var sortTime: Double {
         let t = time.trimmingCharacters(in: .whitespaces)
         let now = Date().timeIntervalSince1970
         if t.isEmpty { return 0 }
         if t == "现在" { return now }
-        if t == "昨天" { return now - 86_400 }
+        let cal = Calendar.current
+        let nowDate = Date()
+        func dayAt(_ y: Int?, _ m: Int, _ d: Int, hour: Int? = nil, minute: Int? = nil) -> Double {
+            var c = DateComponents()
+            c.year = y ?? cal.component(.year, from: nowDate)
+            c.month = m; c.day = d; c.hour = hour ?? 0; c.minute = minute ?? 0
+            return (cal.date(from: c) ?? nowDate).timeIntervalSince1970
+        }
+        // 今天：HH:MM（显示的时间若在未来，说明是昨天的此刻）
+        let hp = t.split(separator: ":").compactMap { Int($0) }
+        if hp.count == 2, (0...23).contains(hp[0]), (0...59).contains(hp[1]), !t.contains("/"), !t.contains("-") {
+            var ts = dayAt(nil, cal.component(.month, from: nowDate), cal.component(.day, from: nowDate), hour: hp[0], minute: hp[1])
+            if ts - now > 3600 { ts -= 86_400 }
+            return ts
+        }
+        // 昨天 [HH:MM]
+        if t.hasPrefix("昨天") {
+            let rest = t.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            let p = rest.split(separator: ":").compactMap { Int($0) }
+            let base = nowDate.addingTimeInterval(-86_400)
+            if p.count == 2, (0...23).contains(p[0]), (0...59).contains(p[1]) {
+                return dayAt(cal.component(.year, from: base), cal.component(.month, from: base), cal.component(.day, from: base), hour: p[0], minute: p[1])
+            }
+            return base.timeIntervalSince1970
+        }
         if t.hasSuffix("分钟前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 60 }
         if t.hasSuffix("小时前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 3600 }
-        if t.contains("-") {
-            let comps = t.split(separator: "-").compactMap { Int($0) }
+        // MM/DD 或 YYYY/MM/DD（兼容 - 分隔）：今年；算出来在未来则按去年
+        if t.contains("/") || t.contains("-") {
+            let comps = t.split { $0 == "/" || $0 == "-" }.compactMap { Int($0) }
             if comps.count == 2, (1...12).contains(comps[0]), (1...31).contains(comps[1]) {
-                var cal = Calendar.current
-                var c = DateComponents()
-                c.year = cal.component(.year, from: Date()); c.month = comps[0]; c.day = comps[1]
-                var dt = cal.date(from: c) ?? Date()
-                if dt.timeIntervalSince1970 - now > 86_400 { c.year! -= 1; dt = cal.date(from: c) ?? dt } // 跨年：按去年算
-                return dt.timeIntervalSince1970
+                var ts = dayAt(nil, comps[0], comps[1])
+                if ts - now > 86_400 { ts = dayAt(cal.component(.year, from: nowDate) - 1, comps[0], comps[1]) }
+                return ts
             }
             if comps.count == 3 {
-                var c = DateComponents(); c.year = comps[0]; c.month = comps[1]; c.day = comps[2]
-                return Calendar.current.date(from: c)?.timeIntervalSince1970 ?? 0
+                return dayAt(comps[0], comps[1], comps[2])
             }
         }
         return 0
