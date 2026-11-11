@@ -7,9 +7,10 @@ enum DYDuoMetrics {
     /// Align full-bleed video chrome to the runtime trailing system column.
     /// Compact chrome and layouts without a trailing column remain unchanged.
     static func actionRailHorizontalOffset(isRegular: Bool, trailingInset: CGFloat,
-                                          columnWidth: CGFloat, outerPadding: CGFloat) -> CGFloat {
+                                          columnWidth: CGFloat, outerPadding: CGFloat,
+                                          opticalLeadingInset: CGFloat = 0) -> CGFloat {
         guard isRegular, trailingInset > 0 else { return 0 }
-        return outerPadding + columnWidth / 2 - trailingInset / 2
+        return outerPadding + columnWidth / 2 - trailingInset / 2 - opticalLeadingInset
     }
 
     /// iOS 17–27.0 的宽屏回退，和改版前同一条线。

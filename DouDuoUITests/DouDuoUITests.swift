@@ -467,8 +467,8 @@ final class DouDuoUITests: XCTestCase {
         return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
     }
 
-    /// 右侧栏顺序与间距：评论在收藏之上，且相邻图标间距收紧。
-    func testRailCommentAboveCollectWithTightSpacing() throws {
+    /// 右侧栏顺序与加宽间距；只读 frame，不点击任何账号动作。
+    func testRailCommentAboveCollectWithExpandedSpacing() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
@@ -484,12 +484,19 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertLessThan(collect.frame.midY, search.frame.midY)
         let likeToComment = comment.frame.minY - like.frame.maxY
         let commentToCollect = collect.frame.minY - comment.frame.maxY
-        for gap in [likeToComment, commentToCollect] {
-            XCTAssertGreaterThanOrEqual(gap, 3, "图标间隙不能挤在一起")
-            XCTAssertLessThanOrEqual(gap, 12, "图标间隙不能过松")
+        let collectToSearch = search.frame.minY - collect.frame.maxY
+        for gap in [likeToComment, commentToCollect, collectToSearch] {
+            XCTAssertGreaterThanOrEqual(gap, 10, "图标间距应比旧版6pt更宽")
+            XCTAssertLessThanOrEqual(gap, 16, "图标间隙不能过松")
+        }
+        let more = app.buttons["douyin.more"].firstMatch
+        XCTAssertTrue(more.exists)
+        for item in [like, comment, collect, search, more] {
+            XCTAssertTrue(item.isHittable, "加宽间距后仍须可达")
+            XCTAssertEqual(item.frame.midX, like.frame.midX, accuracy: 1, "操作栏及更多应同列")
         }
         attach(app, "rail-comment-above-collect")
-        print("DDRAIL: order=like,comment,collect,search; gaps=\(likeToComment)/\(commentToCollect)")
+        print("DDRAIL: order=like,comment,collect,search; gaps=\(likeToComment)/\(commentToCollect)/\(collectToSearch)")
     }
 
     func testCommentImages() throws {
