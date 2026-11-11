@@ -197,8 +197,9 @@ extension DouyinBridge {
     }
 
     /// 发评论 / 回复评论（replyID 非空 = 回复那条）
-    func publishComment(_ awemeID: String, text: String, replyID: String? = nil) async throws -> DYComment {
-        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0"], attempts: 1)
+    /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
+    func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
+        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"], attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
         if r.code == 8 { throw DYError.bad("抖音未登录") }
@@ -241,7 +242,7 @@ extension DouyinBridge {
     static let publishJS = cmap + #"""
     const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
-    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', '0'); }
+    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
@@ -781,10 +782,15 @@ struct DYListPlayer: View {
     @State private var showComments = false
     @State private var toast: String?
     @State private var loadingMore = false
+    /// 从消息点评论进来：自动开评论区并定位那条评论
+    let commentFocus: DYCommentFocus?
 
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
-         loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void) {
+         loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
+         commentFocus: DYCommentFocus? = nil) {
         self.bridge = bridge; self.title = title
+        self.commentFocus = commentFocus
+        _showComments = State(initialValue: commentFocus != nil)
         _items = State(initialValue: items)
         _currentID = State(initialValue: items.indices.contains(start) ? items[start].id : items.first?.id)
         self.loadMore = loadMore; self.onAuthor = onAuthor
@@ -833,7 +839,7 @@ struct DYListPlayer: View {
             }
             .sheet(isPresented: $showComments) {
                 if let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
+                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false }, focus: commentFocus)
                         // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
                         .presentationDetents([.fraction(0.62)])
                 }

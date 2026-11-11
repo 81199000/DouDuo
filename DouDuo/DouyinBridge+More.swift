@@ -16,6 +16,24 @@ struct DYNotice: Identifiable, Codable, Equatable {
     let awemeID: String?
     let author: DYAweme.Author?
     var hasRead: Bool
+    /// 评论通知：这条评论的 cid；是楼中楼时 parentCid = 一级评论 cid（回复/定位都要用）
+    var cid: String? = nil
+    var parentCid: String? = nil
+    /// 被回复的那条（通常是我的评论）原文，列表里灰字引用
+    var quote: String? = nil
+
+    var isComment: Bool { type == 31 && (cid?.isEmpty == false) && (awemeID?.isEmpty == false) }
+    var commentFocus: DYCommentFocus? {
+        guard isComment, let cid, let awemeID else { return nil }
+        return DYCommentFocus(awemeID: awemeID, cid: cid, parentCid: parentCid)
+    }
+}
+
+/// 打开视频后要定位的评论：cid 本身；楼中楼时 parentCid 为一级评论
+struct DYCommentFocus: Equatable, Hashable {
+    let awemeID: String
+    let cid: String
+    let parentCid: String?
 }
 
 struct DYNoticePage: Decodable {
@@ -160,12 +178,20 @@ extension DouyinBridge {
       const gn = n.general_notice || {};
       const inn = n.interactive_notice || {};
       let name = '', avatar = null, action = gn.title || '通知', detail = gn.content || '', cover = null, awemeID = n.aweme_id ? String(n.aweme_id) : null, author = null, images = null;
+      let cid = null, parentCid = null, quote = null;
       if (t === 31 && n.comment) {
         const c = n.comment.comment || {};
         const u = c.user || {};
         name = u.nickname || '';
         avatar = first(u.avatar_thumb);
-        action = '评论了你';
+        cid = c.cid ? String(c.cid) : null;
+        // 楼中楼：reply_id = 一级评论 cid（网页 comment/list/reply 实测）；一级评论为 '0'
+        // 通知里的 comment 没有 reply_id，楼中楼的一级评论在 n.comment.parent_id（一级评论时为 0 或等于自身）
+        const pick = v => (v !== undefined && v !== null && String(v) !== '0' && String(v) !== '') ? String(v) : null;
+        const rid = pick(n.comment.parent_id) || pick(c.reply_id) || pick(n.comment.level1_comment && n.comment.level1_comment.cid);
+        parentCid = rid && rid !== cid ? rid : null;
+        quote = (n.comment.reply_comment && n.comment.reply_comment.text) || null;
+        action = parentCid ? '回复了你的评论' : '评论了你';
         detail = c.text || gn.content || '';
         cover = coverOf(n.comment.aweme);
         // 评论配图（image_list）：缩略图优先级与评论区一致 medium > thumb > crop > origin
@@ -208,7 +234,7 @@ extension DouyinBridge {
       return {
         id: String(n.nid_str || n.nid || (t + '-' + (n.create_time || 0))),
         type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: images.length ? images : null, awemeID, author,
-        hasRead: !!(n.has_read || n.read_time)
+        hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote
       };
     };
     const r = await req('GET', '/aweme/v1/web/notice/?' + q({

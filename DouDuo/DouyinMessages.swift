@@ -80,7 +80,7 @@ final class DYMessageCache: ObservableObject {
     private var file: URL? {
         guard !scope.isEmpty else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("message-cache-v2", isDirectory: true).appendingPathComponent(scope + ".json")
+            .appendingPathComponent("message-cache-v3", isDirectory: true).appendingPathComponent(scope + ".json")
     }
     func prepare() async {
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
@@ -749,6 +749,17 @@ struct DYNoticeListScreen: View {
     @State private var player: DYMessagePlay?
     @State private var opening = false
     @State private var loadGen = 0
+    /// 长评论展开
+    @State private var expanded: Set<String> = []
+    @State private var truncated: Set<String> = []
+    /// 直接回复评论
+    @State private var replying: DYNotice?
+    @State private var replyDraft = ""
+    @State private var replySending = false
+    @State private var replyErr: String?
+    @State private var replied: Set<String> = []
+    @State private var toast: String?
+    @FocusState private var replyFocused: Bool
 
     init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void) {
         self.bridge = bridge
@@ -798,8 +809,89 @@ struct DYNoticeListScreen: View {
                 .presentationBackground(.black)
         }
         .fullScreenCover(item: $player) { p in
-            DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0, onAuthor: { author = $0.author })
+            DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
+                         onAuthor: { author = $0.author }, commentFocus: p.focus)
         }
+        .safeAreaInset(edge: .bottom) { if replying != nil { replyBar } }
+        .overlay(alignment: .bottom) {
+            if let t = toast {
+                Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.7)))
+                    .padding(.bottom, replying == nil ? 40 : 120)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    // MARK: 直接回复评论
+
+    private var replyBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let n = replying {
+                HStack(spacing: 6) {
+                    Text("回复 @\(n.name.isEmpty ? "抖音用户" : n.name)").font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    Spacer()
+                    Button { closeReply() } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(.white.opacity(0.6))
+                        .accessibilityIdentifier("douyin.notice.reply.cancel")
+                }
+            }
+            if let e = replyErr { Text(e).font(.caption2).foregroundStyle(.red) }
+            HStack(spacing: 8) {
+                TextField("回复评论…", text: $replyDraft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .focused($replyFocused)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                    .accessibilityIdentifier("douyin.notice.reply.input")
+                let empty = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                Button { Task { await sendReply() } } label: {
+                    if replySending { ProgressView().controlSize(.small).tint(.white) }
+                    else { Image(systemName: "paperplane.fill").font(.body.weight(.semibold)) }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(empty ? Color.white.opacity(0.35) : Color.white)
+                .disabled(empty || replySending)
+                .accessibilityIdentifier("douyin.notice.reply.send")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func startReply(_ n: DYNotice) {
+        if replying?.id != n.id { replyDraft = "" }
+        replying = n; replyErr = nil
+        replyFocused = true
+    }
+
+    private func closeReply() {
+        replying = nil; replyDraft = ""; replyErr = nil; replyFocused = false
+    }
+
+    private func sendReply() async {
+        guard let n = replying, let aweme = n.awemeID, let cid = n.cid else { return }
+        let text = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !replySending else { return }
+        replySending = true
+        defer { replySending = false }
+        do {
+            // 一级评论：reply_id = 它；楼中楼：reply_id = 一级评论、reply_to_reply_id = 这条（网页同款）
+            _ = try await bridge.publishComment(aweme, text: text, replyID: n.parentCid ?? cid,
+                                                replyToReplyID: n.parentCid == nil ? nil : cid)
+            replied.insert(n.id)
+            closeReply()
+            showToast("已回复")
+        } catch {
+            replyErr = "发送失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func showToast(_ s: String) {
+        toast = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if toast == s { toast = nil } }
     }
 
     /// 互动「全部」走 700 分组，要剔掉关注和系统类
@@ -826,10 +918,13 @@ struct DYNoticeListScreen: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(visibleItems) { n in
-                        Button { Task { await open(n) } } label: { row(n) }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier(n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video")
-                            .accessibilityValue(n.hasRead ? "已读" : "未读")
+                        VStack(alignment: .leading, spacing: 0) {
+                            Button { Task { await open(n) } } label: { row(n) }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier(n.isComment ? "douyin.notice.comment" : (n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video"))
+                                .accessibilityValue(n.hasRead ? "已读" : "未读")
+                            if n.isComment { commentActions(n) }
+                        }
                         Divider().background(Color.white.opacity(0.08))
                     }
                     if hasMore {
@@ -859,8 +954,21 @@ struct DYNoticeListScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(n.name.isEmpty ? "抖音用户" : n.name)
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
-                emojiStore.rich(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
-                    .font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+                if n.isComment {
+                    Text(n.action).font(.caption).foregroundStyle(.white.opacity(0.5))
+                    commentText(n)
+                    if let q = n.quote, !q.isEmpty {
+                        HStack(spacing: 6) {
+                            Rectangle().fill(Color.white.opacity(0.25)).frame(width: 2)
+                            emojiStore.rich(q).font(.caption).foregroundStyle(.white.opacity(0.5)).lineLimit(2)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    emojiStore.rich(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+                }
+                // 评论配图：最多显示 3 张缩略图
                 if let imgs = n.images, !imgs.isEmpty {
                     HStack(spacing: 4) {
                         ForEach(Array(imgs.prefix(3)), id: \.self) { s in
@@ -884,6 +992,68 @@ struct DYNoticeListScreen: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+    }
+
+    /// 评论正文：默认 3 行，超出才出「展开」
+    private func commentText(_ n: DYNotice) -> some View {
+        let open = expanded.contains(n.id)
+        var detail = n.detail
+        #if DEBUG
+        // 验收用：把评论正文拉长，检查「展开」只在超过 3 行时出现
+        if ProcessInfo.processInfo.environment["DOUDUO_LONGNOTICE"] == "1" { detail = String(repeating: detail + "。", count: 5) }
+        #endif
+        let text = emojiStore.rich(detail).font(.subheadline)
+        return text
+            .foregroundStyle(.white.opacity(0.92))
+            .lineLimit(open ? nil : 3)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                // 量完整高度和 3 行高度，比较是否被截断
+                ZStack {
+                    text.fixedSize(horizontal: false, vertical: true).hidden()
+                        .background(GeometryReader { full in
+                            text.lineLimit(3).fixedSize(horizontal: false, vertical: true).hidden()
+                                .background(GeometryReader { cut in
+                                    Color.clear.onAppear { markTruncated(n.id, full.size.height > cut.size.height + 1) }
+                                        .onChange(of: full.size.height) { _, h in markTruncated(n.id, h > cut.size.height + 1) }
+                                })
+                        })
+                }
+                .hidden()
+            }
+    }
+
+    private func markTruncated(_ id: String, _ isCut: Bool) {
+        if isCut { if !truncated.contains(id) { truncated.insert(id) } }
+        else if truncated.contains(id) { truncated.remove(id) }
+    }
+
+    /// 评论下方：展开/收起 + 回复
+    private func commentActions(_ n: DYNotice) -> some View {
+        HStack(spacing: 18) {
+            if truncated.contains(n.id) {
+                let open = expanded.contains(n.id)
+                Button {
+                    withAnimation(.snappy) { if open { expanded.remove(n.id) } else { expanded.insert(n.id) } }
+                } label: {
+                    Label(open ? "收起" : "展开", systemImage: open ? "chevron.up" : "chevron.down")
+                        .labelStyle(.titleAndIcon)
+                }
+                .accessibilityIdentifier("douyin.notice.expand")
+            }
+            Button { startReply(n) } label: {
+                Label(replied.contains(n.id) ? "已回复" : "回复", systemImage: "arrowshape.turn.up.left")
+            }
+            .accessibilityIdentifier("douyin.notice.reply")
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(.plain)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.white.opacity(0.7))
+        .padding(.leading, 70)
+        .padding(.trailing, 16)
+        .padding(.top, -4)
+        .padding(.bottom, 12)
     }
 
     private func reload(reset: Bool) async {
@@ -940,7 +1110,8 @@ struct DYNoticeListScreen: View {
         defer { opening = false }
         do {
             let item = try await bridge.awemeDetail(id)
-            player = DYMessagePlay(item: item)
+            // 评论通知：进视频直接打开评论区并定位到这条评论
+            player = DYMessagePlay(item: item, focus: n.commentFocus)
         } catch {
             self.error = error.localizedDescription
         }
@@ -1853,6 +2024,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
 private struct DYMessagePlay: Identifiable {
     let id = UUID()
     let item: DYAweme
+    var focus: DYCommentFocus? = nil
 }
 
 extension DYMessagesScreen {

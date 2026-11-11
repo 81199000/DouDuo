@@ -563,6 +563,42 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT returned; original row label length=\(label.count)")
     }
 
+    /// 评论通知：下方有「回复」（只验证弹出输入框，不真发）、长评论可展开、点评论进视频并定位高亮那条评论
+    func testCommentNoticeActions() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launchEnvironment["DOUDUO_LONGNOTICE"] = "1"
+        app.launch()
+        let entry = app.buttons["douyin.messages.interactive"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 35))
+        entry.tap()
+        let comment = app.buttons.matching(identifier: "douyin.notice.comment").firstMatch
+        XCTAssertTrue(comment.waitForExistence(timeout: 25), "互动里没有评论通知")
+        sleep(2)
+        print("DDCHAT_SHOT_CNOTICE_LIST"); sleep(3)
+        let reply = app.buttons.matching(identifier: "douyin.notice.reply").firstMatch
+        XCTAssertTrue(reply.exists, "评论通知下面没有回复按钮")
+        reply.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "douyin.notice.reply.input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "点回复没出输入框")
+        print("DDCHAT_SHOT_CNOTICE_REPLY"); sleep(3)
+        app.buttons["douyin.notice.reply.cancel"].firstMatch.tap()
+        sleep(1)
+        let expand = app.buttons.matching(identifier: "douyin.notice.expand").firstMatch
+        print("DDEXPAND count=\(app.buttons.matching(identifier: "douyin.notice.expand").count)")
+        if expand.exists && expand.isHittable {
+            let before = expand.label
+            expand.tap(); sleep(1)
+            print("DDEXPAND before=\(before) after=\(expand.label)")
+            XCTAssertNotEqual(before, expand.label, "点展开没变成收起")
+            print("DDCHAT_SHOT_CNOTICE_EXPAND"); sleep(3)
+        }
+        comment.tap()
+        let focused = app.descendants(matching: .any).matching(identifier: "douyin.comment.focused").firstMatch
+        XCTAssertTrue(focused.waitForExistence(timeout: 30), "进视频后没定位到那条评论")
+        print("DDCHAT_SHOT_CNOTICE_FOCUS"); sleep(3)
+    }
+
     func testMessageReadAndVideoReturn() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
