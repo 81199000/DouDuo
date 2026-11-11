@@ -1357,7 +1357,8 @@ struct DouyinFeedScreen: View {
         .sheet(isPresented: Binding(get: { showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
             if let cur = current {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                    .presentationDetents([.fraction(0.62), .large])
+                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                    .presentationDetents([.fraction(0.62)])
                     .presentationDragIndicator(.visible)
             }
         }
@@ -2332,6 +2333,7 @@ enum DYFormat {
 struct DYCommentPanel: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.horizontalSizeClass) private var hSize
     let bridge: DouyinBridge
     let aweme: DYAweme
     let onClose: (() -> Void)?
@@ -2378,6 +2380,8 @@ struct DYCommentPanel: View {
             }
             .foregroundStyle(.themeTextPrimary)
             .padding(.horizontal, 16).padding(.vertical, 12)
+            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示重叠，整体左移让位
+            .padding(.trailing, hSize == .regular ? 44 : 0)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
@@ -2687,6 +2691,7 @@ struct DYCommentPanel: View {
                     Text("回复加载失败，点此重试").font(.caption).foregroundStyle(.themeTextSecondary)
                 }
                 .buttonStyle(.plain)
+                .padding(.top, 12)
             } else if replies[c.id] == nil || (replyMore[c.id] ?? false) {
                 Button { Task { await loadReplies(c) } } label: {
                     HStack(spacing: 6) {
@@ -2697,6 +2702,8 @@ struct DYCommentPanel: View {
                     .font(.caption.weight(.medium)).foregroundStyle(.themeTextSecondary)
                 }
                 .buttonStyle(.plain)
+                // 和上方回复拉开距离，避免误点到回复评论
+                .padding(.top, 12)
                 .accessibilityIdentifier("douyin.replies")
             }
         }
