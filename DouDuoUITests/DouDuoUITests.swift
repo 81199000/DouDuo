@@ -164,7 +164,9 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertFalse(app.buttons["live.category.featured"].exists)
         discover.tap()
         XCTAssertTrue(app.buttons["live.category.featured"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["live.category.followed"].exists)
+        XCTAssertTrue(app.buttons["live.follow"].exists)
+        XCTAssertTrue(app.buttons["live.follow"].label.contains("我的关注"))
+        XCTAssertFalse(app.buttons["live.category.followed"].exists)
         XCTAssertFalse(app.buttons["live.category.nearby"].exists)
         app.buttons["live.category.chat"].tap()
         XCTAssertEqual(app.buttons["live.category.chat"].value as? String, "已选择")
@@ -1312,6 +1314,66 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(got2, "收藏后没有提示（接口没返回）")
         XCTAssertTrue(label2.contains("已收藏"), "收藏没成功：\(label2)")
         attach(app, "collect")
+    }
+
+    func testFollowedLivePickerRestoresRecommendation() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        app.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "rooms"
+        app.launch()
+        let current = app.staticTexts["live.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-a'"), evaluatedWith: current)], timeout: 10), .completed)
+        XCTAssertTrue(app.buttons["live.follow"].label.contains("我的关注"))
+        app.buttons["live.follow"].tap()
+        XCTAssertTrue(app.navigationBars["我的关注"].waitForExistence(timeout: 5))
+        let row = app.buttons["live.follow.room.fol-b"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["live.follow.list"].exists)
+        XCTAssertTrue(row.label.contains("关注乙"))
+        XCTAssertTrue(row.label.contains("直播中"))
+        XCTAssertFalse(row.label.contains("关注直播乙"), "列表不显示房间标题")
+        XCTAssertFalse(row.label.contains("在看"))
+        let other = app.buttons["live.follow.room.fol-a"]
+        XCTAssertTrue(other.label.contains("关注甲"))
+        XCTAssertTrue(other.label.contains("直播中"))
+        XCTAssertTrue(other.label.contains("30"))
+        XCTAssertTrue(other.label.contains("在看"))
+        row.tap()
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'fol-b'"), evaluatedWith: current)], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["live.room.close"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["live.follow"].exists, "进入关注直播间后不显示选择按钮")
+        app.buttons["live.room.close"].tap()
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-a'"), evaluatedWith: current)], timeout: 5), .completed, "退出应回到原来的推荐直播")
+        XCTAssertTrue(app.buttons["live.follow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["live.discover"].exists)
+        app.swipeUp(velocity: .slow)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-b'"), evaluatedWith: current)], timeout: 5), .completed, "回到推荐后只能滑到原来的下一间")
+    }
+
+    func testFollowedLiveStatesStayDistinct() throws {
+        let empty = XCUIApplication()
+        empty.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        empty.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        empty.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "empty"
+        empty.launch()
+        XCTAssertTrue(empty.buttons["live.follow"].waitForExistence(timeout: 10))
+        empty.buttons["live.follow"].tap()
+        XCTAssertTrue(empty.staticTexts["live.follow.empty"].waitForExistence(timeout: 5))
+        XCTAssertFalse(empty.staticTexts["live.follow.login"].exists)
+        empty.terminate()
+
+        let login = XCUIApplication()
+        login.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        login.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        login.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "login"
+        login.launch()
+        XCTAssertTrue(login.buttons["live.follow"].waitForExistence(timeout: 10))
+        login.buttons["live.follow"].tap()
+        XCTAssertTrue(login.staticTexts["live.follow.login"].waitForExistence(timeout: 5))
+        XCTAssertTrue(login.buttons["live.follow.login.button"].exists)
+        XCTAssertFalse(login.staticTexts["live.follow.empty"].exists)
     }
 
     /// 底部进度条左侧时间（秒）
