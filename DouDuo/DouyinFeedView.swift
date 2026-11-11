@@ -131,7 +131,39 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     var webURL: URL { URL(string: "https://live.douyin.com/\(webRid)")! }
 }
 
+extension DYLiveRoom {
+    var followMetadata: DYFollowMetadata {
+        DYFollowMetadata(id: id, webRid: webRid, title: title, owner: owner, avatar: avatar, cover: cover, viewers: viewers, portrait: portrait)
+    }
+
+    init(_ metadata: DYFollowMetadata) {
+        self.init(id: metadata.id, webRid: metadata.webRid, title: metadata.title, owner: metadata.owner,
+                  avatar: metadata.avatar, cover: metadata.cover, viewers: metadata.viewers, hls: [:], portrait: metadata.portrait)
+    }
+
+    init(playback resolved: DYLiveRoom, fallback: DYLiveRoom) {
+        let meta = resolved.followMetadata.fillingEmpty(from: fallback.followMetadata)
+        self.init(id: meta.id, webRid: meta.webRid, title: meta.title, owner: meta.owner, avatar: meta.avatar,
+                  cover: meta.cover, viewers: meta.viewers, hls: resolved.hls, flv: resolved.flv, portrait: meta.portrait, def: resolved.def)
+    }
+}
+
 private struct DYLiveResp: Decodable { let status: Int; let items: [DYLiveRoom] }
+
+struct DYFollowLiveResult: Equatable {
+    var kind: DYFollowLiveKind
+    var items: [DYLiveRoom]
+    var status: Int
+    var stats: DYFollowLiveStats?
+    var fromCache = false
+    var stale = false
+}
+
+private struct DYFollowLivePayload: Decodable {
+    let status: Int
+    let items: [DYLiveRoom]
+    let stats: DYFollowLiveStats?
+}
 
 /// 直播专区（网页版「游戏」下的专区；id 取自 live.douyin.com/categorynew/4_103_1_<id>）
 /// shortcut: 写死网页版游戏页上的几个专区，网页改版/要别的分类时再从页面里抓
@@ -162,6 +194,8 @@ enum DYError: LocalizedError {
 @MainActor
 final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var ready = false
+    /// 只在 `reload` 推进。界面用它清掉上一账号的关注直播，不代表登录态本身。
+    @Published private(set) var followSession = 0
     let web: WKWebView
     private var readyWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -190,6 +224,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func reload() {
+        followSessionCache.invalidate()
+        followSession = followSessionCache.generation
         ready = false
         web.load(URLRequest(url: startURL))
         liveContext?.reload()
@@ -467,47 +503,146 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     private var liveOffset = 0
     private var liveCursorGeneration = UUID()
 
-    /// 关注的主播里正在直播的（网页版直播首页顶上那排头像，同一个接口；要登录）
+    /// 关注的主播里正在直播的。列表只带展示信息；播放地址等选中单个主播再解析。
     func fetchFollowLive() async throws -> [DYLiveRoom] {
-        let d = try await call(Self.followLiveJS, args: [:], attempts: 2)
-        let p = try JSONDecoder().decode(DYLiveResp.self, from: d)
-        if p.items.isEmpty { DYLiveModel.log("DDFOLLOWLIVE status=\(p.status) raw=\(String(decoding: d.prefix(300), as: UTF8.self))") }
-        guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
-        return p.items
+        let result = await followLiveResult()
+        switch result.kind {
+        case .rooms:
+            return result.items
+        case .nobodyLive, .filtered:
+            return []
+        case .notLoggedIn:
+            throw DYError.blocked("HTTP 401")
+        case .decodeFailed, .unexpectedShape:
+            throw DYError.bad("直播数据无法解析")
+        case .requestFailed:
+            throw DYError.blocked(result.status == 200 ? "连接失败" : "HTTP \(result.status)")
+        }
     }
 
-    private static let followLiveJS = #"""
-    const W = { aid: '6383', app_name: 'douyin_web', live_id: '1', device_platform: 'web', language: 'zh-CN', cookie_enabled: 'true',
-      screen_width: '1440', screen_height: '900', browser_language: 'zh-CN', browser_platform: 'MacIntel', browser_name: 'Safari',
-      browser_version: '26.0', channel: 'channel_pc_web' };
-    const r = await req('GET', 'https://live.douyin.com/webcast/web/feed/follow/?' + new URLSearchParams(Object.assign({}, W,
-      { enter_from: 'web_homepage_follow', scene: 'aweme_pc_follow_top' })).toString());
-    const d = parse(r.t);
-    if (!d) return JSON.stringify({ status: r.s === 200 ? 403 : r.s, items: [], raw: (r.t || '').slice(0, 200) });
-    if (d.status_code) return JSON.stringify({ status: 401, items: [], raw: (r.t || '').slice(0, 200) });
-    const arr = Array.isArray(d.data) ? d.data : ((d.data && d.data.data) || []);
-    const toRoom = (room, rid) => {
-      const su = room.stream_url || {}, o = room.owner || {};
-      return { id: String(room.id_str || room.id || ''), webRid: String(rid || o.web_rid || ''), title: room.title || '',
-        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
-        viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
-        hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
-    };
-    const out = [];
-    for (const e of arr.slice(0, 30)) {
-      const room = e.room || e.data || e;
-      let x = toRoom(room, e.web_rid);
-      // 列表里没带流地址的，按 web_rid 进房拿一次（网页点头像也是走这个接口）
-      if (!Object.keys(x.hls).length && !Object.keys(x.flv).length && x.webRid) {
-        const er = parse((await req('GET', 'https://live.douyin.com/webcast/room/web/enter/?' + new URLSearchParams(Object.assign({}, W,
-          { enter_from: 'web_live', enter_source: '', web_rid: x.webRid })).toString())).t);
-        const rm = er && er.data && er.data.data && er.data.data[0];
-        if (rm && rm.status === 2) x = toRoom(Object.assign({ owner: room.owner }, rm), x.webRid);
-      }
-      if (x.id && (Object.keys(x.hls).length || Object.keys(x.flv).length)) out.push(x);
+    /// 同一次关注直播请求的分类结果。空列表不会一律当成没人直播。
+    /// `ignoreCache` 用于手动刷新。15 秒内的缓存只有主播信息，没有播放地址。
+    func followLiveResult(ignoreCache: Bool = false) async -> DYFollowLiveResult {
+        let generation = followSessionCache.generation
+        if !ignoreCache, let cached = followSessionCache.cachedItems(now: Date()) {
+            let rooms = DYFollowLiveIdentity.unique(cached.map { DYLiveRoom($0) }, id: \.id, webRid: \.webRid)
+            DYLiveModel.log("DDFOLLOWLIVE outcome=rooms source=cache n=\(rooms.count) listRequests=0 detailRequests=0")
+            return DYFollowLiveResult(kind: .rooms, items: rooms, status: 200, stats: nil, fromCache: true)
+        }
+        let joining = followSessionCache.beginList(generation: generation)
+        let epoch = followSessionCache.listEpoch
+        if joining, let followLiveTask {
+            let result = await followLiveTask.value
+            return scopedFollowResult(result, generation: generation, epoch: epoch)
+        }
+        followLiveTicket += 1
+        let ticket = followLiveTicket
+        let task = Task { await self.performFollowLive(generation: generation, epoch: epoch) }
+        followLiveTask = task
+        let result = await task.value
+        if followLiveTicket == ticket {
+            followLiveTask = nil
+            followSessionCache.finishList(generation: generation)
+        }
+        return scopedFollowResult(result, generation: generation, epoch: epoch)
     }
-    return JSON.stringify({ status: 200, items: out, raw: out.length ? null : (r.t || '').slice(0, 300) });
-    """#
+
+    /// 只解析当前这一间。已有可播地址时不再请求。同一个 webRid、同一代际的进行中请求会合并。
+    func resolveFollowRoom(webRid: String) async -> DYFollowLiveResult {
+        let generation = followSessionCache.generation
+        let epoch = followSessionCache.listEpoch
+        let result: DYFollowLiveResult
+        if followSessionCache.beginRoom(webRid: webRid), let current = followRoomTask, current.rid == webRid {
+            result = await current.task.value
+        } else {
+            followRoomTicket += 1
+            let ticket = followRoomTicket
+            let task = Task { await self.performFollowRoom(webRid) }
+            followRoomTask = (webRid, ticket, task)
+            result = await task.value
+            if followRoomTask?.ticket == ticket {
+                followRoomTask = nil
+                followSessionCache.finishRoom(webRid: webRid, generation: generation)
+            }
+        }
+        if result.kind == .notLoggedIn {
+            followSessionCache.noteNotLoggedIn(generation: generation, epoch: epoch)
+        }
+        return scopedFollowResult(result, generation: generation, epoch: epoch)
+    }
+
+    private var followLiveTask: Task<DYFollowLiveResult, Never>?
+    private var followLiveTicket = 0
+    private var followSessionCache = DYFollowSessionCache(ttl: 15)
+    private var followRoomTask: (rid: String, ticket: Int, task: Task<DYFollowLiveResult, Never>)?
+    private var followRoomTicket = 0
+
+    private func scopedFollowResult(_ result: DYFollowLiveResult, generation: Int, epoch: Int) -> DYFollowLiveResult {
+        if result.kind == .notLoggedIn, followSessionCache.generation == generation, followSessionCache.listEpoch == epoch {
+            var visible = result
+            visible.items = []
+            visible.stale = false
+            return visible
+        }
+        guard followSessionCache.accepts(generation: generation, epoch: epoch) else {
+            var hidden = result
+            hidden.items = []
+            hidden.stale = true
+            return hidden
+        }
+        return result
+    }
+
+    private func performFollowLive(generation: Int, epoch: Int) async -> DYFollowLiveResult {
+        let started = ProcessInfo.processInfo.systemUptime
+        let data: Data
+        do { data = try await call(DYFollowLiveScripts.list, args: [:], attempts: 2) }
+        catch {
+            DYLiveModel.log("DDFOLLOWLIVE outcome=request_failed listRequests=1 detailRequests=0 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: .requestFailed, items: [], status: -1, stats: nil)
+        }
+        do {
+            let page = try JSONDecoder().decode(DYFollowLivePayload.self, from: data)
+            let items = DYFollowLiveIdentity.unique(page.items, id: \.id, webRid: \.webRid)
+            let kind = DYFollowLiveClassify.kind(status: page.status, itemCount: items.count, stats: page.stats)
+            let stats = page.stats
+            if kind == .rooms, !items.isEmpty {
+                followSessionCache.store(items: items.map(\.followMetadata), generation: generation, epoch: epoch, now: Date())
+            } else if kind == .notLoggedIn {
+                followSessionCache.noteNotLoggedIn(generation: generation, epoch: epoch)
+            }
+            DYLiveModel.log("DDFOLLOWLIVE outcome=\(kind.rawValue) status=\(page.status) http=\(stats?.http ?? -1) code=\(stats?.code.map(String.init) ?? "-") list=\(stats?.list ?? -1) kept=\(items.count) dropped=\(stats?.dropped ?? -1) listRequests=1 detailRequests=0 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: kind, items: kind == .rooms ? items : [], status: page.status, stats: stats)
+        } catch {
+            DYLiveModel.log("DDFOLLOWLIVE outcome=decode_failed listRequests=1 detailRequests=0 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: .decodeFailed, items: [], status: -1, stats: nil)
+        }
+    }
+
+    private func performFollowRoom(_ webRid: String) async -> DYFollowLiveResult {
+        let started = ProcessInfo.processInfo.systemUptime
+        let data: Data
+        do { data = try await call(DYFollowLiveScripts.room, args: ["rid": webRid], attempts: 1) }
+        catch {
+            DYLiveModel.log("DDFOLLOWROOM outcome=request_failed detailRequests=1 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: .requestFailed, items: [], status: -1, stats: nil)
+        }
+        do {
+            let page = try JSONDecoder().decode(DYFollowLivePayload.self, from: data)
+            let decoded = DYFollowLiveClassify.kind(status: page.status, itemCount: page.items.count, stats: page.stats)
+            let playable = page.items.filter { !$0.liveStreams.isEmpty }
+            let kind: DYFollowLiveKind = decoded == .rooms && playable.isEmpty ? .filtered : decoded
+            DYLiveModel.log("DDFOLLOWROOM outcome=\(kind.rawValue) status=\(page.status) detailRequests=1 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: kind, items: kind == .rooms ? playable : [], status: page.status, stats: page.stats)
+        } catch {
+            DYLiveModel.log("DDFOLLOWROOM outcome=decode_failed detailRequests=1 elapsed=\(Self.elapsed(since: started))")
+            return DYFollowLiveResult(kind: .decodeFailed, items: [], status: -1, stats: nil)
+        }
+    }
+
+    private static func elapsed(since started: TimeInterval) -> String {
+        String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started)
+    }
 
     func fetchLive(reset: Bool, zone: DYLiveZone? = nil) async throws -> [DYLiveRoom] {
         if reset { liveMaxTime = "0"; liveOffset = 0; liveCursorGeneration = UUID() }
@@ -1034,6 +1169,14 @@ final class DYFeedModel: ObservableObject {
     func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0; shortCredit = 0 }
 }
 
+private struct DYTopChromeFrameKey: PreferenceKey {
+    static var defaultValue: CGRect { .zero }
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next.maxY > value.maxY { value = next }
+    }
+}
+
 struct DouyinFeedScreen: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -1082,6 +1225,7 @@ struct DouyinFeedScreen: View {
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
+    @State private var topChrome = CGRect.zero
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
@@ -1094,10 +1238,20 @@ struct DouyinFeedScreen: View {
                     topBar
                 }
                 .padding(.top, hSize == .regular ? 0 : -80)
-                // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边
+                // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边。直播预览仍量这块的下沿。
                 .frame(width: topBarWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: DYTopChromeFrameKey.self, value: proxy.frame(in: .named("douduo.feed")))
+                    }
+                }
             }
+        }
+        .coordinateSpace(.named("douduo.feed"))
+        .onPreferenceChange(DYTopChromeFrameKey.self) { next in
+            guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
+            topChrome = next
         }
         // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
         .ignoresSafeArea(edges: [.top, .horizontal])
@@ -1505,7 +1659,8 @@ struct DouyinFeedScreen: View {
     private var feedArea: some View {
         ZStack(alignment: .top) {
             if tab == .live {
-                DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen)
+                DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
+                           topChrome: topChrome, screenInsets: insets)
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
