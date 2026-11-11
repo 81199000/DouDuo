@@ -825,12 +825,14 @@ final class DYPreloader {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
                 continue
             }
-            let item = AVPlayerItem(asset: DYMedia.asset(DYVideoCache.localURL(a.id) ?? url))
+            let asset = DYMedia.asset(DYVideoCache.localURL(a.id) ?? url)
+            let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 6
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
             p.automaticallyWaitsToMinimizeStalling = true
             players[a.id] = p
+            DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
             // ready 后 preroll：把开头的数据和首帧解码好
             obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
                 guard it.status == .readyToPlay else { return }
@@ -845,17 +847,18 @@ final class DYPreloader {
         guard let p = players.removeValue(forKey: id) else { return nil }
         obs.removeValue(forKey: id)?.invalidate()
         handedOut.insert(id)
-        p.isMuted = false
         return p
     }
 
     func clear() {
         for (id, p) in players { release(id, p) }
+        DDAudioPreloadPool.shared.clear()
         handedOut.removeAll()
     }
 
     private func release(_ id: String, _ p: AVPlayer) {
         obs.removeValue(forKey: id)?.invalidate()
+        DDAudioPreloadPool.shared.discard(id: id)
         p.pause()
         p.replaceCurrentItem(with: nil)
         players[id] = nil
