@@ -97,6 +97,10 @@ struct DYComment: Identifiable, Decodable, Equatable {
     /// 评论配图（image_list）与表情包贴纸（sticker），缺字段为空
     var images: [DYCommentImage]? = nil
     var sticker: DYCommentImage? = nil
+    /// 定位评论时接口随一级评论一起带回的楼中楼（只在 insert_ids 请求里有）
+    var pinned: [DYComment]? = nil
+    /// 楼中楼被 insert_ids 直接顶到一级列表时，它所属的一级评论 cid（回复它要用）
+    var parent: String? = nil
 }
 
 /// 评论里的一张图：缩略图用于列表，原图用于点开全屏
@@ -443,8 +447,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         return s.contains("sessionid") || s == "1"
     }
 
-    func fetchComments(_ id: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool, total: Int) {
-        let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor)])
+    /// insert：要「插到最前」的评论 cid（逗号分隔，一级评论在前、楼中楼在后）。网页从消息点评论跳视频就是这么定位的，
+    /// 实测传楼中楼 cid 时会把它的一级评论顶到第一条，并把那条回复放进 reply_comment。
+    func fetchComments(_ id: String, cursor: Int, insert: String? = nil) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool, total: Int) {
+        let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor), "ins": insert ?? ""])
         let p = try JSONDecoder().decode(DYCommentPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         let withImg = p.items.filter { !($0.images ?? []).isEmpty }.count
@@ -726,6 +732,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     private static let commentJS = #"""
     const P = Object.assign({}, base, { aweme_id: id, cursor: cursor, count: '20', item_type: '0', whale_cut_token: '', cut_version: '1', rcFT: '' });
+    if (ins) P.insert_ids = ins;
     const r = await req('GET', '/aweme/v1/web/comment/list/?' + new URLSearchParams(P).toString());
     const d = parse(r.t);
     if (!d) return JSON.stringify({ status: r.s, items: [], cursor: 0, hasMore: false, total: 0, msg: 'blocked' });
@@ -741,11 +748,14 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const an = ddImg(s.animate_url) || st;
       return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
     };
-    const items = (d.comments || []).map(c => ({
+    const one = c => ({
       id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0,
-      images: ddImages(c), sticker: ddSticker(c)
-    }));
+      images: ddImages(c), sticker: ddSticker(c),
+      parent: (c.reply_id && String(c.reply_id) !== '0') ? String(c.reply_id) : null
+    });
+    // insert_ids 定位楼中楼时，那条回复挂在一级评论的 reply_comment 里
+    const items = (d.comments || []).map(c => Object.assign(one(c), (ins && c.reply_comment && c.reply_comment.length) ? { pinned: c.reply_comment.map(r => Object.assign(one(r), { replies: 0 })) } : {}));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, total: d.total || 0, msg: null });
     """#
 }
@@ -2335,6 +2345,8 @@ struct DYCommentPanel: View {
     let bridge: DouyinBridge
     let aweme: DYAweme
     let onClose: (() -> Void)?
+    /// 从消息点评论进来：首屏用 insert_ids 把这条评论顶到第一条并高亮
+    let focus: DYCommentFocus?
     @State private var items: [DYComment] = []
     @State private var cursor = 0
     @State private var hasMore = true
@@ -2348,6 +2360,10 @@ struct DYCommentPanel: View {
     @State private var replyErr: [String: String] = [:]
     @State private var draft = ""
     @State private var replyTo: DYComment?
+    /// replyTo 是楼中楼时它所在的一级评论 cid（发送走 reply_id=一级、reply_to_reply_id=这条）
+    @State private var replyParent: String?
+    @State private var highlight: String?
+    @State private var focusMiss = false
     @State private var showEmoji = false
     @State private var showAt = false
     @State private var emojis: [DYEmoji] = []
@@ -2362,8 +2378,9 @@ struct DYCommentPanel: View {
     @State private var relatedQuery: DYRelatedQuery?
     @FocusState private var inputFocused: Bool
 
-    init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?) {
+    init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?, focus: DYCommentFocus? = nil) {
         self.bridge = bridge; self.aweme = aweme; self.onClose = onClose
+        self.focus = focus?.awemeID == aweme.id ? focus : nil
     }
 
     var body: some View {
@@ -2379,13 +2396,19 @@ struct DYCommentPanel: View {
             .foregroundStyle(.themeTextPrimary)
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
+                    if focusMiss {
+                        Text("这条评论已删除或暂不可见").font(.caption).foregroundStyle(.themeTextSecondary)
+                            .frame(maxWidth: .infinity)
+                    }
                     ForEach(items) { c in
                         VStack(alignment: .leading, spacing: 10) {
-                            row(c)
-                            if c.replies > 0 { replyBlock(c) }
+                            row(c, parent: nil)
+                            if c.replies > 0 || !(replies[c.id] ?? []).isEmpty { replyBlock(c) }
                         }
+                        .id(c.id)
                     }
                     if let error {
                         Text(error).font(.caption).foregroundStyle(theme.status.danger.color(for: scheme))
@@ -2398,6 +2421,11 @@ struct DYCommentPanel: View {
                     }
                 }
                 .padding(16)
+            }
+            .onChange(of: highlight) { _, h in
+                guard let h else { return }
+                withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
+            }
             }
             if !relatedWords.isEmpty {
                 Divider()
@@ -2436,7 +2464,7 @@ struct DYCommentPanel: View {
                 HStack {
                     Text("回复 @\(r.name)").font(.caption).foregroundStyle(.themeTextSecondary).lineLimit(1)
                     Spacer()
-                    Button { replyTo = nil } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                    Button { replyTo = nil; replyParent = nil } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
                         .buttonStyle(.plain).foregroundStyle(.themeTextSecondary)
                 }
             }
@@ -2591,24 +2619,34 @@ struct DYCommentPanel: View {
         sending = true
         defer { sending = false }
         do {
-            let c = try await bridge.publishComment(aweme.id, text: text, replyID: replyTo?.id)
-            if let parent = replyTo {
-                replies[parent.id, default: []].insert(c, at: 0)
+            // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
+            let top = replyParent ?? replyTo?.id
+            let c = try await bridge.publishComment(aweme.id, text: text, replyID: top,
+                                                    replyToReplyID: replyParent == nil ? nil : replyTo?.id)
+            if let top {
+                replies[top, default: []].insert(c, at: 0)
             } else {
                 items.insert(c, at: 0)
                 total += 1
             }
-            draft = ""; replyTo = nil; sendErr = nil
+            draft = ""; replyTo = nil; replyParent = nil; sendErr = nil
             inputFocused = false
         } catch {
             sendErr = "发送失败：\(error.localizedDescription)"
         }
     }
 
-    private func row(_ c: DYComment) -> some View {
+    private func row(_ c: DYComment, parent: String?) -> some View {
         rowBody(c)
             .contentShape(Rectangle())
-            .onTapGesture { replyTo = c; inputFocused = true }
+            .onTapGesture { replyTo = c; replyParent = parent ?? c.parent; inputFocused = true }
+            .padding(highlight == c.id ? 6 : 0)
+            .background {
+                if highlight == c.id {
+                    RoundedRectangle(cornerRadius: 10).fill(theme.accent.color(for: scheme).opacity(0.16))
+                }
+            }
+            .accessibilityIdentifier(highlight == c.id ? "douyin.comment.focused" : "douyin.comment.row")
     }
 
     private func rowBody(_ c: DYComment) -> some View {
@@ -2681,7 +2719,7 @@ struct DYCommentPanel: View {
     private func replyBlock(_ c: DYComment) -> some View {
         let got = replies[c.id] ?? []
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(got) { r in row(r) }
+            ForEach(got) { r in row(r, parent: c.id).id(r.id) }
             if replyErr[c.id] != nil {
                 Button { replyErr[c.id] = nil; Task { await loadReplies(c) } } label: {
                     Text("回复加载失败，点此重试").font(.caption).foregroundStyle(.themeTextSecondary)
@@ -2701,6 +2739,36 @@ struct DYCommentPanel: View {
             }
         }
         .padding(.leading, 42)
+    }
+
+    /// insert_ids 回来后：一级评论已在第一条；楼中楼挂在它的 pinned 里，先塞进回复区再高亮
+    private func applyFocus(_ f: DYCommentFocus, page: [DYComment]) {
+        // 接口两种形态（2026-11 实测）：
+        // A. 一级评论排第一，楼中楼挂在它的 reply_comment 里；
+        // B. 一级评论没回来时，楼中楼本身直接排在一级列表第一条（reply_id = 一级评论）。
+        let top = f.parentCid ?? f.cid
+        var target: String?
+        if let head = page.first(where: { $0.id == top }) {
+            if f.parentCid != nil, let pinned = head.pinned, !pinned.isEmpty {
+                replies[top] = pinned
+                replyMore[top] = head.replies > pinned.count
+            }
+            target = (replies[top] ?? []).contains { $0.id == f.cid } ? f.cid : top
+        }
+        if target == nil || target == top, page.contains(where: { $0.id == f.cid }) { target = f.cid }
+        guard let target else {
+            focusMiss = true
+            DYLiveModel.log("DDFOCUS miss aweme=\(f.awemeID) cid=\(f.cid) parent=\(f.parentCid ?? "-")")
+            return
+        }
+        let head = page.first(where: { $0.id == top })
+        DYLiveModel.log("DDFOCUS hit aweme=\(f.awemeID) cid=\(f.cid) parent=\(f.parentCid ?? "-") target=\(target) pinned=\(head?.pinned?.count ?? 0)")
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            highlight = target
+            try? await Task.sleep(for: .seconds(6))
+            withAnimation(.easeOut(duration: 0.8)) { if highlight == target { highlight = nil } }
+        }
     }
 
     private func loadReplies(_ c: DYComment) async {
@@ -2726,9 +2794,12 @@ struct DYCommentPanel: View {
         loading = true
         defer { loading = false }
         do {
-            let r = try await bridge.fetchComments(aweme.id, cursor: cursor)
+            let first = cursor == 0 && items.isEmpty
+            let ins = first ? focus.map { f in [f.parentCid, f.cid].compactMap { $0 }.joined(separator: ",") } : nil
+            let r = try await bridge.fetchComments(aweme.id, cursor: cursor, insert: ins)
             let seen = Set(items.map(\.id))
             items.append(contentsOf: r.items.filter { !seen.contains($0.id) })
+            if let f = focus, first { applyFocus(f, page: r.items) }
             for c in r.items where c.userDigged == 1 { digged.insert(c.id) }
             cursor = r.cursor
             hasMore = r.hasMore && !r.items.isEmpty
