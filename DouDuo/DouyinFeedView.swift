@@ -1254,6 +1254,16 @@ struct DouyinFeedScreen: View {
         }
         .task { await refreshNoticeUnread() }
         .task {
+            #if DEBUG
+            // 模拟器无触摸输入：DOUDUO_MSGTEST=1 → 起播后自动打开消息页
+            if ProcessInfo.processInfo.environment["DOUDUO_MSGTEST"] == "1" {
+                try? await Task.sleep(for: .seconds(8))
+                showMessages = true
+                DYLiveModel.log("DDMSGTEST auto-open messages")
+            }
+            #endif
+        }
+        .task {
             // 只预取一页直播元数据，不拉流、不进房；用户点直播时不必再从零等列表。
             guard tab != .live else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
