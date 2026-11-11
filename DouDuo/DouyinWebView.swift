@@ -319,16 +319,25 @@ private let ddVideoTapHookJS = #"""
 (() => {
   if (window.__ddVideoTapHook) return; window.__ddVideoTapHook = 1;
   const post = (o) => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
-  const findID = (card) => {
-    const a = card.querySelector('a[href*="/video/"]');
+  const findID = (root) => {
+    const a = root.querySelector('a[href*="/video/"]');
     if (a) { const m = a.href.match(/\/video\/(\d+)/); if (m) return m[1]; }
-    for (let n = card, d = 0; n && d < 12; n = n.parentElement, d++) {
-      const k = Object.keys(n).find(k => k.startsWith('__reactProps'));
-      const p = k ? n[k] : null;
-      if (!p) continue;
-      const cands = [p.item?.awemeId, p.item?.aweme_id, p.data?.awemeId, p.data?.aweme_id,
-                     p.awemeId, p.aweme_id, p.itemId, p.item?.itemId, p.video?.awemeId, p.media?.awemeId];
-      for (const c of cands) { if (c && String(c).length > 5) return String(c); }
+    // 属性里的长数字（aweme id 一般 15~25 位；时间戳才 10 位，不会误伤）
+    for (const el of [root, ...root.querySelectorAll('*')]) {
+      for (const attr of el.attributes || []) {
+        if (/^\d{15,25}$/.test(attr.value)) return attr.value;
+      }
+    }
+    // React props / fiber 向上找
+    for (let n = root, d = 0; n && d < 10; n = n.parentElement, d++) {
+      for (const k of Object.keys(n)) {
+        if (!k.startsWith('__reactProps') && !k.startsWith('__reactFiber')) continue;
+        const p = n[k];
+        const mp = p && p.memoizedProps ? p.memoizedProps : p;
+        const cands = [mp?.item?.awemeId, mp?.item?.aweme_id, mp?.data?.awemeId, mp?.data?.aweme_id,
+                       mp?.awemeId, mp?.aweme_id, mp?.itemId, mp?.item?.itemId, mp?.video?.awemeId];
+        for (const c of cands) { if (c && String(c).length > 5) return String(c); }
+      }
     }
     return null;
   };
@@ -338,16 +347,15 @@ private let ddVideoTapHookJS = #"""
       const t = ev.target;
       const pane = t.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
       if (!pane) return;
-      // 找最小的「像消息卡」的祖先：优先已知类名，否则向上找第一个含媒体特征的元素
-      let card = t.closest('[class*="messageItem"],[class*="msgItem"],[class*="MessageItem"],[class*="message-item"]');
-      if (!card) {
-        let n = t, d = 0;
-        while (n && d < 15) {
-          if (n.querySelector && n.querySelector('video,img[src*="video"],[class*="videoCard"],[class*="VideoCard"],[class*="video-card"]')) { card = n; break; }
-          n = n.parentElement; d++;
-        }
+      // 实测类名：分享视频卡 = MessageItemShareAweme* / BulletBulletVideo*
+      const media = t.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"]');
+      if (!media) return;
+      // 严格向上找第一个「消息项」祖先（closest 会命中自身，不能用）
+      let card = null;
+      for (let n = media.parentElement; n && n !== pane; n = n.parentElement) {
+        if (String(n.className || '').includes('MessageItem')) { card = n; break; }
       }
-      if (!card) return;
+      if (!card) card = media;
       const id = findID(card);
       if (id) {
         ev.preventDefault(); ev.stopPropagation();
@@ -355,22 +363,11 @@ private let ddVideoTapHookJS = #"""
         post({type: 'video', id: id});
         return;
       }
-      const slim = (card.outerHTML || '').slice(0, 900);
+      const slim = (card.outerHTML || '').slice(0, 1200);
       console.log('DDVIDEOTAP miss ' + slim);
       post({type: 'video-miss', html: slim});
     } catch (e) {}
   }, true);
-  // 页面加载后探一次右栏里视频相关元素的类名，回传给 App 迭代选择器
-  const probe = () => {
-    if (window.__ddVideoProbeDone) return;
-    const r = document.querySelector('[class*="componentsRightPanel"],[class*="rightPanel"]');
-    if (!r) { setTimeout(probe, 2000); return; }
-    window.__ddVideoProbeDone = 1;
-    const classes = [...r.querySelectorAll('[class*="video"],[class*="Video"]')].slice(0, 8)
-      .map(e => (e.className || '').toString().slice(0, 90));
-    post({type: 'video-probe', classes: classes});
-  };
-  setTimeout(probe, 3000);
 })();
 """#
 
