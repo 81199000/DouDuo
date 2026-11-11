@@ -214,6 +214,8 @@ struct PlayerPage: View {
     @State private var duration: Double = 0
     @State private var current: Double = 0
     @State private var isPlaying = false
+    /// 用户是不是手动暂停了：回前台不能把「我自己按的暂停」当成后台中断接着播。
+    @State private var userPaused = false
     @State private var seeking = false
     @State private var seekPreview: Double = 0
     @State private var seekDelta: Double = 0
@@ -844,6 +846,7 @@ struct PlayerPage: View {
         ddWrite("DDBG resumeAfterBackground id=\(id) active=\(isActive) av=\(player != nil) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1))")
         #endif
         guard isActive else { return }
+        guard DYResumePolicy.shouldResumeAfterBackground(userPaused: userPaused) else { return }
         if let v = vlc {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -984,17 +987,19 @@ struct PlayerPage: View {
             MPMediaItemPropertyTitle: title.isEmpty ? "DouDuo" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: t,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? effectiveRate : 0,
+            // 锁屏报实际在跑的速度（长按临时 2 倍、本条锁定 2 倍都算），不是设置里的全局速度
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? (rateBoost || lockedBoost ? 2 : playbackRate) : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
         ]
     }
 
     private func togglePlay() {
         defer { lastNowPlaying = -10; refreshNowPlaying(vlc?.current ?? player?.currentTime().seconds ?? current) }   // 锁屏上的播放/暂停状态马上跟上
-        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; dmClock.sync(v.current, playing: v.isPlaying, rate: 1); return }
+        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; userPaused = !isPlaying; dmClock.sync(v.current, playing: v.isPlaying, rate: 1); return }
         guard let p = player else { return }
         if isPlaying { p.pause() } else { p.play() }
         isPlaying.toggle()
+        userPaused = !isPlaying
         dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: Double(max(p.rate, 1)))
     }
 
@@ -1139,3 +1144,9 @@ final class PlayerUIView: UIView {
     }
 }
 
+
+/// 回到前台的续播规则：只有「被后台/失焦打断」才自动续播。
+/// 用户自己按的暂停是明确意图，不能被生命周期回调覆盖。
+enum DYResumePolicy {
+    static func shouldResumeAfterBackground(userPaused: Bool) -> Bool { !userPaused }
+}
