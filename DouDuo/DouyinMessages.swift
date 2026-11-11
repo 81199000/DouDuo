@@ -343,6 +343,7 @@ struct DYMessagesScreen: View {
     @State private var visitedRoutes: Set<DYMsgRoute> = []
     @State private var openingChat: String?
     @State private var restoringList = false
+    @State private var sidebarVisible = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var chatModel = DYMessageCache.shared.chatModel
@@ -454,6 +455,8 @@ struct DYMessagesScreen: View {
         if #available(iOS 27.1, *) {
             ArrangementView {
                 root
+                    .allowsHitTesting(!navigation.hasDetail || sidebarVisible)
+                    .accessibilityHidden(navigation.hasDetail && !sidebarVisible)
             } secondary: {
                 ZStack {
                     Color.black
@@ -484,6 +487,7 @@ struct DYMessagesScreen: View {
                         .allowsHitTesting(navigation.hasDetail)
                         .accessibilityHidden(!navigation.hasDetail)
                         .position(x: area.midX, y: area.midY)
+                        .onChange(of: split, initial: true) { _, visible in sidebarVisible = visible }
                 }
             }
             .modifier(DYEdgeSwipeBack(action: backFromMessage))
