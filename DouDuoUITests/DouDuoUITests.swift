@@ -335,8 +335,12 @@ final class DouDuoUITests: XCTestCase {
         sleep(4)
         let title = app.navigationBars.firstMatch.identifier
         print("DDSTRANGERCAT navTitle=\(title)")
-        XCTAssertEqual(title, who, "进的会话不是点的那个人")
-        XCTAssertGreaterThan(detail.frame.width, 800, "聊天页没铺满：\(detail.frame)")
+        XCTAssertEqual(title, "消息", "左侧标题不能被右侧会话名替换")
+        XCTAssertTrue(detail.staticTexts[who].waitForExistence(timeout: 10), "进的会话不是点的那个人")
+        XCTAssertGreaterThan(detail.frame.width, 0, "聊天详情不可见：\(detail.frame)")
+        if entry.isHittable {
+            XCTAssertGreaterThanOrEqual(detail.frame.minX, entry.frame.maxX - 2, "双栏聊天盖住了左侧列表")
+        }
         print("DDCHAT_SHOT_STRANGERCHAT"); sleep(3)
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
@@ -352,7 +356,8 @@ final class DouDuoUITests: XCTestCase {
         sleep(4)
         let title2 = app.navigationBars.firstMatch.identifier
         print("DDSTRANGERCAT navTitle2=\(title2)")
-        XCTAssertEqual(title2, who2)
+        XCTAssertEqual(title2, "消息")
+        XCTAssertTrue(detail.staticTexts[who2].waitForExistence(timeout: 10))
         print("DDCHAT_SHOT_STRANGERCHAT2"); sleep(3)
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
@@ -599,6 +604,38 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT_SHOT_CNOTICE_FOCUS"); sleep(3)
     }
 
+    /// Read-only: verify category changes never push the master list offscreen.
+    /// Run in the Open Duo pose. No text input, sends, likes or follows.
+    func testMessageMasterDetailCategories() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let interactive = app.buttons["douyin.messages.interactive"]
+        XCTAssertTrue(interactive.waitForExistence(timeout: 35))
+        interactive.tap()
+        let filter = app.descendants(matching: .any).matching(identifier: "douyin.notice.filter").firstMatch
+        XCTAssertTrue(filter.waitForExistence(timeout: 15))
+        XCTAssertTrue(interactive.isHittable, "分类跳转不应隐藏左栏")
+        XCTAssertGreaterThan(filter.frame.minX, interactive.frame.maxX - 2, "通知应显示在右栏")
+        filter.tap()
+        let comments = app.buttons["douyin.notice.filter.2"] // production DYNoticeGroup.comment
+        XCTAssertTrue(comments.waitForExistence(timeout: 5))
+        comments.tap()
+        XCTAssertTrue(filter.label.contains("评论"))
+        app.buttons["douyin.messages.fans"].tap()
+        XCTAssertTrue(interactive.isHittable)
+        app.buttons["douyin.messages.system"].tap()
+        XCTAssertTrue(interactive.isHittable)
+        interactive.tap()
+        XCTAssertTrue(filter.label.contains("评论"), "分类切换后应保留筛选")
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(interactive.isHittable, "详情返回应先回消息列表，不退出消息中心")
+        // Lists remain mounted to preserve scroll/filter state; inactive controls must not be tappable.
+        XCTAssertFalse(filter.isHittable)
+        XCTAssertFalse(interactive.isSelected)
+        attach(app, "message-master-detail-category-return")
+    }
+
     func testMessageReadAndVideoReturn() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
@@ -623,7 +660,7 @@ final class DouDuoUITests: XCTestCase {
             back.tap()
             sleep(2)
         }
-        let back = app.buttons["BackButton"].firstMatch
+        let back = app.buttons["douyin.messages.back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
         back.tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 8))
