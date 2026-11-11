@@ -401,24 +401,40 @@ struct DYMessagesScreen: View {
         .onDisappear { DYMessageCache.shared.retainChat() }
     }
 
+    @Environment(\.horizontalSizeClass) private var hSize
+
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
+    /// 宽屏（Duo 横屏）：官方同款双栏——左侧原生会话列表 + 右侧官方网页聊天面板（发送/表情/语音/快捷回复全部网页原生）；
+    /// 窄屏保持原来的全屏覆盖。
     private var messageContent: some View {
         GeometryReader { geo in
-          ZStack(alignment: .topLeading) {
-            root
+            if selectedChat == nil || hSize == .compact {
+                ZStack(alignment: .topLeading) {
+                    root
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .opacity(selectedChat == nil ? 1 : 0)
+                        .allowsHitTesting(selectedChat == nil)
+                        .accessibilityHidden(selectedChat != nil)
+                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                        .frame(width: selectedChat == nil ? 760 : geo.size.width,
+                               height: selectedChat == nil ? 640 : geo.size.height)
+                        .opacity(selectedChat == nil ? 0.001 : 1)
+                        .allowsHitTesting(selectedChat != nil)
+                        .accessibilityHidden(selectedChat == nil)
+                        .accessibilityIdentifier("douyin.messages.chat.detail")
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            } else {
+                HStack(spacing: 0) {
+                    root
+                        .frame(width: min(max(geo.size.width * 0.4, 320), 480))
+                    Divider().overlay(Color.white.opacity(0.15))
+                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("douyin.messages.chat.detail")
+                }
                 .frame(width: geo.size.width, height: geo.size.height)
-                .opacity(selectedChat == nil ? 1 : 0)
-                .allowsHitTesting(selectedChat == nil)
-                .accessibilityHidden(selectedChat != nil)
-            DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
-                .frame(width: selectedChat == nil ? 760 : geo.size.width,
-                       height: selectedChat == nil ? 640 : geo.size.height)
-                .opacity(selectedChat == nil ? 0.001 : 1)
-                .allowsHitTesting(selectedChat != nil)
-                .accessibilityHidden(selectedChat == nil)
-                .accessibilityIdentifier("douyin.messages.chat.detail")
-          }
-          .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            }
         }
         .clipped()
         .modifier(DYEdgeSwipeBack(action: backFromMessage))
