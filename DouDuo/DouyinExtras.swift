@@ -1464,93 +1464,10 @@ private struct DYAuthorPlay: Identifiable {
     let index: Int
 }
 
-// MARK: - 直播页推荐条策略
-
-/// 直播页顶部「直播中」头像排的展开/收起规则。
-/// 官方行为：进入直播页展开提醒，用户上滑换直播间时收成「N 个直播」胶囊，点胶囊再展开。
-enum DYFollowLiveStripPolicy {
-    /// 首屏落位（old == nil）或仍在同一条时都不收起；只有真正从一条换到另一条才算上滑。
-    static func shouldCollapse(old: String?, new: String?, expanded: Bool) -> Bool {
-        guard expanded, let old, let new else { return false }
-        return old != new
-    }
-
-    /// 展开态的胶囊文案。
-    static func pillTitle(count: Int) -> String { "\(count) 个直播" }
-}
-
-/// 直播页顶部的「关注主播正在直播」：进入展开一排头像，上滑换直播间后收成「N 个直播」胶囊。
-/// 数据来自 bridge.fetchFollowLive（直播页 model.followLive 同一来源），点头像直接进房。
-struct DYFollowLiveStrip: View {
-    @Environment(\.appTheme) private var theme
-    @Environment(\.colorScheme) private var scheme
-    let rooms: [DYLiveRoom]
-    let expanded: Bool
-    let onOpen: (DYLiveRoom) -> Void
-    let onExpand: () -> Void
-
-    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
-
-    var body: some View {
-        if expanded { row } else { pill }
-    }
-
-    private var row: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 12) {
-                ForEach(rooms) { r in
-                    Button { onOpen(r) } label: {
-                        VStack(spacing: 4) {
-                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                                placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                .frame(width: 54, height: 54).clipShape(Circle())
-                                .padding(2)
-                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
-                                .overlay(alignment: .bottom) {
-                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(foreground)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
-                                        .offset(y: 6)
-                                }
-                            Text(r.owner).font(.caption2).foregroundStyle(foreground).lineLimit(1).frame(width: 68)
-                                .padding(.top, 4)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("live.strip.\(r.id)")
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-        .scrollIndicators(.hidden)
-        .themeShadow(.mediaLabel)
-        .accessibilityIdentifier("live.follow.strip")
-    }
-
-    private var pill: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.24)) { onExpand() }
-        } label: {
-            HStack(spacing: 4) {
-                Text(DYFollowLiveStripPolicy.pillTitle(count: rooms.count)).font(.caption.weight(.bold))
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
-            .overlay(Capsule().stroke(foreground.opacity(0.22), lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("live.follow.pill")
-        .themeShadow(.mediaLabel)
-    }
-}
-
 // MARK: - 关注流
 
 struct DYFollowFeed: View {
-    let bridge: DouyinBridge
+    @ObservedObject var bridge: DouyinBridge
     let insets: EdgeInsets
     let active: Bool
     let onAuthor: (DYAweme) -> Void
@@ -1560,6 +1477,9 @@ struct DYFollowFeed: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
+    @State private var liveNow: [DYLiveRoom] = []
+    @State private var liveNowTicket = 0
+    @State private var livePick = DYFollowSelection()
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
     @State private var currentID: String?
     @State private var preloader = DYPreloader()
@@ -1612,6 +1532,9 @@ struct DYFollowFeed: View {
                 .ignoresSafeArea()
             }
         }
+        .overlay(alignment: .top) {
+            if !liveNow.isEmpty { liveRow.padding(.top, (hSize == .regular ? 20 : 80) + 52) }
+        }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -1619,6 +1542,7 @@ struct DYFollowFeed: View {
             }
         }
         .task {
+            Task { await loadLiveNow() }
             if m.items.isEmpty { await m.loadMore() }
             if currentID == nil { currentID = m.items.first?.id }
         }
@@ -1628,8 +1552,95 @@ struct DYFollowFeed: View {
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
-        .onChange(of: active) { _, a in if !a { preloader.clear() } }
-        .onDisappear { preloader.clear() }
+        .onChange(of: active) { _, a in if !a { preloader.clear() } else { Task { await loadLiveNow() } } }
+        .onChange(of: bridge.followSession) { _, _ in
+            liveNow = []
+            if active { Task { await loadLiveNow() } }
+        }
+        .onDisappear {
+            preloader.clear()
+            var pick = livePick
+            pick.cancel()
+            livePick = pick
+        }
+    }
+
+    private func loadLiveNow() async {
+        liveNowTicket += 1
+        let ticket = liveNowTicket
+        let session = bridge.followSession
+        let result = await bridge.followLiveResult()
+        guard ticket == liveNowTicket, session == bridge.followSession else { return }
+        liveNow = DYFollowAvatarPolicy.liveNow(stale: result.stale, kind: result.kind, items: result.items)
+    }
+
+    /// 头像条和直播页列表共用同一份元数据。点某一位时才补这一间的播放地址。
+    private func openLive(_ room: DYLiveRoom) {
+        var pick = livePick
+        let ticket = pick.begin(roomID: room.id, webRid: room.webRid, hasStream: !room.liveStreams.isEmpty)
+        livePick = pick
+        guard room.liveStreams.isEmpty else {
+            DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=1 detailRequests=0 elapsed=0.000")
+            onLive(room)
+            return
+        }
+        guard !room.webRid.isEmpty else {
+            onToast(DYFollowSelectionFailure.unavailable.message)
+            return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        Task {
+            let result = await bridge.resolveFollowRoom(webRid: room.webRid)
+            guard livePick.isCurrent(roomID: room.id, token: ticket) else { return }
+            if result.stale { return }
+            let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started)
+            if result.kind == .notLoggedIn {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=notLoggedIn reused=0 detailRequests=1 elapsed=\(elapsed)")
+                liveNow = []
+                onLogin()
+                return
+            }
+            if result.kind == .rooms, let resolved = result.items.first, !resolved.liveStreams.isEmpty {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=0 detailRequests=1 elapsed=\(elapsed)")
+                onLive(DYLiveRoom(playback: resolved, fallback: room))
+                return
+            }
+            let failure = DYFollowSelectionFailure.from(kind: result.kind, hasPlayableRoom: false) ?? .unavailable
+            DYLiveModel.log("DDFOLLOWPLAY outcome=\(failure) reused=0 detailRequests=1 elapsed=\(elapsed)")
+            onToast(failure.message)
+        }
+    }
+
+    /// 顶部「直播中」头像：跟抖音关注页一样，点了直接进这个主播的直播间
+    private var liveRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 14) {
+                ForEach(liveNow) { r in
+                    Button { openLive(r) } label: {
+                        VStack(spacing: 4) {
+                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                                placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                .frame(width: 58, height: 58).clipShape(Circle())
+                                .padding(3)
+                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
+                                .overlay(alignment: .bottom) {
+                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(theme.media.onMedia.color(for: scheme))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                        .offset(y: 6)
+                                }
+                            Text(r.owner).font(.caption2).foregroundStyle(theme.media.onMedia.color(for: scheme)).lineLimit(1).frame(width: 70)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.trailing, insets.trailing)
+        .themeShadow(.mediaLabel)
     }
 
     private func like(_ id: String, force: Bool?) {

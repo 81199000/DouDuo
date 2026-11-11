@@ -20,6 +20,7 @@
 		47FEEF8C736CB36FD20BA396 /* ShortVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */; };
 		48F46B135907F902C9B20475 /* CachedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */; };
 		4FD061DC405BE48E593970FD /* DouyinLiveRoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE510B8A54EF604B236B9FF8 /* DouyinLiveRoom.swift */; };
+		E4A91C0B2F7D4E6A8B1C3D50 /* FollowLiveLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B02D1C3E8E5F7B9C2D4E61 /* FollowLiveLogic.swift */; };
 		5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */; };
 		64760847CD94FEE469039F33 /* DouyinFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */; };
 		64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7F33EB1CF5B949489AA77586 /* Assets.xcassets */; };
@@ -59,6 +60,7 @@
 		36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinCommentApiProbe.swift; sourceTree = "<group>"; };
 		4533C36FD7AE2A46CAA52B82 /* DouDuo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DouDuo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A3202317C2541C9EFEC8DBF /* DouyinLiveChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveChat.swift; sourceTree = "<group>"; };
+		F5B02D1C3E8E5F7B9C2D4E61 /* FollowLiveLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowLiveLogic.swift; sourceTree = "<group>"; };
 		54934A09C570DF5D3F0042DC /* DouyinExpandableTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinExpandableTitle.swift; sourceTree = "<group>"; };
 		67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
@@ -120,6 +122,7 @@
 				883B76D790E10A3E7DDFCE0D /* DouyinRelations.swift */,
 				008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */,
 				D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */,
+				F5B02D1C3E8E5F7B9C2D4E61 /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
@@ -286,6 +289,7 @@
 				3B13F9FF35F86C692E05E251 /* DouyinForwardPanel.swift in Sources */,
 				FBD2D9957CE6E54F78D0B1FD /* DouyinLiveChat.swift in Sources */,
 				4FD061DC405BE48E593970FD /* DouyinLiveRoom.swift in Sources */,
+				E4A91C0B2F7D4E6A8B1C3D50 /* FollowLiveLogic.swift in Sources */,
 				B68211E3E80797D1FA1E1C10 /* DouyinLoginProbe.swift in Sources */,
 				0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */,
 				AF2F0EB751A5DBBC824C6357 /* DouyinPeopleCache.swift in Sources */,
