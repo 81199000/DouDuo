@@ -364,7 +364,7 @@ struct DYMessagesScreen: View {
     var body: some View {
         NavigationStack {
             messageContent
-                .navigationTitle("消息")
+                .navigationTitle(sidebarVisible ? "" : "消息")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     // Duo：返回/关闭走系统 cancellationAction，系统把它放进右侧竖向侧栏
@@ -455,8 +455,12 @@ struct DYMessagesScreen: View {
         if #available(iOS 27.1, *) {
             ArrangementView {
                 root
+                    .splitArrangementLayoutRatio(0.4)
+                    .layoutPriority(1)
+                    .opacity(!navigation.hasDetail || sidebarVisible ? 1 : 0)
                     .allowsHitTesting(!navigation.hasDetail || sidebarVisible)
                     .accessibilityHidden(navigation.hasDetail && !sidebarVisible)
+                    .clipped()
             } secondary: {
                 ZStack {
                     Color.black
@@ -789,6 +793,15 @@ struct DYMessagesScreen: View {
 
     private var root: some View {
         VStack(spacing: 0) {
+            if sidebarVisible {
+                HStack {
+                    Text("消息").font(.headline)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: theme.messages.headerHeight)
+                Divider()
+            }
             ScrollView {
                 LazyVStack(spacing: 0) {
                     friendStrip
@@ -1451,6 +1464,22 @@ enum DYChatOpener {
     }
 
     /// 打开一个会话：普通会话在主列表里找；陌生人在展开后的陌生人面板里找。按名字+头像精确匹配，不按位置猜。
+    /// Shell classes verified from a live read-only IM layout capture. Keep all message,
+    /// composer, attachment and event-handler subtrees unchanged.
+    static let chatChromeCSS = #"""
+    :root { --dd-chat-canvas: __DD_CHAT_CANVAS__; --dd-chat-separator: __DD_CHAT_SEPARATOR__; }
+    html, body { width:100%!important; min-width:0!important; height:100%!important; margin:0!important; overflow:hidden!important; background:var(--dd-chat-canvas)!important; }
+    .chatDark { position:fixed!important; inset:0!important; width:100%!important; height:100%!important; max-height:none!important; border:0!important; border-radius:0!important; background:var(--dd-chat-canvas)!important; }
+    [class*="componentsEntrywrapper"] > .semi-resizable-resizable { display:none!important; }
+    [class*="componentsEntrywrapper"] { box-sizing:border-box!important; min-width:0!important; width:100%!important; height:100%!important; max-height:none!important; margin:0!important; border:0!important; border-radius:0!important; background:var(--dd-chat-canvas)!important; }
+    [class*="componentsRightPanelwrapper"] { box-sizing:border-box!important; width:100%!important; max-width:none!important; flex:1!important; min-width:0!important; min-height:0!important; height:100%!important; background:var(--dd-chat-canvas)!important; }
+    [class*="RightPanelHeaderconvHeader"] { box-sizing:border-box!important; flex-shrink:0!important; background:var(--dd-chat-canvas)!important; border-bottom:1px solid var(--dd-chat-separator)!important; }
+    [class*="componentsRightPanelnotHeaderArea"] { flex:1!important; min-height:0!important; background:var(--dd-chat-canvas)!important; }
+    [class*="messageMessageListwrapper"] { flex:1!important; min-height:0!important; background:var(--dd-chat-canvas)!important; }
+    [class*="messageMessageListlist"] { background:var(--dd-chat-canvas)!important; }
+    [class*="componentsRightPanelinputArea"] { box-sizing:border-box!important; flex-shrink:0!important; background:var(--dd-chat-canvas)!important; border-top:1px solid var(--dd-chat-separator)!important; }
+    """#
+
     static func open(_ row: DYConversationRow, web: WKWebView) async -> Result {
         await exclusive {
             let r = await openUnlocked(row, web: web)
@@ -1496,13 +1525,17 @@ enum DYChatOpener {
           row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
           let style = document.getElementById('dd-chat-only');
           if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
-          style.textContent = '[class*="componentsEntrywrapper"] > .semi-resizable-resizable {display:none!important} [class*="componentsRightPanelwrapper"] {width:100%!important;max-width:none!important;flex:1!important;min-width:0!important} [class*="componentsEntrywrapper"] {min-width:0!important;width:100%!important}';
+          style.textContent = appearanceCSS;
           window.__wuweiMinWidth = 320;
           window.__wuweiFixViewport?.();
           window.dispatchEvent(new Event('resize'));
           return 'ok';
         """#
-        let r = try? await web.callAsyncJavaScript(script, arguments: ["name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0"], contentWorld: .page)
+        let colors = DDTheme().messages
+        let appearanceCSS = chatChromeCSS
+            .replacingOccurrences(of: "__DD_CHAT_CANVAS__", with: colors.canvasCSS)
+            .replacingOccurrences(of: "__DD_CHAT_SEPARATOR__", with: colors.separatorCSS)
+        let r = try? await web.callAsyncJavaScript(script, arguments: ["name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": appearanceCSS], contentWorld: .page)
         if (r as? String) == "ok" { return .opened }
         DYLiveModel.log("DDCHAT opener miss name=\(row.name) stranger=\(row.stranger) r=\(String(describing: r))")
         return .notFound
