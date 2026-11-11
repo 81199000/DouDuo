@@ -39,6 +39,13 @@ struct DDTheme {
     let media = Media()
     let status = Status()
     let typography = Typography()
+    /// Shared native/web IM canvas; CSS values stay in the theme, not business scripts.
+    struct Messages {
+        let headerHeight: CGFloat = 60
+        let canvasCSS = "#000000"
+        let separatorCSS = "rgba(255,255,255,0.10)"
+    }
+    let messages = Messages()
     let accent = DDColor(Color(red: 1.0, green: 0.17, blue: 0.33))
 }
 
