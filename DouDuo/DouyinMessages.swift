@@ -339,6 +339,8 @@ struct DYMessagesScreen: View {
     @ObservedObject private var cache = DYMessageCache.shared
     private var selectedChat: DYConversationRow? { cache.selectedChat }
     @State private var chatStatus = "正在加载私信…"
+    /// 聊天里点朋友分享的视频 → 原生播放器（网页 ddMsg 通道触发）
+    @State private var videoPlay: DYMessagePlay?
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -368,6 +370,35 @@ struct DYMessagesScreen: View {
         }
         .preferredColorScheme(.dark)
         .task { await loadRoot() }
+        .task {
+            // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
+            chatModel.onAppMessage = { json in
+                guard let data = json.data(using: .utf8),
+                      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+                switch obj["type"] as? String {
+                case "video":
+                    guard let id = obj["id"] as? String, !id.isEmpty else { return }
+                    Task { @MainActor in
+                        do {
+                            let item = try await self.bridge.awemeDetail(id)
+                            self.videoPlay = DYMessagePlay(item: item)
+                            DYLiveModel.log("DDMSGVIDEO jump \(id)")
+                        } catch {
+                            DYLiveModel.log("DDMSGVIDEO detail fail \(id): \(error.localizedDescription)")
+                        }
+                    }
+                case "video-miss":
+                    // 抽不到 aweme_id 时回传卡片 HTML，用来迭代选择器
+                    DYLiveModel.log("DDVIDEOTAP miss " + String((obj["html"] as? String ?? "").prefix(500)))
+                default:
+                    break
+                }
+            }
+        }
+        .fullScreenCover(item: $videoPlay) { p in
+            DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc,
+                         items: [p.item], start: 0, onAuthor: { _ in })
+        }
         .task {
             // 预读陌生人面板：入口角标显示真实未读、二级页秒开
             try? await Task.sleep(for: .seconds(3))
@@ -401,40 +432,63 @@ struct DYMessagesScreen: View {
         .onDisappear { DYMessageCache.shared.retainChat() }
     }
 
-    @Environment(\.horizontalSizeClass) private var hSize
-
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
-    /// 宽屏（Duo 横屏）：官方同款双栏——左侧原生会话列表 + 右侧官方网页聊天面板（发送/表情/语音/快捷回复全部网页原生）；
-    /// 窄屏保持原来的全屏覆盖。
+    /// iPhone Duo（iOS 27.1+）：ArrangementView.split 官方同款双栏——左会话列表 + 右网页聊天面板；窄容器自动单栏。
+    /// 单树不切容器：开/关会话只改右栏内容，避免 WebView 被销毁重建（黑帧、滚动位置重置）。
     private var messageContent: some View {
-        GeometryReader { geo in
-            if selectedChat == nil || hSize == .compact {
-                ZStack(alignment: .topLeading) {
-                    root
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .opacity(selectedChat == nil ? 1 : 0)
-                        .allowsHitTesting(selectedChat == nil)
-                        .accessibilityHidden(selectedChat != nil)
-                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
-                        .frame(width: selectedChat == nil ? 760 : geo.size.width,
-                               height: selectedChat == nil ? 640 : geo.size.height)
-                        .opacity(selectedChat == nil ? 0.001 : 1)
-                        .allowsHitTesting(selectedChat != nil)
-                        .accessibilityHidden(selectedChat == nil)
-                        .accessibilityIdentifier("douyin.messages.chat.detail")
-                }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            } else {
-                HStack(spacing: 0) {
-                    root
-                        .frame(width: min(max(geo.size.width * 0.4, 320), 480))
-                    Divider().overlay(Color.white.opacity(0.15))
-                    DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityIdentifier("douyin.messages.chat.detail")
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
+        if #available(iOS 27.1, *) {
+            ArrangementView {
+                root
+            } secondary: {
+                chatPane
             }
+            .arrangementViewStyle(.split.axes(.horizontal))
+            .modifier(DYEdgeSwipeBack(action: backFromMessage))
+        } else {
+            legacyMessageContent
+        }
+    }
+
+    /// 右栏：网页聊天面板常驻（保持登录态与连接），未选会话时显示提示
+    @available(iOS 27.1, *)
+    private var chatPane: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                .opacity(selectedChat == nil ? 0.001 : 1)
+                .allowsHitTesting(selectedChat != nil)
+                .accessibilityHidden(selectedChat == nil)
+                .accessibilityIdentifier("douyin.messages.chat.detail")
+            if selectedChat == nil {
+                VStack(spacing: 10) {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.title2).foregroundStyle(.white.opacity(0.35))
+                    Text("选择左侧会话开始聊天")
+                        .font(.footnote).foregroundStyle(.white.opacity(0.45))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// iOS 27.1 以下回退：全屏覆盖（原行为）
+    private var legacyMessageContent: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                root
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .opacity(selectedChat == nil ? 1 : 0)
+                    .allowsHitTesting(selectedChat == nil)
+                    .accessibilityHidden(selectedChat != nil)
+                DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                    .frame(width: selectedChat == nil ? 760 : geo.size.width,
+                           height: selectedChat == nil ? 640 : geo.size.height)
+                    .opacity(selectedChat == nil ? 0.001 : 1)
+                    .allowsHitTesting(selectedChat != nil)
+                    .accessibilityHidden(selectedChat == nil)
+                    .accessibilityIdentifier("douyin.messages.chat.detail")
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .clipped()
         .modifier(DYEdgeSwipeBack(action: backFromMessage))
