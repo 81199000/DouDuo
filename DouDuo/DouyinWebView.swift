@@ -313,39 +313,64 @@ final class DDAppMessageHandler: NSObject, WKScriptMessageHandler {
 }
 
 /// 聊天页点「分享视频」卡片 → 拦下点击、抽出 aweme_id 发给 App 跳原生播放（只在 /chat 页生效，别处不动）
+/// 卡片通常是缩略图不是 <video>：从点击处向上找含媒体特征的消息卡，再从 React props 抽 aweme_id；
+/// 抽不到就把卡片 HTML / 类名回传（video-miss / video-probe），用来迭代选择器。
 private let ddVideoTapHookJS = #"""
 (() => {
   if (window.__ddVideoTapHook) return; window.__ddVideoTapHook = 1;
+  const post = (o) => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
+  const findID = (card) => {
+    const a = card.querySelector('a[href*="/video/"]');
+    if (a) { const m = a.href.match(/\/video\/(\d+)/); if (m) return m[1]; }
+    for (let n = card, d = 0; n && d < 12; n = n.parentElement, d++) {
+      const k = Object.keys(n).find(k => k.startsWith('__reactProps'));
+      const p = k ? n[k] : null;
+      if (!p) continue;
+      const cands = [p.item?.awemeId, p.item?.aweme_id, p.data?.awemeId, p.data?.aweme_id,
+                     p.awemeId, p.aweme_id, p.itemId, p.item?.itemId, p.video?.awemeId, p.media?.awemeId];
+      for (const c of cands) { if (c && String(c).length > 5) return String(c); }
+    }
+    return null;
+  };
   document.addEventListener('click', (ev) => {
     try {
       if (!/\/chat/.test(location.pathname)) return;
       const t = ev.target;
-      const v = t && t.tagName === 'VIDEO' ? t : (t && t.closest ? t.closest('video') : null);
-      if (!v) return;
-      const card = v.closest('[class*="message"],[class*="msg"],[class*="item"],[class*="card"]') || v.parentElement;
-      if (!card) return;
-      let id = null;
-      const a = card.querySelector('a[href*="/video/"]');
-      if (a) { const m = a.href.match(/\/video\/(\d+)/); if (m) id = m[1]; }
-      if (!id) {
-        for (let n = card, d = 0; n && d < 10 && !id; n = n.parentElement, d++) {
-          const k = Object.keys(n).find(k => k.startsWith('__reactProps'));
-          const p = k ? n[k] : null;
-          const c = p && (p.item?.awemeId || p.item?.aweme_id || p.data?.awemeId || p.data?.aweme_id || p.awemeId || p.aweme_id);
-          if (c) id = String(c);
+      const pane = t.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
+      if (!pane) return;
+      // 找最小的「像消息卡」的祖先：优先已知类名，否则向上找第一个含媒体特征的元素
+      let card = t.closest('[class*="messageItem"],[class*="msgItem"],[class*="MessageItem"],[class*="message-item"]');
+      if (!card) {
+        let n = t, d = 0;
+        while (n && d < 15) {
+          if (n.querySelector && n.querySelector('video,img[src*="video"],[class*="videoCard"],[class*="VideoCard"],[class*="video-card"]')) { card = n; break; }
+          n = n.parentElement; d++;
         }
       }
-      if (!id) {
-        const slim = (card.outerHTML || '').slice(0, 800);
-        console.log('DDVIDEOTAP miss ' + slim);
-        try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify({type:'video-miss', html: slim})); } catch (e) {}
+      if (!card) return;
+      const id = findID(card);
+      if (id) {
+        ev.preventDefault(); ev.stopPropagation();
+        console.log('DDVIDEOTAP jump ' + id);
+        post({type: 'video', id: id});
         return;
       }
-      ev.preventDefault(); ev.stopPropagation();
-      console.log('DDVIDEOTAP jump ' + id);
-      try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify({type:'video', id: id})); } catch (e) {}
+      const slim = (card.outerHTML || '').slice(0, 900);
+      console.log('DDVIDEOTAP miss ' + slim);
+      post({type: 'video-miss', html: slim});
     } catch (e) {}
   }, true);
+  // 页面加载后探一次右栏里视频相关元素的类名，回传给 App 迭代选择器
+  const probe = () => {
+    if (window.__ddVideoProbeDone) return;
+    const r = document.querySelector('[class*="componentsRightPanel"],[class*="rightPanel"]');
+    if (!r) { setTimeout(probe, 2000); return; }
+    window.__ddVideoProbeDone = 1;
+    const classes = [...r.querySelectorAll('[class*="video"],[class*="Video"]')].slice(0, 8)
+      .map(e => (e.className || '').toString().slice(0, 90));
+    post({type: 'video-probe', classes: classes});
+  };
+  setTimeout(probe, 3000);
 })();
 """#
 
@@ -374,6 +399,7 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
+        DYLiveModel.log("DDMSG ddmsg-handler registered")
         // 电脑版直播间的播放器要 MediaSource，iPhone 的 WebView 只有 ManagedMediaSource（iOS 17.1+），
         // 没有它就一直「直播加载中」。这里把它补成 MediaSource；ManagedMediaSource 要求关掉隔空播放才能挂到 <video> 上
         cfg.userContentController.addUserScript(WKUserScript(source: """

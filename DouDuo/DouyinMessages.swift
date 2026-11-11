@@ -372,6 +372,7 @@ struct DYMessagesScreen: View {
         .task { await loadRoot() }
         .task {
             // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
+            if #available(iOS 27.1, *) { DYLiveModel.log("DDMSG layout=arrangement") } else { DYLiveModel.log("DDMSG layout=legacy") }
             chatModel.onAppMessage = { json in
                 guard let data = json.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
@@ -390,6 +391,9 @@ struct DYMessagesScreen: View {
                 case "video-miss":
                     // 抽不到 aweme_id 时回传卡片 HTML，用来迭代选择器
                     DYLiveModel.log("DDVIDEOTAP miss " + String((obj["html"] as? String ?? "").prefix(500)))
+                case "video-probe":
+                    let classes = (obj["classes"] as? [String]) ?? []
+                    DYLiveModel.log("DDVIDEOPROBE " + classes.joined(separator: " | "))
                 default:
                     break
                 }
@@ -435,6 +439,7 @@ struct DYMessagesScreen: View {
     /// 同一个网页实例持续连接；首页只读取会话行，点会话后才显示聊天面板。
     /// iPhone Duo（iOS 27.1+）：ArrangementView.split 官方同款双栏——左会话列表 + 右网页聊天面板；窄容器自动单栏。
     /// 单树不切容器：开/关会话只改右栏内容，避免 WebView 被销毁重建（黑帧、滚动位置重置）。
+    @ViewBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
             ArrangementView {
