@@ -61,6 +61,9 @@ final class DYMessageCache: ObservableObject {
         DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count)")
     }
     struct Snapshot: Codable {
+        /// 结构版本：DYNotice 加了 images（评论配图）后升 2；旧文件缺该字段，消息页必须作废重拉
+        var v: Int = 1
+        static let currentV = 2
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
         var friends: [DYFriend] = []
@@ -69,7 +72,7 @@ final class DYMessageCache: ObservableObject {
         var friendCursor: String?
         var friendHasMore: Bool?
     }
-    var snapshot = Snapshot()
+    var snapshot = { var s = Snapshot(); s.v = Snapshot.currentV; return s }()
     let chatModel = DouyinWebModel()
     private var retainedChatWeb: WKWebView?
     @Published private(set) var scope = ""
@@ -92,8 +95,15 @@ final class DYMessageCache: ObservableObject {
         guard next != scope else { DYPeopleCache.shared.activate(scope: scope); return }
         let changingAccount = !scope.isEmpty
         scope = next
-        snapshot = Snapshot(); lastSavedData = nil
-        if let file, let data = try? Data(contentsOf: file), let cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
+        var fresh = Snapshot(); fresh.v = Snapshot.currentV
+        snapshot = fresh; lastSavedData = nil
+        if let file, let data = try? Data(contentsOf: file), var cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            if cached.v < 2 {
+                // 旧缓存的评论通知没有 images 字段且 refresh 不会重取老通知：作废消息页重拉（朋友/会话历史保留）
+                cached.pages = [:]
+                cached.v = Snapshot.currentV
+                DYLiveModel.log("DDMSGCACHE schema v<2 → pages cleared")
+            }
             snapshot = cached; lastSavedData = data
         }
         selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []

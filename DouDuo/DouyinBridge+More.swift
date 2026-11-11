@@ -102,7 +102,7 @@ extension DouyinBridge {
         let p = try JSONDecoder().decode(DYNoticePage.self, from: d)
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
-        DYLiveModel.log("DDNOTICE_FETCH group=\(group) markRead=\(markRead) min=\(minTime) n=\(p.items.count)")
+        DYLiveModel.log("DDNOTICE_FETCH group=\(group) markRead=\(markRead) min=\(minTime) n=\(p.items.count)\(p.msg.map { " msg=\($0)" } ?? "")")
         return (p.items, p.maxTime, p.hasMore)
     }
 
@@ -241,8 +241,13 @@ extension DouyinBridge {
       is_new_notice: '1', is_mark_read: String(markRead || '0'), count: '10', notice_group: String(group), min_time: String(minTime || 0), max_time: String(maxTime || 0)
     }));
     const d = parse(r.t) || {};
-    const items = (d.notice_list_v2 || d.notice_list || []).map(row);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, items, maxTime: d.max_time || 0, hasMore: !!d.has_more, msg: d.status_msg || null });
+    // 逐条解析：单条脏数据不能炸掉整个列表；解析失败的记进 msg 便于定位
+    let items = [];
+    let skipped = 0; let skipWhy = '';
+    for (const n of (d.notice_list_v2 || d.notice_list || [])) {
+      try { items.push(row(n)); } catch (e) { skipped++; skipWhy = String(n.nid_str || '') + ':' + String((e && e.message) || e).slice(0, 120); }
+    }
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, items, maxTime: d.max_time || 0, hasMore: !!d.has_more, msg: d.status_msg || (skipped ? ('' + skipped + '条解析失败:' + skipWhy) : null) });
     """#
 
     private static let detailJS = #"""
