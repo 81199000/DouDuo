@@ -36,6 +36,7 @@
 		D049179D85AB6339BCD12778 /* DouyinDuoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E79B1B7855114828E14FCBA /* DouyinDuoLayout.swift */; };
 		D3DE2156FEFF721744FDB55E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8C00A82D0DF6727AA1E57D1 /* Theme.swift */; };
 		DC990FC343EDD6CE18CCCB91 /* DYMessageNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8692ACA58496924A8020F3F1 /* DYMessageNavigation.swift */; };
+		DE2A3FB15A8ED7BF07FD37C5 /* FollowLiveLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */; };
 		FBD2D9957CE6E54F78D0B1FD /* DouyinLiveChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3202317C2541C9EFEC8DBF /* DouyinLiveChat.swift */; };
 /* End PBXBuildFile section */
 
@@ -82,6 +83,7 @@
 		D66F335DE5A601EA019AD61E /* DouyinExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinExtras.swift; sourceTree = "<group>"; };
 		E8C00A82D0DF6727AA1E57D1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		F08DC47FE80818A237A7BDE3 /* DouyinFeatureProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeatureProbe.swift; sourceTree = "<group>"; };
+		FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowLiveLogic.swift; sourceTree = "<group>"; };
 		FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinEmojiStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -123,6 +125,7 @@
 				008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */,
 				D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */,
 				8692ACA58496924A8020F3F1 /* DYMessageNavigation.swift */,
+				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
@@ -297,6 +300,7 @@
 				CF72544EC26ADDD1E56D739C /* DouyinRelations.swift in Sources */,
 				B6C12A97D054814FFFCCE8A0 /* DouyinVideoCache.swift in Sources */,
 				5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */,
+				DE2A3FB15A8ED7BF07FD37C5 /* FollowLiveLogic.swift in Sources */,
 				B072D11672770FB4836781C5 /* PlayerGestureView.swift in Sources */,
 				47FEEF8C736CB36FD20BA396 /* ShortVideoPlayer.swift in Sources */,
 				D3DE2156FEFF721744FDB55E /* Theme.swift in Sources */,
