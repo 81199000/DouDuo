@@ -535,12 +535,15 @@ final class DouDuoUITests: XCTestCase {
         XCTFail("翻了15条视频都没遇到带图/贴纸的评论")
     }
 
+    /// Both compact and split: inspect the composer without typing or sending.
     func testConversationListAndDetail() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
         app.launch()
         let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 50), app.debugDescription)
+        let expectsSidebar = app.staticTexts["选择左侧消息查看详情"].isHittable
+        print("DDCHAT_EXPECT_SIDEBAR=\(expectsSidebar)")
         attach(app, "conversation-native-root")
         print("DDCHAT_SHOT_ROOT"); sleep(4)
         let label = row.label
@@ -552,14 +555,17 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT_DETAIL\n\(app.debugDescription)\nDDCHAT_DETAIL_END")
         let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
         XCTAssertTrue(web.exists)
-        XCTAssertFalse(app.buttons["douyin.messages.interactive"].isHittable)
+        let master = app.buttons["douyin.messages.interactive"]
+        XCTAssertEqual(master.isHittable, expectsSidebar, "展开应保留左栏；窄屏详情应覆盖列表")
+        if expectsSidebar { XCTAssertGreaterThanOrEqual(web.frame.minX, master.frame.maxX - 2) }
+        if expectsSidebar { XCTAssertTrue(row.isSelected, "左侧当前会话应该高亮") }
+        XCTAssertTrue(web.isHittable, "当前聊天详情应可交互")
         let inputs = web.descendants(matching: .any).matching(NSPredicate(format: "elementType == %d OR elementType == %d", XCUIElement.ElementType.textView.rawValue, XCUIElement.ElementType.textField.rawValue))
         XCTAssertGreaterThan(inputs.count, 0)
         if inputs.count > 0 {
             let input = inputs.firstMatch
             XCTAssertLessThanOrEqual(input.frame.maxY, app.windows.firstMatch.frame.maxY)
-            input.tap()
-            print("DDCHAT_SHOT_KEYBOARD"); sleep(4)
+            XCTAssertTrue(input.isHittable, "聊天输入区应可达；不输入或发送测试消息")
         }
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(row.waitForExistence(timeout: 8))
@@ -604,28 +610,39 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT_SHOT_CNOTICE_FOCUS"); sleep(3)
     }
 
-    /// Read-only: verify category changes never push the master list offscreen.
-    /// Run in the Open Duo pose. No text input, sends, likes or follows.
+    /// Read-only: split keeps master visible; compact returns through master.
+    /// No text input, sends, likes or follows.
     func testMessageMasterDetailCategories() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
         app.launch()
         let interactive = app.buttons["douyin.messages.interactive"]
         XCTAssertTrue(interactive.waitForExistence(timeout: 35))
+        let expectsSidebar = app.staticTexts["选择左侧消息查看详情"].isHittable
+        print("DDMSG_EXPECT_SIDEBAR=\(expectsSidebar)")
+        func showMasterIfCompact() {
+            if !expectsSidebar {
+                app.buttons["douyin.messages.back"].tap()
+                XCTAssertTrue(interactive.isHittable)
+            }
+        }
         interactive.tap()
         let filter = app.descendants(matching: .any).matching(identifier: "douyin.notice.filter").firstMatch
         XCTAssertTrue(filter.waitForExistence(timeout: 15))
-        XCTAssertTrue(interactive.isHittable, "分类跳转不应隐藏左栏")
-        XCTAssertGreaterThan(filter.frame.minX, interactive.frame.maxX - 2, "通知应显示在右栏")
+        XCTAssertEqual(interactive.isHittable, expectsSidebar, "分类应符合当前主从/窄屏布局")
+        if expectsSidebar { XCTAssertGreaterThan(filter.frame.minX, interactive.frame.maxX - 2, "通知应显示在右栏") }
         filter.tap()
         let comments = app.buttons["douyin.notice.filter.2"] // production DYNoticeGroup.comment
         XCTAssertTrue(comments.waitForExistence(timeout: 5))
         comments.tap()
         XCTAssertTrue(filter.label.contains("评论"))
+        showMasterIfCompact()
         app.buttons["douyin.messages.fans"].tap()
-        XCTAssertTrue(interactive.isHittable)
+        XCTAssertEqual(interactive.isHittable, expectsSidebar)
+        showMasterIfCompact()
         app.buttons["douyin.messages.system"].tap()
-        XCTAssertTrue(interactive.isHittable)
+        XCTAssertEqual(interactive.isHittable, expectsSidebar)
+        showMasterIfCompact()
         interactive.tap()
         XCTAssertTrue(filter.label.contains("评论"), "分类切换后应保留筛选")
         app.buttons["douyin.messages.back"].tap()
@@ -649,17 +666,24 @@ final class DouDuoUITests: XCTestCase {
         sleep(12)
         attach(app, "notice-category")
         print("DDCHAT_SHOT_NOTICE"); sleep(4)
-        let video = app.buttons.matching(identifier: "douyin.notice.video").firstMatch
-        if video.waitForExistence(timeout: 15) {
-            video.tap()
-            let back = app.buttons["douyin.list.back"].firstMatch
-            XCTAssertTrue(back.waitForExistence(timeout: 25))
-            let like = app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.first { $0.isHittable }
-            if let like { XCTAssertLessThan(back.frame.midY, like.frame.midY) }
-            attach(app, "notice-video-return-above-like")
-            back.tap()
-            sleep(2)
+        let videos = app.buttons.matching(identifier: "douyin.notice.video")
+        _ = videos.firstMatch.waitForExistence(timeout: 15)
+        guard let video = videos.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+            throw XCTSkip("当前通知里没有可点击视频卡片，不能将视频返回路径算通过")
         }
+        let originalLabel = video.label
+        let originalFrame = video.frame
+        video.tap()
+        let playerBack = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(playerBack.waitForExistence(timeout: 25))
+        let like = app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.first { $0.isHittable }
+        if let like { XCTAssertLessThan(playerBack.frame.midY, like.frame.midY) }
+        attach(app, "notice-video-return-above-like")
+        playerBack.tap()
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        XCTAssertTrue(video.isHittable)
+        XCTAssertEqual(video.label, originalLabel, "视频返回必须保留同一通知")
+        XCTAssertEqual(video.frame.minY, originalFrame.minY, accuracy: 2, "视频返回不能重置列表位置")
         let back = app.buttons["douyin.messages.back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
         back.tap()
