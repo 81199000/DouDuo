@@ -236,11 +236,15 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         var lastErr: Error = DYError.notReady
         for attempt in 0..<attempts {
             do {
+                // 大响应（如消息列表 ~150KB）冷网络下求值慢，失败时记录真实错误码便于定位
                 let r = try await web.callAsyncJavaScript(Self.requestJS + body, arguments: args, contentWorld: .page)
                 guard let s = r as? String, let d = s.data(using: .utf8) else { throw DYError.bad("返回为空") }
                 return d
             } catch {
                 lastErr = error
+                #if DEBUG
+                DYLiveModel.log("DDCALL err code=\(String(describing: (error as? WKError)?.code)) \(error.localizedDescription) attempt=\(attempt)")
+                #endif
                 try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))
             }
         }
