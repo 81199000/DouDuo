@@ -2401,8 +2401,8 @@ struct DYCommentPanel: View {
             }
             .foregroundStyle(.themeTextPrimary)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示重叠，整体左移让位
-            .padding(.trailing, hSize == .regular ? 44 : 0)
+            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示挤在一起，整体左移让位
+            .padding(.trailing, hSize == .regular ? 88 : 0)
             Divider()
             ScrollViewReader { proxy in
             ScrollView {
