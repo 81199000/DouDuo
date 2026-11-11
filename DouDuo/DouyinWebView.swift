@@ -153,6 +153,8 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     @Published var canGoBack = false
     @Published var progress: Double = 0
     weak var web: WKWebView?
+    /// 网页 postMessage("ddMsg") 转给 App（如聊天页点分享视频 → 跳原生播放）
+    var onAppMessage: ((String) -> Void)?
     private var clickedLogin = false
     private var filledPhone = false
     private var filledCode = false
@@ -301,6 +303,52 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     }
 }
 
+/// 网页 → App 消息通道：window.webkit.messageHandlers.ddMsg.postMessage(JSON)
+final class DDAppMessageHandler: NSObject, WKScriptMessageHandler {
+    private let model: DouyinWebModel
+    init(_ model: DouyinWebModel) { self.model = model }
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let s = message.body as? String { model.onAppMessage?(s) }
+    }
+}
+
+/// 聊天页点「分享视频」卡片 → 拦下点击、抽出 aweme_id 发给 App 跳原生播放（只在 /chat 页生效，别处不动）
+private let ddVideoTapHookJS = #"""
+(() => {
+  if (window.__ddVideoTapHook) return; window.__ddVideoTapHook = 1;
+  document.addEventListener('click', (ev) => {
+    try {
+      if (!/\/chat/.test(location.pathname)) return;
+      const t = ev.target;
+      const v = t && t.tagName === 'VIDEO' ? t : (t && t.closest ? t.closest('video') : null);
+      if (!v) return;
+      const card = v.closest('[class*="message"],[class*="msg"],[class*="item"],[class*="card"]') || v.parentElement;
+      if (!card) return;
+      let id = null;
+      const a = card.querySelector('a[href*="/video/"]');
+      if (a) { const m = a.href.match(/\/video\/(\d+)/); if (m) id = m[1]; }
+      if (!id) {
+        for (let n = card, d = 0; n && d < 10 && !id; n = n.parentElement, d++) {
+          const k = Object.keys(n).find(k => k.startsWith('__reactProps'));
+          const p = k ? n[k] : null;
+          const c = p && (p.item?.awemeId || p.item?.aweme_id || p.data?.awemeId || p.data?.aweme_id || p.awemeId || p.aweme_id);
+          if (c) id = String(c);
+        }
+      }
+      if (!id) {
+        const slim = (card.outerHTML || '').slice(0, 800);
+        console.log('DDVIDEOTAP miss ' + slim);
+        try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify({type:'video-miss', html: slim})); } catch (e) {}
+        return;
+      }
+      ev.preventDefault(); ev.stopPropagation();
+      console.log('DDVIDEOTAP jump ' + id);
+      try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify({type:'video', id: id})); } catch (e) {}
+    } catch (e) {}
+  }, true);
+})();
+"""#
+
 struct DouyinWebContainer: UIViewRepresentable {
     @ObservedObject var model: DouyinWebModel
     let zoom: Double
@@ -321,6 +369,11 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         cfg.userContentController.addUserScript(
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // 聊天页点分享视频 → 抽 aweme_id 发给 App（只在 /chat 页生效）
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // 网页 → App 消息通道
+        cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
         // 电脑版直播间的播放器要 MediaSource，iPhone 的 WebView 只有 ManagedMediaSource（iOS 17.1+），
         // 没有它就一直「直播加载中」。这里把它补成 MediaSource；ManagedMediaSource 要求关掉隔空播放才能挂到 <video> 上
         cfg.userContentController.addUserScript(WKUserScript(source: """
