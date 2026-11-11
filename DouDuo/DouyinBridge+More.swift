@@ -233,7 +233,7 @@ extension DouyinBridge {
       if (!cover) cover = urlOf(inn.image_url);
       return {
         id: String(n.nid_str || n.nid || (t + '-' + (n.create_time || 0))),
-        type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: images.length ? images : null, awemeID, author,
+        type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: (images && images.length) ? images : null, awemeID, author,
         hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote
       };
     };

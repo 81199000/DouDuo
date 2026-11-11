@@ -363,9 +363,30 @@ private let ddVideoTapHookJS = #"""
         post({type: 'video', id: id});
         return;
       }
-      const slim = (card.outerHTML || '').slice(0, 1200);
-      console.log('DDVIDEOTAP miss ' + slim);
-      post({type: 'video-miss', html: slim});
+      // 抽不到：把祖先类名链 + 全链长数字扫描结果回传，用来迭代选择器
+      let chain = [];
+      for (let n = media, d = 0; n && n !== pane && d < 10; n = n.parentElement, d++) {
+        chain.push(String(n.className || n.tagName).split(' ')[0].slice(0, 40));
+      }
+      let wideID = null;
+      for (let n = media, d = 0; n && n !== pane && d < 5; n = n.parentElement, d++) {
+        for (const el of [n, ...Array.from(n.children || [])]) {
+          for (const attr of el.attributes || []) {
+            if (/^\d{15,25}$/.test(attr.value)) { wideID = attr.value; break; }
+          }
+          if (wideID) break;
+        }
+        if (wideID) break;
+      }
+      if (wideID) {
+        ev.preventDefault(); ev.stopPropagation();
+        console.log('DDVIDEOTAP widejump ' + wideID);
+        post({type: 'video', id: wideID});
+        return;
+      }
+      const slim = (card.outerHTML || '').slice(0, 600);
+      console.log('DDVIDEOTAP miss ' + chain.join(' > ') + ' | ' + slim);
+      post({type: 'video-miss', html: chain.join(' > ') + ' || ' + slim});
     } catch (e) {}
   }, true);
 })();

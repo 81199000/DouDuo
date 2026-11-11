@@ -371,6 +371,41 @@ struct DYMessagesScreen: View {
         .preferredColorScheme(.dark)
         .task { await loadRoot() }
         .task {
+            #if DEBUG
+            // DOUDUO_VIDTEST=<aweme_id>：直接走「分享视频 → 原生播放」链路（等价于网页点卡片的结果）
+            if let raw = ProcessInfo.processInfo.environment["DOUDUO_VIDTEST"], !raw.isEmpty {
+                do {
+                    let item = try await bridge.awemeDetail(raw)
+                    videoPlay = DYMessagePlay(item: item)
+                    DYLiveModel.log("DDVIDTEST jump \(raw)")
+                } catch { DYLiveModel.log("DDVIDTEST fail \(raw): \(error.localizedDescription)") }
+            }
+            #endif
+        }
+        .task {
+            #if DEBUG
+            // DOUDUO_VIDTAP=1：聊天页加载后对第一张视频卡做合成点击，验证整条 JS 钩子链
+            if ProcessInfo.processInfo.environment["DOUDUO_VIDTAP"] == "1" {
+                for _ in 0..<10 {
+                    try? await Task.sleep(for: .seconds(4))
+                    guard let web = chatModel.web else { continue }
+                    let js = """
+                    (() => {
+                        const c = document.querySelector("[class*='ShareAweme'],[class*='BulletBulletVideo']");
+                        if (!c) return 'none';
+                        c.scrollIntoView({block:'center'});
+                        c.click();
+                        return 'clicked:' + String(c.className || '').slice(0, 80);
+                    })()
+                    """
+                    let r = await (try? web.evaluateJavaScript(js)) as? String ?? "?"
+                    DYLiveModel.log("DDVIDTAP \(r)")
+                    if r.hasPrefix("clicked") { break }
+                }
+            }
+            #endif
+        }
+        .task {
             // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
             if #available(iOS 27.1, *) { DYLiveModel.log("DDMSG layout=arrangement") } else { DYLiveModel.log("DDMSG layout=legacy") }
             chatModel.onAppMessage = { json in
@@ -448,6 +483,9 @@ struct DYMessagesScreen: View {
                 chatPane
             }
             .arrangementViewStyle(.split.axes(.horizontal))
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { s in
+                DYLiveModel.log("DDARRANGE size=\(Int(s.width))x\(Int(s.height))")
+            }
             .modifier(DYEdgeSwipeBack(action: backFromMessage))
         } else {
             legacyMessageContent
