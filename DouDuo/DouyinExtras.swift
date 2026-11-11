@@ -834,7 +834,8 @@ struct DYListPlayer: View {
             .sheet(isPresented: $showComments) {
                 if let cur = current {
                     DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                        .presentationDetents([.fraction(0.62), .large])
+                        // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                        .presentationDetents([.fraction(0.62)])
                 }
             }
         }
@@ -1615,7 +1616,8 @@ struct DYFollowFeed: View {
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                    .presentationDetents([.fraction(0.62), .large])
+                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                    .presentationDetents([.fraction(0.62)])
             }
         }
         .task {

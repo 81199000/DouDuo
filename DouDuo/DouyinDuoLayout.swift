@@ -205,7 +205,8 @@ struct DYOuterCommentSheet: ViewModifier {
         )) {
             if let aweme {
                 DYCommentPanel(bridge: bridge, aweme: aweme, onClose: { showComments = false })
-                    .presentationDetents([.fraction(0.62), .large])
+                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                    .presentationDetents([.fraction(0.62)])
                     .presentationDragIndicator(.visible)
             }
         }

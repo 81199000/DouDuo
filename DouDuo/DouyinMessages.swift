@@ -861,6 +861,17 @@ struct DYNoticeListScreen: View {
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
                 emojiStore.rich(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
                     .font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+                if let imgs = n.images, !imgs.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(imgs.prefix(3)), id: \.self) { s in
+                            CachedAsyncImage(url: URL(string: s)) { img in img.resizable().scaledToFill() } placeholder: { Color.white.opacity(0.06) }
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                    }
+                    .padding(.top, 2)
+                    .accessibilityIdentifier("douyin.notice.commentImages")
+                }
                 Text(DYFormat.time(n.time)).font(.caption2).foregroundStyle(.white.opacity(0.45))
             }
             Spacer(minLength: 8)

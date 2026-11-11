@@ -11,6 +11,8 @@ struct DYNotice: Identifiable, Codable, Equatable {
     let action: String
     let detail: String
     let cover: String?
+    /// 评论配图缩略图地址（仅评论类通知有），缺字段为空，兼容旧缓存
+    var images: [String]? = nil
     let awemeID: String?
     let author: DYAweme.Author?
     var hasRead: Bool
@@ -157,7 +159,7 @@ extension DouyinBridge {
       const t = Number(n.type || 0);
       const gn = n.general_notice || {};
       const inn = n.interactive_notice || {};
-      let name = '', avatar = null, action = gn.title || '通知', detail = gn.content || '', cover = null, awemeID = n.aweme_id ? String(n.aweme_id) : null, author = null;
+      let name = '', avatar = null, action = gn.title || '通知', detail = gn.content || '', cover = null, awemeID = n.aweme_id ? String(n.aweme_id) : null, author = null, images = null;
       if (t === 31 && n.comment) {
         const c = n.comment.comment || {};
         const u = c.user || {};
@@ -166,6 +168,8 @@ extension DouyinBridge {
         action = '评论了你';
         detail = c.text || gn.content || '';
         cover = coverOf(n.comment.aweme);
+        // 评论配图（image_list）：缩略图优先级与评论区一致 medium > thumb > crop > origin
+        images = (c.image_list || []).map(x => first(x.medium_url) || first(x.thumb_url) || first(x.crop_url) || first(x.origin_url)).filter(Boolean);
         awemeID = (c.aweme_id && String(c.aweme_id)) || (n.comment.aweme && n.comment.aweme.aweme_id && String(n.comment.aweme.aweme_id)) || awemeID;
         author = authorOf(u);
       } else if (t === 41 && n.digg) {
@@ -203,7 +207,7 @@ extension DouyinBridge {
       if (!cover) cover = urlOf(inn.image_url);
       return {
         id: String(n.nid_str || n.nid || (t + '-' + (n.create_time || 0))),
-        type: t, time: n.create_time || 0, name, avatar, action, detail, cover, awemeID, author,
+        type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: images.length ? images : null, awemeID, author,
         hasRead: !!(n.has_read || n.read_time)
       };
     };
