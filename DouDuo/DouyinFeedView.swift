@@ -2123,7 +2123,8 @@ struct DYVideoPage: View {
                 actions(fg)
                     .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
                         isRegular: hSize == .regular, trailingInset: systemColumnInset,
-                        columnWidth: actionColumnWidth, outerPadding: chromeSidePadding))
+                        columnWidth: actionColumnWidth, outerPadding: chromeSidePadding,
+                        opticalLeadingInset: theme.media.expandedRailOpticalInset))
                     .modifier(DYRailReservedNudge())
                     .offset(x: hSize == .compact ? -9 : 0)
                     .padding(.bottom, item.images.isEmpty ? 56 : 0)
@@ -2254,7 +2255,7 @@ struct DYVideoPage: View {
 
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 评论 / 收藏 / 搜索，数字在图标下），下方单独一颗「更多」圆按钮
     private func actions(_ fg: Color) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.backward")
@@ -2267,7 +2268,7 @@ struct DYVideoPage: View {
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
-            VStack(spacing: 6) {
+            VStack(spacing: theme.media.actionItemSpacing) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                          tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)

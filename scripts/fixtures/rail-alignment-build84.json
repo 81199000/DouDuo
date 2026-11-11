@@ -1,0 +1,10 @@
+{
+  "source": "Owner screenshot of verified installed build 84; pixels measured from the unmodified 1280x900 image",
+  "imageWidth": 1280,
+  "imageHeight": 900,
+  "signalCenterX": 1215.0,
+  "railCenterX": 1223.0,
+  "railWidthPixels": 73.0,
+  "railWidthPoints": 54.0,
+  "measurement": "Median bright signal spans at y=89..112, and capsule spans at y=470..499; x=1180..1274"
+}

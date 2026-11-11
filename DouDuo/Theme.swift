@@ -18,6 +18,12 @@ struct DDTheme {
         let onMedia = DDColor(.white)
         let onMediaSecondary = DDColor(.white.opacity(0.72))
         let chromeFill = DDColor(.black.opacity(0.35))
+        // Optical calibration from the owner's build84 screenshot: signal x=1215,
+        // rail x=1223, 54pt capsule spans 73px. 8 * 54 / 73 ≈ 6pt leading.
+        // This is not the system column width; runtime geometry still determines that.
+        let expandedRailOpticalInset: CGFloat = 6
+        let actionItemSpacing: CGFloat = 12
+        let actionGroupSpacing: CGFloat = 16
     }
     struct Status {
         let danger = DDColor(Color(red: 1.0, green: 0.17, blue: 0.33))     // 抖音红
