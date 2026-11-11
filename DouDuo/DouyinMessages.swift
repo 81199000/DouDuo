@@ -339,7 +339,12 @@ struct DYMessagesScreen: View {
     let onClose: () -> Void
     let onWeb: (URL) -> Void
 
-    @State private var path: [DYMsgRoute] = []
+    @State private var navigation = DYMessageNavigation()
+    @State private var visitedRoutes: Set<DYMsgRoute> = []
+    @State private var openingChat: String?
+    @State private var restoringList = false
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     @StateObject private var chatModel = DYMessageCache.shared.chatModel
     @State private var viewedGroups: [DYMsgRoute: Set<Int>] = [:]
     @State private var conversations: [DYConversationRow] = []
@@ -356,26 +361,24 @@ struct DYMessagesScreen: View {
     @State private var error: String?
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack {
             messageContent
-                .navigationTitle(selectedChat?.name ?? "消息")
+                .navigationTitle("消息")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     // Duo：返回/关闭走系统 cancellationAction，系统把它放进右侧竖向侧栏
                     ToolbarItem(placement: .cancellationAction) {
                         Button("返回", systemImage: "chevron.backward", action: backFromMessage)
+                            .disabled(openingChat != nil || restoringList)
                             .accessibilityIdentifier("douyin.messages.back")
                     }
                 }
-                .navigationDestination(for: DYMsgRoute.self) { r in
-                    if r == .stranger {
-                        DYStrangerListScreen()
-                    } else {
-                        DYNoticeListScreen(bridge: bridge, route: r, onWeb: onWeb, onViewedGroup: { group in viewedGroups[r, default: []].insert(group) })
-                    }
-                }
+
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            if let row = selectedChat, !navigation.hasDetail { navigation.openChat(row.id, from: nil) }
+        }
         .task { await loadRoot() }
         .task {
             // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
@@ -430,9 +433,9 @@ struct DYMessagesScreen: View {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
-        .onChange(of: path) { old, current in
+        .onChange(of: navigation.detail) { old, current in
             // 只有真正退出分类才标已读；打开视频/作者弹层不算退出分类。
-            guard old.count > current.count, let route = old.last else { return }
+            guard old != current, case .category(let route) = old else { return }
             let seen = viewedGroups.removeValue(forKey: route) ?? []
             Task {
                 await DYMessageCache.shared.markReadAfterExit(seen, bridge: bridge)
@@ -443,9 +446,9 @@ struct DYMessagesScreen: View {
         .onDisappear { DYMessageCache.shared.retainChat() }
     }
 
-    /// System split owns pane placement; the WebView lives in a persistent overlay.
+    /// System split owns pane placement; all details live in a persistent overlay.
     /// A split may place secondary offscreen on compact displays. In that case the
-    /// selected conversation covers primary instead of becoming unreachable.
+    /// selected detail covers primary instead of becoming unreachable.
     @ViewBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
@@ -454,11 +457,11 @@ struct DYMessagesScreen: View {
             } secondary: {
                 ZStack {
                     Color.black
-                    if selectedChat == nil {
+                    if !navigation.hasDetail {
                         VStack(spacing: 10) {
                             Image(systemName: "bubble.left.and.bubble.right.fill")
                                 .font(.title2).foregroundStyle(.secondary)
-                            Text("选择左侧会话开始聊天").font(.footnote).foregroundStyle(.secondary)
+                            Text("选择左侧消息查看详情").font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -474,14 +477,12 @@ struct DYMessagesScreen: View {
                     let split = !visible.isNull && visible.width > 1 && candidate.minX > 1
                         && candidate.maxX <= full.maxX + 1
                     let area = split ? candidate : full
-                    DouyinWebContainer(model: chatModel, zoom: 1,
-                        start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                    detailPane
                         .frame(width: max(1, area.width), height: max(1, area.height))
                         .clipped()
-                        .opacity(selectedChat == nil ? 0.001 : 1)
-                        .allowsHitTesting(selectedChat != nil)
-                        .accessibilityHidden(selectedChat == nil)
-                        .accessibilityIdentifier("douyin.messages.chat.detail")
+                        .opacity(navigation.hasDetail ? 1 : 0.001)
+                        .allowsHitTesting(navigation.hasDetail)
+                        .accessibilityHidden(!navigation.hasDetail)
                         .position(x: area.midX, y: area.midY)
                 }
             }
@@ -497,16 +498,14 @@ struct DYMessagesScreen: View {
             ZStack(alignment: .topLeading) {
                 root
                     .frame(width: geo.size.width, height: geo.size.height)
-                    .opacity(selectedChat == nil ? 1 : 0)
-                    .allowsHitTesting(selectedChat == nil)
-                    .accessibilityHidden(selectedChat != nil)
-                DouyinWebContainer(model: chatModel, zoom: 1, start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
-                    .frame(width: selectedChat == nil ? 760 : geo.size.width,
-                           height: selectedChat == nil ? 640 : geo.size.height)
-                    .opacity(selectedChat == nil ? 0.001 : 1)
-                    .allowsHitTesting(selectedChat != nil)
-                    .accessibilityHidden(selectedChat == nil)
-                    .accessibilityIdentifier("douyin.messages.chat.detail")
+                    .opacity(navigation.hasDetail ? 0 : 1)
+                    .allowsHitTesting(!navigation.hasDetail)
+                    .accessibilityHidden(navigation.hasDetail)
+                detailPane
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .opacity(navigation.hasDetail ? 1 : 0.001)
+                    .allowsHitTesting(navigation.hasDetail)
+                    .accessibilityHidden(!navigation.hasDetail)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
@@ -563,6 +562,9 @@ struct DYMessagesScreen: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
+                .background(navigation.chatID == row.id ? theme.media.onMedia.color(for: scheme).opacity(0.1) : .clear)
+                .accessibilityAddTraits(navigation.chatID == row.id ? .isSelected : [])
+                .disabled(openingChat != nil || restoringList)
                 .accessibilityValue(row.stranger ? "stranger" : "friend")
             }
             if !friendConversations.isEmpty {
@@ -621,6 +623,9 @@ struct DYMessagesScreen: View {
     }
 
     private func openConversation(_ row: DYConversationRow) async {
+        guard openingChat == nil, !restoringList else { return }
+        openingChat = row.id
+        defer { openingChat = nil }
         guard let web = chatModel.web else { return }
         var result = await DYChatOpener.open(row, web: web)
         if case .notReady = result {
@@ -631,6 +636,7 @@ struct DYMessagesScreen: View {
         case .opened:
             cache.selectedChat = row
             DYLiveModel.log("DDCHAT open stranger=\(row.stranger) name=\(row.name)")
+            navigation.openChat(row.id, from: nil)
         case .notReady:
             chatStatus = "私信页面还没加载好，请稍后重试"
             DYLiveModel.log("DDCHAT open miss dom-not-ready name=\(row.name)")
@@ -641,15 +647,64 @@ struct DYMessagesScreen: View {
     }
 
     private func backFromMessage() {
-        guard cache.selectedChat != nil else { onClose(); return }
+        guard openingChat == nil, !restoringList else { return }
+        let wasChat = navigation.isChat
+        if navigation.back() { onClose(); return }
+        guard wasChat else { return }
+        restoreConversationList()
+    }
+
+    private func restoreConversationList() {
+        restoringList = true
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
         Task {
+            defer { restoringList = false }
             if let web = chatModel.web {
                 await DYChatOpener.restoreList(web)
                 if wasStranger { await DYChatOpener.collapseStranger(web) }
             }
             await readConversations()
+        }
+    }
+
+    private func selectCategory(_ route: DYMsgRoute) {
+        guard openingChat == nil, !restoringList else { return }
+        visitedRoutes.insert(route)
+        let wasChat = navigation.isChat
+        navigation.select(route)
+        if wasChat { restoreConversationList() }
+    }
+
+    /// Lists retain identity/scroll position, while the chat WKWebView stays mounted.
+    private var detailPane: some View {
+        ZStack {
+            ForEach([DYMsgRoute.interactive, .fans, .system, .stranger], id: \.self) { route in
+                if visitedRoutes.contains(route) {
+                    let active = !restoringList && !navigation.isChat && navigation.category == route
+                    Group {
+                        if route == .stranger {
+                            DYStrangerListScreen(isActive: active, embedded: true,
+                                onOpen: { row in navigation.openChat(row.id, from: .stranger) },
+                                onOpeningChanged: { openingChat = $0 ? "stranger" : nil })
+                        } else {
+                            DYNoticeListScreen(bridge: bridge, route: route, onWeb: onWeb,
+                                onViewedGroup: { group in viewedGroups[route, default: []].insert(group) },
+                                isActive: active, embedded: true)
+                        }
+                    }
+                    .opacity(active ? 1 : 0)
+                    .allowsHitTesting(active)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityHidden(!active)
+                }
+            }
+            DouyinWebContainer(model: chatModel, zoom: 1,
+                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                .opacity(navigation.isChat ? 1 : 0.001)
+                .allowsHitTesting(navigation.isChat)
+                .accessibilityHidden(!navigation.isChat)
+                .accessibilityIdentifier("douyin.messages.chat.detail")
         }
     }
 
@@ -736,19 +791,19 @@ struct DYMessagesScreen: View {
                     entry(icon: "heart.fill", tint: Color(red: 0.95, green: 0.30, blue: 0.55),
                           title: "互动消息", subtitle: interactSummary,
                           badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0),
-                          id: "douyin.messages.interactive") { path.append(.interactive) }
+                          id: "douyin.messages.interactive", selected: navigation.category == .interactive) { selectCategory(.interactive) }
                     entry(icon: "person.fill", tint: Color(red: 0.25, green: 0.55, blue: 0.95),
                           title: "粉丝消息", subtitle: fansSummary,
                           badge: counts[DYNoticeGroup.fans.rawValue] ?? 0,
-                          id: "douyin.messages.fans") { path.append(.fans) }
+                          id: "douyin.messages.fans", selected: navigation.category == .fans) { selectCategory(.fans) }
                     entry(icon: "bell.fill", tint: Color(red: 0.55, green: 0.55, blue: 0.60),
                           title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
                           badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
-                          id: "douyin.messages.system") { path.append(.system) }
+                          id: "douyin.messages.system", selected: navigation.category == .system) { selectCategory(.system) }
                     entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
                           title: "陌生人消息", subtitle: strangerSummary,
                           badge: strangerBadge,
-                          id: "douyin.messages.stranger") { path.append(.stranger) }
+                          id: "douyin.messages.stranger", selected: navigation.category == .stranger) { selectCategory(.stranger) }
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
@@ -814,7 +869,7 @@ struct DYMessagesScreen: View {
     }
 
     private func entry(icon: String, tint: Color, title: String, subtitle: String, badge: Int,
-                       id: String, action: @escaping () -> Void) -> some View {
+                       id: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
                 ZStack {
@@ -841,6 +896,9 @@ struct DYMessagesScreen: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
         .accessibilityValue(String(badge))
+        .background(selected ? theme.media.onMedia.color(for: scheme).opacity(0.1) : .clear)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .disabled(openingChat != nil || restoringList)
         .accessibilityLabel(title)
     }
 
@@ -896,6 +954,10 @@ struct DYNoticeListScreen: View {
     let route: DYMsgRoute
     let onWeb: (URL) -> Void
     let onViewedGroup: (Int) -> Void
+    let isActive: Bool
+    let embedded: Bool
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     @ObservedObject private var emojiStore = DYEmojiStore.shared
 
     @State private var group: DYNoticeGroup
@@ -908,6 +970,8 @@ struct DYNoticeListScreen: View {
     @State private var player: DYMessagePlay?
     @State private var opening = false
     @State private var loadGen = 0
+    @State private var loadedGroup: DYNoticeGroup?
+    @State private var activationGeneration = 0
     /// 长评论展开
     @State private var expanded: Set<String> = []
     @State private var truncated: Set<String> = []
@@ -920,11 +984,14 @@ struct DYNoticeListScreen: View {
     @State private var toast: String?
     @FocusState private var replyFocused: Bool
 
-    init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void) {
+    init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void,
+         isActive: Bool = true, embedded: Bool = false) {
         self.bridge = bridge
         self.route = route
         self.onWeb = onWeb
         self.onViewedGroup = onViewedGroup
+        self.isActive = isActive
+        self.embedded = embedded
         let group = route.filters.first ?? .all
         _group = State(initialValue: group)
         let cached = DYMessageCache.shared.page(group.rawValue)
@@ -934,34 +1001,31 @@ struct DYNoticeListScreen: View {
     }
 
     var body: some View {
-        list.frame(maxWidth: .infinity, maxHeight: .infinity)
+        presentedList.frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay { if opening { ProgressView().tint(.white) } }
         .background(Color.black.ignoresSafeArea())
-        .navigationTitle(route.filterTitle(group))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarTitleMenu {
-            // 互动页点标题切 全部互动 / 评论 / 赞（对齐抖音「全部消息 ▾」）
-            if route.filters.count > 1 {
-                ForEach(route.filters) { g in
-                    Button { group = g } label: {
-                        if g == group { Label(route.filterTitle(g), systemImage: "checkmark") }
-                        else { Text(route.filterTitle(g)) }
-                    }
-                }
-            }
-        }
+
         .foregroundStyle(.white)
-        .task(id: group) {
+        .task(id: "\(group.rawValue):\(isActive)") {
+            guard isActive else { return }
             // 进哪个分类就记下它对应的服务端分组，退出时一起标已读（评论+赞同属互动）
             route.readGroups.forEach { onViewedGroup($0) }
-            await reload(reset: true)
+            if loadedGroup != group {
+                let requested = group
+                await reload(reset: true)
+                if !Task.isCancelled { loadedGroup = requested }
+            }
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_READ_AUDIT"] == "1", let values = try? await bridge.noticeCounts() {
                 DYLiveModel.log("DDREADAUDIT inside-category " + values.map { "\($0.group)=\($0.count)" }.joined(separator: ","))
             }
             #endif
         }
-        .task { await emojiStore.load(bridge: bridge) }
+        .task(id: isActive) { if isActive { await emojiStore.load(bridge: bridge) } }
+        .onChange(of: isActive) { _, active in
+            activationGeneration += 1
+            if !active { replyFocused = false }
+        }
         .sheet(item: $author) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
                 .presentationDetents([.medium, .large])
@@ -984,6 +1048,50 @@ struct DYNoticeListScreen: View {
     }
 
     // MARK: 直接回复评论
+
+    @ViewBuilder
+    private var presentedList: some View {
+        if embedded {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
+                    if route.filters.count > 1 {
+                        Menu { filterChoices } label: {
+                            HStack(spacing: 6) {
+                                Text(route.filterTitle(group))
+                                Image(systemName: "chevron.down").font(.caption)
+                            }
+                            .font(.headline)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityIdentifier("douyin.notice.filter")
+                    } else {
+                        Text(route.title).font(.headline).padding(.vertical, 14)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .background(theme.media.strongScrim.color(for: scheme))
+                Divider()
+                list
+            }
+        } else {
+            list
+                .navigationTitle(route.filterTitle(group))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarTitleMenu { filterChoices }
+        }
+    }
+
+    private var filterChoices: some View {
+        ForEach(route.filters) { g in
+            Button { group = g } label: {
+                if g == group { Label(route.filterTitle(g), systemImage: "checkmark") }
+                else { Text(route.filterTitle(g)) }
+            }
+            .accessibilityIdentifier("douyin.notice.filter.\(g.rawValue)")
+        }
+    }
 
     private var replyBar: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1216,6 +1324,7 @@ struct DYNoticeListScreen: View {
     }
 
     private func reload(reset: Bool) async {
+        guard isActive else { return }
         if !reset && (!hasMore || loading) { return }
         loadGen += 1
         let gen = loadGen
@@ -1242,20 +1351,22 @@ struct DYNoticeListScreen: View {
                                           hasMore: next.hasMore && !next.items.isEmpty && next.maxTime != maxTime)
                 cache.store(page, group: requestedGroup)
             }
-            guard gen == loadGen else { return }
+            guard gen == loadGen, !Task.isCancelled else { return }
             items = page.items
             maxTime = page.maxTime
             hasMore = page.hasMore
             error = nil
             DYLiveModel.log("DDNOTICE group=\(requestedGroup) n=\(items.count) read=deferred-until-exit")
         } catch {
-            guard gen == loadGen else { return }
+            guard gen == loadGen, !Task.isCancelled else { return }
             if items.isEmpty { self.error = error.localizedDescription }
             DYLiveModel.log("DDNOTICE error \(error.localizedDescription)")
         }
     }
 
     private func open(_ n: DYNotice) async {
+        guard isActive else { return }
+        let generation = activationGeneration
         if n.type == 33, let a = n.author {
             author = a
             return
@@ -1269,6 +1380,7 @@ struct DYNoticeListScreen: View {
         defer { opening = false }
         do {
             let item = try await bridge.awemeDetail(id)
+            guard generation == activationGeneration else { return }
             // 评论通知：进视频直接打开评论区并定位到这条评论
             player = DYMessagePlay(item: item, focus: n.commentFocus)
         } catch {
@@ -1498,6 +1610,10 @@ enum DYChatOpener {
 // MARK: - 陌生人消息（原生二级页）
 
 struct DYStrangerListScreen: View {
+    var isActive = true
+    var embedded = false
+    var onOpen: ((DYConversationRow) -> Void)? = nil
+    var onOpeningChanged: (Bool) -> Void = { _ in }
     @ObservedObject private var cache = DYMessageCache.shared
     @Environment(\.dismiss) private var dismiss
     @State private var status = "正在读取陌生人消息…"
@@ -1509,7 +1625,21 @@ struct DYStrangerListScreen: View {
         return cache.unfollowedRows + cache.strangerRows.filter { !ids.contains($0.id) }
     }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if embedded {
+            content.safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    Text(DYMsgRoute.stranger.title).font(.headline).padding(.vertical, 14)
+                    Divider()
+                }
+                .frame(maxWidth: .infinity)
+            }
+        } else {
+            content.navigationTitle(DYMsgRoute.stranger.title).navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 if allRows.isEmpty {
@@ -1525,10 +1655,8 @@ struct DYStrangerListScreen: View {
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
-        .navigationTitle(DYMsgRoute.stranger.title)
-        .navigationBarTitleDisplayMode(.inline)
         .overlay { if opening != nil { ProgressView().tint(.white) } }
-        .task { await refresh() }
+        .task(id: isActive) { if isActive { await refresh() } }
     }
 
     private func refresh() async {
@@ -1569,15 +1697,17 @@ struct DYStrangerListScreen: View {
         .contentShape(Rectangle())
     }
 
-    /// 选中这个人 → 回消息根页，由根页全屏显示网页聊天；返回时回到消息根页
+    /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。
     private func open(_ row: DYConversationRow) async {
+        guard isActive else { return }
         guard let web = cache.chatModel.web else { return }
         opening = row.id
-        defer { opening = nil }
+        onOpeningChanged(true)
+        defer { opening = nil; onOpeningChanged(false) }
         switch await DYChatOpener.open(row, web: web) {
         case .opened:
             cache.selectedChat = row
-            dismiss()
+            if let onOpen { onOpen(row) } else { dismiss() }
         case .notReady: status = "私信页面还没加载好，请稍后重试"
         case .notFound:
             status = "这条会话位置变了，已刷新列表，请再点一次"
