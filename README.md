@@ -1,6 +1,12 @@
-# DouDuo
+<p align="center">
+  <img src="docs/brand/app-icon.png" width="128" alt="DouDuo 图标">
+</p>
 
-一个**适配 iPhone Duo（折叠屏）/ iPad / 横屏的第三方抖音客户端**，界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
+<h1 align="center">DouDuo · 抖Duo</h1>
+
+<p align="center">适配 iPhone Duo（折叠屏）/ iPad / 横屏的第三方抖音客户端</p>
+
+界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。
 
