@@ -161,6 +161,22 @@ extension PlayerPage {
     }
 }
 
+/// 极简模式：播放进度画在圆形模块入口的外圈。播放器页把当前进度写进来，屏幕层读。
+/// 只有「当前页」会写（isActive），所以不会被相邻预加载页的进度干扰。
+@MainActor final class DDRailProgress: ObservableObject {
+    static let shared = DDRailProgress()
+    @Published var fraction: Double = 0
+    @Published var seeking = false
+    var ownerID = ""
+    func update(id: String, fraction: Double, seeking: Bool) {
+        ownerID = id
+        let f = fraction.isFinite ? max(0, min(1, fraction)) : 0
+        // 0.5% 以内的变化不发布，避免每 0.25s 都重绘整个屏幕层
+        if abs(f - self.fraction) > 0.005 || f == 0 || f == 1 { self.fraction = f }
+        if self.seeking != seeking { self.seeking = seeking }
+    }
+}
+
 /// 右侧按钮/作者区也要能长按加速：这些控件盖在手势层上面，触摸到不了手势层，
 /// 所以由 PlayerPage 把「加速开始/结束」交给这个对象，外层控件按住时直接调用。
 @MainActor final class DYBoostControl: ObservableObject {
@@ -227,6 +243,9 @@ struct PlayerPage: View {
     /// 锁屏 / 控制中心「正在播放」上显示的标题
     var title: String = ""
     var boost: DYBoostControl? = nil
+    /// 极简模式：隐藏底部进度条，进度改画在模块入口外圈
+    @AppStorage("douyin_chrome_mode_v1") private var chromeModeRaw = "classic"
+    private var progressOnRail: Bool { chromeModeRaw == "minimal" }
     /// 上一次刷新「正在播放」信息的位置（约每秒一次）
     @State private var lastNowPlaying = -10.0
     /// 静音（右下角按钮，全局记住）
@@ -363,7 +382,7 @@ struct PlayerPage: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if isActive && !rateBoost { progressBar.padding(.bottom, max(bottomInset, 8)) }
+            if isActive && !rateBoost && !progressOnRail { progressBar.padding(.bottom, max(bottomInset, 8)) }
         }
         .onAppear {
             if player == nil { setup() }
@@ -386,6 +405,9 @@ struct PlayerPage: View {
             resumeAfterBackground()
         }
         .onChange(of: rateBoost) { _, on in boost?.boosting = on }
+        .onChange(of: current) { _, _ in pushRailProgress() }
+        .onChange(of: seeking) { _, _ in pushRailProgress() }
+        .onChange(of: seekPreview) { _, _ in if seeking { pushRailProgress() } }
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
         .onChange(of: muted) { _, m in
             guard isActive else { return }
@@ -435,6 +457,12 @@ struct PlayerPage: View {
                 onSavePosition(p.currentTime().seconds)
             }
         }
+    }
+
+    private func pushRailProgress() {
+        guard isActive, progressOnRail else { return }
+        let pos = seeking ? seekPreview : current
+        DDRailProgress.shared.update(id: id, fraction: duration > 0 ? pos / duration : 0, seeking: seeking)
     }
 
     /// 长按加速开始/结束。手势层和右侧按钮（DYBoostControl）共用。
