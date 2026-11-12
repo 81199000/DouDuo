@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Combine
 import AVFoundation
 
@@ -45,6 +46,7 @@ final class DYLiveModel: ObservableObject {
     /// 关注的主播里正在开播的（网页版直播首页顶上那排头像，复用同一个接口）
     @Published var followLive: [DYLiveRoom] = []
     private var followLiveFetchedAt = Date.distantPast
+    private var loadedFollowSession = -1
     private var followedOnly = false
     @Published var clean = false
     @Published var entered = false
@@ -65,7 +67,19 @@ final class DYLiveModel: ObservableObject {
         UserDefaults.standard.set(q, forKey: "douyin_live_quality_v1")
         retry()
     }
-    @Published var muted = false { didSet { vlc.mediaPlayer.audio?.isMuted = muted } }
+    @Published var muted = false {
+        didSet {
+            vlc.outputMuted = muted
+            if !muted, sessionReleased {
+                if activatePlaybackSession() {
+                    vlc.reopenAudioOutput()
+                    sessionReleased = false
+                }
+            } else {
+                vlc.mediaPlayer.audio?.isMuted = muted
+            }
+        }
+    }
     let vlc = VLCPlayerController()
     private var requestGeneration = UUID()
     private var loadedRoom: String?
@@ -76,17 +90,60 @@ final class DYLiveModel: ObservableObject {
     private var streamGeneration = UUID()
     private let lifecycleID = UUID()
     private var visible = false
+    /// 前后台过渡已经开始。重复回调不能再改策略，也不能再重连一次。
+    private var suspended = false
+    /// 后台声音关闭时，这次进后台已经停掉媒体。回前台必须重开，不能复用。
+    private var stoppedForBackground = false
+    /// 这次离开前台的墙钟时间。不用会在睡眠中停住的 systemUptime。
+    private var suspendedAt: Date?
+    /// 系统打断了音频。恢复时不能把打断前的缓冲接着播。
+    private var audioInterrupted = false
+    /// 音频会话被交还过。视频可能还在，但 VLC 的音频输出已经拆掉。
+    private var sessionReleased = false
+    private var interruptionObserver: NSObjectProtocol?
+    /// 进入后台时输入模块已读字节。demux 计数会消化旧缓冲，不能当作新数据。
+    private var inputReadAtBackground: Int64 = 0
+    private var visit = DYLiveVisit()
+    private var savedFeed: SavedLiveFeed?
+    var isFollowedVisit: Bool { visit.followed }
+    var isFollowedCatalog: Bool { followedOnly }
+    /// 关注分类里的当前房间还没有播放地址时，界面用它重新解析这一间。
+    @Published private(set) var catalogResolveNonce = 0
+
+    private struct SavedLiveFeed {
+        var rooms: [DYLiveRoom]
+        var currentID: String?
+        var zone: DYLiveZone?
+        var error: String?
+        var fetchedAt: Date
+    }
 
     func activate() {
         visible = true
-        DDPlayback.shared.register(lifecycleID, stop: { [weak self] in self?.stop() }, start: { [weak self] in
-            guard let self, self.visible else { return }
-            self.play(self.roomRef)
+        if interruptionObserver == nil {
+            interruptionObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.interruptionNotification,
+                object: AVAudioSession.sharedInstance(),
+                queue: .main
+            ) { [weak self] note in
+                Task { @MainActor in
+                    self?.handleAudioInterruption(note)
+                }
+            }
+        }
+        DDPlayback.shared.register(lifecycleID, stop: { [weak self] in self?.suspendForBackground() }, start: { [weak self] in
+            self?.resumeFromBackground()
+        }, retainsAudioSession: { [weak self] in
+            self?.wantsBackgroundAudioSession ?? false
         })
         play(roomRef)
     }
     func deactivate() {
         visible = false
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+            self.interruptionObserver = nil
+        }
         DDPlayback.shared.unregister(lifecycleID)
         stop()
     }
@@ -103,17 +160,44 @@ final class DYLiveModel: ObservableObject {
 
     init() {
         vlc.onProgress = { [weak self] time in
-            guard let self, !self.ready, self.loadedRoom != nil, time > 0,
+            guard let self else { return }
+            if self.suspended {
+                self.reapplyBackgroundMuteIfNeeded()
+            } else if self.vlc.mediaPlayer.audio?.isMuted != DYLivePlaybackGate.foregroundOutputMuted(userMuted: self.muted) {
+                self.vlc.mediaPlayer.audio?.isMuted = DYLivePlaybackGate.foregroundOutputMuted(userMuted: self.muted)
+            }
+            guard !self.ready, self.loadedRoom != nil, time > 0,
+                  self.liveCanProgress,
                   self.vlc.mediaPlayer.hasVideoOut else { return }
             self.ready = true
             self.retryTask?.cancel()
             Self.log("DDLIVE_READY room=\(self.loadedRoom ?? "-") elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
         }
-        vlc.onError = { [weak self] in self?.tryNextSource(reason: "decoder/network error") }
-        vlc.onEnd = { [weak self] in self?.playbackError = "直播已结束或连接中断，可重试或上滑换台" }
+        vlc.onError = { [weak self] in
+            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+            self.tryNextSource(reason: "decoder/network error", generation: self.streamGeneration)
+        }
+        vlc.onEnd = { [weak self] in
+            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+            self.playbackError = "直播已结束或连接中断，可重试或上滑换台"
+            self.ready = false
+        }
     }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
+        guard visit.acceptsRecommendation else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_LIVEMOCK"] == "1" {
+            guard reset || rooms.isEmpty else { return }
+            let seeded = DYLiveRoom.debugFeed()
+            rooms = seeded
+            currentID = seeded.first?.id
+            error = nil
+            fetchedAt = .distantFuture
+            visit.replaceFeed(ids: rooms.map(\.id), currentID: currentID, zoneID: zone?.id)
+            return
+        }
+        #endif
         guard !loading, !followedOnly else { return }
         let generation = requestGeneration, requestedZone = zone
         let start = ProcessInfo.processInfo.systemUptime
@@ -125,9 +209,10 @@ final class DYLiveModel: ObservableObject {
             if reset { rooms = [] }
             var seen = Set(rooms.map(\.id))
             rooms.append(contentsOf: r.filter { seen.insert($0.id).inserted })
-            if !rooms.contains(where: { $0.id == currentID }) { currentID = rooms.first?.id }
+            if !rooms.contains(where: { $0.id == currentID }) { noteVisibleRoom(rooms.first?.id) }
             fetchedAt = Date()
             error = rooms.isEmpty ? (zone == nil ? "暂时没有直播" : "这个分类暂时没有直播") : nil
+            visit.replaceFeed(ids: rooms.map(\.id), currentID: currentID, zoneID: zone?.id)
             Self.log("DDLIVE_FEED count=\(r.count) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - start))")
         } catch {
             guard requestGeneration == generation else { return }
@@ -137,16 +222,262 @@ final class DYLiveModel: ObservableObject {
 
     func play(_ room: DYLiveRoom?) {
         guard let room else { return }
-        if loadedRoom == room.id, vlc.mediaPlayer.media != nil { return }
         roomRef = room
-        guard !browsing, visible, DDPlayback.shared.appIsActive else { return }
+        let restart = loadedRoom != room.id || DYLivePlaybackGate.shouldRestartSameRoom(
+            state: playbackState(), ready: ready, hasMedia: vlc.mediaPlayer.media != nil)
+        let applicationActive = UIApplication.shared.applicationState == .active
+        if DYLivePlaybackGate.acceptsRoomChange(playbackRegisteredActive: DDPlayback.shared.appIsActive, applicationActive: applicationActive, visible: visible), restart {
+            suspended = false
+            suspendedAt = nil
+            audioInterrupted = false
+        }
+        guard !browsing, DYLivePlaybackGate.acceptsRoomChange(playbackRegisteredActive: DDPlayback.shared.appIsActive, applicationActive: applicationActive, visible: visible), !suspended else {
+            if loadedRoom != room.id {
+                ready = false
+                playbackError = nil
+            }
+            return
+        }
+        guard restart else { return }
         loadedRoom = room.id
         sources = room.liveStreams
-        // 选了清晰度就把它排最前，起不来才退回其他档
+        // 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
         if let q = quality, sources.contains(where: { $0.quality == q }) {
             sources = sources.filter { $0.quality == q } + sources.filter { $0.quality != q }
         }
         startCurrentSource()
+    }
+
+    /// 滑到另一间时先撤掉上一间的就绪状态，避免旧画面被当成这一间已经播出。
+    func noteVisibleRoom(_ id: String?) {
+        guard id != currentID else { return }
+        currentID = id
+        if loadedRoom != id {
+            ready = false
+            playbackError = nil
+        }
+    }
+
+    /// 人已经在前台时，清掉过期的后台锁，让超时和换源还能继续。
+    private var liveCanProgress: Bool {
+        let applicationActive = UIApplication.shared.applicationState == .active
+        let allowed = DYLivePlaybackGate.acceptsRoomChange(
+            playbackRegisteredActive: DDPlayback.shared.appIsActive,
+            applicationActive: applicationActive,
+            visible: visible)
+        if allowed, applicationActive { suspended = false }
+        return allowed && !suspended
+    }
+
+    private var backgroundSoundEnabled: Bool {
+        UserDefaults.standard.bool(forKey: DYLiveBackgroundSound.storageKey)
+    }
+
+    /// 只有真正要播出直播声音时才占着播放会话。静音或被打断时不拿它保活。
+    private var wantsBackgroundAudioSession: Bool {
+        guard DDPlayback.shared.pauseReason == .background, !audioInterrupted else { return false }
+        return DYLivePlaybackGate.retainsAudioSession(
+            visible: visible,
+            hasMedia: vlc.mediaPlayer.media != nil,
+            userMuted: muted,
+            backgroundSound: backgroundSoundEnabled,
+            interrupted: audioInterrupted)
+    }
+
+    private func suspendForBackground() {
+        let reason = DDPlayback.shared.pauseReason
+        if reason == .inactive || !visible { return }
+        if reason == .cover {
+            guard !suspended else { return }
+            suspended = true
+            suspendedAt = Date()
+            retryTask?.cancel()
+            sessionReleased = true
+            if loadedRoom != nil, vlc.mediaPlayer.media != nil { vlc.pause() }
+            return
+        }
+        let first = !suspended
+        if first {
+            suspended = true
+            suspendedAt = Date()
+            retryTask?.cancel()
+        }
+        // 只有「后台直播声音」关闭、并且已经进了真正的 background，才停媒体。
+        if DYLivePlaybackGate.stopsMediaOnBackground(backgroundSound: backgroundSoundEnabled) {
+            guard loadedRoom != nil, !stoppedForBackground else {
+                if loadedRoom == nil, first {
+                    suspended = false
+                    suspendedAt = nil
+                }
+                return
+            }
+            stoppedForBackground = true
+            sessionReleased = true
+            streamGeneration = UUID()
+            vlc.stop()
+            return
+        }
+        guard first else { return }
+        captureBackgroundInput()
+        let outputMuted = audioInterrupted || DYLivePlaybackGate.backgroundOutputMuted(
+            userMuted: muted, backgroundSound: backgroundSoundEnabled)
+        vlc.outputMuted = outputMuted
+        vlc.mediaPlayer.audio?.isMuted = outputMuted
+        if wantsBackgroundAudioSession {
+            if activatePlaybackSession() { sessionReleased = false }
+        } else {
+            sessionReleased = true
+        }
+    }
+
+    private func resumeFromBackground() {
+        if DDPlayback.shared.coverHold { return }
+        if stoppedForBackground {
+            let action = DYLivePlaybackGate.silenceResume(
+                visible: visible, hasRoom: roomRef != nil, coverHold: false, pending: true)
+            stoppedForBackground = false
+            suspended = false
+            suspendedAt = nil
+            audioInterrupted = false
+            guard action == .reconnect else { return }
+            let room = roomRef
+            loadedRoom = nil
+            play(room)
+            return
+        }
+        let away = suspendedAt.map { Date().timeIntervalSince($0) }
+        let age = vlc.lastAdvanceAge
+        let inputAdvanced = inputAdvancedSinceBackground()
+        let decision = DYLivePlaybackGate.recovery(
+            suspended: suspended,
+            visible: visible,
+            sameRoom: loadedRoom != nil && loadedRoom == roomRef?.id,
+            hasMedia: vlc.mediaPlayer.media != nil,
+            state: playbackState(),
+            backgroundDuration: away,
+            lastAdvanceAge: age,
+            inputAdvanced: inputAdvanced,
+            interrupted: audioInterrupted)
+        let interrupted = audioInterrupted
+        let awayText = String(format: "%.0f", away ?? -1)
+        let ageText = age.map { String(format: "%.1f", $0) } ?? "-"
+        Self.log("DDLIVE_RESUME action=\(decision.action == .continueExisting ? "reuse" : decision.action == .reconnect ? "reconnect" : "ignore") reason=\(decision.reason) away=\(awayText) age=\(ageText) input=\(inputAdvanced ? 1 : 0) gen=\(streamGeneration.uuidString.prefix(4))")
+        guard decision.action != .ignore else { return }
+        audioInterrupted = false
+        suspendedAt = nil
+        suspended = false
+        switch decision.action {
+        case .ignore:
+            break
+        case .continueExisting:
+            let reopen = sessionReleased
+            _ = activatePlaybackSession()
+            applyForegroundAudio(reopenTrack: reopen)
+            let age = vlc.lastAdvanceAge ?? .infinity
+            let pictureReady = DYLivePlaybackGate.canShowExistingPicture(state: playbackState(), hasVideoOut: vlc.mediaPlayer.hasVideoOut)
+            if pictureReady || age <= DYLivePlaybackGate.continuityWindow {
+                ready = true
+                playbackError = nil
+                retryTask?.cancel()
+            }
+            armResumeWatch()
+        case .reconnect:
+            if DYLivePlaybackGate.shouldRebuildPlayer(
+                backgroundSound: backgroundSoundEnabled,
+                interrupted: interrupted,
+                action: decision.action,
+                coverHold: DDPlayback.shared.coverHold,
+                visible: visible,
+                hasRoom: roomRef != nil) {
+                ready = false
+                retryTask?.cancel()
+                vlc.onInterruptionPlayerReady = { [weak self] in
+                    guard let self, self.visible, self.roomRef != nil, !DDPlayback.shared.coverHold else { return }
+                    let room = self.roomRef
+                    self.loadedRoom = nil
+                    self.play(room)
+                }
+                vlc.onInterruptionRebuildFailed = { [weak self] in
+                    guard let self, self.visible, self.roomRef != nil else { return }
+                    self.ready = false
+                    self.playbackError = "直播连接失败，请重试或上滑换台"
+                }
+                vlc.rebuildPlayerAfterInterruption()
+                return
+            }
+            let room = roomRef
+            loadedRoom = nil
+            play(room)
+        }
+    }
+
+    /// 回到前台时只恢复进房静音。会话被释放过且用户没静音时，重开音轨，不换媒体。
+    private func applyForegroundAudio(reopenTrack: Bool) {
+        let output = DYLivePlaybackGate.foregroundAudio(userMuted: muted, sessionReleased: reopenTrack)
+        vlc.outputMuted = output.muted
+        if output.reopenTrack {
+            vlc.reopenAudioOutput()
+            sessionReleased = false
+        } else if sessionReleased {
+            vlc.mediaPlayer.audio?.isMuted = true
+        } else {
+            vlc.mediaPlayer.audio?.isMuted = output.muted
+            if !output.muted { vlc.mediaPlayer.audio?.volume = 100 }
+        }
+    }
+
+    private func handleAudioInterruption(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            guard visible, loadedRoom != nil else { return }
+            audioInterrupted = true
+            sessionReleased = true
+            // 系统已经拿走音频。只静音的话，VLC 仍可能把播放会话抢回来。
+            vlc.pause()
+            vlc.outputMuted = true
+            vlc.mediaPlayer.audio?.isMuted = true
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        case .ended:
+            let applicationActive = UIApplication.shared.applicationState == .active
+            guard audioInterrupted, DDPlayback.shared.appIsActive || applicationActive else { return }
+            resumeFromBackground()
+        default:
+            break
+        }
+    }
+
+    private func captureBackgroundInput() {
+        inputReadAtBackground = Int64(vlc.mediaPlayer.media?.statistics.readBytes ?? 0)
+    }
+
+    /// 只看输入模块的 readBytes。demux 字节增加只表示在消化已经读入的缓冲。
+    private func inputAdvancedSinceBackground() -> Bool {
+        guard let media = vlc.mediaPlayer.media else { return false }
+        return Int64(media.statistics.readBytes) > inputReadAtBackground
+    }
+
+    /// 音轨对象可能晚于进后台才出现。进度回调上把后台静音再写一次。
+    private func reapplyBackgroundMuteIfNeeded() {
+        guard suspended, DDPlayback.shared.pauseReason == .background else { return }
+        let shouldMute = audioInterrupted || DYLivePlaybackGate.backgroundOutputMuted(
+            userMuted: muted, backgroundSound: backgroundSoundEnabled)
+        guard vlc.mediaPlayer.audio?.isMuted != shouldMute else { return }
+        vlc.mediaPlayer.audio?.isMuted = shouldMute
+    }
+
+    private func playbackState() -> DYLivePlaybackGate.PlayerState {
+        guard vlc.mediaPlayer.media != nil else { return .empty }
+        switch vlc.mediaPlayer.state {
+        case .opening, .esAdded: return .opening
+        case .buffering: return .buffering
+        case .playing: return .playing
+        case .paused: return .paused
+        case .stopped: return .stopped
+        case .ended, .error: return .failed
+        @unknown default: return .failed
+        }
     }
 
     private func startCurrentSource() {
@@ -154,33 +485,79 @@ final class DYLiveModel: ObservableObject {
         streamGeneration = UUID()
         let generation = streamGeneration
         ready = false; playbackError = nil
-        vlc.stop()
         guard let source = sources.first else {
-            playbackError = "没有可用直播线路，请重试或换一个直播间"; return
+            playbackError = "没有可用直播线路，请重试或换一个直播间"
+            vlc.stop()
+            return
         }
         startedAt = ProcessInfo.processInfo.systemUptime
-        vlc.play(url: source.url, headers: DYMedia.liveHeaders, cachingMs: source.cacheMS)
-        vlc.mediaPlayer.audio?.isMuted = muted
-        Self.log("DDLIVEPLAY room=\(loadedRoom ?? "-") protocol=\(source.isFLV ? "FLV" : "HLS") q=\(source.quality) cache=\(source.cacheMS) drawable=\(vlc.mediaPlayer.drawable != nil)")
-        retryTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(source.isFLV ? 6 : 10)) } catch { return }
-            guard let self, self.streamGeneration == generation, !self.ready else { return }
-            self.tryNextSource(reason: "startup timeout")
+        let sessionOK = activatePlaybackSession()
+        if sessionOK { sessionReleased = false }
+        vlc.outputMuted = DYLivePlaybackGate.foregroundOutputMuted(userMuted: muted)
+        let flv = source.isFLV
+        vlc.onMediaAssigned = { [weak self] in
+            self?.armSourceTimeout(generation: generation, flv: flv)
+        }
+        vlc.replace(url: source.url, headers: DYMedia.liveHeaders, cachingMs: source.cacheMS)
+        Self.log("DDLIVEPLAY room=\(loadedRoom ?? "-") protocol=\(source.isFLV ? "FLV" : "HLS") q=\(source.quality) cache=\(source.cacheMS) drawable=\(vlc.mediaPlayer.drawable != nil) session=\(sessionOK ? 1 : 0)")
+    }
+
+    @discardableResult
+    private func activatePlaybackSession() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try AVAudioSession.sharedInstance().setActive(true)
+            return true
+        } catch {
+            return false
         }
     }
 
-    private func tryNextSource(reason: String) {
-        guard loadedRoom != nil else { return }
+    private func armSourceTimeout(generation: UUID, flv: Bool) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(flv ? 6 : 10)) } catch { return }
+            guard let self else { return }
+            guard DYLivePlaybackGate.acceptEvent(currentGeneration: self.streamGeneration, eventGeneration: generation, ownerRoomID: self.loadedRoom, eventRoomID: self.loadedRoom),
+                  !self.ready, self.liveCanProgress else { return }
+            self.tryNextSource(reason: "startup timeout", generation: generation)
+        }
+    }
+
+    /// 沿用当前会话之后，时钟停住才整段重连。这只发现卡死，不证明还在直播前沿。
+    private func armResumeWatch() {
+        retryTask?.cancel()
+        let generation = streamGeneration
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            guard let self else { return }
+            guard DYLivePlaybackGate.acceptEvent(currentGeneration: self.streamGeneration, eventGeneration: generation, ownerRoomID: self.loadedRoom, eventRoomID: self.loadedRoom),
+                  self.liveCanProgress else { return }
+            let age = self.vlc.lastAdvanceAge ?? .infinity
+            if age <= DYLivePlaybackGate.continuityWindow { return }
+            self.loadedRoom = nil
+            self.play(self.roomRef)
+        }
+    }
+
+    private func tryNextSource(reason: String, generation: UUID) {
+        guard DYLivePlaybackGate.acceptEvent(currentGeneration: streamGeneration, eventGeneration: generation, ownerRoomID: loadedRoom, eventRoomID: loadedRoom),
+              liveCanProgress else { return }
         retryTask?.cancel()
         Self.log("DDLIVE_FALLBACK reason=\(reason) remaining=\(sources.count)")
         if !sources.isEmpty { sources.removeFirst() }
         guard !sources.isEmpty else {
-            playbackError = "直播连接失败，请重试或上滑换台"; vlc.stop(); return
+            playbackError = "直播连接失败，请重试或上滑换台"; ready = false; vlc.stop(); return
         }
         startCurrentSource()
     }
 
     func retry() {
+        if isFollowedCatalog, let room = rooms.first(where: { $0.id == currentID }), room.liveStreams.isEmpty {
+            playbackError = nil
+            catalogResolveNonce += 1
+            return
+        }
         guard let room = roomRef else { return }
         loadedRoom = nil; play(room)
     }
@@ -189,11 +566,42 @@ final class DYLiveModel: ObservableObject {
         Self.log("DDLIVE_ENTER room=\(currentID ?? "-") reused=true")
     }
     func leaveRoom() {
-        entered = false; clean = false
-        Self.log("DDLIVE_LEAVE room=\(currentID ?? "-") reused=true")
+        guard visit.followed, let saved = savedFeed else {
+            entered = false; clean = false
+            Self.log("DDLIVE_LEAVE room=\(currentID ?? "-") reused=true")
+            return
+        }
+        visit.leave()
+        savedFeed = nil
+        requestGeneration = UUID()
+        loading = false
+        stop()
+        rooms = saved.rooms
+        currentID = visit.currentID
+        if currentID == nil || !rooms.contains(where: { $0.id == currentID }) { currentID = rooms.first?.id }
+        zone = saved.zone
+        error = saved.error
+        fetchedAt = saved.fetchedAt
+        entered = false
+        clean = false
+        playbackError = nil
+        visit.replaceFeed(ids: rooms.map(\.id), currentID: currentID, zoneID: zone?.id)
+        Self.log("DDLIVE_LEAVE followed=1 restored=\(rooms.count)")
+        let restored = rooms.first { $0.id == currentID }
+        if followedOnly, restored?.liveStreams.isEmpty != false {
+            playbackError = nil
+        } else {
+            play(restored)
+        }
     }
     func stop() {
+        suspended = false
+        suspendedAt = nil
+        stoppedForBackground = false
+        audioInterrupted = false
+        sessionReleased = false
         retryTask?.cancel(); streamGeneration = UUID()
+        vlc.cancelInterruptionRebuild()
         loadedRoom = nil; vlc.stop(); ready = false
     }
     func reset() {
@@ -201,6 +609,7 @@ final class DYLiveModel: ObservableObject {
         requestGeneration = UUID(); loading = false
         stop(); rooms = []; currentID = nil; error = nil; playbackError = nil
         entered = false; clean = false
+        visit.clear(); savedFeed = nil
     }
     func select(_ z: DYLiveZone?, _ bridge: DouyinBridge) {
         guard z != zone || rooms.isEmpty else { return }
@@ -208,14 +617,55 @@ final class DYLiveModel: ObservableObject {
         Task { await load(bridge, reset: true) }
     }
     func open(_ room: DYLiveRoom) {
-        zone = nil; reset(); rooms = [room]; currentID = room.id; entered = true; fetchedAt = Date()
+        if !visit.followed {
+            savedFeed = SavedLiveFeed(rooms: rooms, currentID: currentID, zone: zone, error: error, fetchedAt: fetchedAt)
+            visit.replaceFeed(ids: rooms.map(\.id), currentID: currentID, zoneID: zone?.id)
+        }
+        visit.open(room.id)
+        requestGeneration = UUID()
+        loading = false
+        stop()
+        playbackError = nil
+        error = nil
+        rooms = [room]
+        currentID = room.id
+        entered = true
+        clean = false
+        fetchedAt = Date()
+        play(room)
     }
 
-    /// 「发现更多」里的关注主播：2 分钟节流；未登录或被风控时静默降级为空列表
+    /// 关注分类里只补当前这一间的播放地址，不换掉整条列表。
+    func adoptFollowPlayback(_ room: DYLiveRoom) {
+        guard followedOnly else { return }
+        guard let index = rooms.firstIndex(where: {
+            $0.id == room.id || (!room.webRid.isEmpty && $0.webRid == room.webRid)
+        }) else { return }
+        let previous = rooms[index].id
+        rooms[index] = room
+        if currentID == previous { currentID = room.id }
+        guard currentID == room.id else { return }
+        loadedRoom = nil
+        play(room)
+    }
+
+    func invalidateFollowLive() {
+        followLive = []
+        followLiveFetchedAt = .distantPast
+        loadedFollowSession = -1
+    }
+
+    /// 关注列表按账号代际隔离。同一账号 2 分钟内不重复请求；换账号立刻丢掉上一份。
     func loadFollowLive(_ bridge: DouyinBridge) async {
-        guard Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
+        let session = bridge.followSession
+        let sessionChanged = session != loadedFollowSession
+        guard sessionChanged || Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
+        if sessionChanged { followLive = [] }
         followLiveFetchedAt = Date()
-        if let r = try? await bridge.fetchFollowLive() { followLive = r }
+        loadedFollowSession = session
+        guard let rooms = try? await bridge.fetchFollowLive() else { return }
+        guard session == bridge.followSession else { return }
+        followLive = rooms
     }
 
     /// 一级分类「关注」：把整条流换成关注主播的开播列表，仍可上下滑换台
@@ -235,9 +685,187 @@ final class DYLiveModel: ObservableObject {
     }
 }
 
-/// 仅展示已核验真实来源的分类；游戏仍可进一步选择具体专区。
+// MARK: - live-playback-gate
+enum DYLiveSceneSignal: Equatable {
+    case active, inactive, background
+}
+
+enum DYLiveSceneCommand: Equatable {
+    case none, pause, resume
+}
+
+enum DYLiveSurfaceMask: Equatable {
+    case showVideo, coverPrevious
+}
+
+enum DYLiveResumeAction: Equatable {
+    case ignore, continueExisting, reconnect
+}
+
+enum DYLiveMediaReplacement: Equatable {
+    case assignNow, waitUntilStopped
+}
+
+/// 「后台直播声音」。默认关闭。和直播间里的静音开关不是同一个偏好。
+enum DYLiveBackgroundSound {
+    static let storageKey = "douyin_live_background_sound_v1"
+}
+
+/// 直播前后台和房间遮挡的纯判断。播放器实例仍只有一个。
+/// 后台声音开或关共用 `resume`。设置只决定出声，不另起一套重连。
+struct DYLivePlaybackGate {
+    enum PlayerState: Equatable {
+        case empty, opening, buffering, playing, paused, stopped, failed
+    }
+
+    static func sceneCommand(_ signal: DYLiveSceneSignal) -> DYLiveSceneCommand {
+        switch signal {
+        case .active: .resume
+        case .background: .pause
+        case .inactive: .none
+        }
+    }
+
+    /// 已经在前台或后台时，重复回调不再停流、也不再重连。
+    static func apply(appIsActive: Bool, command: DYLiveSceneCommand) -> Bool {
+        switch command {
+        case .none: false
+        case .pause: appIsActive
+        case .resume: !appIsActive
+        }
+    }
+
+    static func mask(isCurrent: Bool, ready: Bool, failed: Bool) -> DYLiveSurfaceMask {
+        isCurrent && ready && !failed ? .showVideo : .coverPrevious
+    }
+
+    /// 播放线程上的时钟比这个更旧，就说明进程已经停过，不能把离开前的缓冲接着播。
+    /// 这个时间不是直播前沿距离。VLCKit 3.6 没有那项测量。readBytes 也不证明还在前沿。
+    static let continuityWindow: TimeInterval = 3
+
+    /// 后台只改出声。用户本来就静音，或者关掉了后台声音，输出都保持静音。
+    static func backgroundOutputMuted(userMuted: Bool, backgroundSound: Bool) -> Bool {
+        userMuted || !backgroundSound
+    }
+
+    /// 回到前台时恢复进房静音偏好，不把后台策略留下来。
+    static func foregroundOutputMuted(userMuted: Bool) -> Bool { userMuted }
+
+    /// 只有确实要播出声音时才保留播放会话。静音会话不拿来保活。
+    static func retainsAudioSession(visible: Bool, hasMedia: Bool, userMuted: Bool, backgroundSound: Bool, interrupted: Bool) -> Bool {
+        visible && hasMedia && backgroundSound && !userMuted && !interrupted
+    }
+
+    /// 开/关后台声音都走这里。播放线程的时钟还新鲜才沿用；否则换新的 VLCMedia。
+    /// `inputAdvanced` 只留给诊断。计数停在 0 不能否定一条还在出声的流，增加了也不能证明就在直播前沿。
+    static func resume(suspended: Bool, visible: Bool, sameRoom: Bool, hasMedia: Bool, state: PlayerState, backgroundDuration: TimeInterval? = nil, lastAdvanceAge: TimeInterval? = nil, inputAdvanced: Bool = false, interrupted: Bool = false) -> DYLiveResumeAction {
+        recovery(suspended: suspended, visible: visible, sameRoom: sameRoom, hasMedia: hasMedia, state: state, backgroundDuration: backgroundDuration, lastAdvanceAge: lastAdvanceAge, inputAdvanced: inputAdvanced, interrupted: interrupted).action
+    }
+
+    /// 前台一次已确认的打断重连要换掉已经无法再 opening 的那只 VLC。后台声音开或关都换。
+    /// 真正进入后台时，关闭后台声音仍由 `stopsMediaOnBackground` 停媒体，不经过这里。
+    /// 没有打断标志的回前台、健康复用、遮罩和已经离房都不换。
+    static func shouldRebuildPlayer(backgroundSound: Bool, interrupted: Bool, action: DYLiveResumeAction, coverHold: Bool, visible: Bool, hasRoom: Bool) -> Bool {
+        _ = backgroundSound
+        return interrupted && action == .reconnect && !coverHold && visible && hasRoom
+    }
+
+    static func recovery(suspended: Bool, visible: Bool, sameRoom: Bool, hasMedia: Bool, state: PlayerState, backgroundDuration: TimeInterval? = nil, lastAdvanceAge: TimeInterval? = nil, inputAdvanced: Bool = false, interrupted: Bool = false) -> (action: DYLiveResumeAction, reason: String) {
+        guard visible else { return (.ignore, "hidden") }
+        guard suspended || interrupted else { return (.ignore, "already-foreground") }
+        if interrupted { return (.reconnect, "interrupted") }
+        if !sameRoom { return (.reconnect, "different-room") }
+        if !hasMedia { return (.reconnect, "no-media") }
+        let alive = state == .playing || state == .buffering
+        if !alive { return (.reconnect, "not-playing") }
+        guard let age = lastAdvanceAge, age <= continuityWindow else { return (.reconnect, "stale-callback") }
+        _ = backgroundDuration
+        _ = inputAdvanced
+        return (.continueExisting, "callbacks-fresh")
+    }
+
+    /// 后台声音关闭时，真正的 background 要停掉当前媒体。打开时继续原来的出声路径。
+    static func stopsMediaOnBackground(backgroundSound: Bool) -> Bool { !backgroundSound }
+
+    enum DYLiveSilenceResume: Equatable {
+        case ignore, reconnect
+    }
+
+    /// OFF 回前台只重连一次。离开房间、覆盖层还在、或这次并没有因静音而停止，都不再打开。
+    static func silenceResume(visible: Bool, hasRoom: Bool, coverHold: Bool, pending: Bool) -> DYLiveSilenceResume {
+        guard pending, visible, hasRoom, !coverHold else { return .ignore }
+        return .reconnect
+    }
+
+    /// 正在拆掉的流不能马上装新媒体。状态读数已经是 stopped 也不能证明异步 stop 已经返回。
+    static func mediaReplacement(state: PlayerState, stopInFlight: Bool) -> DYLiveMediaReplacement {
+        if stopInFlight { return .waitUntilStopped }
+        switch state {
+        case .empty, .stopped, .failed: return .assignNow
+        case .opening, .buffering, .playing, .paused: return .waitUntilStopped
+        }
+    }
+
+    enum LateStopKind: Equatable {
+        case stopped, error, ended
+    }
+
+    /// 只重开仍属于当前这次换流的 stopped/error。换房、清晰度、手动重连和退房都会换掉 token。
+    static func acceptsLateReplay(replayToken: Int?, currentToken: Int, kind: LateStopKind) -> Bool {
+        guard let replayToken, replayToken == currentToken else { return false }
+        switch kind {
+        case .stopped, .error: return true
+        case .ended: return false
+        }
+    }
+
+    /// 渲染层重新挂上时，不能再发一次 play。已经排队的启动，或还没完成的 stop，由它们自己的所有权启动。
+    static func surfaceMayStart(stopInFlight: Bool, ownedStartPending: Bool, waitingForSurface: Bool, playingIntent: Bool, state: PlayerState) -> Bool {
+        if stopInFlight || ownedStartPending { return false }
+        if waitingForSurface { return true }
+        return playingIntent && (state == .stopped || state == .paused || state == .failed)
+    }
+
+    /// 同一房间还在打开或播放时，不要再 stop 一次。已经停住或失败则重新打开。
+    static func shouldRestartSameRoom(state: PlayerState, ready: Bool, hasMedia: Bool) -> Bool {
+        guard hasMedia else { return true }
+        _ = ready
+        switch state {
+        case .opening, .buffering, .playing: return false
+        case .empty, .paused, .stopped, .failed: return true
+        }
+    }
+
+    /// 沿用的画面已经在输出时，加载指示可以拿掉。没有画面时不要假装已经播出来。
+    static func canShowExistingPicture(state: PlayerState, hasVideoOut: Bool) -> Bool {
+        hasVideoOut && (state == .playing || state == .buffering)
+    }
+
+    /// 后台或打断关掉音频会话之后，只把静音打开不够，音轨要重新接上。用户自己静音时不动音轨。
+    static func foregroundAudio(userMuted: Bool, sessionReleased: Bool) -> (muted: Bool, reopenTrack: Bool) {
+        (userMuted, sessionReleased && !userMuted)
+    }
+
+    /// 停止回调迟到时，只允许到点后强制装上已经排队的那一条新媒体。
+    static let stopCompletionLimit: TimeInterval = 2
+
+    static func shouldForceAssign(stopInFlight: Bool, hasPending: Bool, waited: TimeInterval) -> Bool {
+        stopInFlight && hasPending && waited >= stopCompletionLimit
+    }
+
+    /// 用户已经回到前台时，登记表上的「仍在后台」不能挡住换房和重试。
+    static func acceptsRoomChange(playbackRegisteredActive: Bool, applicationActive: Bool, visible: Bool) -> Bool {
+        visible && (playbackRegisteredActive || applicationActive)
+    }
+
+    static func acceptEvent(currentGeneration: UUID, eventGeneration: UUID, ownerRoomID: String?, eventRoomID: String?) -> Bool {
+        currentGeneration == eventGeneration && ownerRoomID != nil && ownerRoomID == eventRoomID
+    }
+}
+// MARK: - live-playback-gate-end
+
 private enum DYLiveCategoryKind {
-    case featured, followed, gameZones
+    case featured, gameZones
     case partition(DYLiveZone)
 }
 private struct DYLiveCategory: Identifiable {
@@ -246,7 +874,6 @@ private struct DYLiveCategory: Identifiable {
 }
 private let ddLiveCategories: [DYLiveCategory] = [
     .init(id: "featured", name: "精选", kind: .featured),
-    .init(id: "followed", name: "关注", kind: .followed),
     .init(id: "game", name: "游戏", kind: .gameZones),
     .init(id: "chat", name: "聊天", kind: .partition(.init(id: "101", type: "4", name: "聊天"))),
     .init(id: "music", name: "音乐", kind: .partition(.init(id: "102", type: "4", name: "音乐"))),
@@ -266,44 +893,43 @@ struct DYLiveFeed: View {
     @ObservedObject var model: DYLiveModel
     let onWeb: (URL) -> Void
     var active = true
+    /// 顶栏在 `douduo.feed` 坐标里的框。位置仍由顶栏自己决定，这里只用来把按钮放到它下面。
+    var topChrome: CGRect = .zero
+    var screenInsets: EdgeInsets = .init()
     @StateObject private var chat = DYLiveChat()
     @State private var draft = ""
     @State private var sending = false
     @State private var sendError: String?
     @State private var showCategories = false
-    /// 「发现更多」：关注主播开播头像 + 一级分类，收起时不占画面（抖音广场页同款信息层）
+    @State private var showFollowLive = false
+    /// 「发现更多」只放分类。关注开播走旁边的「关注直播」。
     @State private var showDiscover = false
-    /// 顶部「关注主播正在直播」：进直播页展开，上滑换直播间收成胶囊，点胶囊再展开。
-    @State private var stripExpanded = true
     @State private var selectedCategory = "featured"
     @State private var categoryHint: String?
+    @State private var followPick = DYFollowSelection()
     @State private var scrollID: String?
     @State private var userScrolling = false
     @State private var gestureStartID: String?
     @State private var scrollEndTask: Task<Void, Never>?
     @FocusState private var inputFocused: Bool
+    /// 键盘盖住当前视口底部的高度。分页本身忽略键盘安全区，只用这个值把评论栏抬上去。
+    @State private var keyboardOverlap: CGFloat = 0
+    @State private var viewportMinY: CGFloat = 0
+    @State private var viewportMaxY: CGFloat = 0
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var tick = 0
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
     private var currentRoom: DYLiveRoom? { model.rooms.first { $0.id == model.currentID } }
-    private var chatRoom: String? { model.entered && model.ready && danmakuOn ? currentRoom?.webRid : nil }
-    /// 顶部头像排的数据源；真机取 model.followLive，模拟器可用合成数据验布局。
-    private var stripRooms: [DYLiveRoom] {
-        #if DEBUG && targetEnvironment(simulator)
-        if ProcessInfo.processInfo.environment["DOUDUO_LIVE_FOLLOW_FIXTURE"] == "1" { return Self.fixtureRooms }
-        #endif
-        return model.followLive
+    private var chatRoom: String? {
+        guard model.entered, danmakuOn, let rid = currentRoom?.webRid, !rid.isEmpty else { return nil }
+        return rid
     }
-    #if DEBUG && targetEnvironment(simulator)
-    /// 仅模拟器布局测试：合成 8 个直播间，不连网、不进房。
-    private static let fixtureRooms: [DYLiveRoom] = (0..<8).map { i in
-        DYLiveRoom(id: "fixture-\(i)", webRid: "0", title: "", owner: "合成主播\(i + 1)",
-                   avatar: nil, cover: nil, viewers: "0", hls: [:], portrait: true)
-    }
-    #endif
+    /// 键盘弹出期间锁住换台。收起后再接受竖滑。
+    private var keyboardLocksPaging: Bool { inputFocused || keyboardOverlap > 1 }
 
     var body: some View {
         GeometryReader { geo in
+            let viewport = geo.frame(in: .global)
             ZStack {
                 VLCPlayerSurface(controller: model.vlc, fillWidth: currentRoom?.portrait == true && geo.size.height > geo.size.width * 1.2)
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -311,24 +937,18 @@ struct DYLiveFeed: View {
                 if model.rooms.isEmpty { emptyState }
                 else { pages }
                 if !model.entered {
+                    let chrome = previewChrome(in: geo)
                     VStack(alignment: .leading, spacing: 0) {
                         discoverBar
-                        if !stripRooms.isEmpty {
-                            DYFollowLiveStrip(rooms: stripRooms, expanded: stripExpanded,
-                                              onOpen: { model.open($0) },
-                                              onExpand: { stripExpanded = true })
-                                .padding(.top, 10)
-                                .animation(.easeOut(duration: 0.22), value: stripExpanded)
-                        }
                         if showDiscover {
                             discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
-                                .background(Color.black.ignoresSafeArea())
                         }
-                        Spacer()
                     }
+                    .modifier(DYRailReservedNudge())
+                    .padding(.leading, chrome.leading)
+                    .padding(.trailing, chrome.trailing)
+                    .padding(.top, chrome.top)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 18)
-                    .padding(.top, hSize == .compact ? 46 : 74)
                     .animation(.easeInOut(duration: 0.2), value: showDiscover)
                 }
                 #if DEBUG
@@ -343,31 +963,40 @@ struct DYLiveFeed: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
+            .onAppear { syncViewport(minY: viewport.minY, maxY: viewport.maxY) }
+            .onChange(of: viewport) { _, frame in syncViewport(minY: frame.minY, maxY: frame.maxY) }
         }
-        // 分页与 drawable 使用同一整屏视口，不能只让 ScrollView 越过底部安全区。
+        // 分页与 drawable 共用整屏视口。键盘安全区不能把这一屏缩短，否则上一间封面会从顶上露出来。
         .ignoresSafeArea(.container, edges: .bottom)
+        .ignoresSafeArea(.keyboard)
         .background(DYLiveChatHost(chat: chat).frame(width: 1, height: 1).allowsHitTesting(false))
-        .onAppear { if active { model.activate() } }
+        .onAppear {
+            guard active else { return }
+            model.activate()
+            if model.isFollowedCatalog, currentRoom?.liveStreams.isEmpty == true { model.playbackError = nil }
+        }
         .onChange(of: active) { _, value in
-            if value { stripExpanded = true; model.activate() } else { model.deactivate() }
+            if value {
+                model.activate()
+                presentCurrentRoom()
+            } else {
+                model.deactivate()
+            }
         }
         .task {
             if model.rooms.isEmpty || Date().timeIntervalSince(model.fetchedAt) > 60 {
                 await model.load(bridge, reset: true)
             }
             scrollID = model.currentID
-            model.play(currentRoom)
+            presentCurrentRoom()
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
         }
-        .onChange(of: model.currentID) { old, id in
-            if DYFollowLiveStripPolicy.shouldCollapse(old: old, new: id, expanded: stripExpanded) {
-                withAnimation(.easeOut(duration: 0.2)) { stripExpanded = false }
-            }
+        .onChange(of: model.currentID) { _, id in
             if let id, scrollID != id { scrollID = id }
             draft = ""; sendError = nil; inputFocused = false
-            model.play(currentRoom)
-            if let id, let i = model.rooms.firstIndex(where: { $0.id == id }), i >= model.rooms.count - 3 {
+            presentCurrentRoom()
+            if !model.isFollowedVisit, !model.isFollowedCatalog, let id, let i = model.rooms.firstIndex(where: { $0.id == id }), i >= model.rooms.count - 3 {
                 Task { await model.load(bridge) }
             }
         }
@@ -375,24 +1004,50 @@ struct DYLiveFeed: View {
             chat.close()
             guard let id = chatRoom else { return }
             // 首帧后再接评论网页，避免它的 JS/资源请求抢首播带宽和主线程。
-            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            guard !Task.isCancelled, id == chatRoom else { return }
+            // 同一房间换清晰度会把 ready 打回 false；任务只跟房间走，连上后不因换档重开。
+            while true {
+                while !model.ready {
+                    do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                    guard !Task.isCancelled, id == chatRoom else { return }
+                }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard !Task.isCancelled, id == chatRoom else { return }
+                if model.ready { break }
+            }
             chat.open(id)
         }
         .onChange(of: model.entered) { _, entered in
             if entered { showDiscover = false }
-            else { inputFocused = false; draft = ""; sendError = nil }
+            else {
+                inputFocused = false; draft = ""; sendError = nil
+                if model.isFollowedCatalog, currentRoom?.liveStreams.isEmpty == true { presentCurrentRoom() }
+            }
         }
-        .onChange(of: showDiscover) { _, expanded in
-            model.browsing = expanded
-            if expanded { model.stop(); Task { await model.loadFollowLive(bridge) } }
-            else { model.play(currentRoom) }
+        .onChange(of: model.catalogResolveNonce) { _, _ in presentCurrentRoom() }
+        .onChange(of: model.isFollowedVisit) { _, followed in
+            if !followed, model.rooms.isEmpty { Task { await model.load(bridge, reset: true) } }
         }
-        .onDisappear { scrollEndTask?.cancel(); model.deactivate(); chat.close() }
+        .onChange(of: showFollowLive) { _, shown in
+            if shown { cancelFollowPick() }
+        }
+        .onChange(of: bridge.followSession) { _, _ in
+            cancelFollowPick()
+            model.invalidateFollowLive()
+            Task { await model.loadFollowLive(bridge) }
+        }
+        .onDisappear { scrollEndTask?.cancel(); cancelFollowPick(); model.deactivate(); chat.close() }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { applyKeyboard($0) }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardOverlap = 0
+            userScrolling = false
+            gestureStartID = nil
+            pinCurrentPage()
+        }
         .sheet(isPresented: $showCategories) {
             DYLiveCategories(selection: model.zone) { z in
                 showCategories = false
+                cancelFollowPick()
                 if let z {
                     model.select(z, bridge)
                     selectedCategory = "game"
@@ -405,122 +1060,69 @@ struct DYLiveFeed: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showFollowLive) {
+            DYFollowLiveSheet(bridge: bridge) { room in
+                showFollowLive = false
+                model.open(room)
+            } onLogin: {
+                showFollowLive = false
+                onWeb(DouyinWeb.home)
+            }
+            .presentationDragIndicator(.visible)
+        }
     }
 
-    /// 顶部第一行：抖音广场页的「发现更多」展开入口 + 原有分类入口
+    /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。左右各自让开安全区。
+    private func previewChrome(in geo: GeometryProxy) -> (top: CGFloat, leading: CGFloat, trailing: CGFloat) {
+        let feedTop = geo.frame(in: .named("douduo.feed")).minY
+        let top = DYLivePreviewChrome.buttonOriginY(
+            feedMinY: feedTop,
+            navMaxY: topChrome.maxY,
+            safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
+        return (
+            top,
+            DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.leading, screenInsets.leading)),
+            DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.trailing, screenInsets.trailing))
+        )
+    }
+
+    private func inset(_ local: CGFloat, _ passed: CGFloat) -> CGFloat {
+        local > 0.5 ? local : passed
+    }
+
+    /// 顶部第一行：发现更多、关注直播选择器。位置由导航下沿和安全区决定。
     private var discoverBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: hSize == .compact ? 8 : 10) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { showDiscover.toggle() }
             } label: {
                 Label(showDiscover ? "收起" : "发现更多",
                       systemImage: showDiscover ? "chevron.up" : "chevron.down")
                     .font(.subheadline.weight(.medium))
-                    .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: DYLivePreviewChrome.minTapHeight)
+                    .ddGlassCapsule()
             }
             .foregroundStyle(foreground).buttonStyle(.plain)
+            .layoutPriority(0)
             .accessibilityIdentifier("live.discover")
-            // 靠左避开 Duo 内屏的系统状态栏 / 前摄区。
-            Spacer(minLength: 8)
+            followLiveButton.layoutPriority(1)
+            Spacer(minLength: 0)
         }
     }
 
     private var discoverPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                followedLiveRow
-                categoryStrip
-                if let categoryHint {
-                    Text(categoryHint).font(.caption)
-                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                }
-                roomGrid
-            }
-            .padding(.top, 14).padding(.bottom, 24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .scrollIndicators(.hidden)
-    }
-
-    /// 当前分类的直播间列表（同网页版「更多直播」）：点哪个就看哪个，不用一个个上滑找
-    private var roomGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(model.rooms.isEmpty ? (model.loading ? "加载中…" : "暂时没有直播") : "选一个直播间")
-                .font(.subheadline.weight(.semibold))
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
-                ForEach(model.rooms) { r in
-                    Button {
-                        model.currentID = r.id
-                        withAnimation(.easeInOut(duration: 0.2)) { showDiscover = false }
-                    } label: {
-                        ZStack(alignment: .bottomLeading) {
-                            CachedAsyncImage(url: r.cover.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
-                                placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                .frame(maxWidth: .infinity).aspectRatio(4 / 3, contentMode: .fit).clipped()
-                            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(r.title.isEmpty ? r.owner : r.title).font(.caption.weight(.semibold)).lineLimit(2)
-                                HStack {
-                                    Text(r.owner).lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    Text(r.viewers)
-                                }.font(.caption2).opacity(0.85)
-                            }
-                            .foregroundStyle(.white).padding(8)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(foreground.opacity(r.id == model.currentID ? 0.9 : 0), lineWidth: 2))
-                    }
-                    .buttonStyle(.plain)
-                    .onAppear { if r.id == model.rooms.last?.id { Task { await model.load(bridge) } } }   // 滑到底接着加载
-                }
-            }
-        }
-        .foregroundStyle(foreground)
-    }
-
-    /// 关注的主播里正在开播的：红色直播环 + 头像横排，点一下直接进房
-    private var followedLiveRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Circle().fill(theme.status.danger.color(for: scheme)).frame(width: 6, height: 6)
-                Text("关注的人正在直播").font(.subheadline.weight(.semibold))
-                Text(model.followLive.isEmpty ? "登录后可查看" : "\(model.followLive.count) 位")
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 14) {
+            categoryStrip
+            if let categoryHint {
+                Text(categoryHint).font(.caption)
                     .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
             }
-            if !model.followLive.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 12) {
-                        ForEach(model.followLive) { r in
-                            Button { model.open(r) } label: {
-                                VStack(spacing: 5) {
-                                    CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
-                                        placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                        .frame(width: 52, height: 52).clipShape(Circle())
-                                        .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2))
-                                        .overlay(alignment: .bottom) {
-                                            Text("直播中").font(.caption2.weight(.bold))
-                                                .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                                .background(Capsule().fill(theme.status.danger.color(for: scheme)))
-                                                .offset(y: 6)
-                                        }
-                                    Text(r.owner).font(.caption2).lineLimit(1).frame(width: 66)
-                                }
-                                .padding(.top, 2)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("live.followed.\(r.id)")
-                        }
-                    }
-                    .padding(.vertical, 8)
-                }
-                .scrollIndicators(.hidden)
-            }
         }
-        .foregroundStyle(foreground)
+        .padding(.top, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 一级分类条：只显示有真实列表接口的入口，横向滚动容纳窄屏。
@@ -552,16 +1154,11 @@ struct DYLiveFeed: View {
     }
 
     private func pickCategory(_ c: DYLiveCategory) {
+        cancelFollowPick()
         switch c.kind {
         case .featured:
             selectedCategory = c.id; categoryHint = nil
             model.backToFeatured(bridge)
-        case .followed:
-            guard !model.followLive.isEmpty else {
-                categoryHint = "还没看到关注的主播开播，可到「网页版 / 登录」里登录抖音"; return
-            }
-            selectedCategory = c.id; categoryHint = nil
-            model.openFollowed(bridge)
         case .gameZones:
             selectedCategory = c.id
             model.select(DYLiveZone(id: "103", type: "4", name: "游戏"), bridge)
@@ -571,6 +1168,72 @@ struct DYLiveFeed: View {
             selectedCategory = c.id; categoryHint = nil
             model.select(zone, bridge)
         }
+    }
+
+    /// 有播放地址就直接播。关注分类里还没有地址的当前房间，只解析这一间。
+    private func presentCurrentRoom() {
+        if model.isFollowedCatalog, let room = currentRoom, room.liveStreams.isEmpty {
+            model.playbackError = nil
+            model.stop()
+            resolveListedFollow(room, enter: false)
+        } else {
+            model.play(currentRoom)
+        }
+    }
+
+    /// 列表里的关注直播只有展示信息。点某一间，或滑到分类里的一间时，才补这一间的播放地址。
+    private func resolveListedFollow(_ room: DYLiveRoom, enter: Bool) {
+        var pick = followPick
+        let ticket = pick.begin(roomID: room.id, webRid: room.webRid, hasStream: !room.liveStreams.isEmpty)
+        followPick = pick
+        guard room.liveStreams.isEmpty else {
+            if enter { model.open(room) } else { model.adoptFollowPlayback(room) }
+            return
+        }
+        guard !room.webRid.isEmpty else {
+            if !enter { model.playbackError = DYFollowSelectionFailure.unavailable.message }
+            return
+        }
+        Task {
+            let result = await bridge.resolveFollowRoom(webRid: room.webRid)
+            guard followPick.isCurrent(roomID: room.id, token: ticket), !result.stale else { return }
+            if result.kind == .notLoggedIn {
+                model.followLive = []
+                if !enter { model.playbackError = "抖音未登录" }
+                return
+            }
+            if result.kind == .rooms, let resolved = result.items.first, !resolved.liveStreams.isEmpty {
+                let ready = DYLiveRoom(playback: resolved, fallback: room)
+                if enter { model.open(ready) } else { model.adoptFollowPlayback(ready) }
+                return
+            }
+            if !enter {
+                let failure = DYFollowSelectionFailure.from(kind: result.kind, hasPlayableRoom: false) ?? .unavailable
+                model.playbackError = failure.message
+            }
+        }
+    }
+
+    private func cancelFollowPick() {
+        var pick = followPick
+        pick.cancel()
+        followPick = pick
+    }
+
+
+    private var followLiveButton: some View {
+        Button { showFollowLive = true } label: {
+            Label("我的关注", systemImage: "person.crop.circle")
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.horizontal, hSize == .compact ? 10 : 14)
+                .frame(minHeight: DYLivePreviewChrome.minTapHeight)
+                .ddGlassCapsule()
+        }
+        .foregroundStyle(foreground).buttonStyle(.plain)
+        .accessibilityIdentifier("live.follow")
+        .accessibilityLabel("我的关注")
     }
 
     private var emptyState: some View {
@@ -592,6 +1255,7 @@ struct DYLiveFeed: View {
                 ForEach(model.rooms) { room in
                     DYLiveRoomPage(room: room, model: model, isCurrent: model.currentID == room.id,
                                    messages: model.currentID == room.id ? chat.messages : [],
+                                   keyboardOverlap: model.currentID == room.id ? keyboardOverlap : 0,
                                    input: AnyView(commentInput), onWeb: onWeb)
                         .containerRelativeFrame([.horizontal, .vertical])
                         .contentShape(Rectangle())
@@ -605,6 +1269,8 @@ struct DYLiveFeed: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .ignoresSafeArea(.container, edges: .bottom)
+        .ignoresSafeArea(.keyboard)
+        .background(DYLivePagingKeyboardLock(locked: keyboardLocksPaging))
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
@@ -636,14 +1302,45 @@ struct DYLiveFeed: View {
                 }
             })
         .onChange(of: scrollID) { _, id in
+            // 键盘把分页视口顶偏时，把位置钉回当前房间，不接受这次换台。
+            if keyboardLocksPaging {
+                if id != model.currentID { pinCurrentPage() }
+                return
+            }
             guard let id, id != model.currentID else { return }
             // 仅接受真实竖滑引起的相邻页变化，布局/追加列表不得偷偷切台。
             let start = gestureStartID ?? model.currentID
             if userScrolling, let a = model.rooms.firstIndex(where: { $0.id == id }),
                let b = model.rooms.firstIndex(where: { $0.id == start }), abs(a - b) <= 1 {
-                model.currentID = id
+                model.noteVisibleRoom(id)
             } else { scrollID = model.currentID }
         }
+    }
+
+    private func syncViewport(minY: CGFloat, maxY: CGFloat) {
+        viewportMinY = minY
+        viewportMaxY = maxY
+    }
+
+    private func applyKeyboard(_ note: Notification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        let overlap = DYLiveKeyboardLayout.overlap(
+            viewportMinY: viewportMinY,
+            viewportMaxY: viewportMaxY,
+            keyboardMinY: frame.minY,
+            keyboardMaxY: frame.maxY)
+        if abs(keyboardOverlap - overlap) > 0.5 {
+            let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            withAnimation(.easeOut(duration: min(duration, 0.35))) { keyboardOverlap = overlap }
+        }
+        if overlap > 1 { pinCurrentPage() }
+    }
+
+    private func pinCurrentPage() {
+        guard let id = model.currentID, scrollID != id else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { scrollID = id }
     }
 
     private var commentInput: some View {
@@ -684,10 +1381,12 @@ private struct DYLiveRoomPage: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var hSize
+    @AppStorage(DYLiveBackgroundSound.storageKey) private var backgroundSound = false
     let room: DYLiveRoom
     @ObservedObject var model: DYLiveModel
     let isCurrent: Bool
     let messages: [DYLiveMsg]
+    let keyboardOverlap: CGFloat
     let input: AnyView
     let onWeb: (URL) -> Void
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
@@ -695,10 +1394,17 @@ private struct DYLiveRoomPage: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                if !isCurrent || !model.ready, let cover = room.cover, let url = URL(string: cover) {
-                    CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
-                        placeholder: { Color.clear }
-                        .frame(width: geo.size.width, height: geo.size.height).clipped()
+                if DYLivePlaybackGate.mask(isCurrent: isCurrent, ready: model.ready, failed: model.playbackError != nil) == .coverPrevious {
+                    ZStack {
+                        Color.black
+                        if let cover = room.cover, let url = URL(string: cover) {
+                            CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
+                                placeholder: { Color.black }
+                                .frame(width: geo.size.width, height: geo.size.height).clipped()
+                        }
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .allowsHitTesting(false)
                 }
                 if isCurrent && !model.entered {
                     Color.clear.contentShape(Rectangle()).onTapGesture { model.enterRoom() }
@@ -723,16 +1429,22 @@ private struct DYLiveRoomPage: View {
                         .onTapGesture { model.clean = false }
                         .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, hSize == .compact ? 64 : 70)
                 } else if model.entered {
+                    let closeOnBottom = DYLiveChromePlacement.closeOnBottomTrailing(
+                        regularWidth: hSize == .regular,
+                        foldActive: DYDuoMetrics.foldIsActive(geo))
                     VStack {
-                        header
+                        header(showsClose: !closeOnBottom)
                         Spacer(minLength: 12)
-                        VStack(alignment: .leading, spacing: 12) {
-                            if !messages.isEmpty { DYLiveChatOverlay(messages: messages) }
-                            HStack(spacing: 12) {
-                                input
-                                Menu {
+                        HStack(alignment: .bottom, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if !messages.isEmpty { DYLiveChatOverlay(messages: messages) }
+                                HStack(spacing: 12) {
+                                    input
+                                    Menu {
                                     Button("清屏", systemImage: "rectangle") { model.clean = true }
                                     Toggle("静音", systemImage: "speaker.slash", isOn: $model.muted)
+                                    Toggle("后台播放", systemImage: "speaker.wave.2", isOn: $backgroundSound)
+                                        .accessibilityIdentifier("live.room.backgroundSound")
                                     Menu("清晰度", systemImage: "sparkles.tv") {
                                         Picker("清晰度", selection: Binding(get: { model.quality ?? "" },
                                                                          set: { model.setQuality($0.isEmpty ? nil : $0) })) {
@@ -740,19 +1452,28 @@ private struct DYLiveRoomPage: View {
                                             ForEach(model.qualityOptions, id: \.self) { Text(DYLiveModel.qualityName($0)).tag($0) }
                                         }
                                     }
+                                    .accessibilityIdentifier("live.room.quality")
                                     Button("重新连接", systemImage: "arrow.clockwise", action: model.retry)
                                     Button("官网互动（礼物）", systemImage: "safari") { onWeb(room.webURL) }
-                                } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddGlassCircle() }
-                                .accessibilityIdentifier("live.room.more")
+                                    } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddGlassCircle() }
+                                    .accessibilityIdentifier("live.room.more")
+                                }
+                            }
+                            .frame(maxWidth: 420, alignment: .leading)
+                            if closeOnBottom {
+                                Spacer(minLength: 12)
+                                backCapsule(action: model.leaveRoom, id: "live.room.close", minHeight: 44)
+                                    .modifier(DYRailReservedNudge())
                             }
                         }
-                        .frame(maxWidth: 420, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 18)
                     .padding(.trailing, hSize == .compact ? 82 : 18)
                     .padding(.top, hSize == .compact ? 64 : 70)
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 12)
+                    .padding(.bottom, DYLiveKeyboardLayout.bottomPadding(
+                        safeBottom: geo.safeAreaInsets.bottom,
+                        keyboardOverlap: isCurrent ? keyboardOverlap : 0))
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
                         Spacer()
@@ -768,7 +1489,9 @@ private struct DYLiveRoomPage: View {
                             Text("进入直播间").font(.subheadline.weight(.semibold))
                                 .padding(.horizontal, 22).frame(height: 44).ddGlassCapsule()
                         }.buttonStyle(.plain).accessibilityIdentifier("live.room.enter")
-                        Text("上滑切换直播间").font(.caption).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                        if model.rooms.count > 1 && !model.isFollowedVisit {
+                            Text("上滑切换直播间").font(.caption).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
@@ -788,12 +1511,15 @@ private struct DYLiveRoomPage: View {
             placeholder: { theme.media.chromeFill.color(for: scheme) }
             .frame(width: 36, height: 36).clipShape(Circle())
     }
-    private var header: some View {
+    private func header(showsClose: Bool) -> some View {
         // 直播间唯一的返回键：与「我的 / 信息 / 网页版」页同款标题 + chevron.backward 符号。
-        // 放左上角，右上角留给系统状态栏/前摄挖孔（展开内屏会被系统层盖住）。
+        // 外屏和半折叠仍放左上，右上留给系统状态栏/前摄挖孔。
+        // 完全展开的内屏改放右下，避免被内屏系统层盖住，并离开左下聊天和更多按钮。
         // 主视图不再挂 NavigationStack / toolbar，Duo 系统侧栏不会再多渲染一颗返回。
         HStack(spacing: 10) {
-            backCapsule(action: model.leaveRoom, id: "live.room.close")
+            if showsClose {
+                backCapsule(action: model.leaveRoom, id: "live.room.close")
+            }
             HStack(spacing: 8) {
                 avatar
                 VStack(alignment: .leading, spacing: 2) {
@@ -806,12 +1532,12 @@ private struct DYLiveRoomPage: View {
     }
     /// 和 douyin.web.back / douyin.mine.back / douyin.messages.back 同一套返回键语义：
     /// 「返回」标题 + chevron.backward 符号 + 胶囊底。直播间只保留这一颗，不再叠加系统侧栏返回。
-    private func backCapsule(action: @escaping () -> Void, id: String) -> some View {
+    private func backCapsule(action: @escaping () -> Void, id: String, minHeight: CGFloat = 40) -> some View {
         Button(action: action) {
             Label("返回", systemImage: "chevron.backward")
                 .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .padding(.horizontal, 14).frame(height: 40)
+                .padding(.horizontal, 14).frame(minWidth: 44).frame(height: minHeight)
                 .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
         }
         .buttonStyle(.plain)
@@ -819,6 +1545,67 @@ private struct DYLiveRoomPage: View {
         .accessibilityIdentifier(id)
     }
 }
+
+// MARK: - live-close-placement
+enum DYLiveChromePlacement {
+    /// 只有完全展开的内屏（regular 且折痕未激活）把关闭按钮放到右下。
+    /// 外屏是 compact；半折叠时折痕激活，两者都保持左上。
+    static func closeOnBottomTrailing(regularWidth: Bool, foldActive: Bool) -> Bool {
+        regularWidth && !foldActive
+    }
+}
+// MARK: - live-close-placement-end
+
+// MARK: - live-keyboard-layout
+enum DYLiveKeyboardLayout {
+    /// 只计算贴住视口底边的键盘。悬浮键盘不顶起分页。
+    static func overlap(viewportMinY: CGFloat, viewportMaxY: CGFloat, keyboardMinY: CGFloat, keyboardMaxY: CGFloat) -> CGFloat {
+        guard keyboardMaxY >= viewportMaxY - 1 else { return 0 }
+        let covered = min(viewportMaxY, keyboardMaxY) - max(viewportMinY, keyboardMinY)
+        guard covered > 0 else { return 0 }
+        return min(covered, max(0, viewportMaxY - viewportMinY))
+    }
+
+    /// 键盘收起时保留原来的底部留白；弹出后评论栏贴在键盘上沿，不再叠加安全区。
+    static func bottomPadding(safeBottom: CGFloat, keyboardOverlap: CGFloat) -> CGFloat {
+        let resting = max(safeBottom, 12) + 12
+        guard keyboardOverlap > 1 else { return resting }
+        return keyboardOverlap + 12
+    }
+}
+
+/// 只在键盘占用期间关掉分页 ScrollView 的自动 inset。收起后恢复系统 inset，避免平时把页面顶进状态栏。
+private struct DYLivePagingKeyboardLock: UIViewRepresentable {
+    var locked: Bool
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        let locked = locked
+        DispatchQueue.main.async { apply(locked, from: uiView) }
+    }
+
+    private func apply(_ locked: Bool, from view: UIView) {
+        var ancestor = view.superview
+        while let current = ancestor {
+            if let scroll = current as? UIScrollView {
+                let behavior: UIScrollView.ContentInsetAdjustmentBehavior = locked ? .never : .automatic
+                if scroll.contentInsetAdjustmentBehavior != behavior {
+                    scroll.contentInsetAdjustmentBehavior = behavior
+                }
+                scroll.automaticallyAdjustsScrollIndicatorInsets = !locked
+                return
+            }
+            ancestor = current.superview
+        }
+    }
+}
+// MARK: - live-keyboard-layout-end
 
 private struct DYLiveCategories: View {
     @Environment(\.dismiss) private var dismiss
@@ -852,3 +1639,377 @@ private struct DYLiveCategories: View {
         }
     }
 }
+
+@MainActor
+private final class DYFollowLiveList: ObservableObject {
+    enum Phase: Equatable {
+        case idle, loading, ready, empty, notLoggedIn, failed, decodeFailed, filtered
+    }
+
+    @Published var rooms: [DYLiveRoom] = []
+    @Published private(set) var phase: Phase = .idle
+    @Published var resolvingID: String?
+    @Published var selectionMessage: String?
+    private var token = UUID()
+    private var task: Task<Void, Never>?
+    private var resolveTask: Task<Void, Never>?
+    private var selection = DYFollowSelection()
+    private var didRetryStale = false
+
+    func reload(_ bridge: DouyinBridge, refresh: Bool = false) {
+        task?.cancel()
+        resolveTask?.cancel()
+        selection.cancel()
+        resolvingID = selection.resolvingID
+        selectionMessage = nil
+        let token = UUID()
+        self.token = token
+        #if DEBUG
+        if let mocked = Self.mocked() {
+            rooms = mocked.rooms
+            phase = mocked.phase
+            return
+        }
+        #endif
+        phase = .loading
+        let started = ProcessInfo.processInfo.systemUptime
+        task = Task {
+            let result = await bridge.followLiveResult(ignoreCache: refresh)
+            guard !Task.isCancelled, token == self.token else { return }
+            if result.stale {
+                guard !didRetryStale else {
+                    rooms = []
+                    phase = .failed
+                    return
+                }
+                didRetryStale = true
+                reload(bridge)
+                return
+            }
+            didRetryStale = false
+            switch result.kind {
+            case .rooms where !result.items.isEmpty:
+                rooms = result.items
+                phase = .ready
+            case .nobodyLive:
+                rooms = []
+                phase = .empty
+            case .notLoggedIn:
+                rooms = []
+                phase = .notLoggedIn
+            case .filtered:
+                rooms = []
+                phase = .filtered
+            case .requestFailed:
+                rooms = []
+                phase = .failed
+            case .rooms, .decodeFailed, .unexpectedShape:
+                rooms = []
+                phase = .decodeFailed
+            }
+            let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started)
+            DYLiveModel.log("DDFOLLOWLIST phase=\(self.phase) n=\(self.rooms.count) elapsed=\(elapsed) cache=\(result.fromCache ? 1 : 0) listRequests=\(result.fromCache ? 0 : 1) detailRequests=0")
+        }
+    }
+
+    func pick(_ room: DYLiveRoom, bridge: DouyinBridge, open: @escaping (DYLiveRoom) -> Void) {
+        resolveTask?.cancel()
+        selectionMessage = nil
+        let ticket = selection.begin(roomID: room.id, webRid: room.webRid, hasStream: !room.liveStreams.isEmpty)
+        resolvingID = selection.resolvingID
+        guard room.liveStreams.isEmpty else {
+            guard selection.isCurrent(roomID: room.id, token: ticket) else { return }
+            DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=1 detailRequests=0 elapsed=0.000")
+            open(room)
+            return
+        }
+        guard !room.webRid.isEmpty else {
+            selectionMessage = DYFollowSelectionFailure.unavailable.message
+            return
+        }
+        selection.startResolving(roomID: room.id)
+        resolvingID = selection.resolvingID
+        let started = ProcessInfo.processInfo.systemUptime
+        resolveTask = Task {
+            let result = await bridge.resolveFollowRoom(webRid: room.webRid)
+            guard selection.complete(roomID: room.id, token: ticket) else { return }
+            resolvingID = selection.resolvingID
+            guard !Task.isCancelled else { return }
+            let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started)
+            if result.stale { return }
+            if result.kind == .notLoggedIn {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=notLoggedIn reused=0 detailRequests=1 elapsed=\(elapsed)")
+                rooms = []
+                phase = .notLoggedIn
+                return
+            }
+            if result.kind == .rooms, let resolved = result.items.first, !resolved.liveStreams.isEmpty {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=0 detailRequests=1 elapsed=\(elapsed)")
+                open(DYLiveRoom(playback: resolved, fallback: room))
+                return
+            }
+            let failure = DYFollowSelectionFailure.from(kind: result.kind, hasPlayableRoom: false) ?? .unavailable
+            DYLiveModel.log("DDFOLLOWPLAY outcome=\(failure) reused=0 detailRequests=1 elapsed=\(elapsed)")
+            selectionMessage = failure.message
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        resolveTask?.cancel()
+        selection.cancel()
+        token = UUID()
+        resolvingID = selection.resolvingID
+    }
+
+    #if DEBUG
+    private static func mocked() -> (phase: Phase, rooms: [DYLiveRoom])? {
+        switch ProcessInfo.processInfo.environment["DOUDUO_FOLLOWMOCK"] {
+        case "rooms": return (.ready, DYLiveRoom.debugFollowed())
+        case "empty": return (.empty, [])
+        case "login": return (.notLoggedIn, [])
+        case "failed": return (.failed, [])
+        case "decode": return (.decodeFailed, [])
+        case "filtered": return (.filtered, [])
+        default: return nil
+        }
+    }
+    #endif
+}
+
+// MARK: - follow-live-sheet-layout
+enum DYFollowLiveSheetLayout {
+    static let minimumTap: CGFloat = 44
+    static let ringWidth: CGFloat = 2
+    static let expandedContentWidth: CGFloat = 520
+    static let navigationChrome: CGFloat = 64
+    static let bottomAllowance: CGFloat = 36
+    static let messageHeight: CGFloat = 44
+
+    static func avatarSide(regularWidth: Bool) -> CGFloat { regularWidth ? 64 : 56 }
+    static func rowSpacing(regularWidth: Bool) -> CGFloat { regularWidth ? 12 : 6 }
+    static func rowVerticalPadding(regularWidth: Bool) -> CGFloat { regularWidth ? 8 : 6 }
+    static let listVerticalPadding: CGFloat = 8
+    static func maximumSheetHeight(regularWidth: Bool) -> CGFloat { regularWidth ? 640 : 520 }
+
+    static func contentMaxWidth(regularWidth: Bool) -> CGFloat {
+        regularWidth ? expandedContentWidth : .infinity
+    }
+
+    static func rowHeight(regularWidth: Bool) -> CGFloat {
+        let avatar = avatarSide(regularWidth: regularWidth) + ringWidth * 2
+        let padded = avatar + rowVerticalPadding(regularWidth: regularWidth) * 2
+        return max(padded, minimumTap)
+    }
+
+    /// 按行数估算 sheet 高度，并限制在一屏可放下的上限内。人少时不拉高，人多时只让列表滚动。
+    static func sheetHeight(rowCount: Int, regularWidth: Bool, showsMessage: Bool) -> CGFloat {
+        let maximum = maximumSheetHeight(regularWidth: regularWidth)
+        let message = showsMessage ? messageHeight : 0
+        guard rowCount > 0 else {
+            return min(navigationChrome + bottomAllowance + 168 + message, maximum)
+        }
+        let spacing = rowSpacing(regularWidth: regularWidth)
+        let rows = CGFloat(rowCount) * rowHeight(regularWidth: regularWidth)
+        let gaps = CGFloat(rowCount - 1) * spacing
+        let raw = navigationChrome + bottomAllowance + message + rows + gaps + listVerticalPadding * 2
+        return min(max(raw, navigationChrome + minimumTap), maximum)
+    }
+}
+// MARK: - follow-live-sheet-layout-end
+
+private struct DYFollowLiveSheet: View {
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.horizontalSizeClass) private var hSize
+    @ObservedObject var bridge: DouyinBridge
+    let onPick: (DYLiveRoom) -> Void
+    let onLogin: () -> Void
+    @StateObject private var model = DYFollowLiveList()
+    @State private var foldActive = false
+    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
+    private var secondary: Color { theme.media.onMediaSecondary.color(for: scheme) }
+    private var regularWidth: Bool { hSize == .regular && !foldActive }
+    private var sheetDetent: CGFloat {
+        DYFollowLiveSheetLayout.sheetHeight(
+            rowCount: model.phase == .ready ? model.rooms.count : 0,
+            regularWidth: regularWidth,
+            showsMessage: model.selectionMessage != nil)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch model.phase {
+                case .idle, .loading:
+                    ProgressView("加载我的关注…").tint(foreground)
+                case .ready:
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let message = model.selectionMessage {
+                            Text(message)
+                                .font(.footnote)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 8)
+                                .accessibilityIdentifier("live.follow.selection")
+                        }
+                        list
+                    }
+                case .empty:
+                    notice("关注的人现在没有在直播", id: "live.follow.empty", action: "刷新") { model.reload(bridge, refresh: true) }
+                case .notLoggedIn:
+                    notice("抖音未登录，登录后才能看到关注的直播", id: "live.follow.login", action: "网页版 / 登录", actionID: "live.follow.login.button", onLogin)
+                case .failed:
+                    notice("我的关注加载失败", id: "live.follow.failed", action: "重试") { model.reload(bridge, refresh: true) }
+                case .decodeFailed:
+                    notice("直播数据无法解析", id: "live.follow.decode", action: "重试") { model.reload(bridge, refresh: true) }
+                case .filtered:
+                    notice("关注的人正在直播，但暂时没有可播放的线路", id: "live.follow.filtered", action: "重试") { model.reload(bridge, refresh: true) }
+                }
+            }
+            .frame(maxWidth: DYFollowLiveSheetLayout.contentMaxWidth(regularWidth: regularWidth), maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .foregroundStyle(foreground)
+            .navigationTitle("我的关注")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("刷新") { model.reload(bridge, refresh: true) }
+                        .disabled(model.phase == .loading)
+                        .accessibilityIdentifier("live.follow.refresh")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }.accessibilityIdentifier("live.follow.close")
+                }
+            }
+        }
+        .background {
+            DYFollowFoldReader { foldActive = $0 }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .presentationDetents([.height(sheetDetent)])
+        .presentationBackground(.black)
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+        .task { model.reload(bridge) }
+        .onChange(of: bridge.followSession) { _, _ in
+            model.rooms = []
+            model.reload(bridge)
+        }
+        .onDisappear { model.cancel() }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var list: some View {
+        let side = DYFollowLiveSheetLayout.avatarSide(regularWidth: regularWidth)
+        return ScrollView {
+            LazyVStack(spacing: DYFollowLiveSheetLayout.rowSpacing(regularWidth: regularWidth)) {
+                ForEach(model.rooms) { room in
+                    Button { model.pick(room, bridge: bridge, open: onPick) } label: {
+                        HStack(spacing: 12) {
+                            liveAvatar(room, side: side)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(room.owner.isEmpty ? "未命名主播" : room.owner)
+                                    .font(.body.weight(.semibold))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                HStack(spacing: 8) {
+                                    Text("直播中")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                    if !room.viewers.isEmpty {
+                                        Text("\(room.viewers) 在看")
+                                            .font(.subheadline)
+                                            .foregroundStyle(secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            if model.resolvingID == room.id {
+                                ProgressView().controlSize(.small).tint(foreground)
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(secondary.opacity(0.75))
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, DYFollowLiveSheetLayout.rowVerticalPadding(regularWidth: regularWidth))
+                        .frame(maxWidth: .infinity, minHeight: DYFollowLiveSheetLayout.minimumTap, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("live.follow.room.\(room.id)")
+                    .accessibilityLabel(rowLabel(room))
+                }
+            }
+            .padding(.vertical, DYFollowLiveSheetLayout.listVerticalPadding)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .accessibilityIdentifier("live.follow.list")
+    }
+
+    private func rowLabel(_ room: DYLiveRoom) -> String {
+        let name = room.owner.isEmpty ? "未命名主播" : room.owner
+        if room.viewers.isEmpty { return "\(name)，直播中" }
+        return "\(name)，直播中，\(room.viewers) 在看"
+    }
+
+    private func liveAvatar(_ room: DYLiveRoom, side: CGFloat) -> some View {
+        CachedAsyncImage(url: room.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+            placeholder: { theme.media.chromeFill.color(for: scheme) }
+            .frame(width: side, height: side)
+            .clipShape(Circle())
+            .padding(DYFollowLiveSheetLayout.ringWidth)
+            .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: DYFollowLiveSheetLayout.ringWidth))
+    }
+
+    private func notice(_ text: String, id: String, action: String, actionID: String? = nil, _ run: @escaping () -> Void) -> some View {
+        VStack(spacing: 16) {
+            Text(text).font(.footnote).multilineTextAlignment(.center).accessibilityIdentifier(id)
+            Button(action, action: run)
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier(actionID ?? "\(id).action")
+        }
+        .padding(24)
+    }
+}
+
+private struct DYFollowFoldReader: View {
+    var onChange: (Bool) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let active = DYDuoMetrics.foldIsActive(geo)
+            Color.clear
+                .onAppear { onChange(active) }
+                .onChange(of: active) { _, value in onChange(value) }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+#if DEBUG
+extension DYLiveRoom {
+    static func debugRoom(_ id: String, owner: String, title: String, viewers: String) -> DYLiveRoom {
+        DYLiveRoom(id: id, webRid: id, title: title, owner: owner, avatar: nil, cover: nil, viewers: viewers,
+                   hls: ["HD1": "https://example.com/\(id).m3u8"], portrait: true, def: "HD1")
+    }
+
+    static func debugFeed() -> [DYLiveRoom] {
+        [debugRoom("rec-a", owner: "推荐甲", title: "推荐直播甲", viewers: "10"),
+         debugRoom("rec-b", owner: "推荐乙", title: "推荐直播乙", viewers: "20")]
+    }
+
+    static func debugFollowed() -> [DYLiveRoom] {
+        [debugRoom("fol-a", owner: "关注甲", title: "关注直播甲", viewers: "30"),
+         debugRoom("fol-b", owner: "关注乙", title: "关注直播乙", viewers: "")]
+    }
+}
+#endif

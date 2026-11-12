@@ -164,7 +164,9 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertFalse(app.buttons["live.category.featured"].exists)
         discover.tap()
         XCTAssertTrue(app.buttons["live.category.featured"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["live.category.followed"].exists)
+        XCTAssertTrue(app.buttons["live.follow"].exists)
+        XCTAssertTrue(app.buttons["live.follow"].label.contains("我的关注"))
+        XCTAssertFalse(app.buttons["live.category.followed"].exists)
         XCTAssertFalse(app.buttons["live.category.nearby"].exists)
         app.buttons["live.category.chat"].tap()
         XCTAssertEqual(app.buttons["live.category.chat"].value as? String, "已选择")
@@ -335,8 +337,12 @@ final class DouDuoUITests: XCTestCase {
         sleep(4)
         let title = app.navigationBars.firstMatch.identifier
         print("DDSTRANGERCAT navTitle=\(title)")
-        XCTAssertEqual(title, who, "进的会话不是点的那个人")
-        XCTAssertGreaterThan(detail.frame.width, 800, "聊天页没铺满：\(detail.frame)")
+        XCTAssertTrue(app.staticTexts["消息"].exists, "消息标题不能被右侧会话名替换")
+        XCTAssertTrue(detail.staticTexts[who].waitForExistence(timeout: 10), "进的会话不是点的那个人")
+        XCTAssertGreaterThan(detail.frame.width, 0, "聊天详情不可见：\(detail.frame)")
+        if entry.isHittable {
+            XCTAssertGreaterThanOrEqual(detail.frame.minX, entry.frame.maxX - 2, "双栏聊天盖住了左侧列表")
+        }
         print("DDCHAT_SHOT_STRANGERCHAT"); sleep(3)
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
@@ -352,7 +358,8 @@ final class DouDuoUITests: XCTestCase {
         sleep(4)
         let title2 = app.navigationBars.firstMatch.identifier
         print("DDSTRANGERCAT navTitle2=\(title2)")
-        XCTAssertEqual(title2, who2)
+        XCTAssertTrue(app.staticTexts["消息"].exists)
+        XCTAssertTrue(detail.staticTexts[who2].waitForExistence(timeout: 10))
         print("DDCHAT_SHOT_STRANGERCHAT2"); sleep(3)
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
@@ -462,8 +469,8 @@ final class DouDuoUITests: XCTestCase {
         return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
     }
 
-    /// 右侧栏顺序与间距：评论在收藏之上，且相邻图标间距收紧。
-    func testRailCommentAboveCollectWithTightSpacing() throws {
+    /// 右侧栏顺序与加宽间距；只读 frame，不点击任何账号动作。
+    func testRailCommentAboveCollectWithExpandedSpacing() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
@@ -479,12 +486,19 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertLessThan(collect.frame.midY, search.frame.midY)
         let likeToComment = comment.frame.minY - like.frame.maxY
         let commentToCollect = collect.frame.minY - comment.frame.maxY
-        for gap in [likeToComment, commentToCollect] {
-            XCTAssertGreaterThanOrEqual(gap, 3, "图标间隙不能挤在一起")
-            XCTAssertLessThanOrEqual(gap, 12, "图标间隙不能过松")
+        let collectToSearch = search.frame.minY - collect.frame.maxY
+        for gap in [likeToComment, commentToCollect, collectToSearch] {
+            XCTAssertGreaterThanOrEqual(gap, 10, "图标间距应比旧版6pt更宽")
+            XCTAssertLessThanOrEqual(gap, 16, "图标间隙不能过松")
+        }
+        let more = app.buttons["douyin.more"].firstMatch
+        XCTAssertTrue(more.exists)
+        for item in [like, comment, collect, search, more] {
+            XCTAssertTrue(item.isHittable, "加宽间距后仍须可达")
+            XCTAssertEqual(item.frame.midX, like.frame.midX, accuracy: 1, "操作栏及更多应同列")
         }
         attach(app, "rail-comment-above-collect")
-        print("DDRAIL: order=like,comment,collect,search; gaps=\(likeToComment)/\(commentToCollect)")
+        print("DDRAIL: order=like,comment,collect,search; gaps=\(likeToComment)/\(commentToCollect)/\(collectToSearch)")
     }
 
     func testCommentImages() throws {
@@ -530,12 +544,15 @@ final class DouDuoUITests: XCTestCase {
         XCTFail("翻了15条视频都没遇到带图/贴纸的评论")
     }
 
+    /// Both compact and split: inspect the composer without typing or sending.
     func testConversationListAndDetail() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_OPEN"] = "messages"
         app.launch()
         let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 50), app.debugDescription)
+        let expectsSidebar = app.staticTexts["选择左侧消息查看详情"].isHittable
+        print("DDCHAT_EXPECT_SIDEBAR=\(expectsSidebar)")
         attach(app, "conversation-native-root")
         print("DDCHAT_SHOT_ROOT"); sleep(4)
         let label = row.label
@@ -547,20 +564,102 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT_DETAIL\n\(app.debugDescription)\nDDCHAT_DETAIL_END")
         let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
         XCTAssertTrue(web.exists)
-        XCTAssertFalse(app.buttons["douyin.messages.interactive"].isHittable)
+        let master = app.buttons["douyin.messages.interactive"]
+        XCTAssertEqual(master.isHittable, expectsSidebar, "展开应保留左栏；窄屏详情应覆盖列表")
+        if expectsSidebar { XCTAssertGreaterThanOrEqual(web.frame.minX, master.frame.maxX - 2) }
+        if expectsSidebar { XCTAssertTrue(row.isSelected, "左侧当前会话应该高亮") }
+        XCTAssertTrue(web.isHittable, "当前聊天详情应可交互")
         let inputs = web.descendants(matching: .any).matching(NSPredicate(format: "elementType == %d OR elementType == %d", XCUIElement.ElementType.textView.rawValue, XCUIElement.ElementType.textField.rawValue))
         XCTAssertGreaterThan(inputs.count, 0)
         if inputs.count > 0 {
             let input = inputs.firstMatch
             XCTAssertLessThanOrEqual(input.frame.maxY, app.windows.firstMatch.frame.maxY)
-            input.tap()
-            print("DDCHAT_SHOT_KEYBOARD"); sleep(4)
+            XCTAssertTrue(input.isHittable, "聊天输入区应可达；不输入或发送测试消息")
         }
         app.buttons["douyin.messages.back"].tap()
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["douyin.messages.interactive"].exists)
         attach(app, "conversation-return-list")
         print("DDCHAT returned; original row label length=\(label.count)")
+    }
+
+    /// 评论通知：下方有「回复」（只验证弹出输入框，不真发）、长评论可展开、点评论进视频并定位高亮那条评论
+    func testCommentNoticeActions() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launchEnvironment["DOUDUO_LONGNOTICE"] = "1"
+        app.launch()
+        let entry = app.buttons["douyin.messages.interactive"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 35))
+        entry.tap()
+        let comment = app.buttons.matching(identifier: "douyin.notice.comment").firstMatch
+        XCTAssertTrue(comment.waitForExistence(timeout: 25), "互动里没有评论通知")
+        sleep(2)
+        print("DDCHAT_SHOT_CNOTICE_LIST"); sleep(3)
+        let reply = app.buttons.matching(identifier: "douyin.notice.reply").firstMatch
+        XCTAssertTrue(reply.exists, "评论通知下面没有回复按钮")
+        reply.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "douyin.notice.reply.input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "点回复没出输入框")
+        print("DDCHAT_SHOT_CNOTICE_REPLY"); sleep(3)
+        app.buttons["douyin.notice.reply.cancel"].firstMatch.tap()
+        sleep(1)
+        let expand = app.buttons.matching(identifier: "douyin.notice.expand").firstMatch
+        print("DDEXPAND count=\(app.buttons.matching(identifier: "douyin.notice.expand").count)")
+        if expand.exists && expand.isHittable {
+            let before = expand.label
+            expand.tap(); sleep(1)
+            print("DDEXPAND before=\(before) after=\(expand.label)")
+            XCTAssertNotEqual(before, expand.label, "点展开没变成收起")
+            print("DDCHAT_SHOT_CNOTICE_EXPAND"); sleep(3)
+        }
+        comment.tap()
+        let focused = app.descendants(matching: .any).matching(identifier: "douyin.comment.focused").firstMatch
+        XCTAssertTrue(focused.waitForExistence(timeout: 30), "进视频后没定位到那条评论")
+        print("DDCHAT_SHOT_CNOTICE_FOCUS"); sleep(3)
+    }
+
+    /// Read-only: split keeps master visible; compact returns through master.
+    /// No text input, sends, likes or follows.
+    func testMessageMasterDetailCategories() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launch()
+        let interactive = app.buttons["douyin.messages.interactive"]
+        XCTAssertTrue(interactive.waitForExistence(timeout: 35))
+        let expectsSidebar = app.staticTexts["选择左侧消息查看详情"].isHittable
+        print("DDMSG_EXPECT_SIDEBAR=\(expectsSidebar)")
+        func showMasterIfCompact() {
+            if !expectsSidebar {
+                app.buttons["douyin.messages.back"].tap()
+                XCTAssertTrue(interactive.isHittable)
+            }
+        }
+        interactive.tap()
+        let filter = app.descendants(matching: .any).matching(identifier: "douyin.notice.filter").firstMatch
+        XCTAssertTrue(filter.waitForExistence(timeout: 15))
+        XCTAssertEqual(interactive.isHittable, expectsSidebar, "分类应符合当前主从/窄屏布局")
+        if expectsSidebar { XCTAssertGreaterThan(filter.frame.minX, interactive.frame.maxX - 2, "通知应显示在右栏") }
+        filter.tap()
+        let comments = app.buttons["douyin.notice.filter.2"] // production DYNoticeGroup.comment
+        XCTAssertTrue(comments.waitForExistence(timeout: 5))
+        comments.tap()
+        XCTAssertTrue(filter.label.contains("评论"))
+        showMasterIfCompact()
+        app.buttons["douyin.messages.fans"].tap()
+        XCTAssertEqual(interactive.isHittable, expectsSidebar)
+        showMasterIfCompact()
+        app.buttons["douyin.messages.system"].tap()
+        XCTAssertEqual(interactive.isHittable, expectsSidebar)
+        showMasterIfCompact()
+        interactive.tap()
+        XCTAssertTrue(filter.label.contains("评论"), "分类切换后应保留筛选")
+        app.buttons["douyin.messages.back"].tap()
+        XCTAssertTrue(interactive.isHittable, "详情返回应先回消息列表，不退出消息中心")
+        // Lists remain mounted to preserve scroll/filter state; inactive controls must not be tappable.
+        XCTAssertFalse(filter.isHittable)
+        XCTAssertFalse(interactive.isSelected)
+        attach(app, "message-master-detail-category-return")
     }
 
     func testMessageReadAndVideoReturn() throws {
@@ -576,18 +675,25 @@ final class DouDuoUITests: XCTestCase {
         sleep(12)
         attach(app, "notice-category")
         print("DDCHAT_SHOT_NOTICE"); sleep(4)
-        let video = app.buttons.matching(identifier: "douyin.notice.video").firstMatch
-        if video.waitForExistence(timeout: 15) {
-            video.tap()
-            let back = app.buttons["douyin.list.back"].firstMatch
-            XCTAssertTrue(back.waitForExistence(timeout: 25))
-            let like = app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.first { $0.isHittable }
-            if let like { XCTAssertLessThan(back.frame.midY, like.frame.midY) }
-            attach(app, "notice-video-return-above-like")
-            back.tap()
-            sleep(2)
+        let videos = app.buttons.matching(identifier: "douyin.notice.video")
+        _ = videos.firstMatch.waitForExistence(timeout: 15)
+        guard let video = videos.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+            throw XCTSkip("当前通知里没有可点击视频卡片，不能将视频返回路径算通过")
         }
-        let back = app.buttons["BackButton"].firstMatch
+        let originalLabel = video.label
+        let originalFrame = video.frame
+        video.tap()
+        let playerBack = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(playerBack.waitForExistence(timeout: 25))
+        let like = app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.first { $0.isHittable }
+        if let like { XCTAssertLessThan(playerBack.frame.midY, like.frame.midY) }
+        attach(app, "notice-video-return-above-like")
+        playerBack.tap()
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        XCTAssertTrue(video.isHittable)
+        XCTAssertEqual(video.label, originalLabel, "视频返回必须保留同一通知")
+        XCTAssertEqual(video.frame.minY, originalFrame.minY, accuracy: 2, "视频返回不能重置列表位置")
+        let back = app.buttons["douyin.messages.back"].firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5), app.debugDescription)
         back.tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 8))
@@ -1312,6 +1418,89 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(got2, "收藏后没有提示（接口没返回）")
         XCTAssertTrue(label2.contains("已收藏"), "收藏没成功：\(label2)")
         attach(app, "collect")
+    }
+
+    func testFollowedLivePickerRestoresRecommendation() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        app.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "rooms"
+        app.launch()
+        let current = app.staticTexts["live.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 15))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-a'"), evaluatedWith: current)], timeout: 10), .completed)
+        XCTAssertTrue(app.buttons["live.follow"].label.contains("我的关注"))
+        app.buttons["live.follow"].tap()
+        XCTAssertTrue(app.navigationBars["我的关注"].waitForExistence(timeout: 5))
+        let row = app.buttons["live.follow.room.fol-b"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["live.follow.list"].exists)
+        XCTAssertTrue(row.label.contains("关注乙"))
+        XCTAssertTrue(row.label.contains("直播中"))
+        XCTAssertFalse(row.label.contains("关注直播乙"), "列表不显示房间标题")
+        XCTAssertFalse(row.label.contains("在看"))
+        let other = app.buttons["live.follow.room.fol-a"]
+        XCTAssertTrue(other.label.contains("关注甲"))
+        XCTAssertTrue(other.label.contains("直播中"))
+        XCTAssertTrue(other.label.contains("30"))
+        XCTAssertTrue(other.label.contains("在看"))
+        row.tap()
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'fol-b'"), evaluatedWith: current)], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["live.room.close"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["live.follow"].exists, "进入关注直播间后不显示选择按钮")
+        app.buttons["live.room.close"].tap()
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-a'"), evaluatedWith: current)], timeout: 5), .completed, "退出应回到原来的推荐直播")
+        XCTAssertTrue(app.buttons["live.follow"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["live.discover"].exists)
+        app.swipeUp(velocity: .slow)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label == 'rec-b'"), evaluatedWith: current)], timeout: 5), .completed, "回到推荐后只能滑到原来的下一间")
+    }
+
+    func testFollowedLiveStatesStayDistinct() throws {
+        let empty = XCUIApplication()
+        empty.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        empty.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        empty.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "empty"
+        empty.launch()
+        XCTAssertTrue(empty.buttons["live.follow"].waitForExistence(timeout: 10))
+        empty.buttons["live.follow"].tap()
+        XCTAssertTrue(empty.staticTexts["live.follow.empty"].waitForExistence(timeout: 5))
+        XCTAssertFalse(empty.staticTexts["live.follow.login"].exists)
+        empty.terminate()
+
+        let login = XCUIApplication()
+        login.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        login.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        login.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "login"
+        login.launch()
+        XCTAssertTrue(login.buttons["live.follow"].waitForExistence(timeout: 10))
+        login.buttons["live.follow"].tap()
+        XCTAssertTrue(login.staticTexts["live.follow.login"].waitForExistence(timeout: 5))
+        XCTAssertTrue(login.buttons["live.follow.login.button"].exists)
+        XCTAssertFalse(login.staticTexts["live.follow.empty"].exists)
+    }
+
+    /// 关注开播只走直播页「我的关注」：直播页不挂头像条，关注页不挂直播头像。
+    func testFollowLiveOnlyViaMyFollowButton() throws {
+        let live = XCUIApplication()
+        live.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        live.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        live.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "rooms"
+        live.launch()
+        XCTAssertTrue(live.buttons["live.follow"].waitForExistence(timeout: 10), "「我的关注」入口保留")
+        sleep(2)
+        attach(live, "live-no-strip")
+        XCTAssertFalse(live.scrollViews["live.follow.strip"].exists, "直播页不再挂关注头像条")
+        XCTAssertFalse(live.buttons["live.follow.pill"].exists)
+        live.terminate()
+
+        let follow = XCUIApplication()
+        follow.launchEnvironment["DOUDUO_STARTFOLLOW"] = "1"
+        follow.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "rooms"
+        follow.launch()
+        sleep(4)
+        attach(follow, "follow-no-live-row")
+        XCTAssertFalse(follow.staticTexts["直播中"].exists, "关注页不应出现直播头像")
     }
 
     /// 底部进度条左侧时间（秒）
