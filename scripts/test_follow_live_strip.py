@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""我的关注选择器的竖向列表尺寸，以及直播页只保留这一处入口。
+"""我的关注选择器的竖向列表尺寸；关注开播只走直播页「我的关注」一处入口：直播页不挂头像条，关注页不挂直播头像。
 
 Run: python3 scripts/test_follow_live_strip.py -v
 不联网、不开模拟器。
@@ -85,68 +85,13 @@ class FollowLivePickerTests(unittest.TestCase):
         self.assertIn("placeholder:", sheet)
         self.assertIn(".presentationDetents([.height(sheetDetent)])", sheet)
         self.assertIn("struct DYFollowFeed", EXTRAS)
-        feed = (ROOT / "DouDuo/DouyinFeedView.swift").read_text()
-        self.assertNotIn("(hSize == .regular ? 20 : 80) + 52", EXTRAS)
-        self.assertIn("liveStripExpanded", EXTRAS)
-        self.assertIn("douyin.follow.liveRow", EXTRAS)
-        self.assertIn("ScrollView(.horizontal)", EXTRAS.split("private var liveRow", 1)[1].split("private func like", 1)[0])
-        self.assertIn("douyin.follow.liveDisclosure", feed)
-        self.assertIn("DYFollowLiveDisclosure.showsControl", feed)
-        self.assertIn("DYFollowLiveDisclosure.toggle", feed)
-        self.assertNotIn("DYFollowLiveStrip", EXTRAS)
-        self.assertNotIn("DYFollowLiveStrip", feed)
-        row = feed.split("private func topBarRow", 1)[1].split("private var followLiveDisclosure", 1)[0]
-        disclosure = feed.split("private var followLiveDisclosure", 1)[1].split("private func topIcon", 1)[0]
-        self.assertIn("HStack(spacing: spacing)", row)
-        self.assertNotIn("HStack(alignment: .top", row)
-        self.assertNotIn("overlayPreferenceValue(DYFollowTabFrameKey.self", row)
-        self.assertNotIn("avatarLift", feed)
-        self.assertNotIn("avatarLift", EXTRAS)
-        self.assertNotIn('frame(width: 1, height:', row)
-        self.assertIn("VStack(alignment: .followTabCenter", row)
-        self.assertIn("DYFollowLiveDisclosureLayout.underTab", row)
-        self.assertIn("DYFollowLiveDisclosureLayout.stripTop", EXTRAS)
-        self.assertNotIn('Text("\\(count)")', disclosure)
-        self.assertIn("位正在直播", disclosure)
-        self.assertIn("收起直播主播", disclosure)
-        self.assertIn("alignment: .top", disclosure)
-        self.assertIn("chevron.down", disclosure)
-        self.assertIn("chevron.up", disclosure)
-        self.assertIn("DYFollowLiveDisclosure.minimumTap", disclosure)
-        self._test_vertical_relationship(feed)
 
-    def _test_vertical_relationship(self, feed: str):
-        start = feed.index("// MARK: - follow-live-disclosure-layout\n")
-        end = feed.index("// MARK: - follow-live-disclosure-layout-end\n", start)
-        swift = "import Foundation\n" + feed[start:end] + r'''
-
-var failures: [String] = []
-func check(_ condition: Bool, _ message: String) {
-    if !condition { failures.append(message) }
-}
-let tabBottom: CGFloat = 120
-let capsuleTop = DYFollowLiveDisclosureLayout.capsuleTop(tabMaxY: tabBottom)
-let capsuleBottom = capsuleTop + 44
-let strip = DYFollowLiveDisclosureLayout.stripTop(capsuleMaxY: capsuleBottom)
-check(capsuleTop > tabBottom, "胶囊在页签按钮之下")
-check(!DYFollowLiveDisclosureLayout.touchOverlapsTab(capsuleTop: capsuleTop, tabMaxY: tabBottom), "触摸区不盖住关注页签")
-check(strip > capsuleBottom, "头像条在胶囊之下")
-check(strip - capsuleBottom == DYFollowLiveDisclosureLayout.underDisclosure, "头像条只留固定小间隙")
-check(DYFollowLiveDisclosureLayout.underTab <= 8 && DYFollowLiveDisclosureLayout.underDisclosure <= 8, "间隙保持很小")
-if failures.isEmpty {
-    print("DYFollowLiveDisclosureLayout passed")
-} else {
-    for failure in failures { print("FAIL \(failure)") }
-    exit(1)
-}
-'''
-        with tempfile.TemporaryDirectory(prefix="doudou-follow-disclosure-") as tmp:
-            path = Path(tmp) / "main.swift"
-            path.write_text(swift)
-            completed = subprocess.run(["swift", str(path)], check=False, capture_output=True, text=True)
-        if completed.returncode != 0:
-            self.fail(completed.stdout + completed.stderr)
-        self.assertIn("DYFollowLiveDisclosureLayout passed", completed.stdout)
+    def test_follow_feed_has_no_live_row(self):
+        """老板定：关注页只放关注作品，不再挂一排直播头像（PR #8 曾加回，1.3.11(88) 再次去掉；直播页已有「我的关注」，89 起直播页也不挂头像条）。"""
+        follow = EXTRAS.split("struct DYFollowFeed", 1)[1]
+        follow = follow.split("\nstruct ", 1)[0]
+        for banned in ("liveRow", "loadLiveNow", "followLiveResult", "DYFollowLiveStrip", 'Text("直播中")', "onLive"):
+            self.assertNotIn(banned, follow, f"关注页不应出现 {banned}")
 
 
 if __name__ == "__main__":

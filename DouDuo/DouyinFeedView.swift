@@ -1177,35 +1177,6 @@ private struct DYTopChromeFrameKey: PreferenceKey {
     }
 }
 
-// MARK: - follow-live-disclosure-layout
-/// 关注直播开关和头像条的垂直关系。页签行、胶囊、头像条是同一列里的三段，不再互相用偏移去追。
-enum DYFollowLiveDisclosureLayout {
-    /// 页签按钮底边到胶囊顶边。按钮内部已经留出下划线下方的空白。
-    static let underTab: CGFloat = 4
-    /// 胶囊布局底边到头像条顶边。
-    static let underDisclosure: CGFloat = 4
-
-    static func capsuleTop(tabMaxY: CGFloat) -> CGFloat { tabMaxY + underTab }
-
-    static func stripTop(capsuleMaxY: CGFloat) -> CGFloat { capsuleMaxY + underDisclosure }
-
-    /// 胶囊从页签按钮底边之下开始，触摸区不会盖住「关注」。
-    static func touchOverlapsTab(capsuleTop: CGFloat, tabMaxY: CGFloat) -> Bool {
-        capsuleTop < tabMaxY
-    }
-}
-// MARK: - follow-live-disclosure-layout-end
-
-private enum DYFollowTabCenterID: AlignmentID {
-    static func defaultValue(in context: ViewDimensions) -> CGFloat {
-        context[HorizontalAlignment.center]
-    }
-}
-
-extension HorizontalAlignment {
-    fileprivate static let followTabCenter = HorizontalAlignment(DYFollowTabCenterID.self)
-}
-
 struct DouyinFeedScreen: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -1255,8 +1226,6 @@ struct DouyinFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
-    /// 关注页直播头像条：默认收起。展开与否不触发拉流。
-    @State private var followLiveUI = DYFollowLiveDisclosure.State()
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
@@ -1696,12 +1665,7 @@ struct DouyinFeedScreen: View {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
                              onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onToast: { showToast($0) },
-                             onLive: { r in live.open(r); selectTab(.live) },
-                             liveStripExpanded: DYFollowLiveDisclosure.showsStrip(followLiveUI),
-                             chromeMaxY: topChrome.maxY,
-                             onLiveCount: { followLiveUI = DYFollowLiveDisclosure.liveCountChanged(followLiveUI, count: $0) },
-                             onCollapseLiveStrip: { followLiveUI = DYFollowLiveDisclosure.selectedCreator(followLiveUI) })
+                             onToast: { showToast($0) })
             } else {
                 recommendArea
             }
@@ -1736,17 +1700,8 @@ struct DouyinFeedScreen: View {
             }
         }
         .onChange(of: tab) { _, t in
-            followLiveUI = t == .follow
-                ? DYFollowLiveDisclosure.enteredFollow(followLiveUI)
-                : DYFollowLiveDisclosure.leftFollow(followLiveUI)
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
-        }
-        .onChange(of: bridge.followSession) { _, _ in
-            followLiveUI = DYFollowLiveDisclosure.sessionChanged(followLiveUI)
-        }
-        .onAppear {
-            if tab == .follow { followLiveUI = DYFollowLiveDisclosure.enteredFollow(followLiveUI) }
         }
         .fullScreenCover(isPresented: $showSearch) {
             DYSearchScreen(bridge: bridge, onAuthor: { a in authorTarget = a.author })
@@ -1786,11 +1741,26 @@ struct DouyinFeedScreen: View {
     }
 
     private func topBarRow(spacing: CGFloat, hPad: CGFloat) -> some View {
-        // 页签行保持原来的 HStack。胶囊是它下面的另一个视图，只在水平方向和「关注」中心对齐。
-        VStack(alignment: .followTabCenter, spacing: DYFollowLiveDisclosureLayout.underTab) {
+        // 触摸区左右各扩 hPad、上下各扩 14（图标与字号不动）
         HStack(spacing: spacing) {
             ForEach(DYTab.allCases, id: \.self) { t in
-                feedTab(t, hPad: hPad)
+                Button { selectTab(t) } label: {
+                    VStack(spacing: 3) {
+                        Text(t.title)
+                            .font(.headline.weight(tab == t ? .bold : .medium))
+                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(tab == t ? 1 : 0.62))
+                            .lineLimit(1).fixedSize()
+                        Capsule()
+                            .fill(theme.media.onMedia.color(for: scheme))
+                            .frame(width: 16, height: 3)
+                            .opacity(tab == t ? 1 : 0)
+                    }
+                    // 文字本身小，撑开触摸区，避免点不中/误判成下拉
+                    .padding(.horizontal, hPad)
+                    .padding(.vertical, 14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             // 消息只留图标，未读红点仍独立显示。
             Button { showMessages = true } label: {
@@ -1837,71 +1807,6 @@ struct DouyinFeedScreen: View {
             .accessibilityIdentifier("douyin.mine.top")
         }
         .fixedSize()
-        if DYFollowLiveDisclosure.showsControl(followLiveUI) {
-            followLiveDisclosure
-                .alignmentGuide(.followTabCenter) { d in d[HorizontalAlignment.center] }
-        }
-        }
-        .fixedSize()
-    }
-
-    private func feedTab(_ t: DYTab, hPad: CGFloat) -> some View {
-        let button = Button { selectTab(t) } label: {
-            VStack(spacing: 3) {
-                Text(t.title)
-                    .font(.headline.weight(tab == t ? .bold : .medium))
-                    .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(tab == t ? 1 : 0.62))
-                    .lineLimit(1).fixedSize()
-                Capsule()
-                    .fill(theme.media.onMedia.color(for: scheme))
-                    .frame(width: 16, height: 3)
-                    .opacity(tab == t ? 1 : 0)
-            }
-            .padding(.horizontal, hPad)
-            .padding(.vertical, 14)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        return Group {
-            if t == .follow {
-                button.alignmentGuide(.followTabCenter) { d in d[HorizontalAlignment.center] }
-            } else {
-                button
-            }
-        }
-    }
-
-    /// 挂在「关注」正下方。点页签仍走原来的 `selectTab`，这里只展开或收起头像条。
-    private var followLiveDisclosure: some View {
-        let expanded = followLiveUI.expanded
-        let count = followLiveUI.liveCount
-        let title = expanded ? "收起直播主播" : "\(count) 位正在直播"
-        return Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                followLiveUI = DYFollowLiveDisclosure.toggle(followLiveUI)
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .foregroundStyle(theme.media.onMedia.color(for: scheme))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
-            .frame(minWidth: DYFollowLiveDisclosure.minimumTap, minHeight: DYFollowLiveDisclosure.minimumTap, alignment: .top)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .themeShadow(.mediaLabel)
-        .accessibilityLabel(expanded ? "收起直播主播，\(count) 位正在直播" : "\(count) 位正在直播")
-        .accessibilityHint(expanded ? "点按收起直播头像" : "点按展开正在直播的关注")
-        .accessibilityIdentifier("douyin.follow.liveDisclosure")
     }
 
     private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
