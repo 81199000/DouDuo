@@ -2,6 +2,53 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testModuleMenuSwitching() throws {
+        verifyModuleMenu(leading: false)
+    }
+
+    func testModuleMenuLeadingRail() throws {
+        verifyModuleMenu(leading: true)
+    }
+
+    private func verifyModuleMenu(leading: Bool) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        if leading { app.launchEnvironment["DOUDUO_RAIL_EDGE"] = "leading" }
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["douyin.more"].firstMatch.waitForExistence(timeout: 40))
+        Thread.sleep(forTimeInterval: 2)
+        if leading {
+            for identifier in ["douyin.module.menu", "douyin.like", "douyin.comments", "douyin.collect", "douyin.search", "douyin.more"] {
+                let button = app.buttons[identifier].firstMatch
+                XCTAssertTrue(button.isHittable)
+                XCTAssertGreaterThanOrEqual(button.frame.minX, 0)
+                XCTAssertLessThan(button.frame.midX, app.frame.width / 2)
+            }
+        }
+        let selectorFrame = menu.frame
+        attach(app, leading ? "leading-rail" : "module-menu-collapsed")
+        for (module, title) in [("follow", "关注"), ("live", "直播"), ("recommend", "推荐")] {
+            menu.tap()
+            let option = app.buttons[title]
+            XCTAssertTrue(option.waitForExistence(timeout: 5), app.debugDescription)
+            if module == "follow" { attach(app, "module-menu-expanded") }
+            option.tap()
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            XCTAssertTrue(menu.label.contains(title))
+            XCTAssertTrue(menu.isHittable)
+            // Native Menu accessibility bounds can include the 54pt label or the 50pt circle.
+            // Alignment is defined by the center, not the accessibility rectangle's edge.
+            print("RAIL_CENTER \(module): initial=\(selectorFrame) current=\(menu.frame)")
+            XCTAssertEqual(menu.frame.midX, selectorFrame.midX, accuracy: 1)
+            XCTAssertEqual(menu.frame.midY, selectorFrame.midY, accuracy: 1)
+            if leading { XCTAssertLessThan(menu.frame.midX, app.frame.width / 2) }
+            attach(app, "module-\(module)")
+        }
+    }
+
     /// 菜单与官网分享面板：仅打开、查看、关闭，绝不点击朋友或发送。
     func testMenuCleanupAndFriendForwardWithoutSending() throws {
         continueAfterFailure = false

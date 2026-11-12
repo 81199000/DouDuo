@@ -123,3 +123,8 @@ enum WuWeiDesign {
         static let lg: CGFloat = 16
     }
 }
+
+// Only feed pages publish actions to the shared safe-area rail.
+extension EnvironmentValues {
+    @Entry var dyRootRailTab: DYTab? = nil
+}
