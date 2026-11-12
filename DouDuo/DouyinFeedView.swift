@@ -2472,9 +2472,7 @@ struct DYVideoPage: View {
                     }
                 }
             }
-            // 每个按钮统一 50 高、内容贴顶：图标中心等距。最后一个无数字，下方多出的留白用上边距抵掉，胶囊上下视觉对称。
-            .padding(.top, 12)
-            .padding(.bottom, 2)
+            .padding(.vertical, 8)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: actionColumnWidth)
@@ -2496,8 +2494,9 @@ struct DYVideoPage: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            // 有数字和没数字的按钮高度一致、内容都贴顶，图标中心在同一条等距线上
-            .frame(width: railWidth, height: 50, alignment: .top)
+            // 有数字的按钮：图标 34 + 间隙 2 + 文字；没数字的（搜索/铺满）去掉文字那一截，只留图标高度，
+            // 这样图标到相邻按钮的距离，和「图标—文字」之间的距离一致，不再多出一块空白
+            .frame(width: railWidth, height: text.isEmpty ? 36 : 50, alignment: .top)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
