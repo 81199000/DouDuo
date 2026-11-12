@@ -22,8 +22,8 @@ struct DDTheme {
         // rail x=1223, 54pt capsule spans 73px. 8 * 54 / 73 ≈ 6pt leading.
         // This is not the system column width; runtime geometry still determines that.
         let expandedRailOpticalInset: CGFloat = 6
-        let actionItemSpacing: CGFloat = 12
-        let actionGroupSpacing: CGFloat = 16
+        let actionItemSpacing: CGFloat = 9     // 原 12，整体缩 1/4
+        let actionGroupSpacing: CGFloat = 12   // 原 16，整体缩 1/4
     }
     struct Status {
         let danger = DDColor(Color(red: 1.0, green: 0.17, blue: 0.33))     // 抖音红
@@ -122,4 +122,9 @@ enum WuWeiDesign {
         static let md: CGFloat = 12
         static let lg: CGFloat = 16
     }
+}
+
+// Only feed pages publish actions to the shared safe-area rail.
+extension EnvironmentValues {
+    @Entry var dyRootRailTab: DYTab? = nil
 }

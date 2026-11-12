@@ -2,10 +2,63 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 横滑快进 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testModuleMenuSwitching() throws {
+        verifyModuleMenu(leading: false)
+    }
+
+    func testModuleMenuLeadingRail() throws {
+        verifyModuleMenu(leading: true)
+    }
+
+    private func verifyModuleMenu(leading: Bool) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        // 模块入口只在「简洁」模式出现（默认模式是顶部页签）
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        if leading { app.launchEnvironment["DOUDUO_RAIL_EDGE"] = "leading" }
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["douyin.more"].firstMatch.waitForExistence(timeout: 40))
+        Thread.sleep(forTimeInterval: 2)
+        if leading {
+            for identifier in ["douyin.module.menu", "douyin.like", "douyin.comments", "douyin.collect", "douyin.more"] {
+                let button = app.buttons[identifier].firstMatch
+                XCTAssertTrue(button.isHittable)
+                XCTAssertGreaterThanOrEqual(button.frame.minX, 0)
+                XCTAssertLessThan(button.frame.midX, app.frame.width / 2)
+            }
+        }
+        let selectorFrame = menu.frame
+        attach(app, leading ? "leading-rail" : "module-menu-collapsed")
+        for (module, title) in [("follow", "关注"), ("live", "直播"), ("recommend", "推荐")] {
+            menu.tap()
+            let option = app.buttons[title]
+            XCTAssertTrue(option.waitForExistence(timeout: 5), app.debugDescription)
+            if module == "follow" { attach(app, "module-menu-expanded") }
+            option.tap()
+            XCTAssertTrue(menu.waitForExistence(timeout: 10))
+            sleep(1)
+            print("DDLEAD label=\(menu.label) want=\(title)")
+            XCTAssertTrue(menu.label.contains(title), "入口标签应变为「\(title)」，当前：\(menu.label)")
+            print("DDLEAD \(module) frame=\(menu.frame) hittable=\(menu.isHittable) exists=\(menu.exists) win=\(app.frame)")
+            XCTAssertTrue(menu.isHittable)
+            // Native Menu accessibility bounds can include the 54pt label or the 50pt circle.
+            // Alignment is defined by the center, not the accessibility rectangle's edge.
+            print("RAIL_CENTER \(module): initial=\(selectorFrame) current=\(menu.frame)")
+            XCTAssertEqual(menu.frame.midX, selectorFrame.midX, accuracy: 1)
+            XCTAssertEqual(menu.frame.midY, selectorFrame.midY, accuracy: 1)
+            if leading { XCTAssertLessThan(menu.frame.midX, app.frame.width / 2) }
+            attach(app, "module-\(module)")
+        }
+    }
+
     /// 菜单与官网分享面板：仅打开、查看、关闭，绝不点击朋友或发送。
     func testMenuCleanupAndFriendForwardWithoutSending() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         let query = app.buttons.matching(identifier: "douyin.more")
@@ -16,7 +69,7 @@ final class DouDuoUITests: XCTestCase {
         }
         openMore()
         XCTAssertFalse(app.buttons["竖屏占比"].exists)
-        XCTAssertFalse(app.buttons["自动连播"].exists)
+        XCTAssertTrue(app.buttons["自动连播"].exists, "自动连播按需求放在「更多」第一层")
         XCTAssertFalse(app.buttons["静音"].exists)
         XCTAssertTrue(app.buttons["刷新推荐"].exists)
         attach(app, "menu-cleanup-root")
@@ -27,6 +80,8 @@ final class DouDuoUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["缓存管理"].exists)
+        app.buttons["播放设置"].tap()
+        XCTAssertFalse(app.buttons["播放速度"].exists, "倍速已放在「更多」第一层，设置里不再重复")
         attach(app, "menu-cleanup-settings")
         openMore()
         let share = app.buttons["douyin.forward.menu"]
@@ -394,6 +449,7 @@ final class DouDuoUITests: XCTestCase {
     /// 倍速两条线互不污染：设置是全局速度（当前视频立刻生效），长按下滑锁的 2 倍只锁本条、上滑取消。
     func testPlaybackRateLockedByLongPressDownAndSetting() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
@@ -432,6 +488,360 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "rate-cancelled")
     }
 
+    /// 「更多」第一层的倍速：点开选速度，当前视频立刻变速（不用换视频）。
+    func testQuickSpeedMenuAppliesToCurrentVideo() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(more.isEmpty)
+        more[0].tap()
+        let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "「更多」第一层应直接有倍速")
+        XCTAssertTrue(app.buttons["刷新推荐"].exists)
+        attach(app, "quick-more-root")
+        speed.tap()
+        XCTAssertTrue(app.buttons["1.5 倍速"].waitForExistence(timeout: 5), "点倍速应弹出速度列表")
+        attach(app, "quick-speed-list")
+        app.buttons["1.5 倍速"].tap()
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "选 1.5 倍后当前视频应立刻 1.5×")
+        sleep(3)
+        attach(app, "quick-speed-applied")
+        let fit = app.buttons.matching(identifier: "douyin.fit").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(fit, "搜索下面应有铺满按钮")
+    }
+
+    /// 复现：滑到下一条视频后，在「更多」里改倍速，当前视频应立刻变速（看 ddlog 里的 DDRATETEST）。
+    func testSpeedChangeOnSecondVideoAppliesImmediately() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(5)
+        let first = app.staticTexts["douyin.currentID"].label
+        app.swipeUp(velocity: .fast)
+        sleep(12)
+        let second = app.staticTexts["douyin.currentID"].label
+        print("DDRATETEST first=\(first) second=\(second)")
+        func pick(_ title: String) {
+            let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(more.isEmpty)
+            more[0].tap()
+            let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+            XCTAssertTrue(speed.waitForExistence(timeout: 5))
+            speed.tap()
+            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5))
+            app.buttons[title].tap()
+            sleep(3)
+        }
+        pick("1.5 倍速")
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "第二条视频改 1.5 倍应立刻生效")
+        // 关键回归：从 1.5 改回正常速度，观察器不能再把速度拉回 1.5（旧版会）
+        pick("正常速度")
+        sleep(2)
+        XCTAssertNil(visibleBadge(app), "改回正常速度后不该再显示倍速角标（旧版被预加载时的旧值拉回 1.5）")
+        pick("2 倍速")
+        XCTAssertTrue(waitBadge(app, "2×", timeout: 8))
+        attach(app, "second-video-rate")
+    }
+
+    /// 右侧按钮栏：五个按钮水平居中对齐、竖向等距。
+    func testRailButtonsAlignedAndEvenlySpaced() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        func frame(_ id: String) -> CGRect {
+            let q = app.buttons.matching(identifier: id).allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(q.isEmpty, "\(id) 不可点")
+            return q.first?.frame ?? .zero
+        }
+        let ids = ["douyin.like", "douyin.comments", "douyin.collect", "douyin.search", "douyin.fit"]
+        let f = ids.map(frame)
+        print("DDRAIL frames=\(f)")
+        for r in f { XCTAssertEqual(r.midX, f[0].midX, accuracy: 1.0, "水平没对齐") }
+        // 有数字的三个按钮之间等距；无数字的搜索/铺满之间更紧（没有文字那一截）
+        let pitches = zip(f, f.dropFirst()).map { $1.midY - $0.midY }
+        print("DDRAIL pitches=\(pitches)")
+        XCTAssertEqual(pitches[0], pitches[1], accuracy: 1.0, "赞→评论 与 评论→收藏 间距不等")
+        XCTAssertLessThan(pitches[3], pitches[0], "无文字的按钮之间应比有文字的更紧")
+        // 搜索与铺满之间的空隙 = 「图标—文字」间距那一级（约 2~12pt），不再是一整块空白
+        let gapSearchFit = f[4].minY - f[3].maxY
+        print("DDRAIL gapSearchFit=\(gapSearchFit)")
+        XCTAssertLessThanOrEqual(gapSearchFit, 12)
+        attach(app, "rail-aligned")
+    }
+
+    /// 三档界面模式：默认=顶部页签+原右侧栏；简洁=侧边功能栏；极简=简洁且隐藏作者标题。
+    /// 注意：不能用 -key value 启动参数——它是只读的参数域，会盖住运行时在「更多」里的修改。
+    /// 改用 DOUDUO_CHROME_MODE 环境变量，只在首次启动时写入存储。
+    private func launchChrome(_ mode: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        return app
+    }
+
+    func testChromeModeClassicHasTopTabsAndSearchOnRail() throws {
+        let app = launchChrome("classic")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.search").allElementsBoundByIndex.contains { $0.isHittable }, "默认模式右侧栏应有搜索")
+        XCTAssertFalse(app.buttons["douyin.module.menu"].exists, "默认模式没有模块入口")
+        XCTAssertTrue(app.buttons["关注"].exists || app.staticTexts["关注"].exists, "默认模式顶部应有「关注」页签")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "默认模式应显示作者")
+        attach(app, "chrome-classic")
+    }
+
+    func testChromeModeRailMovesSearchIntoModuleMenu() throws {
+        let app = launchChrome("rail")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 10), "简洁模式应有模块入口")
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.search").allElementsBoundByIndex.contains { $0.isHittable }, "简洁模式右侧栏不再有搜索")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "简洁模式保留作者")
+        app.buttons["douyin.module.menu"].tap()
+        XCTAssertTrue(app.buttons["搜索"].waitForExistence(timeout: 5), "模块菜单里应有搜索")
+        attach(app, "chrome-rail-menu")
+        app.buttons["搜索"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 10) || app.searchFields.firstMatch.waitForExistence(timeout: 5), "点搜索应打开搜索页")
+    }
+
+    func testChromeModeMinimalHidesAuthorAndTitle() throws {
+        let app = launchChrome("minimal")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "极简模式应隐藏作者")
+        XCTAssertFalse(app.staticTexts.matching(identifier: "douyin.video.metadata").allElementsBoundByIndex.contains { $0.isHittable }, "极简模式应隐藏标题信息")
+        attach(app, "chrome-minimal")
+    }
+
+    /// 在「更多」第一层切换界面模式，立即生效。
+    func testChromeModeSwitchFromMoreMenu() throws {
+        let app = launchChrome("classic")
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(more.isEmpty)
+        more[0].tap()
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '界面'")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "「更多」第一层应有界面模式")
+        item.tap()
+        XCTAssertTrue(app.buttons["简洁"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["极简"].exists)
+        attach(app, "chrome-mode-list")
+        app.buttons["极简"].tap()
+        sleep(3)
+        attach(app, "chrome-after-tap")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 8), "切到极简后应出现模块入口")
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "切到极简后应隐藏作者")
+        attach(app, "chrome-switched-minimal")
+    }
+
+    func testClassicTopTabsFrame() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        for t in ["关注", "推荐", "直播"] {
+            let b = app.buttons[t].firstMatch
+            print("DDTOP \(t) frame=\(b.frame) win=\(app.windows.firstMatch.frame)")
+        }
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+        print("DDTOP more frame=\(more?.frame ?? .zero)")
+        attach(app, "top-frame")
+    }
+
+    /// 极简：底部进度条隐藏，进度画在模块入口外圈；长按入口显示作者标题，松开消失。
+    func testMinimalProgressRingAndPeekInfo() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(6)
+        let ring = app.otherElements["douyin.module.ring"].firstMatch
+        XCTAssertTrue(ring.waitForExistence(timeout: 5), "极简模式应有进度外圈")
+        let v1 = ring.value as? String ?? ""
+        print("DDRING value1=\(v1)")
+        sleep(5)
+        let v2 = ring.value as? String ?? ""
+        print("DDRING value2=\(v2)")
+        XCTAssertNotEqual(v1, v2, "进度外圈应随播放前进")
+        attach(app, "minimal-ring")
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "平时不显示作者标题")
+        menu.press(forDuration: 1.2)
+        // 按住期间截图不可行（press 是阻塞的），松开后应已消失
+        sleep(1)
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "松开后作者标题应消失")
+    }
+
+    func testMinimalLongPressShowsInfoWhileHeld() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(4)
+        let c = menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // 按住 3 秒；另起一个 DispatchQueue 在按住中途采样
+        var seenDuring = false
+        let exp = expectation(description: "sample")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.8) {
+            seenDuring = app.otherElements["douyin.peek.info"].exists || app.staticTexts["douyin.peek.info"].exists
+            let shot = XCUIScreen.main.screenshot()
+            let att = XCTAttachment(screenshot: shot); att.name = "minimal-peek-held"; att.lifetime = .keepAlways
+            self.add(att)
+            exp.fulfill()
+        }
+        c.press(forDuration: 3.0)
+        wait(for: [exp], timeout: 5)
+        XCTAssertTrue(seenDuring, "按住模块入口时应显示作者标题")
+        attach(app, "minimal-after-peek")
+        sleep(1)
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "松开后应消失")
+    }
+
+    /// 长按模块入口：按住期间和松手后，系统菜单都不能弹出；单击仍能弹菜单。
+    func testModuleLongPressDoesNotOpenMenuMinimal() throws { try runLongPressNoMenu("minimal") }
+    func testModuleLongPressDoesNotOpenMenuRail() throws { try runLongPressNoMenu("rail") }
+
+    private func runLongPressNoMenu(_ mode: String) throws {
+        let app = launchChrome(mode)
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(4)
+        let c = menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        var samples: [String] = []
+        let lock = NSLock()
+        let exp = expectation(description: "samples")
+        exp.expectedFulfillmentCount = 3
+        for t in [0.7, 1.5, 2.4] {
+            DispatchQueue.global().asyncAfter(deadline: .now() + t) {
+                if t == 2.4 {
+                    let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); att.name = "hold-2.4s"; att.lifetime = .keepAlways
+                    self.add(att)
+                }
+                let menuOpen = app.buttons["douyin.module.search"].exists || app.buttons["搜索"].exists
+                let peek = app.buttons["douyin.author"].exists
+                lock.lock(); samples.append("t=\(t) menu=\(menuOpen) peek=\(peek)"); lock.unlock()
+                exp.fulfill()
+            }
+        }
+        c.press(forDuration: 3.0)
+        wait(for: [exp], timeout: 8)
+        print("DDHOLD \(samples.sorted())")
+        sleep(1)
+        let menuAfter = app.buttons["douyin.module.search"].exists || app.buttons["搜索"].exists
+        let peekAfter = app.buttons["douyin.author"].exists
+        print("DDHOLD after: menu=\(menuAfter) peek=\(peekAfter)")
+        XCTAssertFalse(samples.contains { $0.contains("menu=true") }, "按住期间不应弹出菜单：\(samples)")
+        if mode == "minimal" {
+            // 按下立刻显示：第一个采样点（0.7s）就应该看到
+            XCTAssertTrue(samples.contains { $0.hasPrefix("t=0.7") && $0.contains("peek=true") }, "极简按下后应立即显示作者标题：\(samples)")
+            XCTAssertTrue(samples.allSatisfy { $0.contains("peek=true") }, "按住期间标题应一直显示：\(samples)")
+        }
+        XCTAssertFalse(menuAfter, "松手后不应弹出菜单")
+        if mode == "minimal" { XCTAssertFalse(peekAfter, "松手后作者标题应消失") }
+        // 单击仍然弹菜单
+        menu.tap()
+        XCTAssertTrue(app.buttons["douyin.module.search"].waitForExistence(timeout: 5) || app.buttons["搜索"].waitForExistence(timeout: 5), "单击仍应弹出模块菜单")
+        attach(app, "minimal-menu-after-tap")
+    }
+
+    // 兼容旧名
+
+
+    /// 简洁模式也用外圈进度环，底部进度条隐藏；默认模式没有进度环。
+    func testRailModeAlsoHasProgressRing() throws {
+        let app = launchChrome("rail")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 10))
+        sleep(6)
+        let ring = app.otherElements["douyin.module.ring"].firstMatch
+        XCTAssertTrue(ring.waitForExistence(timeout: 5), "简洁模式应有进度外圈")
+        let v1 = ring.value as? String ?? ""; sleep(5); let v2 = ring.value as? String ?? ""
+        print("DDRING rail \(v1) -> \(v2)")
+        XCTAssertNotEqual(v1, v2)
+        attach(app, "rail-ring")
+        let classic = launchChrome("classic")
+        XCTAssertFalse(classic.otherElements["douyin.module.ring"].exists, "默认模式不画进度环")
+    }
+
+    /// 量布局：入口环、入口按钮、右侧胶囊（赞）、更多按钮的位置和尺寸，核对「环与胶囊同宽」「入口到胶囊的间距 = 胶囊到更多的间距」。
+    func testModuleEntryGeometry() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(5)
+        let ring = app.otherElements["douyin.module.ring"].firstMatch
+        XCTAssertTrue(ring.waitForExistence(timeout: 5))
+        func vis(_ id: String) -> XCUIElement? {
+            app.buttons.matching(identifier: id).allElementsBoundByIndex.first { $0.isHittable }
+        }
+        let like = vis("douyin.like")!.frame
+        let fit = vis("douyin.fit")!.frame
+        let more = vis("douyin.more")!.frame
+        print("DDGEO ring=\(ring.frame) menu=\(menu.frame) like=\(like) fit=\(fit) more=\(more)")
+        // 胶囊整体：赞的上沿 - 8（内边距）= 胶囊上沿；铺满下沿 + 8 = 胶囊下沿
+        let capsuleTop = like.minY - 8, capsuleBottom = fit.maxY + 8
+        let gapA = capsuleTop - ring.frame.maxY, gapB = more.minY - capsuleBottom
+        print("DDGEO capsule=\(capsuleTop)...\(capsuleBottom) ringW=\(ring.frame.width) gapRingToCapsule=\(gapA) gapCapsuleToMore=\(gapB)")
+        XCTAssertEqual(ring.frame.width, like.width, accuracy: 1.5, "进度环应和胶囊同宽")
+        XCTAssertEqual(ring.frame.midX, like.midX, accuracy: 1.5, "进度环应和胶囊居中对齐")
+        XCTAssertEqual(gapA, gapB, accuracy: 1.5, "入口到胶囊的间距应等于胶囊到「更多」的间距")
+        attach(app, "geometry")
+    }
+
+    /// 极简：单击入口 → 菜单弹出，同时作者标题显示；菜单收起后标题消失。红点只在菜单「消息」行，入口上没有。
+    func testMinimalTapShowsInfoWithMenuAndBadgeOnMessagesRow() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(4)
+        XCTAssertFalse(app.buttons["douyin.author"].exists, "平时不显示作者")
+        menu.tap()
+        XCTAssertTrue(app.buttons["douyin.module.search"].waitForExistence(timeout: 5), "单击应弹出菜单")
+        sleep(1)
+        XCTAssertTrue(app.buttons["douyin.author"].exists, "菜单打开期间应显示作者标题")
+        attach(app, "minimal-tap-menu-and-info")
+        // 关菜单：点「推荐」行（当前模块，选了也不换页）
+        app.buttons["douyin.module.item.recommend"].tap()
+        sleep(1)
+        XCTAssertFalse(app.buttons["douyin.author"].exists, "菜单收起后标题应消失")
+        XCTAssertFalse(app.otherElements["douyin.module.entry.badge"].exists, "入口上不再有红点")
+    }
+
+    /// 压测：连续滑 8 条视频，每条停几秒（触发预加载解码音频），期间改倍速。App 不能崩。
+    func testSwipeManyVideosWithSeamlessAudioDoesNotCrash() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(5)
+        for i in 1...8 {
+            app.swipeUp(velocity: .fast)
+            sleep(4)
+            XCTAssertEqual(app.state, .runningForeground, "第 \(i) 条视频后 App 崩溃了")
+            if i == 3 || i == 6 {
+                let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+                if let m = more.first {
+                    m.tap()
+                    let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+                    if speed.waitForExistence(timeout: 4) {
+                        speed.tap()
+                        let t = app.buttons[i == 3 ? "1.5 倍速" : "2 倍速"]
+                        if t.waitForExistence(timeout: 4) { t.tap() }
+                    }
+                    sleep(2)
+                }
+            }
+        }
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     /// 分页里每页都挂了角标，只取屏幕上那个
     private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
         let f = app.frame
@@ -449,19 +859,15 @@ final class DouDuoUITests: XCTestCase {
         return false
     }
 
-    /// 更多 → 设置 → 播放设置 → 播放速度
+    /// 更多 → 倍速（第一层）：点开后弹出速度列表
     private func openSpeedMenu(_ app: XCUIApplication) {
         let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
         XCTAssertFalse(more.isEmpty, "当前页没有可点的「更多」")
         more[0].tap()
-        if !app.buttons["设置"].waitForExistence(timeout: 4) { more[0].tap() }
-        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 5))
-        app.buttons["设置"].tap()
-        if !app.buttons["播放设置"].waitForExistence(timeout: 3), app.buttons["设置"].exists { app.buttons["设置"].tap() }
-        XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
-        app.buttons["播放设置"].tap()
-        XCTAssertTrue(app.buttons["播放速度"].waitForExistence(timeout: 5), "播放设置里应有「播放速度」")
-        app.buttons["播放速度"].tap()
+        let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+        if !speed.waitForExistence(timeout: 4) { more[0].tap() }
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "「更多」第一层应有倍速")
+        speed.tap()
     }
 
     private func wait(label: String, on element: XCUIElement, timeout: TimeInterval) -> Bool {
@@ -472,6 +878,7 @@ final class DouDuoUITests: XCTestCase {
     /// 右侧栏顺序与加宽间距；只读 frame，不点击任何账号动作。
     func testRailCommentAboveCollectWithExpandedSpacing() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
@@ -488,8 +895,9 @@ final class DouDuoUITests: XCTestCase {
         let commentToCollect = collect.frame.minY - comment.frame.maxY
         let collectToSearch = search.frame.minY - collect.frame.maxY
         for gap in [likeToComment, commentToCollect, collectToSearch] {
-            XCTAssertGreaterThanOrEqual(gap, 10, "图标间距应比旧版6pt更宽")
-            XCTAssertLessThanOrEqual(gap, 16, "图标间隙不能过松")
+            // 2026-11-12 老板要求整体缩 1/4：间隙 12 → 9
+            XCTAssertGreaterThanOrEqual(gap, 8, "图标间隙不能过紧")
+            XCTAssertLessThanOrEqual(gap, 10, "图标间隙应已缩 1/4（9pt）")
         }
         let more = app.buttons["douyin.more"].firstMatch
         XCTAssertTrue(more.exists)
