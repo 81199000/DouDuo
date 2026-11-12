@@ -92,6 +92,32 @@ enum DYLiveAdaptiveLayoutEngine {
         }
     }
 
+    /// 展开状态下手动分屏（没有折痕）。横屏画面 + 竖向屏幕：上画面下交互；其余左画面右交互。
+    /// 画面窗格按画面比例取大小并夹在 35%–65% 之间，交互区至少留 35%。
+    static func manualSplit(bounds: CGRect, videoSize: CGSize?) -> DYLiveAdaptiveDecision {
+        let bounds = bounds.standardized
+        let full = DYLiveAdaptiveDecision(layout: .existing, video: bounds, interaction: bounds)
+        guard usable(bounds) else { return full }
+        let aspect: CGFloat = {
+            guard let v = videoSize, v.width.isFinite, v.height.isFinite, v.width > 1, v.height > 1 else { return 0 }
+            return v.width / v.height
+        }()
+        if orientation(videoSize: videoSize) == .landscape, bounds.height >= bounds.width {
+            let wanted = bounds.width / aspect + 56
+            let h = min(max(wanted, bounds.height * 0.35), bounds.height * 0.65)
+            return DYLiveAdaptiveDecision(
+                layout: .layoutA,
+                video: CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: h),
+                interaction: CGRect(x: bounds.minX, y: bounds.minY + h, width: bounds.width, height: bounds.height - h))
+        }
+        let wanted = aspect > 0 ? bounds.height * aspect : bounds.width * 0.55
+        let w = min(max(wanted, bounds.width * 0.35), bounds.width * 0.65)
+        return DYLiveAdaptiveDecision(
+            layout: .layoutB,
+            video: CGRect(x: bounds.minX, y: bounds.minY, width: w, height: bounds.height),
+            interaction: CGRect(x: bounds.minX + w, y: bounds.minY, width: bounds.width - w, height: bounds.height))
+    }
+
     /// 房间还没出画，或尺寸非法时返回 nil。调用方据此保持未知方向，不用上一间的尺寸。
     static func presentationSize(ready: Bool, videoSize: CGSize) -> CGSize? {
         guard ready else { return nil }

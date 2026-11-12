@@ -2454,7 +2454,6 @@ struct DYVideoPage: View {
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: actionColumnWidth)
-            if item.images.isEmpty { quickSettings(fg) }
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
@@ -2481,49 +2480,6 @@ struct DYVideoPage: View {
         .accessibilityIdentifier(id)
     }
 
-    /// 播放设置快捷入口：倍速 / 连播 / 铺满，不用再进「更多 → 播放设置」两层菜单。
-    private func quickSettings(_ fg: Color) -> some View {
-        let rates: [Double] = [1.0, 1.25, 1.5, 2.0, 0.75]
-        let on = theme.status.warning.color(for: scheme)
-        func quick(_ id: String, _ act: @escaping () -> Void, @ViewBuilder _ label: () -> some View) -> some View {
-            Button(action: { if !boost.blocksTap { act() } }) {
-                label().frame(width: railWidth, height: 38).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .modifier(DYHoldBoost(control: boost))
-            .accessibilityIdentifier(id)
-        }
-        return VStack(spacing: 0) {
-            quick("douyin.quick.speed", {
-                let i = rates.firstIndex { abs($0 - playbackRate) < 0.01 } ?? 0
-                playbackRate = rates[(i + 1) % rates.count]
-                onToast?(rateTitle(playbackRate))
-            }) {
-                Text(playbackRate == playbackRate.rounded() ? String(format: "%.0f×", playbackRate) : String(format: "%g×", playbackRate))
-                    .font(.system(size: 15, weight: .bold)).monospacedDigit()
-                    .foregroundStyle(abs(playbackRate - 1) < 0.01 ? fg : on)
-            }
-            quick("douyin.quick.autonext", {
-                autoNext.toggle()
-                onToast?(autoNext ? "自动连播：开" : "自动连播：关")
-            }) {
-                Image(systemName: "play.square.stack").font(.system(size: 19))
-                    .foregroundStyle(autoNext ? on : fg.opacity(0.75))
-            }
-            quick("douyin.quick.autofit", {
-                autoFit.toggle()
-                onToast?(autoFit ? "自动铺满：开" : "自动铺满：关")
-            }) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 17))
-                    .foregroundStyle(autoFit ? on : fg.opacity(0.75))
-            }
-        }
-        .padding(.vertical, 4)
-        .frame(width: railWidth)
-        .ddGlassCapsule()
-        .frame(width: actionColumnWidth)
-    }
-
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
     /// 「更多」：转发 / 下载快捷入口 → 不感兴趣 → 弹幕 → 刷新推荐 / 设置。
@@ -2539,6 +2495,22 @@ struct DYVideoPage: View {
                 }
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
+            }
+            // 常用播放设置放在「更多」第一层，点一下就生效，不用再进两层菜单
+            Section {
+                Button {
+                    let steps: [Double] = [1.0, 1.25, 1.5, 2.0, 0.75]
+                    let i = steps.firstIndex { abs($0 - playbackRate) < 0.01 } ?? -1
+                    playbackRate = steps[(i + 1) % steps.count]
+                    onToast?(rateTitle(playbackRate))
+                } label: {
+                    Label("倍速 \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×（点击切换）", systemImage: "speedometer")
+                }
+                .accessibilityIdentifier("douyin.quick.speed")
+                Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+                    .accessibilityIdentifier("douyin.quick.autonext")
+                Toggle(isOn: $autoFit) { Label("自动铺满", systemImage: "arrow.up.left.and.arrow.down.right") }
+                    .accessibilityIdentifier("douyin.quick.autofit")
             }
             if let onDislike {
                 Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }
