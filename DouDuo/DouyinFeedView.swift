@@ -1220,7 +1220,7 @@ struct DouyinFeedScreen: View {
     @State private var topNudge: CGFloat = 0
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
     @State private var topBarWidth: CGFloat?
-    /// 播放速度（设置 → 播放设置 → 播放速度）：全局速度，长按锁定只作用于单条视频，不写这里
+    /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
@@ -2060,22 +2060,6 @@ struct DouyinFeedScreen: View {
                     Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
                     Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
-                    Menu {
-                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
-                            Button {
-                                playbackRate = r
-                            } label: {
-                                if abs(playbackRate - r) < 0.01 {
-                                    Label(rateTitle(r), systemImage: "checkmark")
-                                } else {
-                                    Text(rateTitle(r))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("播放速度", systemImage: "speedometer")
-                    }
-                    .accessibilityIdentifier("douyin.playback.speed")
                     Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
                 } label: { Label("播放设置", systemImage: "play.circle") }
                 Menu {

@@ -27,6 +27,8 @@ final class DouDuoUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["缓存管理"].exists)
+        app.buttons["播放设置"].tap()
+        XCTAssertFalse(app.buttons["播放速度"].exists, "倍速已放在「更多」第一层，设置里不再重复")
         attach(app, "menu-cleanup-settings")
         openMore()
         let share = app.buttons["douyin.forward.menu"]
@@ -536,19 +538,15 @@ final class DouDuoUITests: XCTestCase {
         return false
     }
 
-    /// 更多 → 设置 → 播放设置 → 播放速度
+    /// 更多 → 倍速（第一层）：点开后弹出速度列表
     private func openSpeedMenu(_ app: XCUIApplication) {
         let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
         XCTAssertFalse(more.isEmpty, "当前页没有可点的「更多」")
         more[0].tap()
-        if !app.buttons["设置"].waitForExistence(timeout: 4) { more[0].tap() }
-        XCTAssertTrue(app.buttons["设置"].waitForExistence(timeout: 5))
-        app.buttons["设置"].tap()
-        if !app.buttons["播放设置"].waitForExistence(timeout: 3), app.buttons["设置"].exists { app.buttons["设置"].tap() }
-        XCTAssertTrue(app.buttons["播放设置"].waitForExistence(timeout: 5))
-        app.buttons["播放设置"].tap()
-        XCTAssertTrue(app.buttons["播放速度"].waitForExistence(timeout: 5), "播放设置里应有「播放速度」")
-        app.buttons["播放速度"].tap()
+        let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+        if !speed.waitForExistence(timeout: 4) { more[0].tap() }
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "「更多」第一层应有倍速")
+        speed.tap()
     }
 
     private func wait(label: String, on element: XCUIElement, timeout: TimeInterval) -> Bool {
