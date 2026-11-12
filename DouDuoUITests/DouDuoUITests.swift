@@ -491,6 +491,28 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "second-video-rate")
     }
 
+    /// 右侧按钮栏：五个按钮水平居中对齐、竖向等距。
+    func testRailButtonsAlignedAndEvenlySpaced() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        func frame(_ id: String) -> CGRect {
+            let q = app.buttons.matching(identifier: id).allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(q.isEmpty, "\(id) 不可点")
+            return q.first?.frame ?? .zero
+        }
+        let ids = ["douyin.like", "douyin.comments", "douyin.collect", "douyin.search", "douyin.fit"]
+        let f = ids.map(frame)
+        print("DDRAIL frames=\(f)")
+        for r in f { XCTAssertEqual(r.midX, f[0].midX, accuracy: 1.0, "水平没对齐") }
+        let pitches = zip(f, f.dropFirst()).map { $1.midY - $0.midY }
+        print("DDRAIL pitches=\(pitches)")
+        for p in pitches { XCTAssertEqual(p, pitches[0], accuracy: 1.0, "竖向间距不等") }
+        attach(app, "rail-aligned")
+    }
+
     /// 分页里每页都挂了角标，只取屏幕上那个
     private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
         let f = app.frame
@@ -547,8 +569,9 @@ final class DouDuoUITests: XCTestCase {
         let commentToCollect = collect.frame.minY - comment.frame.maxY
         let collectToSearch = search.frame.minY - collect.frame.maxY
         for gap in [likeToComment, commentToCollect, collectToSearch] {
-            XCTAssertGreaterThanOrEqual(gap, 10, "图标间距应比旧版6pt更宽")
-            XCTAssertLessThanOrEqual(gap, 16, "图标间隙不能过松")
+            // 2026-11-12 老板要求整体缩 1/4：间隙 12 → 9
+            XCTAssertGreaterThanOrEqual(gap, 8, "图标间隙不能过紧")
+            XCTAssertLessThanOrEqual(gap, 10, "图标间隙应已缩 1/4（9pt）")
         }
         let more = app.buttons["douyin.more"].firstMatch
         XCTAssertTrue(more.exists)
