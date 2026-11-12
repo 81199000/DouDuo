@@ -14,6 +14,8 @@ final class DouDuoUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        // 模块入口只在「简洁」模式出现（默认模式是顶部页签）
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
         if leading { app.launchEnvironment["DOUDUO_RAIL_EDGE"] = "leading" }
         app.launch()
         let menu = app.buttons["douyin.module.menu"].firstMatch
@@ -21,7 +23,7 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["douyin.more"].firstMatch.waitForExistence(timeout: 40))
         Thread.sleep(forTimeInterval: 2)
         if leading {
-            for identifier in ["douyin.module.menu", "douyin.like", "douyin.comments", "douyin.collect", "douyin.search", "douyin.more"] {
+            for identifier in ["douyin.module.menu", "douyin.like", "douyin.comments", "douyin.collect", "douyin.more"] {
                 let button = app.buttons[identifier].firstMatch
                 XCTAssertTrue(button.isHittable)
                 XCTAssertGreaterThanOrEqual(button.frame.minX, 0)
@@ -543,6 +545,7 @@ final class DouDuoUITests: XCTestCase {
     /// 右侧按钮栏：五个按钮水平居中对齐、竖向等距。
     func testRailButtonsAlignedAndEvenlySpaced() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
@@ -566,6 +569,69 @@ final class DouDuoUITests: XCTestCase {
         print("DDRAIL gapSearchFit=\(gapSearchFit)")
         XCTAssertLessThanOrEqual(gapSearchFit, 12)
         attach(app, "rail-aligned")
+    }
+
+    /// 三档界面模式：默认=顶部页签+原右侧栏；简洁=侧边功能栏；极简=简洁且隐藏作者标题。
+    /// 注意：不能用 -key value 启动参数——它是只读的参数域，会盖住运行时在「更多」里的修改。
+    /// 改用 DOUDUO_CHROME_MODE 环境变量，只在首次启动时写入存储。
+    private func launchChrome(_ mode: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        return app
+    }
+
+    func testChromeModeClassicHasTopTabsAndSearchOnRail() throws {
+        let app = launchChrome("classic")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.search").allElementsBoundByIndex.contains { $0.isHittable }, "默认模式右侧栏应有搜索")
+        XCTAssertFalse(app.buttons["douyin.module.menu"].exists, "默认模式没有模块入口")
+        XCTAssertTrue(app.buttons["关注"].exists || app.staticTexts["关注"].exists, "默认模式顶部应有「关注」页签")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "默认模式应显示作者")
+        attach(app, "chrome-classic")
+    }
+
+    func testChromeModeRailMovesSearchIntoModuleMenu() throws {
+        let app = launchChrome("rail")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 10), "简洁模式应有模块入口")
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.search").allElementsBoundByIndex.contains { $0.isHittable }, "简洁模式右侧栏不再有搜索")
+        XCTAssertTrue(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "简洁模式保留作者")
+        app.buttons["douyin.module.menu"].tap()
+        XCTAssertTrue(app.buttons["搜索"].waitForExistence(timeout: 5), "模块菜单里应有搜索")
+        attach(app, "chrome-rail-menu")
+        app.buttons["搜索"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 10) || app.searchFields.firstMatch.waitForExistence(timeout: 5), "点搜索应打开搜索页")
+    }
+
+    func testChromeModeMinimalHidesAuthorAndTitle() throws {
+        let app = launchChrome("minimal")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "极简模式应隐藏作者")
+        XCTAssertFalse(app.staticTexts.matching(identifier: "douyin.video.metadata").allElementsBoundByIndex.contains { $0.isHittable }, "极简模式应隐藏标题信息")
+        attach(app, "chrome-minimal")
+    }
+
+    /// 在「更多」第一层切换界面模式，立即生效。
+    func testChromeModeSwitchFromMoreMenu() throws {
+        let app = launchChrome("classic")
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(more.isEmpty)
+        more[0].tap()
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '界面'")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "「更多」第一层应有界面模式")
+        item.tap()
+        XCTAssertTrue(app.buttons["简洁"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["极简"].exists)
+        attach(app, "chrome-mode-list")
+        app.buttons["极简"].tap()
+        sleep(3)
+        attach(app, "chrome-after-tap")
+        XCTAssertTrue(app.buttons["douyin.module.menu"].waitForExistence(timeout: 8), "切到极简后应出现模块入口")
+        XCTAssertFalse(app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.contains { $0.isHittable }, "切到极简后应隐藏作者")
+        attach(app, "chrome-switched-minimal")
     }
 
     /// 分页里每页都挂了角标，只取屏幕上那个
@@ -604,6 +670,7 @@ final class DouDuoUITests: XCTestCase {
     /// 右侧栏顺序与加宽间距；只读 frame，不点击任何账号动作。
     func testRailCommentAboveCollectWithExpandedSpacing() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
         app.launch()
         XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
