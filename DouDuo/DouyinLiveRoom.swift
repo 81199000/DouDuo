@@ -655,6 +655,35 @@ final class DYLiveModel: ObservableObject {
         play(room)
     }
 
+    /// 提前暖一下下一两间（和上一间）的直播线路：触发 DNS 解析、CDN 回源和边缘缓存。
+    /// 只读前 1KB 就取消，不占带宽；VLC 自己的连接不能复用，收益在 DNS 与 CDN 首包。
+    private var warmed = Set<URL>()
+    func warmNeighbors() {
+        guard let id = currentID, let i = rooms.firstIndex(where: { $0.id == id }) else { return }
+        let ids = [i + 1, i + 2, i - 1].filter { rooms.indices.contains($0) }
+        for idx in ids {
+            guard let source = rooms[idx].liveStreams.first, warmed.insert(source.url).inserted else { continue }
+            if warmed.count > 40 { warmed.removeAll() }
+            var req = URLRequest(url: source.url, timeoutInterval: 6)
+            for (k, v) in DYMedia.liveHeaders { req.setValue(v, forHTTPHeaderField: k) }
+            req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+            let start = ProcessInfo.processInfo.systemUptime
+            let task = Self.warmSession.dataTask(with: req) { data, resp, _ in
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                Self.log("DDLIVE_WARM idx=\(idx) proto=\(source.isFLV ? "FLV" : "HLS") code=\(code) bytes=\(data?.count ?? 0) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - start))")
+            }
+            task.resume()
+            // FLV 是无尽流：拿到首包就够，最多 3 秒后取消，别一直占着 CDN 连接。
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { task.cancel() }
+        }
+    }
+    private static let warmSession: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 6
+        c.waitsForConnectivity = false
+        return URLSession(configuration: c)
+    }()
+
     func invalidateFollowLive() {
         followLive = []
         followLiveFetchedAt = .distantPast
@@ -969,6 +998,12 @@ struct DYLiveFeed: View {
         guard model.entered, danmakuOn, let rid = currentRoom?.webRid, !rid.isEmpty else { return nil }
         return rid
     }
+    /// 评论网页要加载的房间。进房立刻加载；预览阶段视频出画后再预热当前这一间，进房时评论区已经连上。
+    private var chatTarget: String? {
+        guard active, danmakuOn, !model.browsing, let rid = currentRoom?.webRid, !rid.isEmpty else { return nil }
+        if model.entered { return rid }
+        return model.ready ? rid : nil
+    }
     /// 键盘弹出期间锁住换台。收起后再接受竖滑。
     private var keyboardLocksPaging: Bool { inputFocused || keyboardOverlap > 1 }
 
@@ -995,7 +1030,9 @@ struct DYLiveFeed: View {
                 if model.rooms.isEmpty { emptyState }
                 else {
                     pages(video: shown.video, interaction: shown.interaction,
-                          ambientAxis: DYLiveAmbientTreatment.axis(for: shown.layout))
+                          ambientAxis: DYLiveAmbientTreatment.axis(for: shown.layout),
+                          splitRole: placement.role,
+                          splitAction: { performSplitToggle(role: placement.role, eligible: layout.stable.decision.layout) })
                 }
                 if !model.entered {
                     let chrome = previewChrome(in: geo)
@@ -1069,6 +1106,7 @@ struct DYLiveFeed: View {
             }
             scrollID = model.currentID
             presentCurrentRoom()
+            model.warmNeighbors()
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
         }
@@ -1076,23 +1114,22 @@ struct DYLiveFeed: View {
             if let id, scrollID != id { scrollID = id }
             draft = ""; sendError = nil; inputFocused = false
             presentCurrentRoom()
+            model.warmNeighbors()
             if !model.isFollowedVisit, !model.isFollowedCatalog, let id, let i = model.rooms.firstIndex(where: { $0.id == id }), i >= model.rooms.count - 3 {
                 Task { await model.load(bridge) }
             }
         }
-        .task(id: chatRoom) {
-            chat.close()
-            guard let id = chatRoom else { return }
-            // 首帧后再接评论网页，避免它的 JS/资源请求抢首播带宽和主线程。
-            // 同一房间换清晰度会把 ready 打回 false；任务只跟房间走，连上后不因换档重开。
-            while true {
-                while !model.ready {
-                    do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                    guard !Task.isCancelled, id == chatRoom else { return }
-                }
-                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-                guard !Task.isCancelled, id == chatRoom else { return }
-                if model.ready { break }
+        .task(id: chatTarget) {
+            guard let id = chatTarget else {
+                // 离开直播页或关闭弹幕才断开；退出房间回到预览时保留，下次进同一间不用重连。
+                if !active || !danmakuOn { chat.close() }
+                return
+            }
+            if chat.loadedRoom == id { return }
+            // 预览预热：停留 1.5 秒才加载，快速上下翻台不会每间都开一次评论网页。
+            if !model.entered {
+                do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+                guard !Task.isCancelled, id == chatTarget else { return }
             }
             chat.open(id)
         }
@@ -1197,15 +1234,19 @@ struct DYLiveFeed: View {
         }
     }
 
+    private func performSplitToggle(role: DYLiveLayoutToggleRole, eligible: DYLiveAdaptiveLayout) {
+        if role == .restoreSplit {
+            forceImmersive = false
+        } else if role == .enterImmersive, eligible != .existing {
+            immersiveAnchor = eligible
+            forceImmersive = true
+        }
+    }
+
     private func layoutToggle(_ placement: DYLiveLayoutTogglePlacement, eligible: DYLiveAdaptiveLayout) -> some View {
         let restoring = placement.role == .restoreSplit
         return Button {
-            if restoring {
-                forceImmersive = false
-            } else if eligible != .existing {
-                immersiveAnchor = eligible
-                forceImmersive = true
-            }
+            performSplitToggle(role: placement.role, eligible: eligible)
         } label: {
             Text(restoring ? "分屏" : "整屏")
                 .font(.subheadline.weight(.semibold))
@@ -1432,16 +1473,18 @@ struct DYLiveFeed: View {
         }.foregroundStyle(foreground).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func pages(video: CGRect, interaction: CGRect, ambientAxis: DYLiveAmbientAxis?) -> some View {
+    private func pages(video: CGRect, interaction: CGRect, ambientAxis: DYLiveAmbientAxis?,
+                       splitRole: DYLiveLayoutToggleRole, splitAction: @escaping () -> Void) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(model.rooms) { room in
                     DYLiveRoomPage(room: room, model: model, isCurrent: model.currentID == room.id,
-                                   messages: model.currentID == room.id ? chat.messages : [],
+                                   messages: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.messages : [],
                                    keyboardOverlap: model.currentID == room.id ? keyboardOverlap : 0,
                                    input: AnyView(commentInput), onWeb: onWeb,
                                    videoPane: video, interactionPane: interaction,
                                    ambientAxis: model.currentID == room.id ? ambientAxis : nil,
+                                   splitRole: splitRole, splitAction: splitAction,
                                    isolationID: "\(bridge.followSession):\(room.id)")
                         .containerRelativeFrame([.horizontal, .vertical])
                         .contentShape(Rectangle())
@@ -1578,6 +1621,9 @@ private struct DYLiveRoomPage: View {
     var videoPane: CGRect
     var interactionPane: CGRect
     var ambientAxis: DYLiveAmbientAxis?
+    /// 「更多」里的分屏/整屏入口。只有折叠屏处在可分屏姿态时才可点。
+    var splitRole: DYLiveLayoutToggleRole = .hidden
+    var splitAction: () -> Void = {}
     var isolationID: String
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
 
@@ -1650,6 +1696,11 @@ private struct DYLiveRoomPage: View {
                                         }
                                     }
                                     .accessibilityIdentifier("live.room.quality")
+                                    Button(splitRole == .restoreSplit ? "分屏" : "整屏",
+                                           systemImage: splitRole == .restoreSplit ? "rectangle.split.1x2" : "rectangle.expand.vertical",
+                                           action: splitAction)
+                                        .disabled(splitRole == .hidden)
+                                        .accessibilityIdentifier("live.room.split")
                                     Button("重新连接", systemImage: "arrow.clockwise", action: model.retry)
                                     Button("官网互动（礼物）", systemImage: "safari") { onWeb(room.webURL) }
                                     } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddGlassCircle() }
