@@ -387,10 +387,16 @@ struct PlayerPage: View {
         }
         // 设置里改播放速度 = 明确要这个速度：撤掉本条的长按锁定，当前视频立刻生效
         .onChange(of: playbackRate) { _, newRate in
+            // 只有当前这一页自己响应：预加载的相邻页不动，滑过去时由 isActive 路径按新速度起播
+            guard isActive else { return }
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
-            if let v = vlc { v.setRate(Float(target)) }
-            else if let p = player, isPlaying { p.rate = Float(target) }
+            if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
+            else if let p = player {
+                // 暂停中不能写 rate（AVPlayer 把 rate>0 当成播放）；播放中立刻生效
+                if p.rate > 0 || (isPlaying && !userPaused) { p.rate = Float(target) }
+                dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: target)
+            }
         }
         .onChange(of: isActive) { _, active in
             if !active { lockedBoost = false }   // 滑走就解锁：只锁「当前这条」
