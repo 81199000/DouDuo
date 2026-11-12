@@ -2124,6 +2124,9 @@ struct DouyinFeedScreen: View {
                     Button("官网 / 登录（备用入口）", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
                 } label: { Label("账号与登录", systemImage: "person.crop.circle") }
                 Menu {
+                    // 当前版本号：菜单里的灰色说明行，不可点
+                    Text("当前版本 \(DDAppVersion.display)")
+                        .accessibilityIdentifier("douyin.about.version")
                     Button {
                         UIApplication.shared.open(DDUpdateChecker.repoURL)
                     } label: {
@@ -2143,6 +2146,16 @@ private extension Double {
 }
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
+
+/// 当前安装的版本号，读自 Info.plist：1.3.12 (90)
+enum DDAppVersion {
+    static var display: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+}
 
 enum DYTab: CaseIterable { case follow, recommend, live
     var title: String {

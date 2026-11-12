@@ -457,6 +457,40 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertNotNil(fit, "搜索下面应有铺满按钮")
     }
 
+    /// 复现：滑到下一条视频后，在「更多」里改倍速，当前视频应立刻变速（看 ddlog 里的 DDRATETEST）。
+    func testSpeedChangeOnSecondVideoAppliesImmediately() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(5)
+        let first = app.staticTexts["douyin.currentID"].label
+        app.swipeUp(velocity: .fast)
+        sleep(12)
+        let second = app.staticTexts["douyin.currentID"].label
+        print("DDRATETEST first=\(first) second=\(second)")
+        func pick(_ title: String) {
+            let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(more.isEmpty)
+            more[0].tap()
+            let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+            XCTAssertTrue(speed.waitForExistence(timeout: 5))
+            speed.tap()
+            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5))
+            app.buttons[title].tap()
+            sleep(3)
+        }
+        pick("1.5 倍速")
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "第二条视频改 1.5 倍应立刻生效")
+        // 关键回归：从 1.5 改回正常速度，观察器不能再把速度拉回 1.5（旧版会）
+        pick("正常速度")
+        sleep(2)
+        XCTAssertNil(visibleBadge(app), "改回正常速度后不该再显示倍速角标（旧版被预加载时的旧值拉回 1.5）")
+        pick("2 倍速")
+        XCTAssertTrue(waitBadge(app, "2×", timeout: 8))
+        attach(app, "second-video-rate")
+    }
+
     /// 分页里每页都挂了角标，只取屏幕上那个
     private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
         let f = app.frame
