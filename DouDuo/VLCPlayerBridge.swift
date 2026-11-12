@@ -80,6 +80,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
     @Published var videoSize: CGSize = .zero
 
     var onProgress: ((Double) -> Void)?
+    var onVideoSize: ((CGSize) -> Void)?
     var onEnd: (() -> Void)?
     var onError: (() -> Void)?
     private var seekTarget: Double?       // seek 后短暂屏蔽回调防抖
@@ -623,6 +624,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         advanceClock.stamp()
         Task { @MainActor in
             guard epoch == callbackEpoch.current, activePlayer.accepts(source), mediaPlayer.isPlaying else { return }
+            publishAcceptedVideoSize(epoch: epoch)
             applyRestoredAudioIfNeeded()
             let raw = Double(mediaPlayer.time.intValue) / 1000.0
             let dur = mediaPlayer.media?.length.intValue ?? 0
@@ -640,6 +642,18 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
             current = raw
             onProgress?(raw)
         }
+    }
+
+    private func publishAcceptedVideoSize(epoch: Int) {
+        let sample = mediaPlayer.videoSize
+        guard let next = DYLiveAdaptiveLayoutEngine.acceptedSize(
+            current: videoSize,
+            sample: sample,
+            generation: epoch,
+            callbackGeneration: callbackEpoch.current,
+            playerIsCurrent: true) else { return }
+        videoSize = next
+        onVideoSize?(next)
     }
 
     nonisolated func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -661,10 +675,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
                 pendingOwned = nil
                 isPlaying = true
                 applyRestoredAudioIfNeeded()
-                let w = mediaPlayer.videoSize
-                if w.width > 0, w.height > 0 {
-                    videoSize = CGSize(width: w.width, height: w.height)
-                }
+                publishAcceptedVideoSize(epoch: epoch)
             case .paused:
                 isPlaying = false
             case .ended:
@@ -696,6 +707,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
                 }
             case .esAdded:
                 applyRestoredAudioIfNeeded()
+                publishAcceptedVideoSize(epoch: epoch)
             default:
                 break
             }

@@ -42,6 +42,8 @@ final class DYLiveModel: ObservableObject {
     @Published var loading = false
     private(set) var fetchedAt = Date.distantPast
     @Published var ready = false
+    /// 当前这一路解码出的画面尺寸。只在尺寸变化时更新，用来重新判断横屏分屏。
+    @Published var playbackVideoSize: CGSize = .zero
     @Published var zone: DYLiveZone?
     /// 关注的主播里正在开播的（网页版直播首页顶上那排头像，复用同一个接口）
     @Published var followLive: [DYLiveRoom] = []
@@ -172,6 +174,10 @@ final class DYLiveModel: ObservableObject {
             self.ready = true
             self.retryTask?.cancel()
             Self.log("DDLIVE_READY room=\(self.loadedRoom ?? "-") elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
+        }
+        vlc.onVideoSize = { [weak self] size in
+            guard let self, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
+            self.playbackVideoSize = size
         }
         vlc.onError = { [weak self] in
             guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
@@ -484,7 +490,7 @@ final class DYLiveModel: ObservableObject {
         retryTask?.cancel()
         streamGeneration = UUID()
         let generation = streamGeneration
-        ready = false; playbackError = nil
+        ready = false; playbackError = nil; playbackVideoSize = .zero
         guard let source = sources.first else {
             playbackError = "没有可用直播线路，请重试或换一个直播间"
             vlc.stop()
@@ -884,6 +890,37 @@ private let ddLiveCategories: [DYLiveCategory] = [
     .init(id: "exercise", name: "运动", kind: .partition(.init(id: "108", type: "4", name: "运动"))),
 ]
 
+@available(iOS 27.1, *)
+private func dyLiveHingeStatus(_ hinge: DeviceHinge?) -> DYLiveHingeStatus {
+    guard let hinge else { return .unsupported }
+    if hinge.status == .closed { return .closed }
+    if hinge.status == .partiallyOpen { return .partiallyOpen }
+    if hinge.status == .fullyOpen { return .fullyOpen }
+    return .unsupported
+}
+
+private extension View {
+    @ViewBuilder
+    func onLiveHingeChange(_ apply: @escaping (DYLiveHingeStatus) -> Void) -> some View {
+        if #available(iOS 27.1, *) {
+            onHingeChange { _, context in apply(dyLiveHingeStatus(context.hinge)) }
+        } else {
+            self
+        }
+    }
+
+    func placed(in pane: CGRect) -> some View {
+        frame(width: pane.width, height: pane.height)
+            .position(x: pane.midX, y: pane.midY)
+    }
+}
+
+private func livePane(_ requested: CGRect, fallback: CGSize) -> CGRect {
+    let rect = requested.standardized
+    guard rect.width > 1, rect.height > 1 else { return CGRect(origin: .zero, size: fallback) }
+    return rect
+}
+
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
 struct DYLiveFeed: View {
     @Environment(\.appTheme) private var theme
@@ -918,6 +955,12 @@ struct DYLiveFeed: View {
     @State private var viewportMaxY: CGFloat = 0
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @State private var tick = 0
+    /// 系统只通过 onHingeChange 给出开合。没收到回调前保持不支持，继续整屏。
+    @State private var hingeStatus: DYLiveHingeStatus = .unsupported
+    @State private var layoutMemory = DYLiveAdaptiveMemory.empty
+    /// 半折叠时仍可手动回到原来的整屏。只在同一种分屏仍然成立时保留。
+    @State private var forceImmersive = false
+    @State private var immersiveAnchor: DYLiveAdaptiveLayout = .existing
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
     private var currentRoom: DYLiveRoom? { model.rooms.first { $0.id == model.currentID } }
     private var chatRoom: String? {
@@ -930,14 +973,31 @@ struct DYLiveFeed: View {
     var body: some View {
         GeometryReader { geo in
             let viewport = geo.frame(in: .global)
+            let layout = resolvedLayout(in: geo)
+            let shown = layout.shown
+            let placement = layoutTogglePlacement(stable: layout.stable.decision, in: geo)
+            // 整屏仍按竖屏铺满。只有桌面模式把横屏画面放到状态栏下面，并贴住上窗格底边。
+            let fillWidth = shown.layout == .existing && currentRoom?.portrait == true && geo.size.height > geo.size.width * 1.2
+            let videoFrame = shown.layout == .layoutA
+                ? DYLiveLayoutAVideo.frame(
+                    in: shown.video,
+                    aspect: DYLiveLayoutAVideo.aspect(of: model.playbackVideoSize),
+                    safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
+                : shown.video
             ZStack {
-                VLCPlayerSurface(controller: model.vlc, fillWidth: currentRoom?.portrait == true && geo.size.height > geo.size.width * 1.2)
-                    .frame(width: geo.size.width, height: geo.size.height)
+                Color.black
+                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth)
+                    .frame(width: videoFrame.width, height: videoFrame.height)
+                    .position(x: videoFrame.midX, y: videoFrame.midY)
                     .allowsHitTesting(false)
                 if model.rooms.isEmpty { emptyState }
-                else { pages }
+                else {
+                    pages(video: shown.video, interaction: shown.interaction,
+                          ambientAxis: DYLiveAmbientTreatment.axis(for: shown.layout))
+                }
                 if !model.entered {
                     let chrome = previewChrome(in: geo)
+                    let paneAtTop = shown.interaction.minY < 24
                     VStack(alignment: .leading, spacing: 0) {
                         discoverBar
                         if showDiscover {
@@ -947,9 +1007,13 @@ struct DYLiveFeed: View {
                     .modifier(DYRailReservedNudge())
                     .padding(.leading, chrome.leading)
                     .padding(.trailing, chrome.trailing)
-                    .padding(.top, chrome.top)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.top, paneAtTop ? chrome.top : 12)
+                    .frame(width: shown.interaction.width, height: shown.interaction.height, alignment: .topLeading)
+                    .position(x: shown.interaction.midX, y: shown.interaction.midY)
                     .animation(.easeInOut(duration: 0.2), value: showDiscover)
+                }
+                if placement.role != .hidden {
+                    layoutToggle(placement, eligible: layout.stable.decision.layout)
                 }
                 #if DEBUG
                 VStack {
@@ -965,7 +1029,14 @@ struct DYLiveFeed: View {
             .clipped()
             .onAppear { syncViewport(minY: viewport.minY, maxY: viewport.maxY) }
             .onChange(of: viewport) { _, frame in syncViewport(minY: frame.minY, maxY: frame.maxY) }
+            .onChange(of: layout.stable) { _, memory in layoutMemory = memory }
+            .onChange(of: layout.stable.decision.layout) { _, kind in
+                if !DYLiveLayoutToggle.manualApplies(active: forceImmersive, anchored: immersiveAnchor, eligible: kind) {
+                    forceImmersive = false
+                }
+            }
         }
+        .onLiveHingeChange { hingeStatus = $0 }
         // 分页与 drawable 共用整屏视口。键盘安全区不能把这一屏缩短，否则上一间封面会从顶上露出来。
         .ignoresSafeArea(.container, edges: .bottom)
         .ignoresSafeArea(.keyboard)
@@ -1070,6 +1141,71 @@ struct DYLiveFeed: View {
             }
             .presentationDragIndicator(.visible)
         }
+    }
+
+    /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。左右各自让开安全区。
+    private func resolvedLayout(in geo: GeometryProxy) -> (shown: DYLiveAdaptiveDecision, stable: DYLiveAdaptiveMemory) {
+        let bounds = CGRect(origin: .zero, size: geo.size)
+        let divisions = liveDivisions(in: geo)
+        let proposed = DYLiveAdaptiveLayoutEngine.decide(
+            bounds: bounds,
+            status: hingeStatus,
+            divisions: divisions,
+            videoSize: DYLiveAdaptiveLayoutEngine.presentationSize(ready: model.ready, videoSize: model.playbackVideoSize))
+        let stable = DYLiveAdaptiveLayoutEngine.stabilize(
+            previous: layoutMemory,
+            proposed: proposed,
+            status: hingeStatus,
+            bounds: bounds,
+            divisions: divisions)
+        let manual = DYLiveLayoutToggle.manualApplies(
+            active: forceImmersive,
+            anchored: immersiveAnchor,
+            eligible: stable.decision.layout)
+        let shown = manual
+            ? DYLiveAdaptiveDecision(layout: .existing, video: bounds, interaction: bounds)
+            : stable.decision
+        return (shown, stable)
+    }
+
+    private func layoutTogglePlacement(stable: DYLiveAdaptiveDecision, in geo: GeometryProxy) -> DYLiveLayoutTogglePlacement {
+        DYLiveLayoutToggle.place(
+            eligible: stable.layout,
+            manual: DYLiveLayoutToggle.manualApplies(active: forceImmersive, anchored: immersiveAnchor, eligible: stable.layout),
+            bounds: CGRect(origin: .zero, size: geo.size),
+            interaction: stable.interaction,
+            compact: hSize == .compact,
+            safeBottom: geo.safeAreaInsets.bottom,
+            safeTrailing: geo.safeAreaInsets.trailing,
+            keyboardOverlap: keyboardOverlap,
+            entered: model.entered)
+    }
+
+    private func liveDivisions(in geo: GeometryProxy) -> [DYLiveDivision] {
+        guard #available(iOS 27.1, *) else { return [] }
+        return geo.reservedRegions(kind: .division).map {
+            DYLiveDivision(frame: $0.frame, isActive: $0.isActive)
+        }
+    }
+
+    private func layoutToggle(_ placement: DYLiveLayoutTogglePlacement, eligible: DYLiveAdaptiveLayout) -> some View {
+        let restoring = placement.role == .restoreSplit
+        return Button {
+            if restoring {
+                forceImmersive = false
+            } else if eligible != .existing {
+                immersiveAnchor = eligible
+                forceImmersive = true
+            }
+        } label: {
+            Text(restoring ? "分屏" : "整屏")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: placement.frame.width, height: placement.frame.height)
+                .ddGlassCapsule()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(restoring ? "live.layout.adaptive" : "live.layout.immersive")
+        .position(x: placement.frame.midX, y: placement.frame.midY)
     }
 
     /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。左右各自让开安全区。
@@ -1249,14 +1385,17 @@ struct DYLiveFeed: View {
         }.foregroundStyle(foreground).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var pages: some View {
+    private func pages(video: CGRect, interaction: CGRect, ambientAxis: DYLiveAmbientAxis?) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(model.rooms) { room in
                     DYLiveRoomPage(room: room, model: model, isCurrent: model.currentID == room.id,
                                    messages: model.currentID == room.id ? chat.messages : [],
                                    keyboardOverlap: model.currentID == room.id ? keyboardOverlap : 0,
-                                   input: AnyView(commentInput), onWeb: onWeb)
+                                   input: AnyView(commentInput), onWeb: onWeb,
+                                   videoPane: video, interactionPane: interaction,
+                                   ambientAxis: model.currentID == room.id ? ambientAxis : nil,
+                                   isolationID: "\(bridge.followSession):\(room.id)")
                         .containerRelativeFrame([.horizontal, .vertical])
                         .contentShape(Rectangle())
                         .accessibilityHidden(model.currentID != room.id)
@@ -1389,11 +1528,19 @@ private struct DYLiveRoomPage: View {
     let keyboardOverlap: CGFloat
     let input: AnyView
     let onWeb: (URL) -> Void
+    var videoPane: CGRect
+    var interactionPane: CGRect
+    var ambientAxis: DYLiveAmbientAxis?
+    var isolationID: String
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
 
     var body: some View {
         GeometryReader { geo in
+            let video = livePane(videoPane, fallback: geo.size)
+            let interaction = livePane(interactionPane, fallback: geo.size)
+            let topInset = DYLiveLayoutToggle.returnTopInset(paneMinY: interaction.minY, compact: hSize == .compact)
             ZStack {
+                ZStack {
                 if DYLivePlaybackGate.mask(isCurrent: isCurrent, ready: model.ready, failed: model.playbackError != nil) == .coverPrevious {
                     ZStack {
                         Color.black
@@ -1420,6 +1567,9 @@ private struct DYLiveRoomPage: View {
                         }
                     }.foregroundStyle(foreground).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                }
+                .placed(in: video)
+                Group {
                 if !isCurrent {
                     Color.clear.allowsHitTesting(false)
                 } else if model.clean {
@@ -1427,7 +1577,7 @@ private struct DYLiveRoomPage: View {
                     VStack { HStack { backCapsule(action: { model.clean = false }, id: "live.room.restore"); Spacer() }; Spacer() }
                         .contentShape(Rectangle())
                         .onTapGesture { model.clean = false }
-                        .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, hSize == .compact ? 64 : 70)
+                        .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, topInset)
                 } else if model.entered {
                     let closeOnBottom = DYLiveChromePlacement.closeOnBottomTrailing(
                         regularWidth: hSize == .regular,
@@ -1470,7 +1620,7 @@ private struct DYLiveRoomPage: View {
                     }
                     .padding(.leading, 18)
                     .padding(.trailing, hSize == .compact ? 82 : 18)
-                    .padding(.top, hSize == .compact ? 64 : 70)
+                    .padding(.top, topInset)
                     .padding(.bottom, DYLiveKeyboardLayout.bottomPadding(
                         safeBottom: geo.safeAreaInsets.bottom,
                         keyboardOverlap: isCurrent ? keyboardOverlap : 0))
@@ -1497,6 +1647,18 @@ private struct DYLiveRoomPage: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 24)
                 }
+                }
+                .background {
+                    if isCurrent, let axis = ambientAxis {
+                        DouyinLiveAmbientBackground(
+                            coverURL: room.cover.flatMap(URL.init(string:)),
+                            axis: axis,
+                            isolationID: isolationID)
+                            .clipped()
+                            .allowsHitTesting(false)
+                    }
+                }
+                .placed(in: interaction)
             }
             .foregroundStyle(foreground)
         }
@@ -1555,6 +1717,163 @@ enum DYLiveChromePlacement {
     }
 }
 // MARK: - live-close-placement-end
+
+// MARK: - live-layout-toggle
+enum DYLiveLayoutToggleRole: Equatable {
+    case hidden
+    case enterImmersive
+    case restoreSplit
+}
+
+struct DYLiveLayoutTogglePlacement: Equatable {
+    var role: DYLiveLayoutToggleRole
+    var frame: CGRect
+}
+
+enum DYLiveLayoutToggle {
+    static let spacing: CGFloat = 12
+    static let controlSize = CGSize(width: 72, height: 36)
+    static let returnHeight: CGFloat = 40
+    static let returnLeading: CGFloat = 18
+    static let composerHeight: CGFloat = 44
+    static let composerMaxWidth: CGFloat = 420
+
+    static func returnTopInset(paneMinY: CGFloat, compact: Bool) -> CGFloat {
+        paneMinY > 24 ? 12 : (compact ? 64 : 70)
+    }
+
+    /// 手动整屏只跟着当时那一种分屏。换成另一种分屏、竖屏或不支持时取消。
+    static func manualApplies(active: Bool, anchored: DYLiveAdaptiveLayout, eligible: DYLiveAdaptiveLayout) -> Bool {
+        active && anchored == eligible && eligible != .existing
+    }
+
+    static func place(
+        eligible: DYLiveAdaptiveLayout,
+        manual: Bool,
+        bounds: CGRect,
+        interaction: CGRect,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat,
+        keyboardOverlap: CGFloat,
+        entered: Bool
+    ) -> DYLiveLayoutTogglePlacement {
+        guard eligible == .layoutA || eligible == .layoutB else {
+            return DYLiveLayoutTogglePlacement(role: .hidden, frame: .zero)
+        }
+        if manual {
+            return DYLiveLayoutTogglePlacement(
+                role: .restoreSplit,
+                frame: restoreFrame(bounds: bounds, compact: compact, safeBottom: safeBottom, safeTrailing: safeTrailing, keyboardOverlap: keyboardOverlap))
+        }
+        let frame = eligible == .layoutA
+            ? layoutAFrame(interaction: interaction, compact: compact, safeTrailing: safeTrailing)
+            : layoutBFrame(interaction: interaction, compact: compact, safeBottom: safeBottom, safeTrailing: safeTrailing, entered: entered)
+        return DYLiveLayoutTogglePlacement(role: .enterImmersive, frame: frame)
+    }
+
+    private static func trailingInset(compact: Bool, safeTrailing: CGFloat) -> CGFloat {
+        max(compact ? 82 : 18, safeTrailing)
+    }
+
+    private static func layoutAFrame(interaction: CGRect, compact: Bool, safeTrailing: CGFloat) -> CGRect {
+        let trailing = trailingInset(compact: compact, safeTrailing: safeTrailing)
+        return CGRect(
+            x: interaction.maxX - trailing - controlSize.width,
+            y: interaction.minY + spacing,
+            width: controlSize.width,
+            height: controlSize.height)
+    }
+
+    private static func layoutBFrame(
+        interaction: CGRect,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat,
+        entered: Bool
+    ) -> CGRect {
+        guard entered else {
+            return layoutBPreviewFrame(interaction: interaction, compact: compact, safeBottom: safeBottom, safeTrailing: safeTrailing)
+        }
+        let top = returnTopInset(paneMinY: interaction.minY, compact: compact)
+        return CGRect(
+            x: interaction.minX + returnLeading,
+            y: interaction.minY + top + returnHeight + spacing,
+            width: controlSize.width,
+            height: controlSize.height)
+    }
+
+    /// 预览还没有进房「返回」。整屏改放右窗格右下，避开进入按钮。
+    private static func layoutBPreviewFrame(
+        interaction: CGRect,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat
+    ) -> CGRect {
+        let trailing = trailingInset(compact: compact, safeTrailing: safeTrailing)
+        let bottom = DYLiveKeyboardLayout.bottomPadding(safeBottom: safeBottom, keyboardOverlap: 0)
+        var frame = CGRect(
+            x: interaction.maxX - trailing - controlSize.width,
+            y: interaction.maxY - bottom - controlSize.height,
+            width: controlSize.width,
+            height: controlSize.height)
+        let entry = previewEntryFrame(interaction: interaction, safeBottom: safeBottom)
+        if frame.intersects(entry) {
+            frame.origin.y = entry.minY - spacing - controlSize.height
+        }
+        return frame
+    }
+
+    private static func previewEntryFrame(interaction: CGRect, safeBottom: CGFloat) -> CGRect {
+        let bottom = max(safeBottom, 12) + 24
+        let width = min(168, max(0, interaction.width - 40))
+        return CGRect(
+            x: interaction.minX + 20,
+            y: interaction.maxY - bottom - 44,
+            width: width,
+            height: 44)
+    }
+
+    private static func restoreFrame(
+        bounds: CGRect,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat,
+        keyboardOverlap: CGFloat
+    ) -> CGRect {
+        let trailing = trailingInset(compact: compact, safeTrailing: safeTrailing)
+        let bottom = DYLiveKeyboardLayout.bottomPadding(safeBottom: safeBottom, keyboardOverlap: keyboardOverlap)
+        var frame = CGRect(
+            x: bounds.maxX - trailing - controlSize.width,
+            y: bounds.maxY - bottom - controlSize.height,
+            width: controlSize.width,
+            height: controlSize.height)
+        let composer = composerFrame(bounds: bounds, compact: compact, safeBottom: safeBottom, safeTrailing: safeTrailing, keyboardOverlap: keyboardOverlap)
+        if frame.intersects(composer) {
+            frame.origin.y = composer.minY - spacing - controlSize.height
+        }
+        return frame
+    }
+
+    private static func composerFrame(
+        bounds: CGRect,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat,
+        keyboardOverlap: CGFloat
+    ) -> CGRect {
+        let leading = returnLeading
+        let trailing = trailingInset(compact: compact, safeTrailing: safeTrailing)
+        let bottom = DYLiveKeyboardLayout.bottomPadding(safeBottom: safeBottom, keyboardOverlap: keyboardOverlap)
+        let available = max(0, bounds.width - leading - trailing)
+        return CGRect(
+            x: bounds.minX + leading,
+            y: bounds.maxY - bottom - composerHeight,
+            width: min(composerMaxWidth, available),
+            height: composerHeight)
+    }
+}
+// MARK: - live-layout-toggle-end
 
 // MARK: - live-keyboard-layout
 enum DYLiveKeyboardLayout {
