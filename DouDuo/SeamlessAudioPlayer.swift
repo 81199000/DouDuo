@@ -262,6 +262,11 @@ final class DDAudioStream {
         }
     }
 
+    /// 回退原生声音时要把关掉的音轨重新打开，否则只取消静音也没声
+    static func enableAudioTracks(on item: AVPlayerItem) {
+        for t in item.tracks where t.assetTrack?.mediaType == .audio && !t.isEnabled { t.isEnabled = true }
+    }
+
     static func disableAudioTracks(on item: AVPlayerItem) {
         for t in item.tracks where t.assetTrack?.mediaType == .audio {
             if t.isEnabled { t.isEnabled = false }
@@ -526,6 +531,7 @@ final class DDSeamlessController {
                 if self.wantPlaying { vp.rate = self.targetRate }
             case .unsupported, .idle:
                 self.mode = .fallbackAVPlayer
+                if let it = vp.currentItem { DDAudioStream.enableAudioTracks(on: it) }
                 vp.isMuted = !self.wantPlaying || self.isMuted
                 if self.wantPlaying { vp.rate = self.targetRate }
             }
@@ -709,6 +715,7 @@ final class DDSeamlessController {
         } catch {
             // 极端情况下引擎启动失败则安全回退原生音频
             mode = .fallbackAVPlayer
+            if let it = vp.currentItem { DDAudioStream.enableAudioTracks(on: it) }
             vp.isMuted = isMuted
             if wantPlaying { vp.rate = targetRate }
             return
@@ -768,7 +775,7 @@ final class DDSeamlessController {
     private func shouldPlayAudioNow() -> Bool {
         guard wantPlaying else { return false }
         // 后台听书模式下视频 AVPlayer 会停，音频独立持续播
-        if DDPlayback.bgPlay && !DDPlayback.shared.appIsActive { return true }
+        if DDPlayback.bgPlay && UIApplication.shared.applicationState == .background { return true }
         guard let vp = videoPlayer else { return false }
         return vp.timeControlStatus == .playing || (vp.currentItem?.isPlaybackLikelyToKeepUp == true)
     }
@@ -788,7 +795,7 @@ final class DDSeamlessController {
         guard hub.activeOwner == ownerID else { return }
 
         // 后台听书模式：处理后台播完单曲循环或切下一首
-        if DDPlayback.bgPlay && !DDPlayback.shared.appIsActive {
+        if DDPlayback.bgPlay && UIApplication.shared.applicationState == .background {
             if !hub.playerNode.isPlaying && pendingBuffers > 0 {
                 try? hub.ensureRunning()
                 hub.playerNode.play()
