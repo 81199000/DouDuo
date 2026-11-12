@@ -1223,7 +1223,7 @@ struct DouyinFeedScreen: View {
     @State private var topBarWidth: CGFloat?
     @State private var topChrome = CGRect.zero
     /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
-    @State private var peekInfo = false
+    private let peek = DDPeekInfo.shared
     @ObservedObject private var railProgress = DDRailProgress.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
@@ -1264,33 +1264,6 @@ struct DouyinFeedScreen: View {
         .overlay {
             if railMode, !(tab == .live && (live.clean || live.entered)) {
                 rootActionRail(nil, selector: true)
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            // 极简：长按模块入口时才显示当前视频的作者和标题，松开消失
-            if peekInfo, chromeMode.hidesInfo, tab == .recommend, let item = current {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
-                            img.resizable().scaledToFill()
-                        } placeholder: { theme.media.chromeFill.color(for: scheme) }
-                        .frame(width: 34, height: 34).clipShape(Circle())
-                        Text(item.author.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    }
-                    if !item.desc.isEmpty {
-                        Text(item.desc).font(.subheadline).lineLimit(4)
-                    }
-                }
-                .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .padding(12)
-                .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .padding(.leading, 14)
-                .padding(.bottom, max(insets.bottom, 18) + 36)
-                .frame(maxWidth: 320, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .transition(.opacity)
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("douyin.peek.info")
             }
         }
         .onPreferenceChange(DYTopChromeFrameKey.self) { next in
@@ -1870,7 +1843,7 @@ struct DouyinFeedScreen: View {
                 GeometryReader { geometry in
                     VStack(spacing: theme.media.actionGroupSpacing) {
                         if selector {
-                            moduleMenu
+                            moduleMenu(edge: edge)
                         } else {
                             Color.clear.frame(height: 50).allowsHitTesting(false)
                         }
@@ -1894,69 +1867,142 @@ struct DouyinFeedScreen: View {
     /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
     @ViewBuilder
     private var railProgressRing: some View {
-        if chromeMode.hidesInfo, tab == .recommend {
-            let fg = theme.media.onMedia.color(for: scheme)
-            ZStack {
-                Circle().stroke(fg.opacity(0.18), lineWidth: 2)
+        // 简洁 / 极简的推荐页、关注页画进度环；直播没有进度，不画——但占位恒定，切模块时入口位置不动。
+        let show = chromeMode.usesRail && tab != .live
+        let fg = theme.media.onMedia.color(for: scheme)
+        let seeking = railProgress.seeking
+        // 尺寸：玻璃圆按钮保持原来的 50pt 不变，进度环套在外面，直径 58pt（离按钮 4pt）
+        return ZStack {
+            if show {
+                // 底轨：很淡的整圈，让「还剩多少」一眼可见
+                Circle().stroke(fg.opacity(0.16), lineWidth: 3)
+                // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
                 Circle()
-                    .trim(from: 0, to: railProgress.fraction)
-                    .stroke(fg.opacity(railProgress.seeking ? 1 : 0.85), style: StrokeStyle(lineWidth: railProgress.seeking ? 4 : 2.5, lineCap: .round))
+                    .trim(from: 0, to: max(railProgress.fraction, 0.004))
+                    .stroke(
+                        AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
+                                        startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
+                        style: StrokeStyle(lineWidth: seeking ? 4.5 : 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
+                // 弧线终点的小亮点：像进度条的滑块，拖动时更大
+                Circle()
+                    .fill(fg)
+                    .frame(width: seeking ? 8 : 5, height: seeking ? 8 : 5)
+                    .offset(y: -29)
+                    .rotationEffect(.degrees(360 * railProgress.fraction))
+                    .opacity(railProgress.fraction > 0.01 ? 1 : 0)
             }
-            .frame(width: 58, height: 58)
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("douyin.module.ring")
-            .accessibilityValue("\(Int(railProgress.fraction * 100))%")
+        }
+        .frame(width: 58, height: 58)
+        .shadow(color: .black.opacity(0.25), radius: 1.5)
+        .animation(.linear(duration: 0.25), value: railProgress.fraction)
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("douyin.module.ring")
+        .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")
+        .accessibilityHidden(!show)
+    }
+
+    /// 模块菜单的内容（单击圆形入口时弹出）。
+    @ViewBuilder
+    private var moduleMenuContent: some View {
+        Section("切换模块") {
+            Picker("当前模块", selection: Binding(get: { tab }, set: { selectTab($0) })) {
+                ForEach(DYTab.allCases, id: \.self) { target in
+                    Label(target.title, systemImage: target.symbol)
+                        .tag(target)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        Section {
+            Button("搜索", systemImage: "magnifyingglass") { showSearch = true }
+                .accessibilityIdentifier("douyin.module.search")
+            Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
+            Button("我的", systemImage: "person.crop.circle") { showMine = true }
         }
     }
 
-    /// 与「更多」使用同一个系统 Menu API，选择后自动收起。
-    private var moduleMenu: some View {
-        Menu {
-            Section("切换模块") {
-                Picker("当前模块", selection: Binding(get: { tab }, set: { selectTab($0) })) {
-                    ForEach(DYTab.allCases, id: \.self) { target in
-                        Label(target.title, systemImage: target.symbol)
-                            .tag(target)
-                    }
-                }
-                .pickerStyle(.inline)
-            }
-            Section {
-                Button("搜索", systemImage: "magnifyingglass") { showSearch = true }
-                    .accessibilityIdentifier("douyin.module.search")
-                Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
-                Button("我的", systemImage: "person.crop.circle") { showMine = true }
-            }
-        } label: {
+    /// 圆形模块入口（简洁 / 极简共用）。
+    /// 系统 Menu 在长按时也会弹出菜单，没法做到「长按只看作者标题、不弹菜单」，所以统一自己处理：
+    /// 单击（按下不满 0.35 秒）弹菜单，长按（满 0.35 秒）显示作者标题，松手消失，不弹菜单。
+    @ViewBuilder
+    private func moduleMenu(edge: HorizontalEdge) -> some View {
+        minimalModuleButton(edge: edge)
+    }
+
+    private var moduleCircleLabel: some View {
+        ZStack {
             Image(systemName: tab.symbol)
                 .font(.system(size: 23, weight: .medium))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: 50, height: 50)
                 .contentShape(Circle())
                 .ddGlassCircle()
-                .frame(width: 54)
-                .overlay { railProgressRing }
-                .overlay(alignment: .topTrailing) {
-                    if noticeUnread > 0 {
-                        Circle().fill(theme.status.danger.color(for: scheme))
-                            .frame(width: 7, height: 7).offset(x: -3, y: 3)
-                            .allowsHitTesting(false)
-                    }
-                }
+            railProgressRing
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        // 极简：长按显示作者/标题，松开消失。simultaneous 不抢菜单的单击。
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35)
-                .sequenced(before: DragGesture(minimumDistance: 0))
-                .onChanged { value in
-                    if chromeMode.hidesInfo, case .second(true, _) = value, !peekInfo { withAnimation(.easeOut(duration: 0.12)) { peekInfo = true } }
+        .frame(width: 54)
+        .overlay(alignment: .topTrailing) {
+            if noticeUnread > 0 {
+                Circle().fill(theme.status.danger.color(for: scheme))
+                    .frame(width: 7, height: 7).offset(x: -3, y: 3)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// 入口按钮：长按 0.35 秒显示作者标题（极简里松手消失；两档都不弹菜单）；单击弹菜单。
+    @State private var minimalMenuOpen = false
+    private func minimalModuleButton(edge: HorizontalEdge) -> some View {
+        moduleCircleLabel
+            .contentShape(Circle())
+            // 一个手势同时管单击和长按：按下满 0.35 秒 → 显示作者标题，抬手才消失；没满 0.35 秒就抬手 → 当作单击弹菜单。
+            .modifier(DDPressHold(
+                threshold: 0.35,
+                onHoldChanged: { holding in
+                    if chromeMode.hidesInfo { withAnimation(.easeOut(duration: holding ? 0.12 : 0.15)) { peek.on = holding } }
+                },
+                onTap: { minimalMenuOpen = true }))
+            .popover(isPresented: $minimalMenuOpen,
+                     attachmentAnchor: .point(edge == .trailing ? .leading : .trailing),
+                     arrowEdge: edge == .trailing ? .trailing : .leading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(DYTab.allCases, id: \.self) { target in
+                        minimalMenuRow(target.title, target.symbol, selected: tab == target, id: "douyin.module.item.\(target)") {
+                            selectTab(target)
+                        }
+                    }
+                    Divider().padding(.vertical, 4)
+                    minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { showSearch = true }
+                    minimalMenuRow("消息", "bubble.left.and.bubble.right", id: "douyin.module.messages") { showMessages = true }
+                    minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
                 }
-                .onEnded { _ in withAnimation(.easeOut(duration: 0.15)) { peekInfo = false } })
-        .accessibilityLabel("切换模块，当前\(tab.title)")
-        .accessibilityIdentifier("douyin.module.menu")
+                .padding(.vertical, 8)
+                .frame(minWidth: 170)
+                .presentationCompactAdaptation(.popover)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("切换模块，当前\(tab.title)")
+            .accessibilityIdentifier("douyin.module.menu")
+            .accessibilityAction { minimalMenuOpen = true }
+    }
+
+    private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, id: String, action: @escaping () -> Void) -> some View {
+        Button {
+            minimalMenuOpen = false
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).frame(width: 22)
+                Text(title)
+                Spacer(minLength: 12)
+                if selected { Image(systemName: "checkmark") }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 
     @ViewBuilder
@@ -2231,6 +2277,40 @@ private extension Double {
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
+/// 按住 ≥ threshold 秒算「长按」，抬手前一直保持；不满 threshold 抬手算「单击」。
+/// 用 DragGesture(minimumDistance: 0) 自己计时：系统的 onLongPressGesture 达到时长后会自动结束，
+/// 无法做到「按住期间一直显示、抬手才消失」。
+struct DDPressHold: ViewModifier {
+    let threshold: Double
+    let onHoldChanged: (Bool) -> Void
+    let onTap: () -> Void
+    @State private var startedAt: Date?
+    @State private var holding = false
+    @State private var timer: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content.gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard startedAt == nil else { return }
+                    startedAt = Date()
+                    timer = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
+                        guard !Task.isCancelled, startedAt != nil else { return }
+                        holding = true
+                        onHoldChanged(true)
+                    }
+                }
+                .onEnded { value in
+                    timer?.cancel(); timer = nil
+                    let wasHolding = holding
+                    startedAt = nil; holding = false
+                    if wasHolding { onHoldChanged(false) }
+                    else if abs(value.translation.width) < 20, abs(value.translation.height) < 20 { onTap() }
+                })
+    }
+}
+
 /// 默认模式的顶栏贴物理屏最上沿：整层忽略顶部和左右安全区（与 PR #12 之前一致）。
 struct DDClassicTopInset: ViewModifier {
     let active: Bool
@@ -2341,6 +2421,7 @@ struct DYVideoPage: View {
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    @ObservedObject private var peek = DDPeekInfo.shared
     /// 长按加速时右侧按钮/作者区淡出；这些控件按住也能触发加速（见 DYHoldBoost）。
     @StateObject private var boost = DYBoostControl()
 
@@ -2412,7 +2493,7 @@ struct DYVideoPage: View {
                 DYAdaptiveActionRail { edge in
                     HStack(alignment: .bottom, spacing: 12) {
                         if edge == .leading { actionRail(fg, edge: edge) }
-                        if !chromeMode.hidesInfo { info(fg) }
+                        if !chromeMode.hidesInfo || (isCurrent && peek.on) { info(fg).transition(.opacity) }
                         Spacer(minLength: 0)
                         if edge == .trailing { actionRail(fg, edge: edge) }
                     }
