@@ -1480,20 +1480,18 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertFalse(login.staticTexts["live.follow.empty"].exists)
     }
 
-    /// 关注开播只在直播页顶部出现：直播页有头像条、上滑收成胶囊；关注页不再挂一排直播头像。
-    func testFollowLiveStripOnlyOnLivePage() throws {
+    /// 关注开播只走直播页「我的关注」：直播页不挂头像条，关注页不挂直播头像。
+    func testFollowLiveOnlyViaMyFollowButton() throws {
         let live = XCUIApplication()
         live.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
         live.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
         live.launchEnvironment["DOUDUO_FOLLOWMOCK"] = "rooms"
         live.launch()
-        XCTAssertTrue(live.scrollViews["live.follow.strip"].waitForExistence(timeout: 10), "直播页顶部应有关注开播头像条")
-        XCTAssertTrue(live.buttons["live.strip.fol-a"].exists)
-        XCTAssertTrue(live.buttons["live.follow"].exists, "「我的关注」入口保留")
-        attach(live, "live-strip-expanded")
-        live.swipeUp(velocity: .slow)
-        XCTAssertTrue(live.buttons["live.follow.pill"].waitForExistence(timeout: 5), "上滑换台后收成胶囊")
-        attach(live, "live-strip-collapsed")
+        XCTAssertTrue(live.buttons["live.follow"].waitForExistence(timeout: 10), "「我的关注」入口保留")
+        sleep(2)
+        attach(live, "live-no-strip")
+        XCTAssertFalse(live.scrollViews["live.follow.strip"].exists, "直播页不再挂关注头像条")
+        XCTAssertFalse(live.buttons["live.follow.pill"].exists)
         live.terminate()
 
         let follow = XCUIApplication()
@@ -1503,7 +1501,6 @@ final class DouDuoUITests: XCTestCase {
         sleep(4)
         attach(follow, "follow-no-live-row")
         XCTAssertFalse(follow.staticTexts["直播中"].exists, "关注页不应出现直播头像")
-        XCTAssertFalse(follow.scrollViews["live.follow.strip"].exists)
     }
 
     /// 底部进度条左侧时间（秒）

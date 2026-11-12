@@ -657,13 +657,6 @@ final class DYLiveModel: ObservableObject {
 
     /// 关注列表按账号代际隔离。同一账号 2 分钟内不重复请求；换账号立刻丢掉上一份。
     func loadFollowLive(_ bridge: DouyinBridge) async {
-        #if DEBUG
-        // 模拟器验直播页顶部头像条：复用「我的关注」的 FOLLOWMOCK=rooms 合成数据，不连网。
-        if ProcessInfo.processInfo.environment["DOUDUO_FOLLOWMOCK"] == "rooms" {
-            followLive = DYLiveRoom.debugFollowed()
-            return
-        }
-        #endif
         let session = bridge.followSession
         let sessionChanged = session != loadedFollowSession
         guard sessionChanged || Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
@@ -911,8 +904,6 @@ struct DYLiveFeed: View {
     @State private var showFollowLive = false
     /// 「发现更多」只放分类。关注开播走旁边的「关注直播」。
     @State private var showDiscover = false
-    /// 顶部「关注主播正在直播」头像条：进直播页展开，上滑换直播间收成「N 个直播」胶囊，点胶囊再展开。
-    @State private var stripExpanded = true
     @State private var selectedCategory = "featured"
     @State private var categoryHint: String?
     @State private var followPick = DYFollowSelection()
@@ -949,13 +940,6 @@ struct DYLiveFeed: View {
                     let chrome = previewChrome(in: geo)
                     VStack(alignment: .leading, spacing: 0) {
                         discoverBar
-                        if !model.followLive.isEmpty {
-                            DYFollowLiveStrip(rooms: model.followLive, expanded: stripExpanded,
-                                              onOpen: { resolveListedFollow($0, enter: true) },
-                                              onExpand: { stripExpanded = true })
-                                .padding(.top, 10)
-                                .animation(.easeOut(duration: 0.22), value: stripExpanded)
-                        }
                         if showDiscover {
                             discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
                         }
@@ -993,7 +977,6 @@ struct DYLiveFeed: View {
         }
         .onChange(of: active) { _, value in
             if value {
-                stripExpanded = true
                 model.activate()
                 presentCurrentRoom()
             } else {
@@ -1009,10 +992,7 @@ struct DYLiveFeed: View {
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
         }
-        .onChange(of: model.currentID) { old, id in
-            if DYFollowLiveStripPolicy.shouldCollapse(old: old, new: id, expanded: stripExpanded) {
-                withAnimation(.easeOut(duration: 0.2)) { stripExpanded = false }
-            }
+        .onChange(of: model.currentID) { _, id in
             if let id, scrollID != id { scrollID = id }
             draft = ""; sendError = nil; inputFocused = false
             presentCurrentRoom()
@@ -1837,89 +1817,6 @@ enum DYFollowLiveSheetLayout {
     }
 }
 // MARK: - follow-live-sheet-layout-end
-
-// MARK: - 直播页推荐条策略
-
-/// 直播页顶部「直播中」头像排的展开/收起规则。
-/// 官方行为：进入直播页展开提醒，用户上滑换直播间时收成「N 个直播」胶囊，点胶囊再展开。
-enum DYFollowLiveStripPolicy {
-    /// 首屏落位（old == nil）或仍在同一条时都不收起；只有真正从一条换到另一条才算上滑。
-    static func shouldCollapse(old: String?, new: String?, expanded: Bool) -> Bool {
-        guard expanded, let old, let new else { return false }
-        return old != new
-    }
-
-    /// 展开态的胶囊文案。
-    static func pillTitle(count: Int) -> String { "\(count) 个直播" }
-}
-
-/// 直播页顶部的「关注主播正在直播」：进入展开一排头像，上滑换直播间后收成「N 个直播」胶囊。
-/// 数据来自 bridge.fetchFollowLive（直播页 model.followLive 同一来源），点头像直接进房。
-struct DYFollowLiveStrip: View {
-    @Environment(\.appTheme) private var theme
-    @Environment(\.colorScheme) private var scheme
-    let rooms: [DYLiveRoom]
-    let expanded: Bool
-    let onOpen: (DYLiveRoom) -> Void
-    let onExpand: () -> Void
-
-    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
-
-    var body: some View {
-        if expanded { row } else { pill }
-    }
-
-    private var row: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 12) {
-                ForEach(rooms) { r in
-                    Button { onOpen(r) } label: {
-                        VStack(spacing: 4) {
-                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                                placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                .frame(width: 54, height: 54).clipShape(Circle())
-                                .padding(2)
-                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
-                                .overlay(alignment: .bottom) {
-                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(foreground)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
-                                        .offset(y: 6)
-                                }
-                            Text(r.owner).font(.caption2).foregroundStyle(foreground).lineLimit(1).frame(width: 68)
-                                .padding(.top, 4)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("live.strip.\(r.id)")
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-        .scrollIndicators(.hidden)
-        .themeShadow(.mediaLabel)
-        .accessibilityIdentifier("live.follow.strip")
-    }
-
-    private var pill: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.24)) { onExpand() }
-        } label: {
-            HStack(spacing: 4) {
-                Text(DYFollowLiveStripPolicy.pillTitle(count: rooms.count)).font(.caption.weight(.bold))
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
-            .overlay(Capsule().stroke(foreground.opacity(0.22), lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("live.follow.pill")
-        .themeShadow(.mediaLabel)
-    }
-}
 
 private struct DYFollowLiveSheet: View {
     @Environment(\.appTheme) private var theme

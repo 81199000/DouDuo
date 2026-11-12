@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""我的关注选择器的竖向列表尺寸；关注开播只在直播页出现（顶部头像条 + 我的关注），关注页不重复。
+"""我的关注选择器的竖向列表尺寸；关注开播只走直播页「我的关注」一处入口：直播页不挂头像条，关注页不挂直播头像。
 
 Run: python3 scripts/test_follow_live_strip.py -v
 不联网、不开模拟器。
@@ -66,8 +66,8 @@ class FollowLivePickerTests(unittest.TestCase):
     def test_live_discovery_has_one_followed_entry(self):
         feed = LIVE.split("struct DYLiveFeed", 1)[1].split("private struct DYLiveRoomPage", 1)[0]
         sheet = LIVE.split("private struct DYFollowLiveSheet", 1)[1].split("#if DEBUG", 1)[0]
-        self.assertIn("DYFollowLiveStrip(rooms: model.followLive", feed)
-        self.assertIn("DYFollowLiveStripPolicy.shouldCollapse", feed)
+        self.assertNotIn("DYFollowLiveStrip", LIVE)
+        self.assertNotIn("DYFollowLiveStrip", EXTRAS)
         self.assertIn('Label("我的关注"', feed)
         self.assertNotIn('Label("关注直播"', feed)
         self.assertIn('.navigationTitle("我的关注")', sheet)
@@ -87,7 +87,7 @@ class FollowLivePickerTests(unittest.TestCase):
         self.assertIn("struct DYFollowFeed", EXTRAS)
 
     def test_follow_feed_has_no_live_row(self):
-        """老板定：关注页只放关注作品，不再挂一排直播头像（PR #8 曾加回，1.3.11(88) 再次去掉）。"""
+        """老板定：关注页只放关注作品，不再挂一排直播头像（PR #8 曾加回，1.3.11(88) 再次去掉；直播页已有「我的关注」，89 起直播页也不挂头像条）。"""
         follow = EXTRAS.split("struct DYFollowFeed", 1)[1]
         follow = follow.split("\nstruct ", 1)[0]
         for banned in ("liveRow", "loadLiveNow", "followLiveResult", "DYFollowLiveStrip", 'Text("直播中")', "onLive"):
