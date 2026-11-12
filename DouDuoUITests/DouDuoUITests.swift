@@ -813,6 +813,35 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertFalse(app.otherElements["douyin.module.entry.badge"].exists, "入口上不再有红点")
     }
 
+    /// 压测：连续滑 8 条视频，每条停几秒（触发预加载解码音频），期间改倍速。App 不能崩。
+    func testSwipeManyVideosWithSeamlessAudioDoesNotCrash() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(5)
+        for i in 1...8 {
+            app.swipeUp(velocity: .fast)
+            sleep(4)
+            XCTAssertEqual(app.state, .runningForeground, "第 \(i) 条视频后 App 崩溃了")
+            if i == 3 || i == 6 {
+                let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+                if let m = more.first {
+                    m.tap()
+                    let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+                    if speed.waitForExistence(timeout: 4) {
+                        speed.tap()
+                        let t = app.buttons[i == 3 ? "1.5 倍速" : "2 倍速"]
+                        if t.waitForExistence(timeout: 4) { t.tap() }
+                    }
+                    sleep(2)
+                }
+            }
+        }
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     /// 分页里每页都挂了角标，只取屏幕上那个
     private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
         let f = app.frame
