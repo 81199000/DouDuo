@@ -2449,6 +2449,14 @@ struct DYVideoPage: View {
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                          tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
+                if item.images.isEmpty {
+                    // 有些视频铺满后会裁掉边缘，随手切回完整画面
+                    railItem("arrow.up.left.and.arrow.down.right", "", tint: autoFit ? theme.status.warning.color(for: scheme) : fg,
+                             "douyin.fit") {
+                        autoFit.toggle()
+                        onToast?(autoFit ? "铺满：开" : "完整画面")
+                    }
+                }
             }
             .padding(.vertical, 8)
             .frame(width: railWidth)
@@ -2496,21 +2504,20 @@ struct DYVideoPage: View {
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
             }
-            // 常用播放设置放在「更多」第一层，点一下就生效，不用再进两层菜单
+            // 常用播放设置放在「更多」第一层：点「倍速」弹出速度列表，选哪个就切到哪个，当前视频立刻生效
             Section {
-                Button {
-                    let steps: [Double] = [1.0, 1.25, 1.5, 2.0, 0.75]
-                    let i = steps.firstIndex { abs($0 - playbackRate) < 0.01 } ?? -1
-                    playbackRate = steps[(i + 1) % steps.count]
-                    onToast?(rateTitle(playbackRate))
+                Menu {
+                    Picker("倍速", selection: Binding(
+                        get: { playbackRate },
+                        set: { r in playbackRate = r; onToast?(rateTitle(r)) })) {
+                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in Text(rateTitle(r)).tag(r) }
+                    }
                 } label: {
-                    Label("倍速 \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×（点击切换）", systemImage: "speedometer")
+                    Label("倍速 · \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
-                Toggle(isOn: $autoFit) { Label("自动铺满", systemImage: "arrow.up.left.and.arrow.down.right") }
-                    .accessibilityIdentifier("douyin.quick.autofit")
             }
             if let onDislike {
                 Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }

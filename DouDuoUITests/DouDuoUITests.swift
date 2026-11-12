@@ -16,7 +16,7 @@ final class DouDuoUITests: XCTestCase {
         }
         openMore()
         XCTAssertFalse(app.buttons["竖屏占比"].exists)
-        XCTAssertFalse(app.buttons["自动连播"].exists)
+        XCTAssertTrue(app.buttons["自动连播"].exists, "自动连播按需求放在「更多」第一层")
         XCTAssertFalse(app.buttons["静音"].exists)
         XCTAssertTrue(app.buttons["刷新推荐"].exists)
         attach(app, "menu-cleanup-root")
@@ -430,6 +430,31 @@ final class DouDuoUITests: XCTestCase {
         start.press(forDuration: 0.9, thenDragTo: up, withVelocity: .slow, thenHoldForDuration: 0.4)
         XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "上滑应取消倍速，当前 \(visibleBadge(app)?.label ?? "无角标")")
         attach(app, "rate-cancelled")
+    }
+
+    /// 「更多」第一层的倍速：点开选速度，当前视频立刻变速（不用换视频）。
+    func testQuickSpeedMenuAppliesToCurrentVideo() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
+        XCTAssertFalse(more.isEmpty)
+        more[0].tap()
+        let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH '倍速'")).firstMatch
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "「更多」第一层应直接有倍速")
+        XCTAssertTrue(app.buttons["刷新推荐"].exists)
+        attach(app, "quick-more-root")
+        speed.tap()
+        XCTAssertTrue(app.buttons["1.5 倍速"].waitForExistence(timeout: 5), "点倍速应弹出速度列表")
+        attach(app, "quick-speed-list")
+        app.buttons["1.5 倍速"].tap()
+        XCTAssertTrue(waitBadge(app, "1.5×", timeout: 8), "选 1.5 倍后当前视频应立刻 1.5×")
+        sleep(3)
+        attach(app, "quick-speed-applied")
+        let fit = app.buttons.matching(identifier: "douyin.fit").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(fit, "搜索下面应有铺满按钮")
     }
 
     /// 分页里每页都挂了角标，只取屏幕上那个
