@@ -991,6 +991,8 @@ struct DYLiveFeed: View {
     @State private var layoutMemory = DYLiveAdaptiveMemory.empty
     /// 半折叠时仍可手动回到原来的整屏。只在同一种分屏仍然成立时保留。
     @State private var forceImmersive = false
+    /// 内屏完全展开时，用户在「更多」里手动分屏（不需要半折叠）。
+    @State private var manualSplit = false
     @State private var immersiveAnchor: DYLiveAdaptiveLayout = .existing
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
     private var currentRoom: DYLiveRoom? { model.rooms.first { $0.id == model.currentID } }
@@ -1031,8 +1033,11 @@ struct DYLiveFeed: View {
                 else {
                     pages(video: shown.video, interaction: shown.interaction,
                           ambientAxis: DYLiveAmbientTreatment.axis(for: shown.layout),
-                          splitRole: placement.role,
-                          splitAction: { performSplitToggle(role: placement.role, eligible: layout.stable.decision.layout) })
+                          splitRole: menuSplitRole(placement.role),
+                          splitAction: {
+                              if canManualSplit { withAnimation(.easeInOut(duration: 0.2)) { manualSplit.toggle() } }
+                              else { performSplitToggle(role: placement.role, eligible: layout.stable.decision.layout) }
+                          })
                 }
                 if !model.entered {
                     let chrome = previewChrome(in: geo)
@@ -1081,7 +1086,10 @@ struct DYLiveFeed: View {
                 }
             }
         }
-        .onLiveHingeChange { hingeStatus = $0 }
+        .onLiveHingeChange { status in
+            hingeStatus = status
+            if status == .closed || status == .partiallyOpen { manualSplit = false }
+        }
         // 分页与 drawable 共用整屏视口。键盘安全区不能把这一屏缩短，否则上一间封面会从顶上露出来。
         .ignoresSafeArea(.container, edges: .bottom)
         .ignoresSafeArea(.keyboard)
@@ -1208,9 +1216,14 @@ struct DYLiveFeed: View {
             active: forceImmersive,
             anchored: immersiveAnchor,
             eligible: stable.decision.layout)
-        let shown = manual
+        var shown = manual
             ? DYLiveAdaptiveDecision(layout: .existing, video: bounds, interaction: bounds)
             : stable.decision
+        if canManualSplit, manualSplit {
+            shown = DYLiveAdaptiveLayoutEngine.manualSplit(
+                bounds: bounds,
+                videoSize: DYLiveAdaptiveLayoutEngine.presentationSize(ready: model.ready, videoSize: model.playbackVideoSize))
+        }
         return (shown, stable)
     }
 
@@ -1232,6 +1245,18 @@ struct DYLiveFeed: View {
         return geo.reservedRegions(kind: .division).map {
             DYLiveDivision(frame: $0.frame, isActive: $0.isActive)
         }
+    }
+
+    /// 「更多」里的分屏/整屏：内屏完全展开时随时可点；半折叠沿用原来的资格判断；其余（外屏/普通手机）灰掉。
+    /// restoreSplit = 当前是整屏，点了去分屏；enterImmersive = 当前是分屏，点了去整屏。
+    /// 内屏完全展开。系统若没回调铰链状态（unsupported），宽屏（regular）也按展开处理，免得按钮永远灰掉。
+    private var canManualSplit: Bool {
+        hingeStatus == .fullyOpen || (hingeStatus == .unsupported && hSize == .regular)
+    }
+
+    private func menuSplitRole(_ placed: DYLiveLayoutToggleRole) -> DYLiveLayoutToggleRole {
+        if canManualSplit { return manualSplit ? .enterImmersive : .restoreSplit }
+        return placed
     }
 
     private func performSplitToggle(role: DYLiveLayoutToggleRole, eligible: DYLiveAdaptiveLayout) {
