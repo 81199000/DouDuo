@@ -197,8 +197,9 @@ extension DouyinBridge {
     }
 
     /// 发评论 / 回复评论（replyID 非空 = 回复那条）
-    func publishComment(_ awemeID: String, text: String, replyID: String? = nil) async throws -> DYComment {
-        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0"], attempts: 1)
+    /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
+    func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
+        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"], attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
         if r.code == 8 { throw DYError.bad("抖音未登录") }
@@ -241,7 +242,7 @@ extension DouyinBridge {
     static let publishJS = cmap + #"""
     const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
-    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', '0'); }
+    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
@@ -781,10 +782,15 @@ struct DYListPlayer: View {
     @State private var showComments = false
     @State private var toast: String?
     @State private var loadingMore = false
+    /// 从消息点评论进来：自动开评论区并定位那条评论
+    let commentFocus: DYCommentFocus?
 
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
-         loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void) {
+         loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
+         commentFocus: DYCommentFocus? = nil) {
         self.bridge = bridge; self.title = title
+        self.commentFocus = commentFocus
+        _showComments = State(initialValue: commentFocus != nil)
         _items = State(initialValue: items)
         _currentID = State(initialValue: items.indices.contains(start) ? items[start].id : items.first?.id)
         self.loadMore = loadMore; self.onAuthor = onAuthor
@@ -833,8 +839,9 @@ struct DYListPlayer: View {
             }
             .sheet(isPresented: $showComments) {
                 if let cur = current {
-                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                        .presentationDetents([.fraction(0.62), .large])
+                    DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false }, focus: commentFocus)
+                        // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                        .presentationDetents([.fraction(0.62)])
                 }
             }
         }
@@ -1464,100 +1471,15 @@ private struct DYAuthorPlay: Identifiable {
     let index: Int
 }
 
-// MARK: - 直播页推荐条策略
-
-/// 直播页顶部「直播中」头像排的展开/收起规则。
-/// 官方行为：进入直播页展开提醒，用户上滑换直播间时收成「N 个直播」胶囊，点胶囊再展开。
-enum DYFollowLiveStripPolicy {
-    /// 首屏落位（old == nil）或仍在同一条时都不收起；只有真正从一条换到另一条才算上滑。
-    static func shouldCollapse(old: String?, new: String?, expanded: Bool) -> Bool {
-        guard expanded, let old, let new else { return false }
-        return old != new
-    }
-
-    /// 展开态的胶囊文案。
-    static func pillTitle(count: Int) -> String { "\(count) 个直播" }
-}
-
-/// 直播页顶部的「关注主播正在直播」：进入展开一排头像，上滑换直播间后收成「N 个直播」胶囊。
-/// 数据来自 bridge.fetchFollowLive（直播页 model.followLive 同一来源），点头像直接进房。
-struct DYFollowLiveStrip: View {
-    @Environment(\.appTheme) private var theme
-    @Environment(\.colorScheme) private var scheme
-    let rooms: [DYLiveRoom]
-    let expanded: Bool
-    let onOpen: (DYLiveRoom) -> Void
-    let onExpand: () -> Void
-
-    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
-
-    var body: some View {
-        if expanded { row } else { pill }
-    }
-
-    private var row: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 12) {
-                ForEach(rooms) { r in
-                    Button { onOpen(r) } label: {
-                        VStack(spacing: 4) {
-                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                                placeholder: { theme.media.chromeFill.color(for: scheme) }
-                                .frame(width: 54, height: 54).clipShape(Circle())
-                                .padding(2)
-                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
-                                .overlay(alignment: .bottom) {
-                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(foreground)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
-                                        .offset(y: 6)
-                                }
-                            Text(r.owner).font(.caption2).foregroundStyle(foreground).lineLimit(1).frame(width: 68)
-                                .padding(.top, 4)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("live.strip.\(r.id)")
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-        .scrollIndicators(.hidden)
-        .themeShadow(.mediaLabel)
-        .accessibilityIdentifier("live.follow.strip")
-    }
-
-    private var pill: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.24)) { onExpand() }
-        } label: {
-            HStack(spacing: 4) {
-                Text(DYFollowLiveStripPolicy.pillTitle(count: rooms.count)).font(.caption.weight(.bold))
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
-            .overlay(Capsule().stroke(foreground.opacity(0.22), lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("live.follow.pill")
-        .themeShadow(.mediaLabel)
-    }
-}
-
 // MARK: - 关注流
 
 struct DYFollowFeed: View {
-    let bridge: DouyinBridge
+    @ObservedObject var bridge: DouyinBridge
     let insets: EdgeInsets
     let active: Bool
     let onAuthor: (DYAweme) -> Void
     let onLogin: () -> Void
     let onToast: (String) -> Void
-    var onLive: (DYLiveRoom) -> Void = { _ in }
-    @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
@@ -1615,7 +1537,8 @@ struct DYFollowFeed: View {
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                    .presentationDetents([.fraction(0.62), .large])
+                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                    .presentationDetents([.fraction(0.62)])
             }
         }
         .task {
@@ -1628,6 +1551,7 @@ struct DYFollowFeed: View {
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
+        // 关注页只放关注作品。关注主播开播统一在直播页顶部头像条/「我的关注」里看，这里不再重复一排直播头像。
         .onChange(of: active) { _, a in if !a { preloader.clear() } }
         .onDisappear { preloader.clear() }
     }

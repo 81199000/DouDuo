@@ -4,6 +4,15 @@
 import SwiftUI
 
 enum DYDuoMetrics {
+    /// Align full-bleed video chrome to the runtime trailing system column.
+    /// Compact chrome and layouts without a trailing column remain unchanged.
+    static func actionRailHorizontalOffset(isRegular: Bool, trailingInset: CGFloat,
+                                          columnWidth: CGFloat, outerPadding: CGFloat,
+                                          opticalLeadingInset: CGFloat = 0) -> CGFloat {
+        guard isRegular, trailingInset > 0 else { return 0 }
+        return outerPadding + columnWidth / 2 - trailingInset / 2 - opticalLeadingInset
+    }
+
     /// iOS 17–27.0 的宽屏回退，和改版前同一条线。
     static let legacyWideMin: CGFloat = 700
 
@@ -205,7 +214,8 @@ struct DYOuterCommentSheet: ViewModifier {
         )) {
             if let aweme {
                 DYCommentPanel(bridge: bridge, aweme: aweme, onClose: { showComments = false })
-                    .presentationDetents([.fraction(0.62), .large])
+                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
+                    .presentationDetents([.fraction(0.62)])
                     .presentationDragIndicator(.visible)
             }
         }
