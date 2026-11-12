@@ -1172,6 +1172,14 @@ final class DYFeedModel: ObservableObject {
     func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0; shortCredit = 0 }
 }
 
+private struct DYFeedHostFrameKey: PreferenceKey {
+    static var defaultValue: CGRect { .zero }
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next.width > value.width { value = next }
+    }
+}
+
 private struct DYTopChromeFrameKey: PreferenceKey {
     static var defaultValue: CGRect { .zero }
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
@@ -1225,6 +1233,10 @@ struct DouyinFeedScreen: View {
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧（默认模式用）
     @State private var topBarWidth: CGFloat?
     @State private var topChrome = CGRect.zero
+    /// 直播视图报上来的布局 A 下窗格，坐标在 `douduo.feed`。
+    @State private var layoutAModuleAnchor = DYLiveModuleAnchor()
+    /// 本视图在 `douduo.feed` 里的框，用来把窗格坐标换成 overlay 的本地坐标。
+    @State private var feedHost = CGRect.zero
     /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
     private let peek = DDPeekInfo.shared
     @ObservedObject private var railProgress = DDRailProgress.shared
@@ -1266,12 +1278,38 @@ struct DouyinFeedScreen: View {
         }
         .overlay {
             if railMode, !(tab == .live && (live.clean || live.entered)) {
-                rootActionRail(nil, selector: true)
+                if tab == .live, layoutAModuleAnchor.active, feedHost.width > 1 {
+                    layoutAModuleButton
+                } else {
+                    rootActionRail(nil, selector: true)
+                }
             }
         }
         .onPreferenceChange(DYTopChromeFrameKey.self) { next in
             guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
             topChrome = next
+        }
+        .onPreferenceChange(DYLiveModuleAnchorKey.self) { next in
+            let current = layoutAModuleAnchor
+            guard next.active != current.active || next.compact != current.compact
+                    || abs(next.safeBottom - current.safeBottom) > 0.5
+                    || abs(next.safeTrailing - current.safeTrailing) > 0.5
+                    || abs(next.pane.minX - current.pane.minX) > 0.5
+                    || abs(next.pane.minY - current.pane.minY) > 0.5
+                    || abs(next.pane.width - current.pane.width) > 0.5
+                    || abs(next.pane.height - current.pane.height) > 0.5 else { return }
+            layoutAModuleAnchor = next
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: DYFeedHostFrameKey.self, value: proxy.frame(in: .named("douduo.feed")))
+            }
+            .allowsHitTesting(false)
+        }
+        .onPreferenceChange(DYFeedHostFrameKey.self) { next in
+            guard abs(next.minX - feedHost.minX) > 0.5 || abs(next.minY - feedHost.minY) > 0.5
+                    || abs(next.width - feedHost.width) > 0.5 || abs(next.height - feedHost.height) > 0.5 else { return }
+            feedHost = next
         }
         // 默认模式：顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区——和 PR #12 之前完全一致。
         // 简洁/极简模式的 ignoresSafeArea 已在 layoutRoot 上，这里不重复加，避免影响侧边栏的安全区测量。
@@ -1610,6 +1648,10 @@ struct DouyinFeedScreen: View {
     /// 要换一批推荐走「更多 → 刷新推荐」。
     private func selectTab(_ target: DYTab) {
         guard tab != target else { return }
+        if target != .live {
+            queuedLiveAction = nil
+            liveModuleRequest = nil
+        }
         tab = target
     }
 
@@ -1682,7 +1724,8 @@ struct DouyinFeedScreen: View {
         ZStack(alignment: .top) {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
-                           topChrome: chromeMode.usesRail ? .zero : topChrome, screenInsets: insets)
+                           topChrome: chromeMode.usesRail ? .zero : topChrome, screenInsets: insets,
+                           moduleRequest: liveModuleRequest, classicPreviewChrome: !chromeMode.usesRail)
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
@@ -1921,6 +1964,20 @@ struct DouyinFeedScreen: View {
             }
             .pickerStyle(.inline)
         }
+        if tab == .live {
+            Section {
+                Button("我的关注", systemImage: "person.2") {
+                    queuedLiveAction = .followedLive
+                    publishQueuedLiveModule()
+                }
+                .accessibilityIdentifier("douyin.module.live.follow")
+                Button("发现更多", systemImage: "square.grid.2x2") {
+                    queuedLiveAction = .discover
+                    publishQueuedLiveModule()
+                }
+                .accessibilityIdentifier("douyin.module.live.discover")
+            }
+        }
         Section {
             Button("搜索", systemImage: "magnifyingglass") { showSearch = true }
                 .accessibilityIdentifier("douyin.module.search")
@@ -1933,8 +1990,24 @@ struct DouyinFeedScreen: View {
     /// 系统 Menu 在长按时也会弹出菜单，没法做到「长按只看作者标题、不弹菜单」，所以统一自己处理：
     /// 单击（按下不满 0.35 秒）弹菜单，长按（满 0.35 秒）显示作者标题，松手消失，不弹菜单。
     @ViewBuilder
-    private func moduleMenu(edge: HorizontalEdge) -> some View {
-        minimalModuleButton(edge: edge)
+    private func moduleMenu(edge: HorizontalEdge, opensUpward: Bool = false) -> some View {
+        minimalModuleButton(edge: edge, opensUpward: opensUpward)
+    }
+
+    /// 布局 A：同一颗模块圆钮改到下窗格右下。清空层不接点击，只有圆钮自己可点。
+    private var layoutAModuleButton: some View {
+        let place = DYLiveLayoutToggle.layoutAModuleFrame(
+            interaction: layoutAModuleAnchor.pane,
+            button: CGSize(width: 54, height: DDRailMetrics.entryDiameter),
+            compact: layoutAModuleAnchor.compact,
+            safeBottom: layoutAModuleAnchor.safeBottom,
+            safeTrailing: layoutAModuleAnchor.safeTrailing)
+        return ZStack {
+            Color.clear.allowsHitTesting(false)
+            moduleMenu(edge: .trailing, opensUpward: true)
+                .position(x: place.midX - feedHost.minX, y: place.midY - feedHost.minY)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var moduleCircleLabel: some View {
@@ -1960,7 +2033,21 @@ struct DouyinFeedScreen: View {
     /// - 按下不满 0.35 秒就抬手 = 单击，弹出菜单，菜单打开期间标题保持显示，菜单收起后才消失；
     /// - 按满 0.35 秒 = 长按，只看标题，不弹菜单。
     @State private var minimalMenuOpen = false
-    private func minimalModuleButton(edge: HorizontalEdge) -> some View {
+    @State private var queuedLiveAction: DYLiveModuleRequest.Action?
+    @State private var liveModuleRequest: DYLiveModuleRequest?
+
+    private func queueLiveModule(_ action: DYLiveModuleRequest.Action) {
+        queuedLiveAction = action
+    }
+
+    private func publishQueuedLiveModule() {
+        guard let action = queuedLiveAction else { return }
+        queuedLiveAction = nil
+        let token = (liveModuleRequest?.token ?? 0) + 1
+        liveModuleRequest = DYLiveModuleRequest(token: token, action: action)
+    }
+
+    private func minimalModuleButton(edge: HorizontalEdge, opensUpward: Bool = false) -> some View {
         moduleCircleLabel
             .contentShape(Circle())
             .modifier(DDPressHold(
@@ -1976,12 +2063,21 @@ struct DouyinFeedScreen: View {
                     if chromeMode.hidesInfo { peek.on = true }
                 }))
             .popover(isPresented: $minimalMenuOpen,
-                     attachmentAnchor: .point(edge == .trailing ? .leading : .trailing),
-                     arrowEdge: edge == .trailing ? .trailing : .leading) {
+                     attachmentAnchor: .point(opensUpward ? .top : (edge == .trailing ? .leading : .trailing)),
+                     arrowEdge: opensUpward ? .bottom : (edge == .trailing ? .trailing : .leading)) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(DYTab.allCases, id: \.self) { target in
                         minimalMenuRow(target.title, target.symbol, selected: tab == target, id: "douyin.module.item.\(target)") {
                             selectTab(target)
+                        }
+                    }
+                    if tab == .live {
+                        Divider().padding(.vertical, 4)
+                        minimalMenuRow("我的关注", "person.2", id: "douyin.module.live.follow") {
+                            queueLiveModule(.followedLive)
+                        }
+                        minimalMenuRow("发现更多", "square.grid.2x2", id: "douyin.module.live.discover") {
+                            queueLiveModule(.discover)
                         }
                     }
                     Divider().padding(.vertical, 4)
@@ -1995,6 +2091,7 @@ struct DouyinFeedScreen: View {
             }
             .onChange(of: minimalMenuOpen) { _, open in
                 if !open, chromeMode.hidesInfo { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
+                if !open { publishQueuedLiveModule() }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isButton)

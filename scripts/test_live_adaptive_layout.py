@@ -365,6 +365,27 @@ let heldToggle = DYLiveAdaptiveLayoutEngine.stabilize(previous: DYLiveAdaptiveMe
 let during = placed(heldToggle.decision.layout, false, full, heldToggle.decision.interaction)
 check(during == splitA, "a transient hinge keeps the single current toggle")
 
+let moduleButton = CGSize(width: 54, height: 50)
+let moduleA = DYLiveLayoutToggle.layoutAModuleFrame(interaction: lower, button: moduleButton, compact: false, safeBottom: 34, safeTrailing: 0)
+check(moduleA == CGRect(x: 334, y: 704, width: 54, height: 50), "layout A module button sits in the lower-right of the interaction pane")
+check(lower.contains(moduleA), "layout A module button stays inside the interaction pane")
+check(moduleA.maxX == lower.maxX - 12, "layout A module button keeps the 12pt trailing margin")
+check(moduleA.maxY == lower.maxY - 34 - 12, "layout A module button sits above the bottom safe area")
+check(!overlaps(moduleA, splitA.frame), "layout A module button does not cover 整屏")
+let entryA = CGRect(x: lower.minX + 20, y: lower.maxY - 58 - 44, width: min(168, lower.width - 40), height: 44)
+check(!overlaps(moduleA, entryA), "layout A module button does not cover 进入直播间")
+let trailedModule = DYLiveLayoutToggle.layoutAModuleFrame(interaction: lower, button: moduleButton, compact: false, safeBottom: 34, safeTrailing: 40)
+check(trailedModule.maxX == lower.maxX - 40 - 12, "layout A module button respects the trailing safe area")
+check(!overlaps(trailedModule, trailed.frame), "an inset module button still clears 整屏")
+let shiftedPane = lower.offsetBy(dx: 30, dy: 15)
+let shiftedModule = DYLiveLayoutToggle.layoutAModuleFrame(interaction: shiftedPane, button: moduleButton, compact: false, safeBottom: 34, safeTrailing: 0)
+check(shiftedModule == moduleA.offsetBy(dx: 30, dy: 15), "layout A module button follows the pane origin")
+let shortPane = CGRect(x: 0, y: 0, width: 400, height: 120)
+let cramped = DYLiveLayoutToggle.layoutAModuleFrame(interaction: shortPane, button: moduleButton, compact: false, safeBottom: 34, safeTrailing: 0)
+let crampedToggle = placed(.layoutA, false, shortPane, shortPane).frame
+check(shortPane.contains(cramped), "a short pane keeps the module button inside")
+check(!overlaps(cramped, crampedToggle), "a short pane moves the module button off 整屏")
+
 if failures.isEmpty {
     print("DYLiveLayoutToggle passed")
 } else {
@@ -484,6 +505,20 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
         placement = feed.split("private func layoutTogglePlacement", 1)[1].split("private func liveDivisions", 1)[0]
         self.assertIn("entered: model.entered", placement)
         self.assertNotIn("model.ready", placement)
+        anchor = feed.split("private func liveModuleAnchor", 1)[1].split("private func layoutTogglePlacement", 1)[0]
+        self.assertIn("shown.layout == .layoutA", anchor)
+        self.assertIn(".named(\"douduo.feed\")", anchor)
+        self.assertIn("offsetBy(dx: origin.x, dy: origin.y)", anchor)
+        screen = (ROOT / "DouDuo/DouyinFeedView.swift").read_text()
+        button = screen.split("private var layoutAModuleButton", 1)[1].split("private var moduleCircleLabel", 1)[0]
+        self.assertIn("layoutAModuleFrame", button)
+        self.assertIn("place.midX - feedHost.minX", button)
+        self.assertIn("opensUpward: true", button)
+        self.assertIn("Color.clear.allowsHitTesting(false)", button)
+        overlay = screen.split(".overlay {", 1)[1].split(".onPreferenceChange(DYTopChromeFrameKey", 1)[0]
+        self.assertIn("layoutAModuleAnchor.active", overlay)
+        self.assertIn("rootActionRail(nil, selector: true)", overlay)
+        self.assertLess(overlay.index("layoutAModuleButton"), overlay.index("rootActionRail(nil, selector: true)"))
         self.assertNotIn("ready", toggle)
         self.assertIn("DYLiveLayoutToggle.returnTopInset", room.split("private struct DYLiveRoomPage", 1)[1])
         self.assertIn('accessibilityIdentifier("live.room.more")', room)
