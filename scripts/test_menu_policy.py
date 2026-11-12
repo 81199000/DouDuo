@@ -82,9 +82,12 @@ class MenuPolicyTests(unittest.TestCase):
         menu = block(FEED, "private func moreExtrasMenu")
         settings = menu_content(menu, "设置")
         playback = menu_content(settings, "播放设置")
-        for binding in ("$autoNext", "$muted", "$feed.autoFit"):
-            self.assertIn(binding, playback)
-            self.assertEqual(menu.count(binding), 1)
+        # 2026-11-12 老板定：倍速/自动连播放「更多」第一层，铺满放右侧按钮栏，设置·播放设置里不再重复
+        self.assertIn("$muted", playback)
+        self.assertEqual(menu.count("$muted"), 1)
+        for gone in ("$autoNext", "$feed.autoFit", "播放速度"):
+            self.assertNotIn(gone, playback)
+            self.assertNotIn(gone, menu)
         self.assertIn('Label("播放设置",', settings)
         for title in ("内容偏好", "高级筛选", "缓存管理", "账号与登录", "关于", "开源仓库"):
             self.assertIn('Label("' + title + '"', settings)

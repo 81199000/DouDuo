@@ -1210,7 +1210,6 @@ struct DouyinFeedScreen: View {
     @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
-    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
@@ -2057,9 +2056,7 @@ struct DouyinFeedScreen: View {
             .disabled(refreshing)
             Menu {
                 Menu {
-                    Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
-                    Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
                     Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
                 } label: { Label("播放设置", systemImage: "play.circle") }
                 Menu {
