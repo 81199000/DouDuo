@@ -507,9 +507,15 @@ final class DouDuoUITests: XCTestCase {
         let f = ids.map(frame)
         print("DDRAIL frames=\(f)")
         for r in f { XCTAssertEqual(r.midX, f[0].midX, accuracy: 1.0, "水平没对齐") }
+        // 有数字的三个按钮之间等距；无数字的搜索/铺满之间更紧（没有文字那一截）
         let pitches = zip(f, f.dropFirst()).map { $1.midY - $0.midY }
         print("DDRAIL pitches=\(pitches)")
-        for p in pitches { XCTAssertEqual(p, pitches[0], accuracy: 1.0, "竖向间距不等") }
+        XCTAssertEqual(pitches[0], pitches[1], accuracy: 1.0, "赞→评论 与 评论→收藏 间距不等")
+        XCTAssertLessThan(pitches[3], pitches[0], "无文字的按钮之间应比有文字的更紧")
+        // 搜索与铺满之间的空隙 = 「图标—文字」间距那一级（约 2~12pt），不再是一整块空白
+        let gapSearchFit = f[4].minY - f[3].maxY
+        print("DDRAIL gapSearchFit=\(gapSearchFit)")
+        XCTAssertLessThanOrEqual(gapSearchFit, 12)
         attach(app, "rail-aligned")
     }
 
