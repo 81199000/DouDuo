@@ -79,10 +79,16 @@ struct PlayerGestureView: UIViewRepresentable {
         weak var long: UILongPressGestureRecognizer?
         private var pressStartY: CGFloat = 0
         private var pressLocked = false
+        /// 长按（加速）结束的时间。松手后系统可能再补一个「单击」，会把视频误暂停，这里吞掉。
+        private var lastLongEnd = Date.distantPast
+        private var longActive = false
         private weak var frozenScroll: UIScrollView?
         init(_ p: PlayerGestureView) { parent = p }
 
-        @objc func handleSingle(_ g: UITapGestureRecognizer) { parent.onSingleTap() }
+        @objc func handleSingle(_ g: UITapGestureRecognizer) {
+            if longActive || Date().timeIntervalSince(lastLongEnd) < 0.8 { return }
+            parent.onSingleTap()
+        }
 
         @objc func handleDouble(_ g: UITapGestureRecognizer) {
             guard let v = view else { return }
@@ -92,6 +98,7 @@ struct PlayerGestureView: UIViewRepresentable {
         @objc func handleLong(_ g: UILongPressGestureRecognizer) {
             switch g.state {
             case .began:
+                longActive = true
                 parent.onLongPress(true)
                 pressStartY = g.location(in: view).y; pressLocked = false
                 // 长按期间下滑不能触发外层切视频：先把外层 ScrollView 的滑动关掉，松手再恢复
@@ -108,6 +115,8 @@ struct PlayerGestureView: UIViewRepresentable {
             case .ended, .cancelled, .failed:
                 frozenScroll?.panGestureRecognizer.isEnabled = true; frozenScroll = nil
                 pressLocked = false
+                longActive = false
+                lastLongEnd = Date()
                 parent.onLongPress(false)
             default: break
             }
