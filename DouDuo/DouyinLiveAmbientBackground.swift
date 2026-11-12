@@ -3,7 +3,8 @@ import SwiftUI
 /// 直播交互区的环境光背景。画面本身仍由现有播放器绘制。
 /// Layout A 的交互区在画面下方，光从折痕（上沿）向下淡出。
 /// Layout B 的交互区在画面右方，光从折痕（左沿）向右淡出。
-/// 封面只走现有 ImageCache；模糊在封面变化时做一次，不在 body 里重算。
+/// 封面只用来取色。画面上的轮廓不再放大铺开，避免低分辨率色块和斜向分界。
+/// 模糊在封面变化时做一次，不在 body 里重算。
 struct DouyinLiveAmbientBackground: View {
     /// 已有房间封面。没有缓存时才经 ImageCache 取缩略图。
     var coverURL: URL?
@@ -13,20 +14,20 @@ struct DouyinLiveAmbientBackground: View {
     /// 预览和测试直接给图。有图时不再读取 coverURL，也不会发起加载。
     var artwork: UIImage?
 
-    @State private var displayed: UIImage?
     @State private var displayedKey = ""
+    @State private var palette = DYLiveAmbientPalette.neutral
 
     var body: some View {
         // MARK: - ambient-body
         let fade = DYLiveAmbientTreatment.fade(for: axis)
         ZStack {
             treatmentColor(DYLiveAmbientTreatment.fallback)
-            if let displayed, displayedKey == sourceToken {
-                reflection(displayed, fade: fade)
+            if displayedKey == sourceToken, palette != DYLiveAmbientPalette.neutral {
+                glowField(palette, fade: fade)
                     .id(displayedKey)
                     .transition(.opacity)
             }
-            Color.black.opacity(DYLiveAmbientTreatment.plateOpacity)
+            maskGradient(DYLiveAmbientTreatment.plateStops, fade: fade, color: .black)
             maskGradient(DYLiveAmbientTreatment.veilStops, fade: fade, color: .black)
         }
         .animation(.easeInOut(duration: DYLiveAmbientTreatment.transitionDuration), value: displayedKey)
@@ -56,32 +57,32 @@ struct DouyinLiveAmbientBackground: View {
         let requestedCover = artwork == nil ? coverURL : nil
         let requestedArtwork = artwork
         guard !DYLiveAmbientIdentity.isFallback(token) else {
-            publish(nil, token: token)
+            publish(.neutral, token: token)
             return
         }
-        if displayedKey == token, displayed != nil { return }
+        if displayedKey == token, palette != .neutral { return }
         if let cached = DYLiveAmbientBlurStore.shared.peek(token) {
-            publish(cached.uiImage(), token: token)
+            publish(cached.palette, token: token)
             return
         }
         guard let source = await Self.sourceImage(coverURL: requestedCover, artwork: requestedArtwork) else {
-            publish(nil, token: token)
+            publish(.neutral, token: token)
             return
         }
         guard stillCurrent(token) else { return }
         guard let bitmap = DYLiveAmbientBitmap.scaled(from: source, maxPixel: DYLiveAmbientTreatment.sourceMaxPixel) else { return }
-        let soft = await Task.detached(priority: .utility) {
-            DYLiveAmbientBlur.soften(bitmap)
+        let prepared = await Task.detached(priority: .utility) {
+            DYLiveAmbientPrepared(palette: DYLiveAmbientPalette.extract(from: bitmap))
         }.value
         guard stillCurrent(token) else { return }
-        let kept = DYLiveAmbientBlurStore.shared.resolve(key: token) { soft }
-        publish(kept.uiImage(), token: token)
+        let kept = DYLiveAmbientBlurStore.shared.resolve(key: token) { prepared }
+        publish(kept.palette, token: token)
     }
 
     /// 只接受这次任务自己的房间和账号。过期或已取消的结果直接丢掉。
-    private func publish(_ image: UIImage?, token: String) {
+    private func publish(_ palette: DYLiveAmbientPalette, token: String) {
         guard stillCurrent(token) else { return }
-        displayed = image
+        self.palette = palette
         displayedKey = token
     }
 
@@ -101,28 +102,48 @@ struct DouyinLiveAmbientBackground: View {
     }
     // MARK: - ambient-refresh-end
 
-    private func reflection(_ image: UIImage, fade: DYLiveAmbientFade) -> some View {
-        ZStack {
-            field(image)
-                .mask(maskGradient(DYLiveAmbientTreatment.artworkStops, fade: fade, color: .white))
-            field(image)
-                .scaleEffect(x: axis == .horizontal ? -1 : 1, y: axis == .vertical ? -1 : 1)
-                .mask(maskGradient(DYLiveAmbientTreatment.reflectionStops, fade: fade, color: .white))
-                .opacity(DYLiveAmbientTreatment.reflectionOpacity)
+    /// 主色铺底、辅光和贴边溢光都沿窗格轴向渐变。椭圆半径伸出窗格，避免看见圆边。
+    private func glowField(_ palette: DYLiveAmbientPalette, fade: DYLiveAmbientFade) -> some View {
+        let ends = endpoints(fade)
+        let primaryCenter: UnitPoint = axis == .vertical ? UnitPoint(x: 0.42, y: -0.08) : UnitPoint(x: -0.08, y: 0.42)
+        let secondaryCenter: UnitPoint = axis == .vertical ? UnitPoint(x: 0.72, y: 0.42) : UnitPoint(x: 0.42, y: 0.72)
+        return ZStack {
+            LinearGradient(
+                stops: colorStops(palette.primary, DYLiveAmbientTreatment.artworkStops, 1),
+                startPoint: ends.start,
+                endPoint: ends.end)
+            LinearGradient(
+                stops: colorStops(palette.primary, DYLiveAmbientTreatment.reflectionStops, DYLiveAmbientTreatment.reflectionOpacity),
+                startPoint: ends.start,
+                endPoint: ends.end)
+            softGlow(palette.primary, center: primaryCenter, strength: DYLiveAmbientTreatment.primaryGlowStrength, radius: 1.65)
+            softGlow(palette.secondary, center: secondaryCenter, strength: DYLiveAmbientTreatment.secondaryGlowStrength, radius: 1.85)
+            LinearGradient(
+                stops: colorStops(palette.primary, DYLiveAmbientTreatment.spillStops, DYLiveAmbientTreatment.spillStrength),
+                startPoint: ends.start,
+                endPoint: ends.end)
+            maskGradient(DYLiveAmbientTreatment.brightnessScrimStops(palette.sourceLuminance), fade: fade, color: .black)
         }
-        .compositingGroup()
+        .allowsHitTesting(false)
     }
 
-    private func field(_ image: UIImage) -> some View {
-        // 铺满只负责裁切后的绘制。Color.clear 占住父级给出的尺寸，避免封面比例把交互区撑出窗格。
-        Color.clear
-            .overlay {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.low)
-                    .scaledToFill()
-            }
-            .clipped()
+    private func softGlow(_ color: DYLiveAmbientRGB, center: UnitPoint, strength: CGFloat, radius: CGFloat) -> some View {
+        EllipticalGradient(
+            stops: [
+                Gradient.Stop(color: treatmentColor(color).opacity(strength), location: 0),
+                Gradient.Stop(color: treatmentColor(color).opacity(strength * 0.62), location: 0.28),
+                Gradient.Stop(color: treatmentColor(color).opacity(strength * 0.24), location: 0.62),
+                Gradient.Stop(color: treatmentColor(color).opacity(0), location: 1),
+            ],
+            center: center,
+            startRadiusFraction: 0,
+            endRadiusFraction: radius)
+    }
+
+    private func colorStops(_ color: DYLiveAmbientRGB, _ stops: [DYLiveAmbientStop], _ strength: CGFloat) -> [Gradient.Stop] {
+        stops.map {
+            Gradient.Stop(color: treatmentColor(color).opacity(Double($0.opacity * strength)), location: $0.location)
+        }
     }
 
     private func maskGradient(_ stops: [DYLiveAmbientStop], fade: DYLiveAmbientFade, color: Color) -> LinearGradient {
@@ -207,10 +228,13 @@ enum DYLiveAmbientTreatment {
     static let sourceMaxPixel = 72
     /// 房间切换时的交叉淡入，只播一次。
     static let transitionDuration: Double = 0.45
-    /// 整层压暗。折痕到外侧的明暗差交给 artwork 和 veil，不再靠一块更重的纯黑。
-    static let plateOpacity: CGFloat = 0.58
-    /// 折痕一侧的低分辨率色光。只在封面变化时叠一次。
-    static let reflectionOpacity: CGFloat = 0.46
+    /// 交互区中段的压暗。折痕更轻，评论侧更重，不再整块用同一个黑色。
+    static let plateOpacity: CGFloat = 0.52
+    /// 折痕一侧的低分辨率倒影。主溢光另算，倒影只留一层薄的。
+    static let reflectionOpacity: CGFloat = 0.32
+    static let primaryGlowStrength: CGFloat = 0.42
+    static let secondaryGlowStrength: CGFloat = 0.2
+    static let spillStrength: CGFloat = 0.4
     static let minimumTextContrast: CGFloat = 4.5
     static let fallback = DYLiveAmbientRGB(red: 0.067, green: 0.067, blue: 0.074)
 
@@ -226,9 +250,42 @@ enum DYLiveAmbientTreatment {
         DYLiveAmbientStop(location: 1, opacity: 0),
     ]
     static let veilStops: [DYLiveAmbientStop] = [
-        DYLiveAmbientStop(location: 0, opacity: 0.04),
-        DYLiveAmbientStop(location: 1, opacity: 0.34),
+        DYLiveAmbientStop(location: 0, opacity: 0.02),
+        DYLiveAmbientStop(location: 1, opacity: 0.4),
     ]
+    /// 0 贴着画面。主光从折痕铺开，辅光在中段，溢光只留在贴边。
+    static let primaryGlowStops: [DYLiveAmbientStop] = [
+        DYLiveAmbientStop(location: 0, opacity: 0.9),
+        DYLiveAmbientStop(location: 0.5, opacity: 0.28),
+        DYLiveAmbientStop(location: 1, opacity: 0.06),
+    ]
+    static let secondaryGlowStops: [DYLiveAmbientStop] = [
+        DYLiveAmbientStop(location: 0, opacity: 0.12),
+        DYLiveAmbientStop(location: 0.42, opacity: 0.85),
+        DYLiveAmbientStop(location: 1, opacity: 0.08),
+    ]
+    static let spillStops: [DYLiveAmbientStop] = [
+        DYLiveAmbientStop(location: 0, opacity: 1),
+        DYLiveAmbientStop(location: 0.18, opacity: 0.72),
+        DYLiveAmbientStop(location: 0.4, opacity: 0.38),
+        DYLiveAmbientStop(location: 0.68, opacity: 0.12),
+        DYLiveAmbientStop(location: 1, opacity: 0),
+    ]
+    static var plateStops: [DYLiveAmbientStop] {
+        [
+            DYLiveAmbientStop(location: 0, opacity: 0.3),
+            DYLiveAmbientStop(location: 0.5, opacity: plateOpacity),
+            DYLiveAmbientStop(location: 1, opacity: 0.66),
+        ]
+    }
+
+    static func brightnessScrimStops(_ luminance: CGFloat) -> [DYLiveAmbientStop] {
+        let bright = min(1, max(0, (luminance - 0.12) / 0.55))
+        return [
+            DYLiveAmbientStop(location: 0, opacity: 0.02 + bright * 0.06),
+            DYLiveAmbientStop(location: 1, opacity: 0.08 + bright * 0.3),
+        ]
+    }
 
     static func axis(for layout: DYLiveAdaptiveLayout) -> DYLiveAmbientAxis? {
         switch layout {
@@ -252,16 +309,118 @@ enum DYLiveAmbientTreatment {
     }
 
     static func backdrop(artwork: DYLiveAmbientRGB?, location: CGFloat) -> DYLiveAmbientRGB {
+        guard let artwork else { return composited(nil, location: location) }
+        return composited(DYLiveAmbientPalette.make(average: artwork, accent: artwork), location: location)
+    }
+
+    /// 用已经定好的主色和辅色合成背景。纯色样本和分桶取色走同一条压暗。
+    static func composited(_ palette: DYLiveAmbientPalette?, location: CGFloat) -> DYLiveAmbientRGB {
         let black = DYLiveAmbientRGB(red: 0, green: 0, blue: 0)
         var pixel = fallback
-        if let artwork {
-            pixel = over(pixel, artwork, opacity: artworkOpacity(at: location))
+        if let palette {
+            pixel = over(pixel, palette.primary, opacity: artworkOpacity(at: location))
             let reflection = opacity(at: location, stops: reflectionStops) * reflectionOpacity
-            pixel = over(pixel, artwork, opacity: reflection)
+            pixel = over(pixel, palette.primary, opacity: reflection)
+            pixel = over(pixel, palette.primary, opacity: opacity(at: location, stops: primaryGlowStops) * primaryGlowStrength)
+            pixel = over(pixel, palette.secondary, opacity: opacity(at: location, stops: secondaryGlowStops) * secondaryGlowStrength)
+            pixel = over(pixel, palette.primary, opacity: opacity(at: location, stops: spillStops) * spillStrength)
+            pixel = over(pixel, black, opacity: opacity(at: location, stops: brightnessScrimStops(palette.sourceLuminance)))
         }
-        pixel = over(pixel, black, opacity: plateOpacity)
+        pixel = over(pixel, black, opacity: opacity(at: location, stops: plateStops))
         pixel = over(pixel, black, opacity: opacity(at: location, stops: veilStops))
         return pixel
+    }
+
+    /// 亮色压暗、暗色抬起、高饱和收一点。辅色只降低明度，不再另转色相。
+    static func graded(_ color: DYLiveAmbientRGB, accent: Bool = false) -> DYLiveAmbientRGB {
+        let (h, s, v) = hsv(color)
+        let neutral = neutralGrade(v, accent: accent)
+        let chromatic = chromaticGrade(h: h, s: s, v: v, accent: accent)
+        return mix(neutral, chromatic, smoothstep(0.06, 0.16, s))
+    }
+
+    static func neutralGrade(_ v: CGFloat, accent: Bool) -> DYLiveAmbientRGB {
+        let cap: CGFloat = accent ? 0.12 : 0.24
+        let lifted: CGFloat = v < 0.05 ? 0.06 : min(cap, 0.08 + v * 0.22)
+        return DYLiveAmbientRGB(red: lifted, green: lifted, blue: min(1, lifted + (accent ? 0.02 : 0.012)))
+    }
+
+    static func chromaticGrade(h: CGFloat, s: CGFloat, v: CGFloat, accent: Bool) -> DYLiveAmbientRGB {
+        var saturation = s
+        var value = v
+        if saturation > 0.75 { saturation = 0.75 + (saturation - 0.75) * 0.2 }
+        if value < 0.16 {
+            value = 0.16 + (0.16 - value) * 0.8
+        } else if value > 0.48 {
+            value = 0.48 - (value - 0.48) * 0.45
+        }
+        if accent {
+            saturation *= 0.75
+            value *= 0.7
+        }
+        return rgb(h: h, s: min(0.68, saturation), v: min(accent ? 0.3 : 0.46, value))
+    }
+
+    static func hueDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        let delta = abs(a - b)
+        return min(delta, 1 - delta)
+    }
+
+    static func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
+        let span = edge1 - edge0
+        let t = span > 0 ? min(1, max(0, (value - edge0) / span)) : (value < edge0 ? 0 : 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    static func mix(_ a: DYLiveAmbientRGB, _ b: DYLiveAmbientRGB, _ amount: CGFloat) -> DYLiveAmbientRGB {
+        let t = min(1, max(0, amount))
+        return DYLiveAmbientRGB(
+            red: a.red * (1 - t) + b.red * t,
+            green: a.green * (1 - t) + b.green * t,
+            blue: a.blue * (1 - t) + b.blue * t)
+    }
+
+    /// 单色时只压低同一色相，不发明另一种颜色。
+    static func variant(_ color: DYLiveAmbientRGB) -> DYLiveAmbientRGB {
+        let (h, s, v) = hsv(color)
+        return rgb(h: h, s: min(0.68, s * 0.82), v: max(0.05, v * 0.72))
+    }
+
+    static func hsv(_ color: DYLiveAmbientRGB) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
+        let r = min(1, max(0, color.red))
+        let g = min(1, max(0, color.green))
+        let b = min(1, max(0, color.blue))
+        let maxC = max(r, max(g, b))
+        let minC = min(r, min(g, b))
+        let delta = maxC - minC
+        var h: CGFloat = 0
+        if delta > 0.0001 {
+            if maxC == r { h = (g - b) / delta }
+            else if maxC == g { h = 2 + (b - r) / delta }
+            else { h = 4 + (r - g) / delta }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        let saturation = maxC <= 0 ? 0 : delta / maxC
+        return (h, saturation, maxC)
+    }
+
+    static func rgb(h: CGFloat, s: CGFloat, v: CGFloat) -> DYLiveAmbientRGB {
+        let wrapped = h - floor(h)
+        let sector = wrapped * 6
+        let index = Int(sector) % 6
+        let fraction = sector - CGFloat(Int(sector))
+        let p = v * (1 - s)
+        let q = v * (1 - fraction * s)
+        let t = v * (1 - (1 - fraction) * s)
+        switch index {
+        case 0: return DYLiveAmbientRGB(red: v, green: t, blue: p)
+        case 1: return DYLiveAmbientRGB(red: q, green: v, blue: p)
+        case 2: return DYLiveAmbientRGB(red: p, green: v, blue: t)
+        case 3: return DYLiveAmbientRGB(red: p, green: q, blue: v)
+        case 4: return DYLiveAmbientRGB(red: t, green: p, blue: v)
+        default: return DYLiveAmbientRGB(red: v, green: p, blue: q)
+        }
     }
 
     static func whiteTextContrast(artwork: DYLiveAmbientRGB?, location: CGFloat) -> CGFloat {
@@ -303,9 +462,104 @@ enum DYLiveAmbientTreatment {
         return pow((channel + 0.055) / 1.055, 2.4)
     }
 
-    private static func relativeLuminance(_ color: DYLiveAmbientRGB) -> CGFloat {
+    static func relativeLuminance(_ color: DYLiveAmbientRGB) -> CGFloat {
         0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
     }
+}
+
+struct DYLiveAmbientPalette: Equatable, Sendable {
+    var primary: DYLiveAmbientRGB
+    var secondary: DYLiveAmbientRGB
+    var sourceLuminance: CGFloat
+
+    static let neutral = DYLiveAmbientPalette(
+        primary: DYLiveAmbientTreatment.fallback,
+        secondary: DYLiveAmbientTreatment.fallback,
+        sourceLuminance: 0)
+
+    /// 纯色样本没有面积信息。色相接近时退回同一色相的明暗变化。
+    static func make(average: DYLiveAmbientRGB, accent: DYLiveAmbientRGB) -> DYLiveAmbientPalette {
+        let averageHSV = DYLiveAmbientTreatment.hsv(average)
+        let accentHSV = DYLiveAmbientTreatment.hsv(accent)
+        let separated = accentHSV.s > 0.18 && DYLiveAmbientTreatment.hueDistance(accentHSV.h, averageHSV.h) > 0.05
+        let secondarySource = separated ? accent : DYLiveAmbientTreatment.variant(average)
+        return DYLiveAmbientPalette(
+            primary: DYLiveAmbientTreatment.graded(average),
+            secondary: DYLiveAmbientTreatment.graded(secondarySource, accent: true),
+            sourceLuminance: DYLiveAmbientTreatment.relativeLuminance(average))
+    }
+
+    /// 按色相分桶，面积够大的颜色才进入主色或辅色。孤立的高饱和像素会被忽略。
+    static func extract(from bitmap: DYLiveAmbientBitmap) -> DYLiveAmbientPalette {
+        let count = bitmap.width * bitmap.height
+        guard count > 0, bitmap.rgba.count == count * 4 else { return .neutral }
+        let binCount = 12
+        var weight = [Int](repeating: 0, count: binCount)
+        var sumR = [CGFloat](repeating: 0, count: binCount)
+        var sumG = [CGFloat](repeating: 0, count: binCount)
+        var sumB = [CGFloat](repeating: 0, count: binCount)
+        var allR: CGFloat = 0
+        var allG: CGFloat = 0
+        var allB: CGFloat = 0
+        for index in 0..<count {
+            let offset = index * 4
+            let pixel = DYLiveAmbientRGB(
+                red: CGFloat(bitmap.rgba[offset]) / 255,
+                green: CGFloat(bitmap.rgba[offset + 1]) / 255,
+                blue: CGFloat(bitmap.rgba[offset + 2]) / 255)
+            allR += pixel.red
+            allG += pixel.green
+            allB += pixel.blue
+            let (hue, saturation, value) = DYLiveAmbientTreatment.hsv(pixel)
+            if saturation < 0.12 || value < 0.05 { continue }
+            var bin = Int((hue * CGFloat(binCount)).rounded(.down))
+            if bin >= binCount { bin = 0 }
+            if bin < 0 { bin = 0 }
+            weight[bin] += 1
+            sumR[bin] += pixel.red
+            sumG[bin] += pixel.green
+            sumB[bin] += pixel.blue
+        }
+        let total = CGFloat(count)
+        let global = DYLiveAmbientRGB(red: allR / total, green: allG / total, blue: allB / total)
+        var first = -1
+        var second = -1
+        for bin in 0..<binCount where weight[bin] > 0 {
+            if first < 0 || weight[bin] > weight[first] {
+                second = first
+                first = bin
+            } else if second < 0 || weight[bin] > weight[second] {
+                second = bin
+            }
+        }
+        func average(_ bin: Int) -> DYLiveAmbientRGB {
+            let samples = CGFloat(weight[bin])
+            return DYLiveAmbientRGB(red: sumR[bin] / samples, green: sumG[bin] / samples, blue: sumB[bin] / samples)
+        }
+        let primaryRaw: DYLiveAmbientRGB
+        if first >= 0 {
+            let share = CGFloat(weight[first]) / total
+            primaryRaw = DYLiveAmbientTreatment.mix(global, average(first), DYLiveAmbientTreatment.smoothstep(0.12, 0.30, share))
+        } else {
+            primaryRaw = global
+        }
+        var secondaryRaw = DYLiveAmbientTreatment.variant(primaryRaw)
+        if second >= 0 {
+            let share = CGFloat(weight[second]) / total
+            let influence = DYLiveAmbientTreatment.smoothstep(0.08, 0.18, share)
+            let gap = DYLiveAmbientTreatment.hueDistance(DYLiveAmbientTreatment.hsv(average(second)).h, DYLiveAmbientTreatment.hsv(primaryRaw).h)
+            let separated = gap > 0.05 ? influence : 0
+            secondaryRaw = DYLiveAmbientTreatment.mix(DYLiveAmbientTreatment.variant(primaryRaw), average(second), separated)
+        }
+        return DYLiveAmbientPalette(
+            primary: DYLiveAmbientTreatment.graded(primaryRaw),
+            secondary: DYLiveAmbientTreatment.graded(secondaryRaw, accent: true),
+            sourceLuminance: DYLiveAmbientTreatment.relativeLuminance(global))
+    }
+}
+
+struct DYLiveAmbientPrepared: Equatable, Sendable {
+    var palette: DYLiveAmbientPalette
 }
 
 struct DYLiveAmbientBitmap: Equatable, Sendable {
@@ -323,7 +577,7 @@ enum DYLiveAmbientBlur {
         return blur(horizontal, radius: radius, horizontal: false)
     }
 
-    /// 三次盒式模糊叠成柔和色块。只应在封面变化时调用。
+    /// 三次盒式模糊。当前取色直接用缩小后的封面，不再为调色板跑这一步。
     static func soften(_ source: DYLiveAmbientBitmap) -> DYLiveAmbientBitmap {
         guard source.width > 0, source.height > 0 else { return source }
         let radius = max(2, min(source.width, source.height) / 5)
@@ -416,11 +670,11 @@ final class DYLiveAmbientMemo<Value> {
 
 private final class DYLiveAmbientBlurStore {
     static let shared = DYLiveAmbientBlurStore()
-    private let memo = DYLiveAmbientMemo<DYLiveAmbientBitmap>(limit: 4)
+    private let memo = DYLiveAmbientMemo<DYLiveAmbientPrepared>(limit: 4)
 
-    func peek(_ key: String) -> DYLiveAmbientBitmap? { memo.peek(key) }
+    func peek(_ key: String) -> DYLiveAmbientPrepared? { memo.peek(key) }
 
-    func resolve(key: String, render: () -> DYLiveAmbientBitmap) -> DYLiveAmbientBitmap {
+    func resolve(key: String, render: () -> DYLiveAmbientPrepared) -> DYLiveAmbientPrepared {
         memo.resolve(key: key, render: render)
     }
 }
