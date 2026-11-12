@@ -2471,7 +2471,9 @@ struct DYVideoPage: View {
                     }
                 }
             }
-            .padding(.vertical, 8)
+            // 每个按钮统一 50 高、内容贴顶：图标中心等距。最后一个无数字，下方多出的留白用上边距抵掉，胶囊上下视觉对称。
+            .padding(.top, 12)
+            .padding(.bottom, 2)
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: actionColumnWidth)
@@ -2486,14 +2488,15 @@ struct DYVideoPage: View {
                 Image(systemName: icon)
                     .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .regular))
                     .foregroundStyle(tint)
-                    .frame(height: 34)
+                    .frame(width: 34, height: 34)
                 if !text.isEmpty {
                     Text(text).font(.caption2.weight(.medium)).monospacedDigit()
                         .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: railWidth, height: text.isEmpty ? 44 : 50)
+            // 有数字和没数字的按钮高度一致、内容都贴顶，图标中心在同一条等距线上
+            .frame(width: railWidth, height: 50, alignment: .top)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
