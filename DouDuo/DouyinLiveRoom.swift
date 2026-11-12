@@ -941,6 +941,8 @@ struct DYLiveFeed: View {
     @State private var showFollowLive = false
     /// 「发现更多」只放分类。关注开播走旁边的「关注直播」。
     @State private var showDiscover = false
+    /// 关注主播头像条：默认收起，只显示「N 位正在直播」胶囊；点胶囊展开，选了主播或离开直播页就收起。
+    @State private var followStripExpanded = false
     @State private var selectedCategory = "featured"
     @State private var categoryHint: String?
     @State private var followPick = DYFollowSelection()
@@ -1000,6 +1002,11 @@ struct DYLiveFeed: View {
                     let paneAtTop = shown.interaction.minY < 24
                     VStack(alignment: .leading, spacing: 0) {
                         discoverBar
+                        if followStripExpanded, !model.followLive.isEmpty {
+                            followStrip
+                                .padding(.top, 10)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
                         if showDiscover {
                             discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
                         }
@@ -1011,6 +1018,7 @@ struct DYLiveFeed: View {
                     .frame(width: shown.interaction.width, height: shown.interaction.height, alignment: .topLeading)
                     .position(x: shown.interaction.midX, y: shown.interaction.midY)
                     .animation(.easeInOut(duration: 0.2), value: showDiscover)
+                    .animation(.easeInOut(duration: 0.2), value: followStripExpanded)
                 }
                 if placement.role != .hidden {
                     layoutToggle(placement, eligible: layout.stable.decision.layout)
@@ -1048,6 +1056,7 @@ struct DYLiveFeed: View {
         }
         .onChange(of: active) { _, value in
             if value {
+                followStripExpanded = false
                 model.activate()
                 presentCurrentRoom()
             } else {
@@ -1244,7 +1253,7 @@ struct DYLiveFeed: View {
             .foregroundStyle(foreground).buttonStyle(.plain)
             .layoutPriority(0)
             .accessibilityIdentifier("live.discover")
-            followLiveButton.layoutPriority(1)
+            if !model.followLive.isEmpty { followLiveButton.layoutPriority(1) }
             Spacer(minLength: 0)
         }
     }
@@ -1357,9 +1366,11 @@ struct DYLiveFeed: View {
     }
 
 
+    /// 替换原「我的关注」入口：有关注主播在播才出现，点开是一排头像，点头像直接进直播间。
     private var followLiveButton: some View {
-        Button { showFollowLive = true } label: {
-            Label("我的关注", systemImage: "person.crop.circle")
+        let count = model.followLive.count
+        return Button { followStripExpanded.toggle() } label: {
+            Label("\(count) 位正在直播", systemImage: followStripExpanded ? "chevron.up" : "chevron.down")
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -1369,7 +1380,43 @@ struct DYLiveFeed: View {
         }
         .foregroundStyle(foreground).buttonStyle(.plain)
         .accessibilityIdentifier("live.follow")
-        .accessibilityLabel("我的关注")
+        .accessibilityLabel("\(count) 位关注的主播正在直播")
+    }
+
+    private var followStrip: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 14) {
+                ForEach(model.followLive) { r in
+                    Button {
+                        followStripExpanded = false
+                        resolveListedFollow(r, enter: true)
+                    } label: {
+                        VStack(spacing: 4) {
+                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                                placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                .frame(width: 54, height: 54).clipShape(Circle())
+                                .padding(3)
+                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
+                                .overlay(alignment: .bottom) {
+                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(foreground)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                        .offset(y: 6)
+                                }
+                            Text(r.owner).font(.caption2).foregroundStyle(foreground).lineLimit(1).frame(width: 68)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(r.owner)，直播中")
+                    .accessibilityIdentifier("live.strip.\(r.id)")
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .scrollIndicators(.hidden)
+        .themeShadow(.mediaLabel)
+        .accessibilityIdentifier("live.follow.strip")
     }
 
     private var emptyState: some View {
