@@ -1665,8 +1665,7 @@ struct DouyinFeedScreen: View {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
                              onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onToast: { showToast($0) },
-                             onLive: { r in live.open(r); selectTab(.live) })
+                             onToast: { showToast($0) })
             } else {
                 recommendArea
             }
