@@ -281,68 +281,6 @@ enum DYFollowAvatarPolicy {
     }
 }
 
-/// 关注页直播头像条的展开状态。只描述界面，不发请求，也不保存房间。
-enum DYFollowLiveDisclosure {
-    static let minimumTap: CGFloat = 44
-
-    struct State: Equatable {
-        var expanded = false
-        var liveCount = 0
-        var onFollowTab = false
-    }
-
-    static func showsControl(_ state: State) -> Bool {
-        state.onFollowTab && state.liveCount > 0
-    }
-
-    static func showsStrip(_ state: State) -> Bool {
-        showsControl(state) && state.expanded
-    }
-
-    /// 进入关注页时默认收起。人数保留，等这一页自己上报最新结果。
-    static func enteredFollow(_ state: State) -> State {
-        var next = state
-        next.onFollowTab = true
-        next.expanded = false
-        return next
-    }
-
-    static func leftFollow(_ state: State) -> State {
-        var next = state
-        next.onFollowTab = false
-        next.expanded = false
-        return next
-    }
-
-    static func toggle(_ state: State) -> State {
-        guard showsControl(state) else { return state }
-        var next = state
-        next.expanded.toggle()
-        return next
-    }
-
-    static func selectedCreator(_ state: State) -> State {
-        var next = state
-        next.expanded = false
-        return next
-    }
-
-    static func liveCountChanged(_ state: State, count: Int) -> State {
-        var next = state
-        next.liveCount = max(0, count)
-        if next.liveCount == 0 { next.expanded = false }
-        return next
-    }
-
-    /// 换账号：丢掉上一份人数并收起。调用方不应为此再发一次列表请求。
-    static func sessionChanged(_ state: State) -> State {
-        var next = state
-        next.liveCount = 0
-        next.expanded = false
-        return next
-    }
-}
-
 struct DYFollowSelection {
     private(set) var token = 0
     private(set) var roomID: String?
@@ -576,34 +514,6 @@ enum DYFollowLiveLogicTests {
         check(DYFollowAvatarPolicy.liveNow(stale: false, kind: .requestFailed, items: ["old"]).isEmpty, "请求失败清空头像")
         check(DYFollowAvatarPolicy.liveNow(stale: false, kind: .decodeFailed, items: ["old"]).isEmpty, "解析失败清空头像")
         check(DYFollowAvatarPolicy.liveNow(stale: false, kind: .rooms, items: ["n1", "n2"]) == ["n1", "n2"], "有房间时换成新 id")
-
-        check(DYFollowLiveDisclosure.minimumTap == 44, "关注直播开关至少 44pt")
-        var disclosure = DYFollowLiveDisclosure.State()
-        disclosure = DYFollowLiveDisclosure.enteredFollow(disclosure)
-        check(disclosure.onFollowTab && !disclosure.expanded && !DYFollowLiveDisclosure.showsControl(disclosure), "进入关注页默认收起，没人直播不显示开关")
-        disclosure = DYFollowLiveDisclosure.liveCountChanged(disclosure, count: 3)
-        check(DYFollowLiveDisclosure.showsControl(disclosure) && !DYFollowLiveDisclosure.showsStrip(disclosure), "有人直播时只显示收起的开关")
-        disclosure = DYFollowLiveDisclosure.toggle(disclosure)
-        check(disclosure.expanded && DYFollowLiveDisclosure.showsStrip(disclosure), "点一次展开头像条")
-        disclosure = DYFollowLiveDisclosure.toggle(disclosure)
-        check(!disclosure.expanded && !DYFollowLiveDisclosure.showsStrip(disclosure) && DYFollowLiveDisclosure.showsControl(disclosure), "再点一次收起头像条")
-        disclosure = DYFollowLiveDisclosure.toggle(disclosure)
-        disclosure = DYFollowLiveDisclosure.selectedCreator(disclosure)
-        check(!disclosure.expanded && !DYFollowLiveDisclosure.showsStrip(disclosure), "选中主播后收起")
-        disclosure = DYFollowLiveDisclosure.toggle(disclosure)
-        disclosure = DYFollowLiveDisclosure.leftFollow(disclosure)
-        check(!disclosure.onFollowTab && !disclosure.expanded && !DYFollowLiveDisclosure.showsControl(disclosure), "离开关注页收起并隐藏开关")
-        disclosure = DYFollowLiveDisclosure.enteredFollow(disclosure)
-        check(!disclosure.expanded && disclosure.liveCount == 3 && !DYFollowLiveDisclosure.showsStrip(disclosure), "再次进入仍是收起")
-        let hidden = DYFollowLiveDisclosure.toggle(DYFollowLiveDisclosure.State())
-        check(!hidden.expanded, "没有开关时点击不会展开")
-        disclosure = DYFollowLiveDisclosure.liveCountChanged(disclosure, count: 0)
-        check(!DYFollowLiveDisclosure.showsControl(disclosure) && !disclosure.expanded, "没人直播时隐藏开关")
-        disclosure = DYFollowLiveDisclosure.liveCountChanged(disclosure, count: 2)
-        disclosure = DYFollowLiveDisclosure.toggle(disclosure)
-        disclosure = DYFollowLiveDisclosure.sessionChanged(disclosure)
-        check(disclosure.liveCount == 0 && !disclosure.expanded && disclosure.onFollowTab, "换账号清空上一份人数并收起")
-        check(!DYFollowLiveDisclosure.showsStrip(disclosure), "换账号后不能直接露出上一份头像条")
 
         var visit = DYLiveVisit()
         visit.replaceFeed(ids: ["rec-a", "rec-b"], currentID: "rec-a", zoneID: "1010014")
