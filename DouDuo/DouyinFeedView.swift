@@ -1169,14 +1169,6 @@ final class DYFeedModel: ObservableObject {
     func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0; shortCredit = 0 }
 }
 
-private struct DYTopChromeFrameKey: PreferenceKey {
-    static var defaultValue: CGRect { .zero }
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        let next = nextValue()
-        if next.maxY > value.maxY { value = next }
-    }
-}
-
 struct DouyinFeedScreen: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -1216,16 +1208,11 @@ struct DouyinFeedScreen: View {
     @State private var showMessages = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
     private var overlayOpen: Bool { showSearch || showMine || showMessages || authorTarget != nil }
-    /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧
-    @State private var topNudge: CGFloat = 0
-    /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
-    @State private var topBarWidth: CGFloat?
     /// 播放速度（设置 → 播放设置 → 播放速度）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
-    @State private var topChrome = CGRect.zero
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
@@ -1233,28 +1220,19 @@ struct DouyinFeedScreen: View {
     var body: some View {
         ZStack(alignment: .top) {
             layoutRoot
+                .ignoresSafeArea(edges: [.top, .horizontal])
+                .environment(\.dyRootRailTab, tab == .live ? nil : tab)
+        }
+        .overlayPreferenceValue(DYFeedRailPreference.self) { entries in
+            let entry = entries.first { $0.tab == tab && (tab != .recommend || $0.id == currentID) }
+            rootActionRail(entry, selector: false)
+        }
+        .overlay {
             if !(tab == .live && (live.clean || live.entered)) {
-                VStack(spacing: 6) {
-                    topBar
-                }
-                .padding(.top, hSize == .regular ? 0 : -80)
-                // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边。直播预览仍量这块的下沿。
-                .frame(width: topBarWidth)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: DYTopChromeFrameKey.self, value: proxy.frame(in: .named("douduo.feed")))
-                    }
-                }
+                rootActionRail(nil, selector: true)
             }
         }
         .coordinateSpace(.named("douduo.feed"))
-        .onPreferenceChange(DYTopChromeFrameKey.self) { next in
-            guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
-            topChrome = next
-        }
-        // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
-        .ignoresSafeArea(edges: [.top, .horizontal])
         // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
         // 主视图不挂 NavigationStack / toolbar，避免 Duo 系统侧栏再渲染一个重复的返回按钮。
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
@@ -1449,14 +1427,7 @@ struct DouyinFeedScreen: View {
     private var layoutRoot: some View {
         GeometryReader { geo in
             let wide = Self.playAreaIsWide(geo)
-            let panelW = sidePanelWidth(geo)
-            // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲
-            let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
-            let barW: CGFloat? = panelW > 0 ? geo.size.width - panelW : nil
             flatArrangement(geo)
-                .onAppear { topNudge = nudge; topBarWidth = barW }
-                .onChange(of: nudge) { _, n in topNudge = n }
-                .onChange(of: barW) { _, v in withAnimation(.snappy) { topBarWidth = v } }
                 .onAppear { feed.screenWide = wide }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
@@ -1660,7 +1631,7 @@ struct DouyinFeedScreen: View {
         ZStack(alignment: .top) {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
-                           topChrome: topChrome, screenInsets: insets)
+                           topChrome: .zero, screenInsets: insets)
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
@@ -1719,142 +1690,78 @@ struct DouyinFeedScreen: View {
 
     }
 
-    /// 顶部一排：左菜单，中间 关注/推荐/直播，右边 搜索 / 我的
-    /// 顶栏：只留「关注 / 推荐 / 直播」三个纯文字页签，不用胶囊，与状态栏时间/信号同一行。
-    /// 自适应仅收紧间距；消息与头像入口始终保留最小触摸区。
-    private var topBar: some View {
-        ViewThatFits(in: .horizontal) {
-            topBarRow(spacing: topNudge > 0 ? 5 : 14, hPad: 16)
-            topBarRow(spacing: 0, hPad: 10)
-            topBarRow(spacing: 0, hPad: 8)
-            topBarRow(spacing: 0, hPad: 5)
+    /// The selector and current video actions share the same outer-column geometry.
+    /// Empty and live pages reserve the same slots, so changing modules never moves the selector.
+    private func rootActionRail(_ entry: DYFeedRailEntry?, selector: Bool) -> some View {
+        let groupHeight = 3 * CGFloat(50) + 44 + 3 * theme.media.actionItemSpacing + 16
+        let railHeight = 50 + theme.media.actionGroupSpacing + groupHeight + theme.media.actionGroupSpacing + 50
+        return DYAdaptiveActionRail { edge in
+            // Read the current container's inset before expanding into the outer column.
+            // A size class does not describe the width of the system's vertical bar.
+            GeometryReader { safeGeometry in
+                let columnInset = edge == .leading ? safeGeometry.safeAreaInsets.leading : safeGeometry.safeAreaInsets.trailing
+                // Preserve the theme's optical inset so the circles align with system status glyphs.
+                let outerPadding = columnInset > 0 ? max(0, (columnInset - 54) / 2 + theme.media.expandedRailOpticalInset) : 12
+                GeometryReader { geometry in
+                    VStack(spacing: theme.media.actionGroupSpacing) {
+                        if selector {
+                            moduleMenu
+                        } else {
+                            Color.clear.frame(height: 50).allowsHitTesting(false)
+                        }
+                        if let entry {
+                            entry.actions.id("\(entry.tab)-\(entry.id)")
+                        }
+                    }
+                    .frame(width: 54, height: railHeight, alignment: .top)
+                    .modifier(DYRailReservedNudge(railEdge: edge, verticalSpace: (-max(0, geometry.size.height - railHeight - 92))...92))
+                    .padding(.horizontal, outerPadding)
+                    .padding(.bottom, 92)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: edge == .leading ? .bottomLeading : .bottomTrailing)
+                }
+                // Only the rail extends into the system column; reserved-region avoidance remains active.
+                .ignoresSafeArea(edges: .horizontal)
+            }
         }
-        .themeShadow(.mediaLabel)
-        .frame(maxWidth: .infinity, alignment: .center)
-        // 整行可点区域随内容高度撑开，避免点在文字上方的极窄条带时落空
-        .frame(minHeight: 54)
-        // 合屏避让：用右侧内缩把居中点推左（small move），绝不把左边的「关注」推出屏幕
-        .padding(.trailing, topNudge)
-        // 外屏（compact）状态区更深：外屏时间约 85pt，内屏（regular）约 39pt
-        // 注意用 size class 判断，不能用容器宽度——评论栏打开时视频区会变窄。
-        .padding(.top, hSize == .regular ? 23 : 76)
     }
 
-    private func topBarRow(spacing: CGFloat, hPad: CGFloat) -> some View {
-        // 触摸区左右各扩 hPad、上下各扩 14（图标与字号不动）
-        HStack(spacing: spacing) {
-            ForEach(DYTab.allCases, id: \.self) { t in
-                Button { selectTab(t) } label: {
-                    VStack(spacing: 3) {
-                        Text(t.title)
-                            .font(.headline.weight(tab == t ? .bold : .medium))
-                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(tab == t ? 1 : 0.62))
-                            .lineLimit(1).fixedSize()
-                        Capsule()
-                            .fill(theme.media.onMedia.color(for: scheme))
-                            .frame(width: 16, height: 3)
-                            .opacity(tab == t ? 1 : 0)
+    /// 与「更多」使用同一个系统 Menu API，选择后自动收起。
+    private var moduleMenu: some View {
+        Menu {
+            Section("切换模块") {
+                Picker("当前模块", selection: Binding(get: { tab }, set: { selectTab($0) })) {
+                    ForEach(DYTab.allCases, id: \.self) { target in
+                        Label(target.title, systemImage: target.symbol)
+                            .tag(target)
                     }
-                    // 文字本身小，撑开触摸区，避免点不中/误判成下拉
-                    .padding(.horizontal, hPad)
-                    .padding(.vertical, 14)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .pickerStyle(.inline)
             }
-            // 消息只留图标，未读红点仍独立显示。
-            Button { showMessages = true } label: {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.headline.weight(.medium))
-                    .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
-                .padding(.horizontal, hPad)
-                .padding(.vertical, 14)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
+            Section {
+                Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
+                Button("我的", systemImage: "person.crop.circle") { showMine = true }
+            }
+        } label: {
+            Image(systemName: tab.symbol)
+                .font(.system(size: 23, weight: .medium))
+                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                .frame(width: 50, height: 50)
+                .contentShape(Circle())
+                .ddGlassCircle()
+                .frame(width: 54)
                 .overlay(alignment: .topTrailing) {
                     if noticeUnread > 0 {
                         Circle().fill(theme.status.danger.color(for: scheme))
-                            .frame(width: 7, height: 7)
-                            .offset(x: -(hPad - 2), y: 10)
+                            .frame(width: 7, height: 7).offset(x: -3, y: 3)
                             .allowsHitTesting(false)
                     }
                 }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("消息")
-            .accessibilityIdentifier("douyin.messages.top")
-
-            // 「我的」：独立按钮（不属于 tab 切换）
-            Button { showMine = true } label: {
-                HStack(spacing: 5) {
-                    CachedAsyncImage(url: myUser?.avatar.flatMap(URL.init(string:))) { img in
-                        img.resizable().scaledToFill()
-                    } placeholder: {
-                        Image(systemName: "person.crop.circle")
-                            .font(.system(size: 19))
-                            .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
-                    }
-                    .frame(width: 22, height: 22)
-                    .clipShape(Circle())
-                }
-                .padding(.horizontal, max(hPad - 2, 4))
-                .padding(.vertical, 12)
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("我的")
-            .accessibilityIdentifier("douyin.mine.top")
         }
-        .fixedSize()
-    }
-
-    private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            Image(systemName: name)
-                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
-                .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-        }
+        .menuStyle(.button)
         .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
-    }
-
-    /// 顶栏「消息」。样式跟现有 topIcon，红暴液态按钮合并后会一起换。
-    private var messageEntry: some View {
-        topIcon("bell", "douyin.messages") { showMessages = true }
-            .overlay(alignment: .topTrailing) {
-                if noticeUnread > 0 {
-                    Circle().fill(theme.status.danger.color(for: scheme))
-                        .frame(width: 8, height: 8)
-                        .offset(x: -6, y: 6)
-                        .allowsHitTesting(false)
-                        .accessibilityIdentifier("douyin.messages.badge")
-                }
-            }
-    }
-
-    /// 顶部「关注 / 推荐 / 直播」切换（抖音顶栏同款位置）
-    private var tabSwitcher: some View {
-        let fg = theme.media.onMedia.color(for: scheme)
-        return HStack(spacing: 14) {
-            ForEach(DYTab.allCases, id: \.self) { t in
-                Button { selectTab(t) } label: {
-                    VStack(spacing: 4) {
-                        Text(t.title)
-                            .font(.headline.weight(tab == t ? .bold : .medium))
-                            .foregroundStyle(fg.opacity(tab == t ? 1 : 0.6))
-                            .lineLimit(1)
-                            .fixedSize()
-                        Capsule().fill(fg).frame(width: 18, height: 3).opacity(tab == t ? 1 : 0)
-                    }
-                    .padding(.horizontal, 2)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 2)
+        .accessibilityLabel("切换模块，当前\(tab.title)")
+        .accessibilityIdentifier("douyin.module.menu")
     }
 
     @ViewBuilder
@@ -2145,6 +2052,14 @@ private extension Double {
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
 enum DYTab: CaseIterable { case follow, recommend, live
+    var symbol: String {
+        switch self {
+        case .follow: "heart.fill"
+        case .recommend: "play.rectangle"
+        case .live: "dot.radiowaves.left.and.right"
+        }
+    }
+
     var title: String {
         switch self {
         case .follow: "关注"
@@ -2161,16 +2076,6 @@ struct DYVideoPage: View {
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var actionColumnWidth: CGFloat { 54 }
     private var chromeSidePadding: CGFloat { 12 }
-    // Full-bleed ancestors may report zero safe-area insets. Read the app's
-    // foreground key window as a fallback, never a guessed device/rail width.
-    private var systemColumnInset: CGFloat {
-        let windowInset = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
-        return max(insets.trailing, windowInset)
-    }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -2270,25 +2175,22 @@ struct DYVideoPage: View {
                     .allowsHitTesting(false)
             }
 
-            // 左下信息贴近进度条；右侧按钮维持原高度，不跟随标题下移。
-            HStack(alignment: .bottom, spacing: 12) {
-                info(fg)
-                Spacer(minLength: 0)
-                actions(fg)
-                    .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
-                        isRegular: hSize == .regular, trailingInset: systemColumnInset,
-                        columnWidth: actionColumnWidth, outerPadding: chromeSidePadding,
-                        opticalLeadingInset: theme.media.expandedRailOpticalInset))
-                    .modifier(DYRailReservedNudge())
-                    .offset(x: hSize == .compact ? -9 : 0)
-                    .padding(.bottom, item.images.isEmpty ? 56 : 0)
+            // Keep the entire action group on the system bar edge as the scene moves.
+            DYAdaptiveActionRail { edge in
+                HStack(alignment: .bottom, spacing: 12) {
+                    if edge == .leading { actionRail(fg, edge: edge) }
+                    info(fg)
+                    Spacer(minLength: 0)
+                    if edge == .trailing { actionRail(fg, edge: edge) }
+                }
+                .padding(.horizontal, chromeSidePadding)
+                .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
             }
-            .padding(.horizontal, chromeSidePadding)
-            .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
         }
         .overlay(alignment: .bottom) {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
         }
+        .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）
@@ -2302,6 +2204,11 @@ struct DYVideoPage: View {
                 DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
             }
         }
+    }
+
+    private func railEntry(_ fg: Color) -> [DYFeedRailEntry] {
+        guard isCurrent, onBack == nil, let rootRailTab else { return [] }
+        return [DYFeedRailEntry(id: item.id, tab: rootRailTab, actions: AnyView(actions(fg)))]
     }
 
     private var danmakuBar: some View {
@@ -2408,6 +2315,22 @@ struct DYVideoPage: View {
     }
 
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 评论 / 收藏 / 搜索，数字在图标下），下方单独一颗「更多」圆按钮
+    @Environment(\.dyRootRailTab) private var rootRailTab
+
+    private func actionRail(_ fg: Color, edge: HorizontalEdge) -> some View {
+        Group {
+            if rootRailTab != nil && onBack == nil {
+                Color.clear.frame(width: actionColumnWidth, height: 0).allowsHitTesting(false)
+            } else {
+                actions(fg)
+                    .fixedSize()
+                    .modifier(DYRailReservedNudge(railEdge: edge))
+                    .padding(.bottom, item.images.isEmpty ? 56 : 0)
+            }
+        }
+        .padding(.horizontal, hSize == .compact ? 9 : 0)
+    }
+
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
