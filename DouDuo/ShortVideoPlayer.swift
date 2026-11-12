@@ -161,6 +161,13 @@ extension PlayerPage {
     }
 }
 
+/// 极简模式：长按圆形模块入口时，让当前视频页把左下角的作者和标题临时显示出来（松手消失）。
+/// 直接复用页面里原来的信息区，所以样式、位置和平时完全一样。
+@MainActor final class DDPeekInfo: ObservableObject {
+    static let shared = DDPeekInfo()
+    @Published var on = false
+}
+
 /// 极简模式：播放进度画在圆形模块入口的外圈。播放器页把当前进度写进来，屏幕层读。
 /// 只有「当前页」会写（isActive），所以不会被相邻预加载页的进度干扰。
 @MainActor final class DDRailProgress: ObservableObject {
@@ -243,9 +250,9 @@ struct PlayerPage: View {
     /// 锁屏 / 控制中心「正在播放」上显示的标题
     var title: String = ""
     var boost: DYBoostControl? = nil
-    /// 极简模式：隐藏底部进度条，进度改画在模块入口外圈
+    /// 简洁 / 极简模式：隐藏底部进度条，进度改画在模块入口外圈
     @AppStorage("douyin_chrome_mode_v1") private var chromeModeRaw = "classic"
-    private var progressOnRail: Bool { chromeModeRaw == "minimal" }
+    private var progressOnRail: Bool { chromeModeRaw == "minimal" || chromeModeRaw == "rail" }
     /// 上一次刷新「正在播放」信息的位置（约每秒一次）
     @State private var lastNowPlaying = -10.0
     /// 静音（右下角按钮，全局记住）
