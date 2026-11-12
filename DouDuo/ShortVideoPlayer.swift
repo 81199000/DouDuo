@@ -150,13 +150,44 @@ extension PlayerPage {
                          fillWidth: Bool = true, danmaku: [DYDanmaku] = [], altURL: URL? = nil,
                          quality: String? = nil, fastURL: URL? = nil, posterURL: URL? = nil,
                          videoAspect: Double = 0,
-                         headEndSeconds: Double? = nil, continuationURL: URL? = nil) -> PlayerPage {
+                         headEndSeconds: Double? = nil, continuationURL: URL? = nil,
+                         boost: DYBoostControl? = nil) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
                    topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
                    posterURL: posterURL, headEndSeconds: headEndSeconds,
-                   continuationURL: continuationURL, videoAspect: videoAspect, title: title)
+                   continuationURL: continuationURL, videoAspect: videoAspect, title: title, boost: boost)
+    }
+}
+
+/// 右侧按钮/作者区也要能长按加速：这些控件盖在手势层上面，触摸到不了手势层，
+/// 所以由 PlayerPage 把「加速开始/结束」交给这个对象，外层控件按住时直接调用。
+@MainActor final class DYBoostControl: ObservableObject {
+    /// 正在加速：外层据此淡出按钮和状态图标。
+    @Published var boosting = false
+    var press: (Bool) -> Void = { _ in }
+    private var held = false
+    private var lastEnd = Date.distantPast
+    /// 按住或刚松手的一小段时间内，按钮自己的点击要忽略（否则长按加速后松手会变成点赞/评论）。
+    var blocksTap: Bool { held || Date().timeIntervalSince(lastEnd) < 0.8 }
+    func begin() { guard !held else { return }; held = true; press(true) }
+    func end() { guard held else { return }; held = false; lastEnd = Date(); press(false) }
+}
+
+/// 给按钮加「按住 0.5 秒进入加速、松手恢复」。GestureState 在松手和被系统取消时都会复位，不会卡在加速状态。
+struct DYHoldBoost: ViewModifier {
+    let control: DYBoostControl
+    @GestureState private var holding = false
+    func body(content: Content) -> some View {
+        content
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.5)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .updating($holding) { value, state, _ in
+                        if case .second(true, _) = value { state = true }
+                    })
+            .onChange(of: holding) { _, now in now ? control.begin() : control.end() }
     }
 }
 
@@ -195,6 +226,7 @@ struct PlayerPage: View {
     var videoAspect: Double = 0
     /// 锁屏 / 控制中心「正在播放」上显示的标题
     var title: String = ""
+    var boost: DYBoostControl? = nil
     /// 上一次刷新「正在播放」信息的位置（约每秒一次）
     @State private var lastNowPlaying = -10.0
     /// 静音（右下角按钮，全局记住）
@@ -324,10 +356,11 @@ struct PlayerPage: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if isActive { progressBar.padding(.bottom, max(bottomInset, 8)) }
+            if isActive && !rateBoost { progressBar.padding(.bottom, max(bottomInset, 8)) }
         }
         .onAppear {
             if player == nil { setup() }
+            boost?.press = { handleLongPress($0) }
             if isActive { bindRemote() }
             DDPlayback.shared.register(playbackID, stop: { pauseForBackground() }, start: { resumeAfterBackground() })
         }
@@ -345,6 +378,8 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             resumeAfterBackground()
         }
+        .onChange(of: rateBoost) { _, on in boost?.boosting = on }
+        .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
         .onChange(of: muted) { _, m in
             guard isActive else { return }
             player?.isMuted = m
@@ -389,21 +424,25 @@ struct PlayerPage: View {
         }
     }
 
+    /// 长按加速开始/结束。手势层和右侧按钮（DYBoostControl）共用。
+    private func handleLongPress(_ pressing: Bool) {
+        if pressing && !rateBoost { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+        if let v = vlc {
+            if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(effectiveRate)); rateBoost = false }
+            return
+        }
+        guard let p = player else { return }
+        if pressing { p.rate = 2; rateBoost = true }
+        else if rateBoost { p.rate = isPlaying ? Float(effectiveRate) : 0; rateBoost = false }
+    }
+
     // MARK: 手势（UIKit 宿主：起手定方向，竖向优先让给分页）
 
     private var gestures: some View {
         PlayerGestureView(
             onSingleTap: { togglePlay() },
             onDoubleTap: { _, _ in onDoubleTap?() },
-            onLongPress: { pressing in
-                if let v = vlc {
-                    if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(effectiveRate)); rateBoost = false }
-                    return
-                }
-                guard let p = player else { return }
-                if pressing { p.rate = 2; rateBoost = true }
-                else if rateBoost { p.rate = isPlaying ? Float(effectiveRate) : 0; rateBoost = false }
-            },
+            onLongPress: { pressing in handleLongPress(pressing) },
             // 下滑：锁住本条视频的 2 倍速（不写设置、不影响下一条）
             onLongPressLock: { lockedBoost = true },
             // 上滑：立刻取消倍速，回到设置里的速度

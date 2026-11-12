@@ -2207,6 +2207,9 @@ struct DYVideoPage: View {
     @FocusState private var danmakuFocused: Bool
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
+    @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
+    /// 长按加速时右侧按钮/作者区淡出；这些控件按住也能触发加速（见 DYHoldBoost）。
+    @StateObject private var boost = DYBoostControl()
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
@@ -2250,7 +2253,8 @@ struct DYVideoPage: View {
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
                                     headEndSeconds: nil,
-                                    continuationURL: nil)
+                                    continuationURL: nil,
+                                    boost: boost)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in
@@ -2285,6 +2289,9 @@ struct DYVideoPage: View {
             }
             .padding(.horizontal, chromeSidePadding)
             .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
+            // 长按加速时淡出按钮和信息，画面干净；不禁用点击区，手指按在按钮上也能继续加速。
+            .opacity(boost.boosting ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: boost.boosting)
         }
         .overlay(alignment: .bottom) {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
@@ -2372,7 +2379,7 @@ struct DYVideoPage: View {
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Button(action: onAuthor) {
+                Button(action: { if !boost.blocksTap { onAuthor() } }) {
                     HStack(spacing: 8) {
                         CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
                             img.resizable().scaledToFill()
@@ -2380,10 +2387,23 @@ struct DYVideoPage: View {
                         .frame(width: 34, height: 34)
                         .clipShape(Circle())
                         .overlay(Circle().stroke(fg.opacity(0.9), lineWidth: 1))
+                        .overlay(alignment: .bottomTrailing) {
+                            // 已关注：绿色对勾；未关注：红色加号。follow_status > 0 即已关注（互关为 2）。
+                            let followed = (item.author.follow ?? 0) > 0
+                            Image(systemName: followed ? "checkmark" : "plus")
+                                .font(.system(size: 8, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .frame(width: 14, height: 14)
+                                .background(Circle().fill(followed ? theme.status.success.color(for: scheme) : theme.status.danger.color(for: scheme)))
+                                .overlay(Circle().stroke(.black.opacity(0.35), lineWidth: 0.5))
+                                .offset(x: 3, y: 3)
+                                .accessibilityIdentifier(followed ? "douyin.author.followed" : "douyin.author.notfollowed")
+                        }
                         Text(item.author.name).font(.subheadline.weight(.semibold)).foregroundStyle(fg).lineLimit(1)
                     }
                 }
                 .buttonStyle(.plain)
+                .modifier(DYHoldBoost(control: boost))
                 .accessibilityIdentifier("douyin.author")
             }
             if let metadata = item.metadataText() {
@@ -2434,13 +2454,14 @@ struct DYVideoPage: View {
             .frame(width: railWidth)
             .ddGlassCapsule()
             .frame(width: actionColumnWidth)
+            if item.images.isEmpty { quickSettings(fg) }
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
     }
 
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
+        Button(action: { if !boost.blocksTap { act() } }) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .regular))
@@ -2456,8 +2477,54 @@ struct DYVideoPage: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(DYHoldBoost(control: boost))
         .accessibilityIdentifier(id)
     }
+
+    /// 播放设置快捷入口：倍速 / 连播 / 铺满，不用再进「更多 → 播放设置」两层菜单。
+    private func quickSettings(_ fg: Color) -> some View {
+        let rates: [Double] = [1.0, 1.25, 1.5, 2.0, 0.75]
+        let on = theme.status.warning.color(for: scheme)
+        func quick(_ id: String, _ act: @escaping () -> Void, @ViewBuilder _ label: () -> some View) -> some View {
+            Button(action: { if !boost.blocksTap { act() } }) {
+                label().frame(width: railWidth, height: 38).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .modifier(DYHoldBoost(control: boost))
+            .accessibilityIdentifier(id)
+        }
+        return VStack(spacing: 0) {
+            quick("douyin.quick.speed", {
+                let i = rates.firstIndex { abs($0 - playbackRate) < 0.01 } ?? 0
+                playbackRate = rates[(i + 1) % rates.count]
+                onToast?(rateTitle(playbackRate))
+            }) {
+                Text(playbackRate == playbackRate.rounded() ? String(format: "%.0f×", playbackRate) : String(format: "%g×", playbackRate))
+                    .font(.system(size: 15, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(abs(playbackRate - 1) < 0.01 ? fg : on)
+            }
+            quick("douyin.quick.autonext", {
+                autoNext.toggle()
+                onToast?(autoNext ? "自动连播：开" : "自动连播：关")
+            }) {
+                Image(systemName: "play.square.stack").font(.system(size: 19))
+                    .foregroundStyle(autoNext ? on : fg.opacity(0.75))
+            }
+            quick("douyin.quick.autofit", {
+                autoFit.toggle()
+                onToast?(autoFit ? "自动铺满：开" : "自动铺满：关")
+            }) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 17))
+                    .foregroundStyle(autoFit ? on : fg.opacity(0.75))
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(width: railWidth)
+        .ddGlassCapsule()
+        .frame(width: actionColumnWidth)
+    }
+
+    private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
     /// 「更多」：转发 / 下载快捷入口 → 不感兴趣 → 弹幕 → 刷新推荐 / 设置。
     @ViewBuilder
