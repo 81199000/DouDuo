@@ -18,7 +18,7 @@ class FollowLiveLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="doudou-follow-logic-") as tmp:
             binary = Path(tmp) / "follow-logic"
             completed = subprocess.run(
-                ["swiftc", "-parse-as-library", "-D", "FOLLOW_LIVE_LOGIC_MAIN", str(SOURCE), "-o", str(binary)],
+                ["swiftc", "-swift-version", "5", "-parse-as-library", "-D", "FOLLOW_LIVE_LOGIC_MAIN", str(SOURCE), "-o", str(binary)],
                 check=False,
                 capture_output=True,
                 text=True,

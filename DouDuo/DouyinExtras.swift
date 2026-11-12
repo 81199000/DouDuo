@@ -1480,8 +1480,19 @@ struct DYFollowFeed: View {
     let onAuthor: (DYAweme) -> Void
     let onLogin: () -> Void
     let onToast: (String) -> Void
+    var onLive: (DYLiveRoom) -> Void = { _ in }
+    /// 头像条是否展开。收起时不挂 overlay，避免挡住视频手势。
+    var liveStripExpanded = false
+    /// 顶栏在 `douduo.feed` 坐标里的下沿。头像条贴着它，不再写死外屏/内屏偏移。
+    var chromeMaxY: CGFloat = 0
+    var onLiveCount: (Int) -> Void = { _ in }
+    var onCollapseLiveStrip: () -> Void = {}
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
+    @State private var liveNow: [DYLiveRoom] = []
+    @State private var liveNowTicket = 0
+    @State private var livePick = DYFollowSelection()
+    @State private var feedMinY: CGFloat = 0
     @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
     @State private var currentID: String?
     @State private var preloader = DYPreloader()
@@ -1534,6 +1545,25 @@ struct DYFollowFeed: View {
                 .ignoresSafeArea()
             }
         }
+        .overlay(alignment: .top) {
+            // 动画只包这一层。关注流本身不跟着做动画，播放器不会因为展开被重建。
+            Group {
+                if liveStripExpanded, !liveNow.isEmpty {
+                    liveRow
+                        .padding(.top, liveStripTop)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .accessibilityIdentifier("douyin.follow.liveRow")
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: liveStripExpanded)
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { feedMinY = proxy.frame(in: .named("douduo.feed")).minY }
+                    .onChange(of: proxy.frame(in: .named("douduo.feed")).minY) { _, y in feedMinY = y }
+            }
+        }
         .sheet(isPresented: $showComments) {
             if let cur = m.items.first(where: { $0.id == currentID }) {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -1542,6 +1572,7 @@ struct DYFollowFeed: View {
             }
         }
         .task {
+            Task { await loadLiveNow() }
             if m.items.isEmpty { await m.loadMore() }
             if currentID == nil { currentID = m.items.first?.id }
         }
@@ -1551,9 +1582,109 @@ struct DYFollowFeed: View {
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
         }
-        // 关注页只放关注作品。关注主播开播统一在直播页顶部头像条/「我的关注」里看，这里不再重复一排直播头像。
-        .onChange(of: active) { _, a in if !a { preloader.clear() } }
-        .onDisappear { preloader.clear() }
+        .onChange(of: active) { _, a in if !a { preloader.clear() } else { Task { await loadLiveNow() } } }
+        .onChange(of: liveNow.count) { _, count in onLiveCount(count) }
+        .onAppear { onLiveCount(liveNow.count) }
+        .onChange(of: bridge.followSession) { _, _ in
+            liveNow = []
+            onLiveCount(0)
+            onCollapseLiveStrip()
+            if active { Task { await loadLiveNow() } }
+        }
+        .onDisappear {
+            preloader.clear()
+            var pick = livePick
+            pick.cancel()
+            livePick = pick
+        }
+    }
+
+    /// 头像条顶边 = 顶栏底边（也就是胶囊底边）再加一小段空隙。不再减去一块预留高度。
+    private var liveStripTop: CGFloat {
+        guard chromeMaxY > 0 else { return max(insets.top, 0) }
+        return max(0, DYFollowLiveDisclosureLayout.stripTop(capsuleMaxY: chromeMaxY - feedMinY))
+    }
+
+    private func loadLiveNow() async {
+        liveNowTicket += 1
+        let ticket = liveNowTicket
+        let session = bridge.followSession
+        let result = await bridge.followLiveResult()
+        guard ticket == liveNowTicket, session == bridge.followSession else { return }
+        liveNow = DYFollowAvatarPolicy.liveNow(stale: result.stale, kind: result.kind, items: result.items)
+    }
+
+    /// 头像条和直播页列表共用同一份元数据。点某一位时才补这一间的播放地址。
+    private func openLive(_ room: DYLiveRoom) {
+        onCollapseLiveStrip()
+        var pick = livePick
+        let ticket = pick.begin(roomID: room.id, webRid: room.webRid, hasStream: !room.liveStreams.isEmpty)
+        livePick = pick
+        guard room.liveStreams.isEmpty else {
+            DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=1 detailRequests=0 elapsed=0.000")
+            onLive(room)
+            return
+        }
+        guard !room.webRid.isEmpty else {
+            onToast(DYFollowSelectionFailure.unavailable.message)
+            return
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        Task {
+            let result = await bridge.resolveFollowRoom(webRid: room.webRid)
+            guard livePick.isCurrent(roomID: room.id, token: ticket) else { return }
+            if result.stale { return }
+            let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started)
+            if result.kind == .notLoggedIn {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=notLoggedIn reused=0 detailRequests=1 elapsed=\(elapsed)")
+                liveNow = []
+                onLogin()
+                return
+            }
+            if result.kind == .rooms, let resolved = result.items.first, !resolved.liveStreams.isEmpty {
+                DYLiveModel.log("DDFOLLOWPLAY outcome=ready reused=0 detailRequests=1 elapsed=\(elapsed)")
+                onLive(DYLiveRoom(playback: resolved, fallback: room))
+                return
+            }
+            let failure = DYFollowSelectionFailure.from(kind: result.kind, hasPlayableRoom: false) ?? .unavailable
+            DYLiveModel.log("DDFOLLOWPLAY outcome=\(failure) reused=0 detailRequests=1 elapsed=\(elapsed)")
+            onToast(failure.message)
+        }
+    }
+
+    /// 顶部「直播中」头像：跟抖音关注页一样，点了直接进这个主播的直播间
+    private var liveRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 14) {
+                ForEach(liveNow) { r in
+                    Button { openLive(r) } label: {
+                        VStack(spacing: 4) {
+                            CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
+                                placeholder: { theme.media.chromeFill.color(for: scheme) }
+                                .frame(width: 58, height: 58).clipShape(Circle())
+                                .padding(3)
+                                .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 2.5))
+                                .overlay(alignment: .bottom) {
+                                    Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(theme.media.onMedia.color(for: scheme))
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                                        .offset(y: 6)
+                                }
+                            Text(r.owner).font(.caption2).foregroundStyle(theme.media.onMedia.color(for: scheme)).lineLimit(1).frame(width: 70)
+                                .padding(.top, 4)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(r.owner)，直播中")
+                    .accessibilityHint("进入直播间")
+                    .accessibilityIdentifier("douyin.follow.live.\(r.id)")
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.trailing, insets.trailing)
+        .themeShadow(.mediaLabel)
     }
 
     private func like(_ id: String, force: Bool?) {
