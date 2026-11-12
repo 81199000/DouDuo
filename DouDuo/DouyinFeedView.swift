@@ -2464,7 +2464,8 @@ struct DYVideoPage: View {
                 railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
                 if item.images.isEmpty {
                     // 有些视频铺满后会裁掉边缘，随手切回完整画面
-                    railItem("arrow.up.left.and.arrow.down.right", "", tint: autoFit ? theme.status.warning.color(for: scheme) : fg,
+                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
+                    railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
                              "douyin.fit") {
                         autoFit.toggle()
                         onToast?(autoFit ? "铺满：开" : "完整画面")
