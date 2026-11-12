@@ -1871,29 +1871,33 @@ struct DouyinFeedScreen: View {
         let show = chromeMode.usesRail && tab != .live
         let fg = theme.media.onMedia.color(for: scheme)
         let seeking = railProgress.seeking
-        // 尺寸：玻璃圆按钮保持原来的 50pt 不变，进度环套在外面，直径 58pt（离按钮 4pt）
+        // 外径 = 右侧胶囊宽度（50pt）。线宽画在圆内侧，所以这个圈的最外沿正好和胶囊左右对齐。
+        let d = DDRailMetrics.entryDiameter
+        let lw: CGFloat = seeking ? 4 : 2.5
+        let r = (d - lw) / 2
         return ZStack {
             if show {
-                // 底轨：很淡的整圈，让「还剩多少」一眼可见
-                Circle().stroke(fg.opacity(0.16), lineWidth: 3)
+                // 底轨：很淡的整圈
+                Circle().stroke(fg.opacity(0.18), lineWidth: 2.5)
                 // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
                 Circle()
                     .trim(from: 0, to: max(railProgress.fraction, 0.004))
                     .stroke(
                         AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
                                         startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
-                        style: StrokeStyle(lineWidth: seeking ? 4.5 : 3, lineCap: .round))
+                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                // 弧线终点的小亮点：像进度条的滑块，拖动时更大
+                // 弧线终点的小亮点
                 Circle()
                     .fill(fg)
-                    .frame(width: seeking ? 8 : 5, height: seeking ? 8 : 5)
-                    .offset(y: -29)
+                    .frame(width: seeking ? 7 : 4.5, height: seeking ? 7 : 4.5)
+                    .offset(y: -r)
                     .rotationEffect(.degrees(360 * railProgress.fraction))
                     .opacity(railProgress.fraction > 0.01 ? 1 : 0)
             }
         }
-        .frame(width: 58, height: 58)
+        .padding(lw / 2)
+        .frame(width: d, height: d)
         .shadow(color: .black.opacity(0.25), radius: 1.5)
         .animation(.linear(duration: 0.25), value: railProgress.fraction)
         .allowsHitTesting(false)
@@ -1931,37 +1935,43 @@ struct DouyinFeedScreen: View {
     }
 
     private var moduleCircleLabel: some View {
-        ZStack {
+        let ringOn = chromeMode.usesRail && tab != .live
+        // 有进度环时，玻璃圆缩进环里面（环内侧留 4pt）；没有环（直播）时保持原来的 50pt 圆。
+        let glass: CGFloat = ringOn ? DDRailMetrics.entryDiameter - 8 : DDRailMetrics.entryDiameter
+        return ZStack {
             Image(systemName: tab.symbol)
-                .font(.system(size: 23, weight: .medium))
+                .font(.system(size: ringOn ? 20 : 23, weight: .medium))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 50, height: 50)
+                .frame(width: glass, height: glass)
                 .contentShape(Circle())
                 .ddGlassCircle()
             railProgressRing
         }
+        // 占位固定：入口总高 50 + 下方间距，让入口到胶囊的距离和「胶囊到更多」一致（见 DDRailMetrics）
+        .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
         .frame(width: 54)
-        .overlay(alignment: .topTrailing) {
-            if noticeUnread > 0 {
-                Circle().fill(theme.status.danger.color(for: scheme))
-                    .frame(width: 7, height: 7).offset(x: -3, y: 3)
-                    .allowsHitTesting(false)
-            }
-        }
     }
 
-    /// 入口按钮：长按 0.35 秒显示作者标题（极简里松手消失；两档都不弹菜单）；单击弹菜单。
+    /// 入口按钮：
+    /// - 一按下就显示作者标题（不用等），抬手后消失；
+    /// - 按下不满 0.35 秒就抬手 = 单击，弹出菜单，菜单打开期间标题保持显示，菜单收起后才消失；
+    /// - 按满 0.35 秒 = 长按，只看标题，不弹菜单。
     @State private var minimalMenuOpen = false
     private func minimalModuleButton(edge: HorizontalEdge) -> some View {
         moduleCircleLabel
             .contentShape(Circle())
-            // 一个手势同时管单击和长按：按下满 0.35 秒 → 显示作者标题，抬手才消失；没满 0.35 秒就抬手 → 当作单击弹菜单。
             .modifier(DDPressHold(
                 threshold: 0.35,
-                onHoldChanged: { holding in
-                    if chromeMode.hidesInfo { withAnimation(.easeOut(duration: holding ? 0.12 : 0.15)) { peek.on = holding } }
+                onPressChanged: { pressing in
+                    guard chromeMode.hidesInfo else { return }
+                    // 抬手时若是单击，菜单会随后打开，标题由菜单状态接管，这里不先关
+                    if pressing { withAnimation(.easeOut(duration: 0.1)) { peek.on = true } }
+                    else if !minimalMenuOpen { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
                 },
-                onTap: { minimalMenuOpen = true }))
+                onTap: {
+                    minimalMenuOpen = true
+                    if chromeMode.hidesInfo { peek.on = true }
+                }))
             .popover(isPresented: $minimalMenuOpen,
                      attachmentAnchor: .point(edge == .trailing ? .leading : .trailing),
                      arrowEdge: edge == .trailing ? .trailing : .leading) {
@@ -1973,12 +1983,15 @@ struct DouyinFeedScreen: View {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { showSearch = true }
-                    minimalMenuRow("消息", "bubble.left.and.bubble.right", id: "douyin.module.messages") { showMessages = true }
+                    minimalMenuRow("消息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") { showMessages = true }
                     minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
                 }
                 .padding(.vertical, 8)
                 .frame(minWidth: 170)
                 .presentationCompactAdaptation(.popover)
+            }
+            .onChange(of: minimalMenuOpen) { _, open in
+                if !open, chromeMode.hidesInfo { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isButton)
@@ -1987,7 +2000,7 @@ struct DouyinFeedScreen: View {
             .accessibilityAction { minimalMenuOpen = true }
     }
 
-    private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, id: String, action: @escaping () -> Void) -> some View {
+    private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, badge: Bool = false, id: String, action: @escaping () -> Void) -> some View {
         Button {
             minimalMenuOpen = false
             action()
@@ -1995,6 +2008,11 @@ struct DouyinFeedScreen: View {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 22)
                 Text(title)
+                if badge {
+                    Circle().fill(theme.status.danger.color(for: scheme))
+                        .frame(width: 8, height: 8)
+                        .accessibilityIdentifier("douyin.module.messages.badge")
+                }
                 Spacer(minLength: 12)
                 if selected { Image(systemName: "checkmark") }
             }
@@ -2277,12 +2295,19 @@ private extension Double {
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
+/// 右侧功能栏的几何：进度环外径 = 玻璃胶囊宽（50pt）；入口到胶囊的间距沿用胶囊到「更多」的间距（actionGroupSpacing）。
+enum DDRailMetrics {
+    static let entryDiameter: CGFloat = 50
+}
+
 /// 按住 ≥ threshold 秒算「长按」，抬手前一直保持；不满 threshold 抬手算「单击」。
 /// 用 DragGesture(minimumDistance: 0) 自己计时：系统的 onLongPressGesture 达到时长后会自动结束，
 /// 无法做到「按住期间一直显示、抬手才消失」。
 struct DDPressHold: ViewModifier {
     let threshold: Double
-    let onHoldChanged: (Bool) -> Void
+    /// 按下 / 抬起（按下立即回调 true，抬起回调 false）
+    let onPressChanged: (Bool) -> Void
+    /// 按下不满 threshold 秒就抬起（且基本没移动）
     let onTap: () -> Void
     @State private var startedAt: Date?
     @State private var holding = false
@@ -2294,19 +2319,22 @@ struct DDPressHold: ViewModifier {
                 .onChanged { _ in
                     guard startedAt == nil else { return }
                     startedAt = Date()
+                    onPressChanged(true)
                     timer = Task { @MainActor in
                         try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
                         guard !Task.isCancelled, startedAt != nil else { return }
                         holding = true
-                        onHoldChanged(true)
                     }
                 }
                 .onEnded { value in
                     timer?.cancel(); timer = nil
                     let wasHolding = holding
+                    let moved = abs(value.translation.width) >= 20 || abs(value.translation.height) >= 20
                     startedAt = nil; holding = false
-                    if wasHolding { onHoldChanged(false) }
-                    else if abs(value.translation.width) < 20, abs(value.translation.height) < 20 { onTap() }
+                    if !wasHolding, !moved {
+                        onTap()          // 先开菜单（它会接管标题的显示），再回调抬起
+                    }
+                    onPressChanged(false)
                 })
     }
 }

@@ -739,7 +739,9 @@ final class DouDuoUITests: XCTestCase {
         print("DDHOLD after: menu=\(menuAfter) peek=\(peekAfter)")
         XCTAssertFalse(samples.contains { $0.contains("menu=true") }, "按住期间不应弹出菜单：\(samples)")
         if mode == "minimal" {
-            XCTAssertTrue(samples.contains { $0.contains("peek=true") }, "极简按住期间应显示作者标题：\(samples)")
+            // 按下立刻显示：第一个采样点（0.7s）就应该看到
+            XCTAssertTrue(samples.contains { $0.hasPrefix("t=0.7") && $0.contains("peek=true") }, "极简按下后应立即显示作者标题：\(samples)")
+            XCTAssertTrue(samples.allSatisfy { $0.contains("peek=true") }, "按住期间标题应一直显示：\(samples)")
         }
         XCTAssertFalse(menuAfter, "松手后不应弹出菜单")
         if mode == "minimal" { XCTAssertFalse(peekAfter, "松手后作者标题应消失") }
@@ -748,6 +750,9 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["douyin.module.search"].waitForExistence(timeout: 5) || app.buttons["搜索"].waitForExistence(timeout: 5), "单击仍应弹出模块菜单")
         attach(app, "minimal-menu-after-tap")
     }
+
+    // 兼容旧名
+
 
     /// 简洁模式也用外圈进度环，底部进度条隐藏；默认模式没有进度环。
     func testRailModeAlsoHasProgressRing() throws {
@@ -762,6 +767,50 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "rail-ring")
         let classic = launchChrome("classic")
         XCTAssertFalse(classic.otherElements["douyin.module.ring"].exists, "默认模式不画进度环")
+    }
+
+    /// 量布局：入口环、入口按钮、右侧胶囊（赞）、更多按钮的位置和尺寸，核对「环与胶囊同宽」「入口到胶囊的间距 = 胶囊到更多的间距」。
+    func testModuleEntryGeometry() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(5)
+        let ring = app.otherElements["douyin.module.ring"].firstMatch
+        XCTAssertTrue(ring.waitForExistence(timeout: 5))
+        func vis(_ id: String) -> XCUIElement? {
+            app.buttons.matching(identifier: id).allElementsBoundByIndex.first { $0.isHittable }
+        }
+        let like = vis("douyin.like")!.frame
+        let fit = vis("douyin.fit")!.frame
+        let more = vis("douyin.more")!.frame
+        print("DDGEO ring=\(ring.frame) menu=\(menu.frame) like=\(like) fit=\(fit) more=\(more)")
+        // 胶囊整体：赞的上沿 - 8（内边距）= 胶囊上沿；铺满下沿 + 8 = 胶囊下沿
+        let capsuleTop = like.minY - 8, capsuleBottom = fit.maxY + 8
+        let gapA = capsuleTop - ring.frame.maxY, gapB = more.minY - capsuleBottom
+        print("DDGEO capsule=\(capsuleTop)...\(capsuleBottom) ringW=\(ring.frame.width) gapRingToCapsule=\(gapA) gapCapsuleToMore=\(gapB)")
+        XCTAssertEqual(ring.frame.width, like.width, accuracy: 1.5, "进度环应和胶囊同宽")
+        XCTAssertEqual(ring.frame.midX, like.midX, accuracy: 1.5, "进度环应和胶囊居中对齐")
+        XCTAssertEqual(gapA, gapB, accuracy: 1.5, "入口到胶囊的间距应等于胶囊到「更多」的间距")
+        attach(app, "geometry")
+    }
+
+    /// 极简：单击入口 → 菜单弹出，同时作者标题显示；菜单收起后标题消失。红点只在菜单「消息」行，入口上没有。
+    func testMinimalTapShowsInfoWithMenuAndBadgeOnMessagesRow() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(4)
+        XCTAssertFalse(app.buttons["douyin.author"].exists, "平时不显示作者")
+        menu.tap()
+        XCTAssertTrue(app.buttons["douyin.module.search"].waitForExistence(timeout: 5), "单击应弹出菜单")
+        sleep(1)
+        XCTAssertTrue(app.buttons["douyin.author"].exists, "菜单打开期间应显示作者标题")
+        attach(app, "minimal-tap-menu-and-info")
+        // 关菜单：点「推荐」行（当前模块，选了也不换页）
+        app.buttons["douyin.module.item.recommend"].tap()
+        sleep(1)
+        XCTAssertFalse(app.buttons["douyin.author"].exists, "菜单收起后标题应消失")
+        XCTAssertFalse(app.otherElements["douyin.module.entry.badge"].exists, "入口上不再有红点")
     }
 
     /// 分页里每页都挂了角标，只取屏幕上那个
