@@ -261,7 +261,14 @@ struct PlayerPage: View {
     @State private var lockedBoost = false
 
     /// 当前实际速度：本视频锁了 2 倍就 2 倍，否则跟设置走
-    private var effectiveRate: Double { lockedBoost ? 2 : playbackRate }
+    /// 设置里的倍速，直接读 UserDefaults。
+    /// 时间观察器和 VLC 回调是播放器创建（预加载）时挂的闭包，里面拿到的 @AppStorage 是当时的旧值，
+    /// 之后在「更多」里改倍速，这些闭包还会把播放速率拉回旧值，于是当前视频不变速，滑到下一条才生效。
+    private var liveRate: Double {
+        let v = UserDefaults.standard.double(forKey: "douyin_playback_rate_v1")
+        return v > 0 ? v : 1.0
+    }
+    private var effectiveRate: Double { lockedBoost ? 2 : liveRate }
     private func rateText(_ r: Double) -> String {
         r == r.rounded() ? String(format: "%.0f×", r) : String(format: "%g×", r)
     }
@@ -454,8 +461,8 @@ struct PlayerPage: View {
             // 上滑：立刻取消倍速，回到设置里的速度
             onLongPressUnlock: {
                 lockedBoost = false; rateBoost = false
-                if let v = vlc { v.setRate(Float(playbackRate)) }
-                else { player?.rate = isPlaying ? Float(playbackRate) : 0 }
+                if let v = vlc { v.setRate(Float(liveRate)) }
+                else { player?.rate = isPlaying ? Float(liveRate) : 0 }
             },
             onSeekBegan: {
                 guard duration > 0 else { return }
@@ -1033,7 +1040,7 @@ struct PlayerPage: View {
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: t,
             // 锁屏报实际在跑的速度（长按临时 2 倍、本条锁定 2 倍都算），不是设置里的全局速度
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? (rateBoost || lockedBoost ? 2 : playbackRate) : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? (rateBoost || lockedBoost ? 2 : liveRate) : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
         ]
     }
@@ -1049,7 +1056,7 @@ struct PlayerPage: View {
     }
 
     private func seekTo(_ pos: Double) {
-        dmClock.sync(pos, playing: isPlaying, rate: rateBoost || lockedBoost ? 2 : playbackRate)
+        dmClock.sync(pos, playing: isPlaying, rate: rateBoost || lockedBoost ? 2 : liveRate)
         if let v = vlc { v.seekTo(pos); current = pos; return }
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
