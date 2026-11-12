@@ -974,12 +974,14 @@ final class DYPreloader {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
                 continue
             }
-            let item = AVPlayerItem(asset: DYMedia.asset(DYVideoCache.localURL(a.id) ?? url))
+            let asset = DYMedia.asset(DYVideoCache.localURL(a.id) ?? url)
+            let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 6
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
             p.automaticallyWaitsToMinimizeStalling = true
             players[a.id] = p
+            DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
             // ready 后 preroll：把开头的数据和首帧解码好
             obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
                 guard it.status == .readyToPlay else { return }
@@ -994,17 +996,18 @@ final class DYPreloader {
         guard let p = players.removeValue(forKey: id) else { return nil }
         obs.removeValue(forKey: id)?.invalidate()
         handedOut.insert(id)
-        p.isMuted = false
         return p
     }
 
     func clear() {
         for (id, p) in players { release(id, p) }
+        DDAudioPreloadPool.shared.clear()
         handedOut.removeAll()
     }
 
     private func release(_ id: String, _ p: AVPlayer) {
         obs.removeValue(forKey: id)?.invalidate()
+        DDAudioPreloadPool.shared.discard(id: id)
         p.pause()
         p.replaceCurrentItem(with: nil)
         players[id] = nil
@@ -1210,30 +1213,37 @@ struct DouyinFeedScreen: View {
     @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
-    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
     private var overlayOpen: Bool { showSearch || showMine || showMessages || authorTarget != nil }
-    /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧
+    @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
     @State private var topNudge: CGFloat = 0
-    /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧
+    /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧（默认模式用）
     @State private var topBarWidth: CGFloat?
-    /// 播放速度（设置 → 播放设置 → 播放速度）：全局速度，长按锁定只作用于单条视频，不写这里
+    @State private var topChrome = CGRect.zero
+    /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
+    private let peek = DDPeekInfo.shared
+    @ObservedObject private var railProgress = DDRailProgress.shared
+    /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
-    @State private var topChrome = CGRect.zero
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
     var body: some View {
-        ZStack(alignment: .top) {
+        let railMode = chromeMode.usesRail
+        return ZStack(alignment: .top) {
             layoutRoot
-            if !(tab == .live && (live.clean || live.entered)) {
+                .ignoresSafeArea(edges: [.top, .horizontal])
+                .environment(\.dyRootRailTab, (railMode && tab != .live) ? tab : nil)
+            if !railMode, !(tab == .live && (live.clean || live.entered)) {
                 VStack(spacing: 6) {
                     topBar
                 }
@@ -1248,13 +1258,25 @@ struct DouyinFeedScreen: View {
                 }
             }
         }
-        .coordinateSpace(.named("douduo.feed"))
+        .overlayPreferenceValue(DYFeedRailPreference.self) { entries in
+            if railMode {
+                let entry = entries.first { $0.tab == tab && (tab != .recommend || $0.id == currentID) }
+                rootActionRail(entry, selector: false)
+            }
+        }
+        .overlay {
+            if railMode, !(tab == .live && (live.clean || live.entered)) {
+                rootActionRail(nil, selector: true)
+            }
+        }
         .onPreferenceChange(DYTopChromeFrameKey.self) { next in
             guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
             topChrome = next
         }
-        // 顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区
-        .ignoresSafeArea(edges: [.top, .horizontal])
+        // 默认模式：顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区——和 PR #12 之前完全一致。
+        // 简洁/极简模式的 ignoresSafeArea 已在 layoutRoot 上，这里不重复加，避免影响侧边栏的安全区测量。
+        .modifier(DDClassicTopInset(active: !railMode))
+        .coordinateSpace(.named("douduo.feed"))
         // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
         // 主视图不挂 NavigationStack / toolbar，避免 Duo 系统侧栏再渲染一个重复的返回按钮。
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
@@ -1450,7 +1472,7 @@ struct DouyinFeedScreen: View {
         GeometryReader { geo in
             let wide = Self.playAreaIsWide(geo)
             let panelW = sidePanelWidth(geo)
-            // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲
+            // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲（默认模式的顶栏用）
             let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
             let barW: CGFloat? = panelW > 0 ? geo.size.width - panelW : nil
             flatArrangement(geo)
@@ -1660,7 +1682,7 @@ struct DouyinFeedScreen: View {
         ZStack(alignment: .top) {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
-                           topChrome: topChrome, screenInsets: insets)
+                           topChrome: chromeMode.usesRail ? .zero : topChrome, screenInsets: insets)
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
@@ -1809,52 +1831,199 @@ struct DouyinFeedScreen: View {
         .fixedSize()
     }
 
-    private func topIcon(_ name: String, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            Image(systemName: name)
-                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+    /// The selector and current video actions share the same outer-column geometry.
+    /// Empty and live pages reserve the same slots, so changing modules never moves the selector.
+    private func rootActionRail(_ entry: DYFeedRailEntry?, selector: Bool) -> some View {
+        let groupHeight = 3 * CGFloat(50) + 44 + 3 * theme.media.actionItemSpacing + 16
+        let railHeight = 50 + theme.media.actionGroupSpacing + groupHeight + theme.media.actionGroupSpacing + 50
+        return DYAdaptiveActionRail { edge in
+            // Read the current container's inset before expanding into the outer column.
+            // A size class does not describe the width of the system's vertical bar.
+            GeometryReader { safeGeometry in
+                let columnInset = edge == .leading ? safeGeometry.safeAreaInsets.leading : safeGeometry.safeAreaInsets.trailing
+                // Preserve the theme's optical inset so the circles align with system status glyphs.
+                let outerPadding = columnInset > 0 ? max(0, (columnInset - 54) / 2 + theme.media.expandedRailOpticalInset) : 12
+                GeometryReader { geometry in
+                    VStack(spacing: theme.media.actionGroupSpacing) {
+                        if selector {
+                            moduleMenu(edge: edge)
+                        } else {
+                            Color.clear.frame(height: 50).allowsHitTesting(false)
+                        }
+                        if let entry {
+                            entry.actions.id("\(entry.tab)-\(entry.id)")
+                        }
+                    }
+                    .frame(width: 54, height: railHeight, alignment: .top)
+                    .modifier(DYRailReservedNudge(railEdge: edge, verticalSpace: (-max(0, geometry.size.height - railHeight - 92))...92))
+                    .padding(.horizontal, outerPadding)
+                    .padding(.bottom, 92)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: edge == .leading ? .bottomLeading : .bottomTrailing)
+                }
+                // Only the rail extends into the system column; reserved-region avoidance remains active.
+                .ignoresSafeArea(edges: .horizontal)
+            }
+        }
+    }
+
+    /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
+    @ViewBuilder
+    private var railProgressRing: some View {
+        // 简洁 / 极简的推荐页、关注页画进度环；直播没有进度，不画——但占位恒定，切模块时入口位置不动。
+        let show = chromeMode.usesRail && tab != .live
+        let fg = theme.media.onMedia.color(for: scheme)
+        let seeking = railProgress.seeking
+        // 外径 = 右侧胶囊宽度（50pt）。线宽画在圆内侧，所以这个圈的最外沿正好和胶囊左右对齐。
+        let d = DDRailMetrics.entryDiameter
+        let lw: CGFloat = seeking ? 4 : 2.5
+        let r = (d - lw) / 2
+        return ZStack {
+            if show {
+                // 底轨：很淡的整圈
+                Circle().stroke(fg.opacity(0.18), lineWidth: 2.5)
+                // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
+                Circle()
+                    .trim(from: 0, to: max(railProgress.fraction, 0.004))
+                    .stroke(
+                        AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
+                                        startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
+                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                // 弧线终点的小亮点
+                Circle()
+                    .fill(fg)
+                    .frame(width: seeking ? 7 : 4.5, height: seeking ? 7 : 4.5)
+                    .offset(y: -r)
+                    .rotationEffect(.degrees(360 * railProgress.fraction))
+                    .opacity(railProgress.fraction > 0.01 ? 1 : 0)
+            }
+        }
+        .padding(lw / 2)
+        .frame(width: d, height: d)
+        .shadow(color: .black.opacity(0.25), radius: 1.5)
+        .animation(.linear(duration: 0.25), value: railProgress.fraction)
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("douyin.module.ring")
+        .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")
+        .accessibilityHidden(!show)
+    }
+
+    /// 模块菜单的内容（单击圆形入口时弹出）。
+    @ViewBuilder
+    private var moduleMenuContent: some View {
+        Section("切换模块") {
+            Picker("当前模块", selection: Binding(get: { tab }, set: { selectTab($0) })) {
+                ForEach(DYTab.allCases, id: \.self) { target in
+                    Label(target.title, systemImage: target.symbol)
+                        .tag(target)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        Section {
+            Button("搜索", systemImage: "magnifyingglass") { showSearch = true }
+                .accessibilityIdentifier("douyin.module.search")
+            Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
+            Button("我的", systemImage: "person.crop.circle") { showMine = true }
+        }
+    }
+
+    /// 圆形模块入口（简洁 / 极简共用）。
+    /// 系统 Menu 在长按时也会弹出菜单，没法做到「长按只看作者标题、不弹菜单」，所以统一自己处理：
+    /// 单击（按下不满 0.35 秒）弹菜单，长按（满 0.35 秒）显示作者标题，松手消失，不弹菜单。
+    @ViewBuilder
+    private func moduleMenu(edge: HorizontalEdge) -> some View {
+        minimalModuleButton(edge: edge)
+    }
+
+    private var moduleCircleLabel: some View {
+        let ringOn = chromeMode.usesRail && tab != .live
+        // 有进度环时，玻璃圆缩进环里面（环内侧留 4pt）；没有环（直播）时保持原来的 50pt 圆。
+        let glass: CGFloat = ringOn ? DDRailMetrics.entryDiameter - 8 : DDRailMetrics.entryDiameter
+        return ZStack {
+            Image(systemName: tab.symbol)
+                .font(.system(size: ringOn ? 20 : 23, weight: .medium))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
+                .frame(width: glass, height: glass)
+                .contentShape(Circle())
+                .ddGlassCircle()
+            railProgressRing
+        }
+        // 占位固定：入口总高 50 + 下方间距，让入口到胶囊的距离和「胶囊到更多」一致（见 DDRailMetrics）
+        .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
+        .frame(width: 54)
+    }
+
+    /// 入口按钮：
+    /// - 一按下就显示作者标题（不用等），抬手后消失；
+    /// - 按下不满 0.35 秒就抬手 = 单击，弹出菜单，菜单打开期间标题保持显示，菜单收起后才消失；
+    /// - 按满 0.35 秒 = 长按，只看标题，不弹菜单。
+    @State private var minimalMenuOpen = false
+    private func minimalModuleButton(edge: HorizontalEdge) -> some View {
+        moduleCircleLabel
+            .contentShape(Circle())
+            .modifier(DDPressHold(
+                threshold: 0.35,
+                onPressChanged: { pressing in
+                    guard chromeMode.hidesInfo else { return }
+                    // 抬手时若是单击，菜单会随后打开，标题由菜单状态接管，这里不先关
+                    if pressing { withAnimation(.easeOut(duration: 0.1)) { peek.on = true } }
+                    else if !minimalMenuOpen { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
+                },
+                onTap: {
+                    minimalMenuOpen = true
+                    if chromeMode.hidesInfo { peek.on = true }
+                }))
+            .popover(isPresented: $minimalMenuOpen,
+                     attachmentAnchor: .point(edge == .trailing ? .leading : .trailing),
+                     arrowEdge: edge == .trailing ? .trailing : .leading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(DYTab.allCases, id: \.self) { target in
+                        minimalMenuRow(target.title, target.symbol, selected: tab == target, id: "douyin.module.item.\(target)") {
+                            selectTab(target)
+                        }
+                    }
+                    Divider().padding(.vertical, 4)
+                    minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { showSearch = true }
+                    minimalMenuRow("消息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") { showMessages = true }
+                    minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
+                }
+                .padding(.vertical, 8)
+                .frame(minWidth: 170)
+                .presentationCompactAdaptation(.popover)
+            }
+            .onChange(of: minimalMenuOpen) { _, open in
+                if !open, chromeMode.hidesInfo { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("切换模块，当前\(tab.title)")
+            .accessibilityIdentifier("douyin.module.menu")
+            .accessibilityAction { minimalMenuOpen = true }
+    }
+
+    private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, badge: Bool = false, id: String, action: @escaping () -> Void) -> some View {
+        Button {
+            minimalMenuOpen = false
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).frame(width: 22)
+                Text(title)
+                if badge {
+                    Circle().fill(theme.status.danger.color(for: scheme))
+                        .frame(width: 8, height: 8)
+                        .accessibilityIdentifier("douyin.module.messages.badge")
+                }
+                Spacer(minLength: 12)
+                if selected { Image(systemName: "checkmark") }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
-    }
-
-    /// 顶栏「消息」。样式跟现有 topIcon，红暴液态按钮合并后会一起换。
-    private var messageEntry: some View {
-        topIcon("bell", "douyin.messages") { showMessages = true }
-            .overlay(alignment: .topTrailing) {
-                if noticeUnread > 0 {
-                    Circle().fill(theme.status.danger.color(for: scheme))
-                        .frame(width: 8, height: 8)
-                        .offset(x: -6, y: 6)
-                        .allowsHitTesting(false)
-                        .accessibilityIdentifier("douyin.messages.badge")
-                }
-            }
-    }
-
-    /// 顶部「关注 / 推荐 / 直播」切换（抖音顶栏同款位置）
-    private var tabSwitcher: some View {
-        let fg = theme.media.onMedia.color(for: scheme)
-        return HStack(spacing: 14) {
-            ForEach(DYTab.allCases, id: \.self) { t in
-                Button { selectTab(t) } label: {
-                    VStack(spacing: 4) {
-                        Text(t.title)
-                            .font(.headline.weight(tab == t ? .bold : .medium))
-                            .foregroundStyle(fg.opacity(tab == t ? 1 : 0.6))
-                            .lineLimit(1)
-                            .fixedSize()
-                        Capsule().fill(fg).frame(width: 18, height: 3).opacity(tab == t ? 1 : 0)
-                    }
-                    .padding(.horizontal, 2)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 2)
     }
 
     @ViewBuilder
@@ -2057,25 +2226,7 @@ struct DouyinFeedScreen: View {
             .disabled(refreshing)
             Menu {
                 Menu {
-                    Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
-                    Toggle(isOn: $feed.autoFit) { Label("自动铺满宽度", systemImage: "arrow.up.left.and.arrow.down.right") }
-                    Menu {
-                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
-                            Button {
-                                playbackRate = r
-                            } label: {
-                                if abs(playbackRate - r) < 0.01 {
-                                    Label(rateTitle(r), systemImage: "checkmark")
-                                } else {
-                                    Text(rateTitle(r))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("播放速度", systemImage: "speedometer")
-                    }
-                    .accessibilityIdentifier("douyin.playback.speed")
                     Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
                 } label: { Label("播放设置", systemImage: "play.circle") }
                 Menu {
@@ -2124,6 +2275,9 @@ struct DouyinFeedScreen: View {
                     Button("官网 / 登录（备用入口）", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
                 } label: { Label("账号与登录", systemImage: "person.crop.circle") }
                 Menu {
+                    // 当前版本号：菜单里的灰色说明行，不可点
+                    Text("当前版本 \(DDAppVersion.display)")
+                        .accessibilityIdentifier("douyin.about.version")
                     Button {
                         UIApplication.shared.open(DDUpdateChecker.repoURL)
                     } label: {
@@ -2144,7 +2298,95 @@ private extension Double {
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
+/// 右侧功能栏的几何：进度环外径 = 玻璃胶囊宽（50pt）；入口到胶囊的间距沿用胶囊到「更多」的间距（actionGroupSpacing）。
+enum DDRailMetrics {
+    static let entryDiameter: CGFloat = 50
+}
+
+/// 按住 ≥ threshold 秒算「长按」，抬手前一直保持；不满 threshold 抬手算「单击」。
+/// 用 DragGesture(minimumDistance: 0) 自己计时：系统的 onLongPressGesture 达到时长后会自动结束，
+/// 无法做到「按住期间一直显示、抬手才消失」。
+struct DDPressHold: ViewModifier {
+    let threshold: Double
+    /// 按下 / 抬起（按下立即回调 true，抬起回调 false）
+    let onPressChanged: (Bool) -> Void
+    /// 按下不满 threshold 秒就抬起（且基本没移动）
+    let onTap: () -> Void
+    @State private var startedAt: Date?
+    @State private var holding = false
+    @State private var timer: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content.gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard startedAt == nil else { return }
+                    startedAt = Date()
+                    onPressChanged(true)
+                    timer = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
+                        guard !Task.isCancelled, startedAt != nil else { return }
+                        holding = true
+                    }
+                }
+                .onEnded { value in
+                    timer?.cancel(); timer = nil
+                    let wasHolding = holding
+                    let moved = abs(value.translation.width) >= 20 || abs(value.translation.height) >= 20
+                    startedAt = nil; holding = false
+                    if !wasHolding, !moved {
+                        onTap()          // 先开菜单（它会接管标题的显示），再回调抬起
+                    }
+                    onPressChanged(false)
+                })
+    }
+}
+
+/// 默认模式的顶栏贴物理屏最上沿：整层忽略顶部和左右安全区（与 PR #12 之前一致）。
+struct DDClassicTopInset: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        if active { content.ignoresSafeArea(edges: [.top, .horizontal]) } else { content }
+    }
+}
+
+/// 界面模式（更多 → 界面模式）：
+/// - classic 默认：顶部「关注/推荐/直播」文字页签 + 原有右侧按钮栏（PR #12 之前的样子）
+/// - rail 简洁：页签收进右侧功能栏的圆形模块入口，搜索进该入口的菜单
+/// - minimal 极简：同简洁，并且隐藏作者和标题
+enum DDChromeMode: String, CaseIterable, Identifiable {
+    case classic, rail, minimal
+    static let key = "douyin_chrome_mode_v1"
+    var id: String { rawValue }
+    var title: String {
+        switch self { case .classic: "默认"; case .rail: "简洁"; case .minimal: "极简" }
+    }
+    var symbol: String {
+        switch self { case .classic: "rectangle.topthird.inset.filled"; case .rail: "sidebar.right"; case .minimal: "rectangle" }
+    }
+    var usesRail: Bool { self != .classic }
+    var hidesInfo: Bool { self == .minimal }
+}
+
+/// 当前安装的版本号，读自 Info.plist：1.3.12 (90)
+enum DDAppVersion {
+    static var display: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+}
+
 enum DYTab: CaseIterable { case follow, recommend, live
+    var symbol: String {
+        switch self {
+        case .follow: "heart.fill"
+        case .recommend: "play.rectangle"
+        case .live: "dot.radiowaves.left.and.right"
+        }
+    }
+
     var title: String {
         switch self {
         case .follow: "关注"
@@ -2207,6 +2449,12 @@ struct DYVideoPage: View {
     @FocusState private var danmakuFocused: Bool
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
+    @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
+    @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    @ObservedObject private var peek = DDPeekInfo.shared
+    /// 长按加速时右侧按钮/作者区淡出；这些控件按住也能触发加速（见 DYHoldBoost）。
+    @StateObject private var boost = DYBoostControl()
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
@@ -2250,7 +2498,8 @@ struct DYVideoPage: View {
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
                                     headEndSeconds: nil,
-                                    continuationURL: nil)
+                                    continuationURL: nil,
+                                    boost: boost)
             } else {
                 TabView {
                     ForEach(item.images, id: \.self) { s in
@@ -2270,25 +2519,45 @@ struct DYVideoPage: View {
                     .allowsHitTesting(false)
             }
 
-            // 左下信息贴近进度条；右侧按钮维持原高度，不跟随标题下移。
-            HStack(alignment: .bottom, spacing: 12) {
-                info(fg)
-                Spacer(minLength: 0)
-                actions(fg)
-                    .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
-                        isRegular: hSize == .regular, trailingInset: systemColumnInset,
-                        columnWidth: actionColumnWidth, outerPadding: chromeSidePadding,
-                        opticalLeadingInset: theme.media.expandedRailOpticalInset))
-                    .modifier(DYRailReservedNudge())
-                    .offset(x: hSize == .compact ? -9 : 0)
-                    .padding(.bottom, item.images.isEmpty ? 56 : 0)
+            if chromeMode.usesRail {
+                // 简洁 / 极简：整组按钮跟着系统侧栏边缘走（PR #12）
+                DYAdaptiveActionRail { edge in
+                    HStack(alignment: .bottom, spacing: 12) {
+                        if edge == .leading { actionRail(fg, edge: edge) }
+                        if !chromeMode.hidesInfo || (isCurrent && peek.on) { info(fg).transition(.opacity) }
+                        Spacer(minLength: 0)
+                        if edge == .trailing { actionRail(fg, edge: edge) }
+                    }
+                    .padding(.horizontal, chromeSidePadding)
+                    .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
+                }
+                // 长按加速时淡出按钮和信息，画面干净；不禁用点击区，手指按在按钮上也能继续加速。
+                .opacity(boost.boosting ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: boost.boosting)
+            } else {
+                // 默认：PR #12 之前的布局，左下信息 + 右侧按钮栏
+                HStack(alignment: .bottom, spacing: 12) {
+                    info(fg)
+                    Spacer(minLength: 0)
+                    actions(fg)
+                        .offset(x: DYDuoMetrics.actionRailHorizontalOffset(
+                            isRegular: hSize == .regular, trailingInset: systemColumnInset,
+                            columnWidth: actionColumnWidth, outerPadding: chromeSidePadding,
+                            opticalLeadingInset: theme.media.expandedRailOpticalInset))
+                        .modifier(DYRailReservedNudge())
+                        .offset(x: hSize == .compact ? -9 : 0)
+                        .padding(.bottom, item.images.isEmpty ? 56 : 0)
+                }
+                .padding(.horizontal, chromeSidePadding)
+                .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
+                .opacity(boost.boosting ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: boost.boosting)
             }
-            .padding(.horizontal, chromeSidePadding)
-            .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
         }
         .overlay(alignment: .bottom) {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
         }
+        .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）
@@ -2302,6 +2571,11 @@ struct DYVideoPage: View {
                 DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
             }
         }
+    }
+
+    private func railEntry(_ fg: Color) -> [DYFeedRailEntry] {
+        guard isCurrent, onBack == nil, let rootRailTab else { return [] }
+        return [DYFeedRailEntry(id: item.id, tab: rootRailTab, actions: AnyView(actions(fg)))]
     }
 
     private var danmakuBar: some View {
@@ -2372,7 +2646,7 @@ struct DYVideoPage: View {
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Button(action: onAuthor) {
+                Button(action: { if !boost.blocksTap { onAuthor() } }) {
                     HStack(spacing: 8) {
                         CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
                             img.resizable().scaledToFill()
@@ -2380,10 +2654,23 @@ struct DYVideoPage: View {
                         .frame(width: 34, height: 34)
                         .clipShape(Circle())
                         .overlay(Circle().stroke(fg.opacity(0.9), lineWidth: 1))
+                        .overlay(alignment: .bottomTrailing) {
+                            // 已关注：绿色对勾；未关注：红色加号。follow_status > 0 即已关注（互关为 2）。
+                            let followed = (item.author.follow ?? 0) > 0
+                            Image(systemName: followed ? "checkmark" : "plus")
+                                .font(.system(size: 8, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .frame(width: 14, height: 14)
+                                .background(Circle().fill(followed ? theme.status.success.color(for: scheme) : theme.status.danger.color(for: scheme)))
+                                .overlay(Circle().stroke(.black.opacity(0.35), lineWidth: 0.5))
+                                .offset(x: 3, y: 3)
+                                .accessibilityIdentifier(followed ? "douyin.author.followed" : "douyin.author.notfollowed")
+                        }
                         Text(item.author.name).font(.subheadline.weight(.semibold)).foregroundStyle(fg).lineLimit(1)
                     }
                 }
                 .buttonStyle(.plain)
+                .modifier(DYHoldBoost(control: boost))
                 .accessibilityIdentifier("douyin.author")
             }
             if let metadata = item.metadataText() {
@@ -2408,6 +2695,22 @@ struct DYVideoPage: View {
     }
 
     /// 小红书式右侧栏：一根竖向液态玻璃胶囊（赞 / 评论 / 收藏 / 搜索，数字在图标下），下方单独一颗「更多」圆按钮
+    @Environment(\.dyRootRailTab) private var rootRailTab
+
+    private func actionRail(_ fg: Color, edge: HorizontalEdge) -> some View {
+        Group {
+            if rootRailTab != nil && onBack == nil {
+                Color.clear.frame(width: actionColumnWidth, height: 0).allowsHitTesting(false)
+            } else {
+                actions(fg)
+                    .fixedSize()
+                    .modifier(DYRailReservedNudge(railEdge: edge))
+                    .padding(.bottom, item.images.isEmpty ? 56 : 0)
+            }
+        }
+        .padding(.horizontal, hSize == .compact ? 9 : 0)
+    }
+
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
@@ -2428,7 +2731,18 @@ struct DYVideoPage: View {
                 railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
                 railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                          tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
-                railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
+                if !chromeMode.usesRail {
+                    railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
+                }
+                if item.images.isEmpty {
+                    // 有些视频铺满后会裁掉边缘，随手切回完整画面
+                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
+                    railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
+                             "douyin.fit") {
+                        autoFit.toggle()
+                        onToast?(autoFit ? "铺满：开" : "完整画面")
+                    }
+                }
             }
             .padding(.vertical, 8)
             .frame(width: railWidth)
@@ -2440,24 +2754,29 @@ struct DYVideoPage: View {
     }
 
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
+        Button(action: { if !boost.blocksTap { act() } }) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .regular))
                     .foregroundStyle(tint)
-                    .frame(height: 34)
+                    .frame(width: 34, height: 34)
                 if !text.isEmpty {
                     Text(text).font(.caption2.weight(.medium)).monospacedDigit()
                         .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                         .lineLimit(1).minimumScaleFactor(0.7)
                 }
             }
-            .frame(width: railWidth, height: text.isEmpty ? 44 : 50)
+            // 有数字的按钮：图标 34 + 间隙 2 + 文字；没数字的（搜索/铺满）去掉文字那一截，只留图标高度，
+            // 这样图标到相邻按钮的距离，和「图标—文字」之间的距离一致，不再多出一块空白
+            .frame(width: railWidth, height: text.isEmpty ? 36 : 50, alignment: .top)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(DYHoldBoost(control: boost))
         .accessibilityIdentifier(id)
     }
+
+    private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
     /// 「更多」：转发 / 下载快捷入口 → 不感兴趣 → 弹幕 → 刷新推荐 / 设置。
     @ViewBuilder
@@ -2472,6 +2791,31 @@ struct DYVideoPage: View {
                 }
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
+            }
+            // 常用播放设置放在「更多」第一层：点「倍速」弹出速度列表，选哪个就切到哪个，当前视频立刻生效
+            Section {
+                Menu {
+                    Picker("倍速", selection: Binding(
+                        get: { playbackRate },
+                        set: { r in playbackRate = r; onToast?(rateTitle(r)) })) {
+                        ForEach([0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in Text(rateTitle(r)).tag(r) }
+                    }
+                } label: {
+                    Label("倍速 · \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×", systemImage: "speedometer")
+                }
+                .accessibilityIdentifier("douyin.quick.speed")
+                Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+                    .accessibilityIdentifier("douyin.quick.autonext")
+                Menu {
+                    Picker("界面模式", selection: $chromeModeRaw) {
+                        ForEach(DDChromeMode.allCases) { m in
+                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("界面 · \(chromeMode.title)", systemImage: "rectangle.3.group")
+                }
+                .accessibilityIdentifier("douyin.quick.chrome")
             }
             if let onDislike {
                 Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }

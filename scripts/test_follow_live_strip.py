@@ -68,7 +68,10 @@ class FollowLivePickerTests(unittest.TestCase):
         sheet = LIVE.split("private struct DYFollowLiveSheet", 1)[1].split("#if DEBUG", 1)[0]
         self.assertNotIn("DYFollowLiveStrip", LIVE)
         self.assertNotIn("DYFollowLiveStrip", EXTRAS)
-        self.assertIn('Label("我的关注"', feed)
+        # 2026-11-12 老板定：直播页「我的关注」按钮换成「N 位正在直播」胶囊 + 可展开头像条（PR #11 的关注头像条移到直播页）
+        self.assertIn('位正在直播', feed)
+        self.assertIn("followStripExpanded", feed)
+        self.assertNotIn('Label("我的关注"', feed)
         self.assertNotIn('Label("关注直播"', feed)
         self.assertIn('.navigationTitle("我的关注")', sheet)
         self.assertNotIn('.navigationTitle("关注直播")', sheet)

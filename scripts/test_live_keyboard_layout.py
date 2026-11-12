@@ -57,7 +57,7 @@ class LiveKeyboardLayoutTests(unittest.TestCase):
         self.assertIn("DYLiveKeyboardLayout passed", completed.stdout)
 
     def test_paging_ignores_keyboard_and_keeps_composer(self):
-        pages = SOURCE.split("private var pages", 1)[1].split("private func syncViewport", 1)[0]
+        pages = SOURCE.split("private func pages(", 1)[1].split("private func syncViewport", 1)[0]
         room = SOURCE.split("private struct DYLiveRoomPage", 1)[1].split("// MARK: - live-close-placement", 1)[0]
         self.assertIn(".ignoresSafeArea(.keyboard)", pages)
         self.assertIn(".scrollDismissesKeyboard(.interactively)", pages)
