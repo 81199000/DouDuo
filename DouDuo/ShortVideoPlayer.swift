@@ -84,6 +84,13 @@ final class DDPlayback {
         ddWrite("DDBG pauseAll count=\(stops.count) reason=\(label)")
         #endif
         stops.forEach { $0() }
+        if !Self.bgPlay {   // 后台播放开着时声音引擎要继续出声
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { DDAudioEngineHub.shared.pauseAll() }
+            } else {
+                DispatchQueue.main.sync { MainActor.assumeIsolated { DDAudioEngineHub.shared.pauseAll() } }
+            }
+        }
         let keepSession = Self.bgPlay || retainers.contains { $0() }
         if !keepSession {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -313,7 +320,10 @@ struct PlayerPage: View {
     @State private var nextOpacity: Double = 0
     @State private var stalledTicks = 0
     @State private var fastT0 = Date()
+    @State private var seamAudio = DDSeamlessController()
     private let playbackID = UUID()
+    /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
+    private var playRate: Float { rateBoost ? 2 : Float(effectiveRate) }
 
     var body: some View {
         ZStack {
@@ -418,7 +428,7 @@ struct PlayerPage: View {
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
         .onChange(of: muted) { _, m in
             guard isActive else { return }
-            player?.isMuted = m
+            seamAudio.setMuted(m)
             vlc?.mediaPlayer.audio?.isMuted = m
         }
         // 设置里改播放速度 = 明确要这个速度：撤掉本条的长按锁定，当前视频立刻生效
@@ -428,11 +438,14 @@ struct PlayerPage: View {
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
             if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
-            else if let p = player {
-                // 暂停中不能写 rate（AVPlayer 把 rate>0 当成播放）；播放中立刻生效
-                if p.rate > 0 || (isPlaying && !userPaused) { p.rate = Float(target) }
-                dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: target)
+            else if isPlaying {
+                seamAudio.setRate(Float(target))
+                dmClock.sync(seamAudio.currentMediaTime ?? player?.currentTime().seconds ?? current, playing: isPlaying, rate: target)
             }
+        }
+        // 锁定/解锁（含锁屏控件改速度）：交给独立音频引擎即时生效
+        .onChange(of: lockedBoost) { _, _ in
+            if vlc == nil, isPlaying, !rateBoost { seamAudio.setRate(Float(effectiveRate)) }
         }
         .onChange(of: isActive) { _, active in
             if !active { lockedBoost = false }   // 滑走就解锁：只锁「当前这条」
@@ -457,11 +470,14 @@ struct PlayerPage: View {
                 #if DEBUG
                 logSwipeStart(p)
                 #endif
-                p.isMuted = muted; p.play(); isPlaying = true
+                isPlaying = true
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
                 watchdog(p)
             } else {
-                p.isMuted = true; p.pause(); isPlaying = false
-                onSavePosition(p.currentTime().seconds)
+                let savedPos = seamAudio.currentMediaTime ?? p.currentTime().seconds
+                isPlaying = false
+                seamAudio.setActive(false, isPlaying: false, rate: 1, muted: true)
+                onSavePosition(savedPos)
             }
         }
     }
@@ -479,9 +495,13 @@ struct PlayerPage: View {
             if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(effectiveRate)); rateBoost = false }
             return
         }
-        guard let p = player else { return }
-        if pressing { p.rate = 2; rateBoost = true }
-        else if rateBoost { p.rate = isPlaying ? Float(effectiveRate) : 0; rateBoost = false }
+        guard player != nil else { return }
+        // 声音交给独立音频引擎变速（不断流、不爆音），画面速率由引擎的软同步跟随
+        if pressing { rateBoost = true; seamAudio.setRate(2) }
+        else if rateBoost {
+            rateBoost = false
+            if isPlaying { seamAudio.setRate(Float(effectiveRate)) } else { seamAudio.pause() }
+        }
     }
 
     // MARK: 手势（UIKit 宿主：起手定方向，竖向优先让给分页）
@@ -497,11 +517,12 @@ struct PlayerPage: View {
             onLongPressUnlock: {
                 lockedBoost = false; rateBoost = false
                 if let v = vlc { v.setRate(Float(liveRate)) }
-                else { player?.rate = isPlaying ? Float(liveRate) : 0 }
+                else if isPlaying { seamAudio.setRate(Float(liveRate)) } else { seamAudio.pause() }
             },
             onSeekBegan: {
                 guard duration > 0 else { return }
                 if let v = vlc { current = v.current }
+                else if let aSec = seamAudio.currentMediaTime { current = aSec }
                 else if let p = player { current = p.currentTime().seconds } else { return }
                 holdAnchor = current
                 seekPreview = current
@@ -612,9 +633,9 @@ struct PlayerPage: View {
         np.automaticallyWaitsToMinimizeStalling = true
         player = np
         attachObservers(np)
-        np.isMuted = muted
-        np.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { _ in np.play() }
         isPlaying = true
+        bindSeamlessAudio(to: np, initialPos: start, active: isActive, playing: true)
+        np.seek(to: CMTime(seconds: start, preferredTimescale: 600)) { _ in np.rate = playRate }
         watchdog(np)
         return true
     }
@@ -653,12 +674,12 @@ struct PlayerPage: View {
         ddWrite("DDHEAD continue remote at \(String(format: "%.1f", start)) primed=\(primed)")
         #endif
         let wasPlaying = isPlaying
-        np.isMuted = muted
+        np.isMuted = true
         // 先把它精确定位到接续点（预热过的话这段是已缓冲区间，seek 基本瞬时），
         // seek 完成才让它亮相，避免露出预热时的错帧
         np.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             DispatchQueue.main.async {
-                if wasPlaying { np.play() }
+                if wasPlaying { np.rate = self.playRate }
                 self.nextOpacity = 1
                 // 新画面已经在顶层播同一位置 → 把主 player 换过去（此时 layer 换绑不会露黑）
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
@@ -669,11 +690,24 @@ struct PlayerPage: View {
                     self.nextPlayer = nil
                     self.attachObservers(np)
                     self.isPlaying = wasPlaying
+                    self.bindSeamlessAudio(to: np, initialPos: np.currentTime().seconds, active: self.isActive, playing: wasPlaying)
                     self.watchdog(np)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { old.replaceCurrentItem(with: nil) }
                 }
             }
         }
+    }
+
+    private func bindSeamlessAudio(to p: AVPlayer, initialPos: Double?, active: Bool, playing: Bool) {
+        seamAudio.onBackgroundEnded = { [weak p] in
+            guard let p else { return }
+            if let onEnded { onEnded() }
+            else {
+                p.seek(to: .zero)
+                seamAudio.loopToZero(rate: playRate, muted: muted)
+            }
+        }
+        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted)
     }
 
     private func setup() {
@@ -710,13 +744,13 @@ struct PlayerPage: View {
             startFast(hd: p)
             return
         }
-        p.isMuted = !isActive || muted
+        isPlaying = isActive
+        bindSeamlessAudio(to: p, initialPos: (resumePosition ?? 0) > 1 ? resumePosition : nil, active: isActive, playing: isActive)
         if isActive {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
-            p.play()
+            p.rate = playRate
         }
-        isPlaying = isActive
         if isActive { watchdog(p) }
         #if DEBUG
         if isActive {
@@ -786,9 +820,9 @@ struct PlayerPage: View {
         if resume.seconds > 1 { low.seek(to: resume) }
         player = low
         attachObservers(low)
-        low.isMuted = muted
-        low.play()
         isPlaying = true
+        bindSeamlessAudio(to: low, initialPos: resume.seconds > 1 ? resume.seconds : nil, active: isActive, playing: true)
+        low.rate = playRate
         fastT0 = Date()
         #if DEBUG
         logSwipeStart(low, fast: true)
@@ -827,12 +861,12 @@ struct PlayerPage: View {
         hd.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { done in
             DispatchQueue.main.async {
                 guard done, isActive, player === low, hdPlayer === hd else { return }
-                hd.rate = isPlaying ? max(low.rate, 1) : 0
+                hd.isMuted = true
+                hd.rate = isPlaying ? playRate : 0
                 // 等高清出两帧画面再盖上去，声音同时交接
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                     guard player === low, hdPlayer === hd else { return }
                     withAnimation(.easeInOut(duration: 0.15)) { hdVisible = true }
-                    hd.isMuted = muted
                     low.isMuted = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { finishUpgrade(low, hd) }
                 }
@@ -847,6 +881,7 @@ struct PlayerPage: View {
         low.pause(); low.replaceCurrentItem(with: nil)
         player = hd
         attachObservers(hd)
+        bindSeamlessAudio(to: hd, initialPos: hd.currentTime().seconds, active: isActive, playing: isPlaying)
         #if DEBUG
         ddWrite("DDUPGRADE \(id) 高清接管=\(String(format: "%.2f", Date().timeIntervalSince(fastT0)))s")
         #endif
@@ -860,11 +895,13 @@ struct PlayerPage: View {
         guard let hd = hdPlayer, let low = player else { return }
         let t = low.currentTime()
         detachObservers()
+        seamAudio.reset()
         low.pause(); low.replaceCurrentItem(with: nil)
         hd.pause(); hd.isMuted = true
         hd.seek(to: t)
         player = hd
         attachObservers(hd)
+        bindSeamlessAudio(to: hd, initialPos: t.seconds, active: false, playing: false)
         hdPlayer = nil; hdVisible = false
     }
 
@@ -900,9 +937,9 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         attachObservers(p)
-        p.isMuted = muted
-        p.play()
         isPlaying = true
+        bindSeamlessAudio(to: p, initialPos: nil, active: isActive, playing: true)
+        p.rate = playRate
         watchdog(p)
     }
 
@@ -917,9 +954,16 @@ struct PlayerPage: View {
             v.mediaPlayer.pause(); isPlaying = false
             onSavePosition(v.current)
         }
-        if let p = player, p.rate != 0 {
-            p.pause(); isPlaying = false
-            onSavePosition(p.currentTime().seconds)
+        if let p = player {
+            let pos = seamAudio.currentMediaTime ?? p.currentTime().seconds
+            if isPlaying || p.rate != 0 {
+                seamAudio.pause()
+                p.pause()
+                isPlaying = false
+                onSavePosition(pos)
+            } else {
+                seamAudio.pause()
+            }
         }
         hdPlayer?.pause()
         #if DEBUG
@@ -933,6 +977,10 @@ struct PlayerPage: View {
         ddWrite("DDBG resumeAfterBackground id=\(id) active=\(isActive) av=\(player != nil) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1))")
         #endif
         guard isActive else { return }
+        if DDPlayback.bgPlay && isPlaying {
+            seamAudio.syncAfterForeground(rate: playRate, muted: muted)
+            return
+        }
         guard DYResumePolicy.shouldResumeAfterBackground(userPaused: userPaused) else { return }
         if let v = vlc {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -941,10 +989,11 @@ struct PlayerPage: View {
             v.mediaPlayer.play(); isPlaying = true
             return
         }
-        if let p = player {
+        if player != nil {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
-            p.play(); isPlaying = true
+            isPlaying = true
+            seamAudio.play(rate: playRate, muted: muted)
             hdPlayer?.play()      // 秒开中：高清继续静音陪跑缓冲
         }
     }
@@ -980,13 +1029,16 @@ struct PlayerPage: View {
     private func attachObservers(_ p: AVPlayer) {
         timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { t in
             MainActor.assumeIsolated {
-                if !seeking { current = t.seconds }
+                let pos = seamAudio.currentMediaTime ?? t.seconds
+                if !seeking { current = pos }
                 if !firstFrame, t.seconds > 0.02 { firstFrame = true }
-                if isActive { DDNowPlaying.id = id; DDNowPlaying.time = t.seconds }
-                dmClock.sync(t.seconds, playing: p.rate > 0 && !seeking, rate: Double(p.rate))
-                refreshNowPlaying(t.seconds)
-                // 锁定倍速：play()/换播放器都会回到 1 倍，每 0.25s 拉回选定速度
-                if !rateBoost, p.rate > 0, p.rate != Float(effectiveRate) { p.rate = Float(effectiveRate) }
+                if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
+                dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
+                refreshNowPlaying(pos)
+                // 仅在罕见回退模式下每 0.25s 拉回锁定倍速；engaged 模式下由 seamAudio 的 Soft PLL 维护速率
+                if seamAudio.mode == .fallbackAVPlayer, !rateBoost, p.rate > 0, p.rate != Float(effectiveRate), !AVPlayer.softRatePending {
+                    p.softRate(Float(effectiveRate))
+                }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
                 // 头部缓存 → 在线流：提前预热，到点直接交接（不等 ended，避免尾部没数据干等）
                 if let h = headEndSeconds, h > 0, !continued {
@@ -1012,12 +1064,26 @@ struct PlayerPage: View {
                                                              object: p.currentItem, queue: .main) { _ in
             MainActor.assumeIsolated {
                 if continueFromRemote(p) { return }
-                if let onEnded { onEnded() } else { p.seek(to: .zero); p.play() }   // 抖音同款：单条循环
+                if let onEnded {
+                    onEnded()
+                } else {
+                    // 抖音同款：单条循环
+                    p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                        DispatchQueue.main.async {
+                            if seamAudio.isEngaged {
+                                seamAudio.loopToZero(rate: playRate, muted: muted)
+                            } else if isPlaying {
+                                p.rate = playRate
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     private func teardownPlayerOnly() {
+        seamAudio.reset()
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
         player?.pause()
@@ -1038,7 +1104,7 @@ struct PlayerPage: View {
             return
         }
         DDRemoteOwner.id = id
-        let now = { vlc?.current ?? player?.currentTime().seconds ?? current }
+        let now = { vlc?.current ?? seamAudio.currentMediaTime ?? player?.currentTime().seconds ?? current }
         func on(_ cmd: MPRemoteCommand, _ f: @escaping (MPRemoteCommandEvent) -> Void) {
             cmd.removeTarget(nil); cmd.isEnabled = true
             cmd.addTarget { e in DispatchQueue.main.async { f(e) }; return .success }
@@ -1074,27 +1140,39 @@ struct PlayerPage: View {
             MPMediaItemPropertyTitle: title.isEmpty ? "DouDuo" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: t,
-            // 锁屏报实际在跑的速度（长按临时 2 倍、本条锁定 2 倍都算），不是设置里的全局速度
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? (rateBoost || lockedBoost ? 2 : liveRate) : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(playRate) : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
         ]
     }
 
     private func togglePlay() {
-        defer { lastNowPlaying = -10; refreshNowPlaying(vlc?.current ?? player?.currentTime().seconds ?? current) }   // 锁屏上的播放/暂停状态马上跟上
+        defer { lastNowPlaying = -10; refreshNowPlaying(vlc?.current ?? seamAudio.currentMediaTime ?? player?.currentTime().seconds ?? current) }   // 锁屏上的播放/暂停状态马上跟上
         if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; userPaused = !isPlaying; dmClock.sync(v.current, playing: v.isPlaying, rate: 1); return }
         guard let p = player else { return }
-        if isPlaying { p.pause() } else { p.play() }
-        isPlaying.toggle()
+        if isPlaying {
+            seamAudio.pause()
+            isPlaying = false
+        } else {
+            isPlaying = true
+            seamAudio.play(rate: playRate, muted: muted)
+        }
         userPaused = !isPlaying
-        dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: Double(max(p.rate, 1)))
+        let pos = seamAudio.currentMediaTime ?? p.currentTime().seconds
+        dmClock.sync(pos, playing: isPlaying, rate: Double(playRate))
     }
 
     private func seekTo(_ pos: Double) {
-        dmClock.sync(pos, playing: isPlaying, rate: rateBoost || lockedBoost ? 2 : liveRate)
+        dmClock.sync(pos, playing: isPlaying, rate: Double(playRate))
         if let v = vlc { v.seekTo(pos); current = pos; return }
+        seamAudio.prepareForSeek()
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
-        player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
+        player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol) { done in
+            guard done else { return }
+            DispatchQueue.main.async {
+                let landed = player?.currentTime().seconds ?? pos
+                seamAudio.didFinishVideoSeek(landedSeconds: landed, resumePlaying: isPlaying, rate: playRate, muted: muted)
+            }
+        }
         hdPlayer?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
         current = pos
     }
@@ -1115,7 +1193,8 @@ struct PlayerPage: View {
     private func teardown() {
         cancelUpgrade()
         if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
-        if let p = player { onSavePosition(p.currentTime().seconds) }
+        if let p = player { onSavePosition(seamAudio.currentMediaTime ?? p.currentTime().seconds) }
+        seamAudio.reset()
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
         if let np = nextPlayer { np.pause(); np.replaceCurrentItem(with: nil); nextPlayer = nil }
@@ -1231,6 +1310,27 @@ final class PlayerUIView: UIView {
     }
 }
 
+
+extension AVPlayer {
+    private static var softGen = 0
+    /// 变速指令已发出、还没真正生效的那 35ms：避免定时拉回重复触发
+    static var softRatePending = false
+    /// 实测 AVPlayer 换速率会硬切断声音再硬恢复（啪声，恢复处是稳态的 100+ 倍）：
+    /// 先 30ms 淡出 → 变速 → 等它内部的静音段过去 → 40ms 淡入，啪声降到与稳态同量级
+    func softRate(_ r: Float) {
+        AVPlayer.softGen += 1
+        let gen = AVPlayer.softGen, wasPlaying = rate > 0, q = DispatchQueue.main
+        AVPlayer.softRatePending = true
+        for i in 1...6 { q.asyncAfter(deadline: .now() + Double(i) * 0.005) { [weak self] in if gen == AVPlayer.softGen { self?.volume = Float(6 - i) / 6 } } }
+        q.asyncAfter(deadline: .now() + 0.035) { [weak self] in
+            AVPlayer.softRatePending = false
+            guard let self, !(wasPlaying && self.rate == 0 && r > 0) else { return }   // 这 35ms 里被暂停了就不再拉起
+            self.rate = r
+        }
+        // 本项目静音用 isMuted、不调 volume，所以淡入终点固定为 1
+        for i in 1...8 { q.asyncAfter(deadline: .now() + 0.22 + Double(i) * 0.005) { [weak self] in if gen == AVPlayer.softGen { self?.volume = Float(i) / 8 } } }
+    }
+}
 
 /// 回到前台的续播规则：只有「被后台/失焦打断」才自动续播。
 /// 用户自己按的暂停是明确意图，不能被生命周期回调覆盖。
