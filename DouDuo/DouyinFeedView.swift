@@ -1222,6 +1222,9 @@ struct DouyinFeedScreen: View {
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧（默认模式用）
     @State private var topBarWidth: CGFloat?
     @State private var topChrome = CGRect.zero
+    /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
+    @State private var peekInfo = false
+    @ObservedObject private var railProgress = DDRailProgress.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
@@ -1263,10 +1266,40 @@ struct DouyinFeedScreen: View {
                 rootActionRail(nil, selector: true)
             }
         }
+        .overlay(alignment: .bottomLeading) {
+            // 极简：长按模块入口时才显示当前视频的作者和标题，松开消失
+            if peekInfo, chromeMode.hidesInfo, tab == .recommend, let item = current {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        CachedAsyncImage(url: item.author.avatar.flatMap(URL.init(string:))) { img in
+                            img.resizable().scaledToFill()
+                        } placeholder: { theme.media.chromeFill.color(for: scheme) }
+                        .frame(width: 34, height: 34).clipShape(Circle())
+                        Text(item.author.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    }
+                    if !item.desc.isEmpty {
+                        Text(item.desc).font(.subheadline).lineLimit(4)
+                    }
+                }
+                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                .padding(12)
+                .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.leading, 14)
+                .padding(.bottom, max(insets.bottom, 18) + 36)
+                .frame(maxWidth: 320, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("douyin.peek.info")
+            }
+        }
         .onPreferenceChange(DYTopChromeFrameKey.self) { next in
             guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
             topChrome = next
         }
+        // 默认模式：顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区——和 PR #12 之前完全一致。
+        // 简洁/极简模式的 ignoresSafeArea 已在 layoutRoot 上，这里不重复加，避免影响侧边栏的安全区测量。
+        .modifier(DDClassicTopInset(active: !railMode))
         .coordinateSpace(.named("douduo.feed"))
         // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
         // 主视图不挂 NavigationStack / toolbar，避免 Duo 系统侧栏再渲染一个重复的返回按钮。
@@ -1858,6 +1891,25 @@ struct DouyinFeedScreen: View {
         }
     }
 
+    /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
+    @ViewBuilder
+    private var railProgressRing: some View {
+        if chromeMode.hidesInfo, tab == .recommend {
+            let fg = theme.media.onMedia.color(for: scheme)
+            ZStack {
+                Circle().stroke(fg.opacity(0.18), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: railProgress.fraction)
+                    .stroke(fg.opacity(railProgress.seeking ? 1 : 0.85), style: StrokeStyle(lineWidth: railProgress.seeking ? 4 : 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 58, height: 58)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("douyin.module.ring")
+            .accessibilityValue("\(Int(railProgress.fraction * 100))%")
+        }
+    }
+
     /// 与「更多」使用同一个系统 Menu API，选择后自动收起。
     private var moduleMenu: some View {
         Menu {
@@ -1884,6 +1936,7 @@ struct DouyinFeedScreen: View {
                 .contentShape(Circle())
                 .ddGlassCircle()
                 .frame(width: 54)
+                .overlay { railProgressRing }
                 .overlay(alignment: .topTrailing) {
                     if noticeUnread > 0 {
                         Circle().fill(theme.status.danger.color(for: scheme))
@@ -1894,6 +1947,14 @@ struct DouyinFeedScreen: View {
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
+        // 极简：长按显示作者/标题，松开消失。simultaneous 不抢菜单的单击。
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.35)
+                .sequenced(before: DragGesture(minimumDistance: 0))
+                .onChanged { value in
+                    if chromeMode.hidesInfo, case .second(true, _) = value, !peekInfo { withAnimation(.easeOut(duration: 0.12)) { peekInfo = true } }
+                }
+                .onEnded { _ in withAnimation(.easeOut(duration: 0.15)) { peekInfo = false } })
         .accessibilityLabel("切换模块，当前\(tab.title)")
         .accessibilityIdentifier("douyin.module.menu")
     }
@@ -2169,6 +2230,14 @@ private extension Double {
 }
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
+
+/// 默认模式的顶栏贴物理屏最上沿：整层忽略顶部和左右安全区（与 PR #12 之前一致）。
+struct DDClassicTopInset: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        if active { content.ignoresSafeArea(edges: [.top, .horizontal]) } else { content }
+    }
+}
 
 /// 界面模式（更多 → 界面模式）：
 /// - classic 默认：顶部「关注/推荐/直播」文字页签 + 原有右侧按钮栏（PR #12 之前的样子）

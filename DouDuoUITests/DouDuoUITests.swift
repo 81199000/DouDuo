@@ -634,6 +634,69 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "chrome-switched-minimal")
     }
 
+    func testClassicTopTabsFrame() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7705789488781932361"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchArguments += ["-douduo_dismissed_update_v1", "1.3.12"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(4)
+        for t in ["关注", "推荐", "直播"] {
+            let b = app.buttons[t].firstMatch
+            print("DDTOP \(t) frame=\(b.frame) win=\(app.windows.firstMatch.frame)")
+        }
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+        print("DDTOP more frame=\(more?.frame ?? .zero)")
+        attach(app, "top-frame")
+    }
+
+    /// 极简：底部进度条隐藏，进度画在模块入口外圈；长按入口显示作者标题，松开消失。
+    func testMinimalProgressRingAndPeekInfo() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(6)
+        let ring = app.otherElements["douyin.module.ring"].firstMatch
+        XCTAssertTrue(ring.waitForExistence(timeout: 5), "极简模式应有进度外圈")
+        let v1 = ring.value as? String ?? ""
+        print("DDRING value1=\(v1)")
+        sleep(5)
+        let v2 = ring.value as? String ?? ""
+        print("DDRING value2=\(v2)")
+        XCTAssertNotEqual(v1, v2, "进度外圈应随播放前进")
+        attach(app, "minimal-ring")
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "平时不显示作者标题")
+        menu.press(forDuration: 1.2)
+        // 按住期间截图不可行（press 是阻塞的），松开后应已消失
+        sleep(1)
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "松开后作者标题应消失")
+    }
+
+    func testMinimalLongPressShowsInfoWhileHeld() throws {
+        let app = launchChrome("minimal")
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        sleep(4)
+        let c = menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // 按住 3 秒；另起一个 DispatchQueue 在按住中途采样
+        var seenDuring = false
+        let exp = expectation(description: "sample")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.8) {
+            seenDuring = app.otherElements["douyin.peek.info"].exists || app.staticTexts["douyin.peek.info"].exists
+            let shot = XCUIScreen.main.screenshot()
+            let att = XCTAttachment(screenshot: shot); att.name = "minimal-peek-held"; att.lifetime = .keepAlways
+            self.add(att)
+            exp.fulfill()
+        }
+        c.press(forDuration: 3.0)
+        wait(for: [exp], timeout: 5)
+        XCTAssertTrue(seenDuring, "按住模块入口时应显示作者标题")
+        attach(app, "minimal-after-peek")
+        sleep(1)
+        XCTAssertFalse(app.otherElements["douyin.peek.info"].exists, "松开后应消失")
+    }
+
     /// 分页里每页都挂了角标，只取屏幕上那个
     private func visibleBadge(_ app: XCUIApplication) -> XCUIElement? {
         let f = app.frame
