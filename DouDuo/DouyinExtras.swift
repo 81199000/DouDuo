@@ -293,12 +293,13 @@ extension DouyinBridge {
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
     // x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记；缺它抖音会 200 + 空 body 静默丢弃
+    const sdk = await sdkReady(6000);
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
     // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。
     const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
-    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none');
+    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none') + ' sdk=' + sdk + ' sdkGlobals=' + (typeof window.byted_acrawler);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';

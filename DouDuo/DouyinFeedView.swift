@@ -840,6 +840,17 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       os_name: 'Mac OS', os_version: '10.15.7', cpu_core_num: '8', device_memory: '8', platform: 'PC', downlink: '10',
       effective_type: '4g', round_trip_time: '50' };
     const parse = t => { try { return JSON.parse(t) } catch (e) { return null } };
+    // 写接口必须在安全 SDK 挂钩之后发，否则不带签名 → 抖音静默返回空 body（读接口不受影响）
+    const sdkReady = async (ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 5000)) {
+        let hooked = false;
+        try { hooked = !/native code/.test(XMLHttpRequest.prototype.send.toString()) } catch (e) {}
+        if (typeof window.byted_acrawler !== 'undefined' && hooked) return true;
+        await new Promise(r => setTimeout(r, 150));
+      }
+      return false;
+    };
     const first = o => (o && o.url_list && o.url_list[0]) || null;
     const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
     // 直连 CDN（douyinvod）优先：实测首字节 0.27–0.30s；www.douyin.com/aweme/v1/play/ 多跳一次 0.95–1.85s
