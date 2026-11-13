@@ -12,6 +12,9 @@ struct DDColor {
 enum DDFontSize { case caption, body, headline, title, displayLarge, splash }
 
 struct DDTheme {
+    static let sheetCornerRadius: CGFloat = 32
+    static let shareSheetHeight: CGFloat = 300
+
     struct Media {
         let scrim = DDColor(.black.opacity(0.35))
         let strongScrim = DDColor(.black)
@@ -127,4 +130,6 @@ enum WuWeiDesign {
 // Only feed pages publish actions to the shared safe-area rail.
 extension EnvironmentValues {
     @Entry var dyRootRailTab: DYTab? = nil
+    /// 评论面板右侧已经让开系统竖栏（外层按遮挡区缩窄了宽度），面板内不必再给关闭键额外留 88pt。
+    @Entry var dyCommentTrailingCleared: Bool = false
 }

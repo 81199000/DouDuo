@@ -6,6 +6,8 @@
 
 界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
+本地测试分支已基于 v1.3.14 整合，并新增可选的 iPhone Duo **经典布局**，保留默认／简洁／极简。详见[经典布局与手势说明](docs/classic-duo-layout.md)。经典模式需要 iOS 27.1+；仅针对 Duo 适配，未测试 iPad。本次尚未更新 PR。
+
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。
 
 ## 界面展示
@@ -69,6 +71,7 @@
 - **GitHub 下载**：[最新发行版](https://github.com/81199000/DouDuo/releases/latest)
 - GitHub 为主仓库，Gitee 为国内源码与安装包镜像。
 - 下载文件名带 `unsigned.ipa` 的安装包；它是**未签名 IPA，不能下载后直接安装**，需要按下方教程自己签名。
+- v1.3.15 修复非 Duo 机型默认模式顶栏被推进状态栏点不到（#16）；长按加速改 0.3 秒触发，简洁/极简模式长按时整列淡出、按住圆形入口也能加速，底部留白减少；评论栏按系统竖栏实际宽度收窄（#15）；新增可选「经典」布局（PR #17）、上下翻页更利落（PR #23），最低系统改为 iOS 26.0，详见[更新说明](docs/releases/v1.3.15.md)。
 - v1.3.14 修复 1.3.13 滑动卡顿：1x 播放改回系统原生声音（倍速时才启用独立音频引擎），简洁/极简进度环不再带动整屏重算；推荐页半折叠按真实折痕切分视频与评论，详见[更新说明](docs/releases/v1.3.14.md)。
 - v1.3.13 新增三档界面模式（默认 / 简洁 / 极简，更多 → 界面）和折叠屏直播分屏与环境光，合入社区 PR #5、#11、#12；倍速改为点开选速度并修复改了不立刻生效；直播评论区与起播提速，详见[更新说明](docs/releases/v1.3.13.md)。
 - v1.3.12 关注页与直播页去掉重复的直播头像入口，关注开播统一走「我的关注」；爱思助手签名失败可先在手机上用同一 Apple ID 登录一次 icloud.com 再签，详见[更新说明](docs/releases/v1.3.12.md)。
@@ -80,13 +83,13 @@
 
 ## 安装
 
-支持 iOS / iPadOS **17.0 及以上**。DouDuo 未在 App Store 上架，需要**自己签名安装**。以下方式任选一种：
+支持 iOS / iPadOS **26.0 及以上**（iPhone Duo 出厂即 iOS 26）。DouDuo 未在 App Store 上架，需要**自己签名安装**。以下方式任选一种：
 
 先到 [Gitee 发行版](https://gitee.com/remon8/douduo/releases) 或 [GitHub Releases](https://github.com/81199000/DouDuo/releases/latest) 下载最新的 `DouDuo-x.y.z-unsigned.ipa`，不要下载源码 ZIP 代替 IPA。
 
 ### 方式一：爱思助手（Windows / Mac，最简单）
 
-以下配图来自[爱思助手官方 IPA 签名教程](https://www.i4.cn/news_detail_38195.html)；**图中的应用文件名仅为官方示例，实际请选择我们下载的 `DouDuo-1.3.14-unsigned.ipa`**。
+以下配图来自[爱思助手官方 IPA 签名教程](https://www.i4.cn/news_detail_38195.html)；**图中的应用文件名仅为官方示例，实际请选择我们下载的 `DouDuo-1.3.15-unsigned.ipa`**。
 
 #### 1. 连接手机，打开 IPA 签名工具
 
