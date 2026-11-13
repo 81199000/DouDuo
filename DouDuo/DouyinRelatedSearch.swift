@@ -34,10 +34,12 @@ struct DYRelatedSearchScreen: View {
     var body: some View {
         DYSearchScreen(bridge: bridge, onAuthor: { author = $0.author }, initialQuery: word)
             .sheet(item: $author) { a in
-                DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
-                    author = nil
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { web = DYWebTarget(url: url) }
-                })
+                NavigationStack {
+                    DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
+                        author = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { web = DYWebTarget(url: url) }
+                    })
+                }
             }
             .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
     }
