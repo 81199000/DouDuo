@@ -28,11 +28,14 @@ struct DYRelatedQuery: Identifiable {
 struct DYRelatedSearchScreen: View {
     let bridge: DouyinBridge
     let word: String
+    var session: DYSearchSession? = nil
+    var onClose: (() -> Void)? = nil
     @State private var author: DYAweme.Author?
     @State private var web: DYWebTarget?
 
     var body: some View {
-        DYSearchScreen(bridge: bridge, onAuthor: { author = $0.author }, initialQuery: word)
+        DYSearchScreen(bridge: bridge, onAuthor: { author = $0.author }, initialQuery: word,
+                       session: session, onClose: onClose)
             .sheet(item: $author) { a in
                 NavigationStack {
                     DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in

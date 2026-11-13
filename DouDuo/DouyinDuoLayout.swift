@@ -465,6 +465,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     var focus: DYCommentFocus? = nil
     var onBack: () -> Void
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    @Environment(\.dySearchPresented) private var searchPresented
     @ViewBuilder var video: (EdgeInsets) -> Video
 
     private var usesClassicLayout: Bool {
@@ -482,7 +483,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
         GeometryReader { geo in
             video(geo.safeAreaInsets)
                 .environment(\.dyStandaloneBack, onBack)
-                .sheet(isPresented: $showComments) {
+                .sheet(isPresented: Binding(get: { showComments && !searchPresented }, set: { showComments = $0 })) {
                     if let aweme {
                         DYCommentPanel(bridge: bridge, aweme: aweme,
                                        onClose: { showComments = false }, focus: focus)
@@ -495,7 +496,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
     private var classicBody: some View {
         NavigationStack {
             GeometryReader { geo in
-                let layout = DYCommentPaneMetrics(geo, isPresented: showComments)
+                let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented,
+                                                  allowsResident: !searchPresented)
                 ZStack(alignment: .topLeading) {
                     video(geo.safeAreaInsets)
                         .environment(\.dyStandaloneBack, onBack)
@@ -526,7 +528,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 .animation(.snappy, value: showComments)
                 .animation(.snappy, value: layout.resident)
                 .dyBottomSheet(isPresented: Binding(
-                    get: { showComments && !layout.sideBySide && !layout.resident && aweme != nil },
+                    get: { showComments && !searchPresented && !layout.sideBySide && !layout.resident && aweme != nil },
                     set: { if !layout.sideBySide && !layout.resident { showComments = $0 } }
                 ), kind: .comments) {
                     if let aweme {

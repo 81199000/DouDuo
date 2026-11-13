@@ -13,6 +13,356 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    func testHashtagClassicFlow() throws { verifyHashtags(mode: "duoClassic") }
+    func testHashtagDefaultFlow() throws { verifyHashtags(mode: "classic") }
+
+    func testSearchClassicLayout() throws { verifySearchLayout(mode: "duoClassic") }
+    func testSearchDefaultLayout() throws { verifySearchLayout(mode: "classic") }
+    func testSearchHalfFoldClassicLayout() throws { verifySearchLayout(mode: "duoClassic", halfFold: true) }
+    func testSearchHalfFoldDefaultLayout() throws { verifySearchLayout(mode: "classic", halfFold: true) }
+
+    func testLiveHashtagClassicFlow() throws { verifyLiveHashtags(mode: "duoClassic") }
+    func testLiveHashtagDefaultFlow() throws { verifyLiveHashtags(mode: "classic") }
+
+    func testHashtagChipLayout() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douyin_wide_landscape_v1", "NO",
+                                "-douduo_dismissed_update_v1", "1.3.15"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(wait(label: "hashtag-cat", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 15))
+        attach(app, "hashtag-chips-before-opening")
+        app.buttons["douyin.more"].firstMatch.tap()
+        app.buttons["按标签过滤视频"].firstMatch.tap()
+        let cat = app.buttons["屏蔽 #猫咪"].firstMatch
+        let travel = app.buttons["屏蔽 #旅行"].firstMatch
+        XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields["douyin.hashtags.input"].frame.midY,
+                       app.buttons["douyin.hashtags.add"].frame.midY, accuracy: 1,
+                       "the add button shares the input row")
+        XCTAssertEqual(cat.frame.minY, travel.frame.minY, accuracy: 1, "short current tags share a row")
+        let currentTags = app.scrollViews["douyin.hashtags.current"].firstMatch
+        let lastTag = app.buttons["屏蔽 #运动"].firstMatch
+        XCTAssertTrue(currentTags.waitForExistence(timeout: 5))
+        for _ in 0..<3 where !lastTag.isHittable { currentTags.swipeLeft() }
+        XCTAssertTrue(lastTag.isHittable, "horizontal scrolling reveals the remaining tags")
+        XCTAssertEqual(lastTag.frame.minY, cat.frame.minY, accuracy: 1, "current tags stay on one line")
+        for _ in 0..<3 where !cat.isHittable { currentTags.swipeRight() }
+        for tag in ["猫咪", "旅行", "摄影"] {
+            app.buttons["屏蔽 #" + tag].firstMatch.tap()
+        }
+        let removeCat = app.buttons["取消屏蔽 #猫咪"].firstMatch
+        let removeTravel = app.buttons["取消屏蔽 #旅行"].firstMatch
+        XCTAssertTrue(removeCat.waitForExistence(timeout: 5))
+        XCTAssertEqual(removeCat.frame.minY, removeTravel.frame.minY, accuracy: 1, "short blocked tags share a row")
+        attach(app, "hashtag-chips-compact")
+        let longTag = "这是一条用于检查屏蔽页面自动换行的很长很长的完整标签名字" + String(repeating: "长标签", count: 10)
+        let input = app.textFields["douyin.hashtags.input"]
+        input.tap(); input.typeText(longTag)
+        app.buttons["douyin.hashtags.add"].tap()
+        let longChip = app.buttons["取消屏蔽 #" + longTag].firstMatch
+        XCTAssertTrue(longChip.waitForExistence(timeout: 5))
+        if !longChip.isHittable { app.swipeUp() }
+        let bounds = app.windows.firstMatch.frame
+        XCTAssertGreaterThanOrEqual(longChip.frame.minX, bounds.minX)
+        XCTAssertLessThanOrEqual(longChip.frame.maxX, bounds.maxX)
+        XCTAssertGreaterThan(longChip.frame.height, removeCat.frame.height, "long tags wrap inside the available width")
+        attach(app, "hashtag-chips-long")
+        longChip.tap()
+        for tag in ["猫咪", "旅行", "摄影"] {
+            app.buttons["取消屏蔽 #" + tag].firstMatch.tap()
+        }
+        XCTAssertTrue(app.staticTexts["尚未屏蔽任何标签"].waitForExistence(timeout: 5))
+        app.buttons["douyin.hashtags.done"].tap()
+    }
+
+    private func verifyLiveHashtags(mode: String) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        // No feed/search fixtures, forced video IDs or blocklist reset: use the
+        // real recommended feed and real signed search API in this app session.
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douyin_wide_landscape_v1", "NO",
+                                "-douduo_dismissed_update_v1", "1.3.15"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 90) { current.exists && current.label.range(of: "^[0-9]{10,}$", options: .regularExpression) != nil }, app.debugDescription)
+
+        func pauseVideo() {
+            let state = app.staticTexts["douyin.video.playback"].firstMatch
+            guard state.waitForExistence(timeout: 5) else { return } // photo gallery
+            if wait(label: "playing", on: state, timeout: 5) {
+                app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4)).tap()
+                XCTAssertTrue(wait(label: "paused", on: state, timeout: 5))
+            }
+        }
+        func openFilters() {
+            app.buttons["douyin.more"].firstMatch.tap()
+            let manage = app.buttons["按标签过滤视频"].firstMatch
+            XCTAssertTrue(manage.waitForExistence(timeout: 5))
+            manage.tap()
+            XCTAssertTrue(app.textFields["douyin.hashtags.input"].waitForExistence(timeout: 5))
+        }
+        func audit(_ phase: String, tag: String, originalID: String) {
+            let payload = ["phase": phase, "tag": tag, "originalID": originalID]
+            let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            print("DUODUO_AUDIT " + String(decoding: data, as: UTF8.self))
+            Thread.sleep(forTimeInterval: 1)
+        }
+
+        pauseVideo()
+        attach(app, "live-" + mode + "-start")
+        func visibleTags() -> [XCUIElement] {
+            app.links.matching(NSPredicate(format: "label BEGINSWITH '#' OR label BEGINSWITH '＃'"))
+                .allElementsBoundByIndex.filter { $0.isHittable && $0.label.count > 1 }
+        }
+        var chosen: XCUIElement?
+        for _ in 0..<20 {
+            var links = visibleTags()
+            let expand = app.buttons["douyin.description.toggle"].firstMatch
+            if links.isEmpty, expand.exists, expand.label == "展开" {
+                expand.tap()
+                links = visibleTags()
+            }
+            if let tag = links.first(where: { $0.label.count <= 16 }) ?? links.first {
+                chosen = tag; break
+            }
+            let previous = current.label
+            app.windows.firstMatch.swipeUp(velocity: .fast)
+            XCTAssertTrue(waitUntil(timeout: 15) { current.label != previous && current.label != "-" }, app.debugDescription)
+        }
+        guard let chosen else { XCTFail("No real caption hashtag found in 20 recommendations"); return }
+        let originalID = current.label
+        let tag = String(chosen.label.dropFirst())
+        pauseVideo()
+        audit("before-filter", tag: tag, originalID: originalID)
+        attach(app, "live-" + mode + "-caption")
+        chosen.tap()
+        let field = app.textFields["douyin.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertEqual(field.value as? String, "#" + tag)
+        let result = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'douyin.grid.item.'")).firstMatch
+        let timeout = app.staticTexts["搜索请求超时，请稍后重试"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 90) { result.exists || timeout.exists }, app.debugDescription)
+        if timeout.exists {
+            print("DUODUO_REAL_SEARCH_RETRY timeout query=" + tag)
+            app.buttons["douyin.search.submit"].tap()
+        }
+        XCTAssertTrue(result.waitForExistence(timeout: 90), app.debugDescription)
+        XCTAssertNotNil(result.identifier.range(of: "[0-9]{10,}$", options: .regularExpression))
+        let playback = app.staticTexts["douyin.video.playback"].firstMatch
+        if app.windows.firstMatch.frame.width > 700, playback.exists {
+            XCTAssertEqual(playback.label, "paused", "opening split search must preserve the video's paused state")
+        }
+        print("DUODUO_REAL_SEARCH query=\(tag) result=\(result.identifier)")
+        attach(app, "live-" + mode + "-search-results")
+        app.buttons["douyin.search.back"].firstMatch.tap()
+        XCTAssertTrue(field.waitForNonExistence(timeout: 10))
+        XCTAssertEqual(current.label, originalID)
+        pauseVideo()
+        openFilters()
+        let input = app.textFields["douyin.hashtags.input"]
+        input.tap(); input.typeText(tag)
+        app.buttons["douyin.hashtags.add"].tap()
+        let feedback = app.staticTexts["douyin.hashtags.feedback"]
+        XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+        XCTAssertTrue(feedback.label.contains("已添加"))
+        attach(app, "live-" + mode + "-blocked")
+        app.buttons["douyin.hashtags.done"].tap()
+        XCTAssertTrue(waitUntil(timeout: 30) { current.label != originalID && current.label != "-" })
+        pauseVideo()
+        audit("after-filter", tag: tag, originalID: originalID)
+        let beforeRefresh = current.label
+        app.buttons["douyin.more"].firstMatch.tap()
+        app.buttons["刷新推荐"].firstMatch.tap()
+        XCTAssertTrue(waitUntil(timeout: 90) { current.label != beforeRefresh && current.label != "-" }, app.debugDescription)
+        pauseVideo()
+        audit("after-refresh", tag: tag, originalID: originalID)
+        attach(app, "live-" + mode + "-refreshed")
+        app.terminate(); app.launch()
+        XCTAssertTrue(waitUntil(timeout: 60) { current.exists && current.label != "-" && current.label != originalID })
+        pauseVideo()
+        audit("after-relaunch", tag: tag, originalID: originalID)
+        openFilters()
+        let remove = app.buttons["取消屏蔽 #" + tag].firstMatch
+        if !remove.isHittable { app.swipeUp() }
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        XCTAssertTrue(remove.waitForNonExistence(timeout: 5))
+        app.buttons["douyin.hashtags.done"].tap()
+        pauseVideo()
+        audit("after-cleanup", tag: tag, originalID: originalID)
+    }
+
+    private func verifySearchLayout(mode: String, halfFold: Bool = false) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_SEARCH_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douduo_dismissed_update_v1", "1.3.15"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.windows.firstMatch.frame.width))
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 15))
+        if ProcessInfo.processInfo.environment["DOUDUO_TEST_DISPLAY"] == "inner" {
+            print("DUODUO_POSTURE " + (halfFold ? "half" : "open"))
+            Thread.sleep(forTimeInterval: 2)
+            print("DUODUO_ROTATE landscape")
+            XCTAssertTrue(waitUntil(timeout: 15) { app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height })
+        }
+        // XCTest application bounds describe the inactive outer display on Duo.
+        // Window bounds follow the active display and its current orientation.
+        let capturePrefix = "search-" + mode + (halfFold ? "-half" : "")
+        attach(app, capturePrefix + "-before-opening")
+        let expandedLandscape = app.windows.firstMatch.frame.width > 700 && app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height
+        let comments = app.scrollViews["douyin.comments.list"].firstMatch
+        if expandedLandscape {
+            if !halfFold { app.buttons["douyin.comments"].firstMatch.tap() }
+            XCTAssertTrue(comments.waitForExistence(timeout: 10))
+            attach(app, capturePrefix + "-comments-before-search")
+        }
+        app.buttons["douyin.search"].firstMatch.tap()
+        let field = app.textFields["douyin.search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
+        let submit = app.buttons["douyin.search.submit"]
+        XCTAssertTrue(submit.isHittable)
+        XCTAssertGreaterThanOrEqual(submit.frame.width, 30, "resizing from comments must not collapse the search button")
+        if !app.keyboards.firstMatch.exists { print("DUODUO_SHOW_KEYBOARD") }
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 15))
+        let back = app.buttons["douyin.search.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        // Back is independent of the field and belongs to Duo's right toolbar.
+        XCTAssertGreaterThanOrEqual(back.frame.minX, field.frame.maxX)
+        if expandedLandscape {
+            XCTAssertTrue(comments.waitForNonExistence(timeout: 5), "search must replace inline and resident comments without a comment sheet")
+            XCTAssertGreaterThan(field.frame.minX, app.windows.firstMatch.frame.midX)
+            let divider = app.descendants(matching: .any).matching(identifier: "douyin.search.divider").firstMatch
+            XCTAssertTrue(divider.waitForExistence(timeout: 5))
+            XCTAssertEqual(divider.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 1, "split must use exactly half of the entire display")
+            XCTAssertTrue(current.exists, "video must remain alongside search")
+            XCTAssertEqual(current.label, "hashtag-cat")
+        } else {
+            XCTAssertLessThan(field.frame.minX, app.windows.firstMatch.frame.midX)
+            XCTAssertFalse(app.buttons["douyin.more"].firstMatch.isHittable, "full-screen search covers the video")
+        }
+        for rank in 0...3 {
+            XCTAssertTrue(app.buttons["douyin.search.hot.\(rank)"].waitForExistence(timeout: 5))
+        }
+        attach(app, capturePrefix + "-hot-and-keyboard")
+        app.buttons["douyin.search.hot.1"].tap()
+        XCTAssertEqual(field.value as? String, "手工敲虾到底有多好吃")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        attach(app, capturePrefix + "-results")
+        if expandedLandscape {
+            // Device Hub owns inner-display rotation. The host recorder handles
+            // these markers because XCUIDevice rotates only Duo's outer display.
+            print("DUODUO_ROTATE portrait")
+            XCTAssertTrue(waitUntil(timeout: 15) { app.windows.firstMatch.frame.width < app.windows.firstMatch.frame.height })
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            XCTAssertTrue(waitUntil(timeout: 5) { field.frame.minX < app.windows.firstMatch.frame.midX })
+            XCTAssertEqual(field.value as? String, "手工敲虾到底有多好吃")
+            attach(app, capturePrefix + "-portrait")
+            XCTAssertFalse(app.buttons["douyin.more"].firstMatch.isHittable)
+            XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "douyin.search.divider").firstMatch.exists)
+            print("DUODUO_ROTATE landscape")
+            XCTAssertTrue(waitUntil(timeout: 15) { app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height })
+            XCTAssertTrue(waitUntil(timeout: 5) { field.frame.minX > app.windows.firstMatch.frame.midX })
+            XCTAssertEqual(field.value as? String, "手工敲虾到底有多好吃")
+            XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 5))
+        }
+        back.tap()
+        XCTAssertTrue(field.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 5))
+        if halfFold {
+            XCTAssertTrue(comments.waitForExistence(timeout: 5), "resident comments return after leaving search")
+            print("DUODUO_POSTURE open")
+            Thread.sleep(forTimeInterval: 2)
+        }
+    }
+
+    private func waitUntil(timeout: TimeInterval, condition: @escaping () -> Bool) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: nil)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func verifyHashtags(mode: String) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_SEARCH_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douyin_wide_landscape_v1", "NO",
+                                "-douduo_dismissed_update_v1", "1.3.15"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.frame.width), "This regression must run on an iPhone Duo display: \(app.frame)")
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 15))
+        let tag = app.links["#猫咪"].firstMatch
+        XCTAssertTrue(tag.waitForExistence(timeout: 5), app.debugDescription)
+        attach(app, "hashtag-" + mode + "-caption")
+        tag.tap()
+        let search = app.textFields["douyin.search.field"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(search.value as? String, "#猫咪")
+        attach(app, "hashtag-" + mode + "-search")
+        app.buttons["douyin.search.back"].tap()
+        XCTAssertTrue(tag.waitForExistence(timeout: 5))
+        let expand = app.buttons["douyin.description.toggle"].firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        expand.tap()
+        let lastTag = app.links["#摄影"].firstMatch
+        XCTAssertTrue(lastTag.waitForExistence(timeout: 5))
+        lastTag.tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertEqual(search.value as? String, "#摄影")
+        app.buttons["douyin.search.back"].tap()
+
+        func openFilters() {
+            let more = app.buttons["douyin.more"].firstMatch
+            XCTAssertTrue(more.waitForExistence(timeout: 5), app.debugDescription)
+            more.tap()
+            let manage = app.buttons["按标签过滤视频"].firstMatch
+            XCTAssertTrue(manage.waitForExistence(timeout: 5), app.debugDescription)
+            manage.tap()
+            XCTAssertTrue(app.textFields["douyin.hashtags.input"].waitForExistence(timeout: 5))
+        }
+        openFilters()
+        let input = app.textFields["douyin.hashtags.input"]
+        input.tap(); input.typeText("猫咪")
+        app.buttons["douyin.hashtags.add"].tap()
+        XCTAssertTrue(app.staticTexts["douyin.hashtags.feedback"].waitForExistence(timeout: 5))
+        attach(app, "hashtag-" + mode + "-filter")
+        app.buttons["douyin.hashtags.done"].tap()
+        XCTAssertTrue(wait(label: "hashtag-travel", on: current, timeout: 5), app.debugDescription)
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "DOUDUO_RESET_HASHTAG_FILTER")
+        app.launch()
+        XCTAssertTrue(wait(label: "hashtag-travel", on: current, timeout: 15), "blocklist must survive relaunch")
+        openFilters()
+        let remove = app.buttons["取消屏蔽 #猫咪"].firstMatch
+        if !remove.isHittable { app.swipeUp() }
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
+        remove.tap()
+        app.buttons["douyin.hashtags.done"].tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 15), "unblocked videos return in future recommendations")
+    }
+
     func testPanelsKeepPlaybackAndDismissGestures() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

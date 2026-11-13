@@ -40,6 +40,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var publishedAt: TimeInterval? = nil
     /// 保留平台返回的 AI 声明原文；没有标记不代表非 AI。
     var aiDeclaration: String? = nil
+    /// Optional for compatibility with sessions saved before hashtag support.
+    var hashtagNames: [String]? = nil
 
     func publicationText(now: Date = Date()) -> String? {
         guard let publishedAt, publishedAt.isFinite, publishedAt > 0,
@@ -230,6 +232,13 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func reload() {
+        #if DEBUG
+        // Layout fixtures must not bootstrap the live website or share its request budget.
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            ready = true
+            return
+        }
+        #endif
         authorFollowStates = [:]
         followSessionCache.invalidate()
         followSession = followSessionCache.generation
@@ -275,6 +284,11 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// 在抖音页面里发请求（页面 SDK 自动签名），JS 端把大 JSON 裁成精简结构再回传
     func call(_ body: String, args: [String: Any], attempts: Int = 3) async throws -> Data {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            throw DYError.bad("本地标签回归已禁用网络请求")
+        }
+        #endif
         await waitReady()
         var lastErr: Error = DYError.notReady
         for attempt in 0..<attempts {
@@ -830,7 +844,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const fr = fastRate(v), fast = fr ? pickPlay(fr.play_addr.url_list) : null;
       const pd = v.play_addr || {};
       return {
-        id: String(a.aweme_id), desc: a.desc || '', width: v.width || 0, height: v.height || 0, duration: (v.duration || 0) / 1000,
+        id: String(a.aweme_id), desc: a.desc || '',
+        hashtagNames: [...new Set([...(a.text_extra || []).map(t => t.hashtag_name), ...(a.cha_list || []).map(t => t.cha_name)].filter(t => typeof t === 'string' && t.trim()))], width: v.width || 0, height: v.height || 0, duration: (v.duration || 0) / 1000,
         play: best || def,
         playAlt: pickRedirect(br ? br.play_addr.url_list : urls) || (best && def && best !== def ? def : null),
         playFast: fast && fast !== (best || def) ? fast : null,
@@ -1034,6 +1049,28 @@ final class DYFeedModel: ObservableObject {
     /// 是否已登录抖音（登录后推荐流才按账号个性化，点赞/收藏才能进账号）
     @Published var isLoggedIn = false
     private var hasMore = true
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func allowedRecommendations(_ candidates: [DYAweme]) -> [DYAweme] {
+        let filter = DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "")
+        return candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) }
+    }
+
+    /// Keep the active video when possible; otherwise prefer the next surviving recommendation.
+    @discardableResult
+    func applyHashtagFilter(currentID: String?) -> String? {
+        let previous = items
+        let index = currentID.flatMap { id in previous.firstIndex { $0.id == id } } ?? 0
+        items = allowedRecommendations(items)
+        pool = allowedRecommendations(pool)
+        if let currentID, items.contains(where: { $0.id == currentID }) { return currentID }
+        let survivingIDs = Set(items.map(\.id))
+        let next = previous.dropFirst(index).first { survivingIDs.contains($0.id) }?.id
+        if items.isEmpty { fill(6, relaxed: true); return items.first?.id }
+        return currentID == nil ? items.first?.id : (next ?? items.last?.id)
+    }
 
     /// 推荐方向固定目标由 targetRatio 给出，不读取旧版方向偏好。
     /// 候选池保留暂未排入的素材；素材不足仍允许放宽，横屏限定除外。
@@ -1065,6 +1102,7 @@ final class DYFeedModel: ObservableObject {
     /// 从候选池按比例往列表里排最多 maxN 条；relaxed = 比例凑不齐时也照原顺序放（别让列表断粮）
     @discardableResult
     func fill(_ maxN: Int, relaxed: Bool = false) -> Int {
+        pool = allowedRecommendations(pool)
         var n = 0
         while n < maxN, !pool.isEmpty {
             var idx: Int?
@@ -1132,7 +1170,7 @@ final class DYFeedModel: ObservableObject {
     /// 启动时把本地已缓存、没看过、又不在列表里的放到候选池最前（秒开）
     func seedPool(_ cached: [DYAweme]) {
         let have = Set(items.map(\.id)).union(pool.map(\.id))
-        pool = cached.filter { !have.contains($0.id) } + pool
+        pool = allowedRecommendations(cached).filter { !have.contains($0.id) } + pool
     }
 
     private func trimPool() {
@@ -1145,6 +1183,12 @@ final class DYFeedModel: ObservableObject {
     }
 
     func loadMore(_ bridge: DouyinBridge) async {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            error = items.isEmpty ? "暂时没有符合标签过滤条件的推荐" : nil
+            return
+        }
+        #endif
         guard !loading, hasMore || items.isEmpty || !pool.isEmpty else { return }
         loading = true
         defer { loading = false }
@@ -1154,9 +1198,10 @@ final class DYFeedModel: ObservableObject {
             var pages = 0
             while added < want && pages < 8 && (hasMore || items.isEmpty) {
                 let r = try await bridge.fetchFeed()
+                guard !Task.isCancelled else { return }
                 pages += 1
                 let seen = Set(items.map(\.id)).union(pool.map(\.id))
-                let fresh = r.items.filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty) }
+                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty) }
                 // 账号里已点赞/已收藏的，进页面就是选中态
                 for a in fresh {
                     if a.userDigged == 1 { liked.insert(a.id) }
@@ -1170,7 +1215,8 @@ final class DYFeedModel: ObservableObject {
             if added == 0, let r = targetRatio, r > 0, r < 1 { added += fill(want, relaxed: true) }
             trimPool()
             DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(targetRatio.map { String(format: "%.2f", $0) } ?? "free") wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
-            error = (items.isEmpty && added == 0) ? "暂时没刷到推荐，登录后或稍后再试" : nil
+            error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
+                ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
             if items.isEmpty { self.error = error.localizedDescription }
         }
@@ -1202,6 +1248,8 @@ struct DYUpstreamFeedScreen: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var bridge = DouyinBridge()
     @StateObject private var feed = DYFeedModel()
+    @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
@@ -1221,7 +1269,10 @@ struct DYUpstreamFeedScreen: View {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
-    @State private var showSearch = false
+    @State private var searchSession: DYSearchSession?
+    @State private var searchIsSplit = false
+    private var showSearch: Bool { searchSession != nil }
+    private func openSearch() { showComments = false; searchSession = DYSearchSession() }
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
@@ -1233,7 +1284,7 @@ struct DYUpstreamFeedScreen: View {
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
-    private var overlayOpen: Bool { showSearch || showMine || showMessages || authorTarget != nil }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && !searchIsSplit) || showMine || showMessages || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
@@ -1342,6 +1393,14 @@ struct DYUpstreamFeedScreen: View {
         .task {
             guard !initialized else { return }
             initialized = true
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+                feed.items = feed.allowedRecommendations(DYFeedModel.hashtagFixtures)
+                currentID = feed.items.first?.id
+                scrollID = currentID
+                return
+            }
+            #endif
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
             #if DEBUG
@@ -1371,10 +1430,10 @@ struct DYUpstreamFeedScreen: View {
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
             if feed.items.isEmpty, let saved = DYFeedSession.load() {
-                feed.items = saved.items
+                feed.items = feed.allowedRecommendations(saved.items)
                 resume = saved.positions
-                currentID = saved.currentID
-                scrollID = saved.currentID
+                currentID = feed.items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : feed.items.first?.id
+                scrollID = currentID
                 for a in saved.items {
                     if a.userDigged == 1 { feed.liked.insert(a.id) }
                     if a.isCollect == 1 { feed.collected.insert(a.id) }
@@ -1416,7 +1475,7 @@ struct DYUpstreamFeedScreen: View {
             if let o = env["DOUDUO_OPEN"] {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 switch o {
-                case "search": showSearch = true
+                case "search": openSearch()
                 case "mine": showMine = true
                 case "follow": tab = .follow
                 case "author": authorTarget = current?.author
@@ -1465,6 +1524,7 @@ struct DYUpstreamFeedScreen: View {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
+        .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
@@ -1472,7 +1532,11 @@ struct DYUpstreamFeedScreen: View {
     }
 
     var body: some View {
-        loadedFeed.fullScreenCover(item: $web, onDismiss: {
+        loadedFeed
+        .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
+                                      onOpen: { showComments = false }))
+        .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
+        .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
             live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
             Task {
@@ -1590,6 +1654,7 @@ struct DYUpstreamFeedScreen: View {
     private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
 
     private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
+        guard !showSearch else { return 0 }
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let w = geo.size.width, h = geo.size.height
         if let p = foldPanes(geo) { return p.book ? max(0, w - p.video.width) : 0 }
@@ -1600,14 +1665,14 @@ struct DYUpstreamFeedScreen: View {
     }
 
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
+        let fold = !showSearch && tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
         let w = geo.size.width, h = geo.size.height
-        let hinge = foldPanes(geo)            // 有真实折痕时按折痕切，评论从折痕另一侧开始
+        let hinge = showSearch ? nil : foldPanes(geo)
         let bookFold = fold && (hinge.map { $0.book } ?? (w > h))   // 书本姿态：左右分
         let tableFold = fold && !bookFold     // 桌面姿态：上下分
         let sideBySide = wide || bookFold
-        let showPanel = fold || (showComments && sideBySide && tab != .live)
+        let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
 
         let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
         let panelH = hinge.map { $0.panel.height } ?? (tableFold ? h * 0.45 : 0)
@@ -1640,7 +1705,7 @@ struct DYUpstreamFeedScreen: View {
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
         .animation(.snappy, value: fold)
         .animation(.snappy, value: showComments)
-        .sheet(isPresented: Binding(get: { showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
+        .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
             if let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
                     // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
@@ -1669,6 +1734,9 @@ struct DYUpstreamFeedScreen: View {
     }
 
     private func saveSession() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
         guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
         var positions = resume
         if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
@@ -1742,7 +1810,33 @@ struct DYUpstreamFeedScreen: View {
         DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
     }
 
+    private func applyHashtagFilter() async {
+        let previousID = currentID
+        currentID = feed.applyHashtagFilter(currentID: currentID)
+        if previousID != currentID {
+            scrollEndTask?.cancel()
+            userScrolling = false
+            showComments = false
+            scrollID = currentID
+            preloader.clear()
+        }
+        saveSession()
+        guard initialized else { return }
+        while feed.loading {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        if feed.items.isEmpty { await feed.loadMore(bridge) }
+        guard !Task.isCancelled else { return }
+        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
+        focusCurrent()
+        saveSession()
+    }
+
     private func focusCurrent() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
         let curID = feed.items[i].id
@@ -1817,9 +1911,6 @@ struct DYUpstreamFeedScreen: View {
         .onChange(of: tab) { _, t in
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
-        }
-        .fullScreenCover(isPresented: $showSearch) {
-            DYSearchScreen(bridge: bridge, onAuthor: { a in authorTarget = a.author })
         }
         .fullScreenCover(isPresented: $showMine) {
             DYMineScreen(bridge: bridge,
@@ -1999,7 +2090,7 @@ struct DYUpstreamFeedScreen: View {
             }
         }
         Section {
-            Button("搜索", systemImage: "magnifyingglass") { showSearch = true }
+            Button("搜索", systemImage: "magnifyingglass") { openSearch() }
                 .accessibilityIdentifier("douyin.module.search")
             Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
             Button("我的", systemImage: "person.crop.circle") { showMine = true }
@@ -2102,7 +2193,7 @@ struct DYUpstreamFeedScreen: View {
                         }
                     }
                     Divider().padding(.vertical, 4)
-                    minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { showSearch = true }
+                    minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
                     minimalMenuRow("消息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") { showMessages = true }
                     minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
                 }
@@ -2163,6 +2254,7 @@ struct DYUpstreamFeedScreen: View {
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
                             .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                     }
+                    DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2221,7 +2313,7 @@ struct DYUpstreamFeedScreen: View {
                            onCollect: { toggleCollect(item.id) },
                            onDoubleTap: { toggleLike(item.id, force: true) },
                            onComments: { withAnimation(.snappy) { showComments.toggle() } },
-                           onSearch: { showSearch = true },
+                           onSearch: { openSearch() },
                            onAuthor: { authorTarget = item.author },
                            onSavePosition: { resume[item.id] = $0; saveSession() },
                            preloader: preloader,
@@ -2339,6 +2431,7 @@ struct DYUpstreamFeedScreen: View {
     @ViewBuilder
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
         Section {
+            DYHashtagFilterButton(tags: item.hashtags)
             Button("刷新推荐", systemImage: "arrow.clockwise") {
                 Task { await refreshRecommendations() }
             }
@@ -2569,6 +2662,8 @@ enum DYTab: CaseIterable { case follow, recommend, live
 
 struct DYVideoPage: View {
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    @Environment(\.dySearchCoversVideo) private var searchCoversVideo
+    @Environment(\.dyHashtagFilterPresented) private var filterPresented
     @Environment(\.dyStandaloneBack) private var standaloneBack
     let onSearch: () -> Void
     var moreExtras: AnyView
@@ -2614,18 +2709,20 @@ struct DYVideoPage: View {
     }
 
     var body: some View {
-        if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
-            DYClassicVideoPage(item: item, isCurrent: isCurrent, insets: insets, resume: resume,
-                liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
-                onDoubleTap: onDoubleTap, onComments: onComments, onAuthor: onAuthor,
-                onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
-                onDislike: onDislike, onEnded: onEnded, onShowFollowing: onShowFollowing, onNavigateLeft: onNavigateLeft)
-        } else {
-            DYUpstreamVideoPage(item: item, isCurrent: isCurrent, insets: insets, resume: resume,
-                liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
-                onDoubleTap: onDoubleTap, onComments: onComments, onSearch: onSearch, onAuthor: onAuthor,
-                onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
-                onDislike: onDislike, moreExtras: moreExtras, onEnded: onEnded, onBack: onBack ?? standaloneBack)
+        Group {
+            if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
+                DYClassicVideoPage(item: item, isCurrent: isCurrent && !searchCoversVideo && !filterPresented, insets: insets, resume: resume,
+                    liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
+                    onDoubleTap: onDoubleTap, onComments: onComments, onAuthor: onAuthor,
+                    onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
+                    onDislike: onDislike, onEnded: onEnded, onShowFollowing: onShowFollowing, onNavigateLeft: onNavigateLeft)
+            } else {
+                DYUpstreamVideoPage(item: item, isCurrent: isCurrent && !searchCoversVideo && !filterPresented, insets: insets, resume: resume,
+                    liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
+                    onDoubleTap: onDoubleTap, onComments: onComments, onSearch: onSearch, onAuthor: onAuthor,
+                    onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
+                    onDislike: onDislike, moreExtras: moreExtras, onEnded: onEnded, onBack: onBack ?? standaloneBack)
+            }
         }
     }
 }
@@ -2633,11 +2730,14 @@ struct DYVideoPage: View {
 struct DouyinFeedScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     var body: some View {
-        if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
-            DYClassicFeedScreen()
-        } else {
-            DYUpstreamFeedScreen()
+        Group {
+            if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
+                DYClassicFeedScreen()
+            } else {
+                DYUpstreamFeedScreen()
+            }
         }
+        .modifier(DYHashtagFilterPresentation())
     }
 }
 
@@ -2667,6 +2767,8 @@ struct DYClassicFeedScreen: View {
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
     @StateObject private var feed = DYFeedModel()
+    @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
@@ -2686,7 +2788,10 @@ struct DYClassicFeedScreen: View {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
-    @State private var showSearch = false
+    @State private var searchSession: DYSearchSession?
+    @State private var searchIsSplit = false
+    private var showSearch: Bool { searchSession != nil }
+    private func openSearch() { showComments = false; searchSession = DYSearchSession() }
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var mainTab: DYMainTab = .home
@@ -2704,7 +2809,7 @@ struct DYClassicFeedScreen: View {
         nonmutating set { mainTab = newValue ? .messages : .home }
     }
     /// A side-by-side author pane leaves the current video visible and playing.
-    private var overlayOpen: Bool { showSearch || showMine || showMessages || authorWorkOpen || (authorTarget != nil && !supportsSidePanel) }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && !searchIsSplit) || showMine || showMessages || authorWorkOpen || (authorTarget != nil && !supportsSidePanel) }
     /// 全局播放速度；长按临时倍速不修改持久化偏好。
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @State private var noticeUnread = 0
@@ -2713,8 +2818,8 @@ struct DYClassicFeedScreen: View {
     @State private var supportsSidePanel = false
     @State private var residentComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
-    private var sidePanelOpen: Bool { residentComments || (supportsSidePanel && (authorTarget != nil || showComments)) }
-    private var hidesVideoChrome: Bool { showComments || residentComments || authorTarget != nil || liveRoomOpen }
+    private var sidePanelOpen: Bool { !showSearch && (residentComments || (supportsSidePanel && (authorTarget != nil || showComments))) }
+    private var hidesVideoChrome: Bool { (!showSearch && (showComments || residentComments || authorTarget != nil)) || liveRoomOpen }
     private var headerTopInset: CGFloat {
         // NavigationStack's inset includes a horizontal toolbar after rotation.
         // The fixed video header needs only the physical window's safe area.
@@ -2730,15 +2835,21 @@ struct DYClassicFeedScreen: View {
 
     var body: some View {
         systemTabs
-        // Present from the stable tab host, outside the pager/toolbar geometry.
-        // Opening search deactivates video pages and updates their toolbar preferences.
-        .fullScreenCover(isPresented: $showSearch) {
-            DYSearchScreen(bridge: bridge, onAuthor: { a in authorTarget = a.author })
-        }
+        .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
+                                      onOpen: { showComments = false }))
+        .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .background(DouyinBridgeHost(bridge: bridge).frame(width: 1, height: 1).allowsHitTesting(false))
         .task {
             guard !initialized else { return }
             initialized = true
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+                feed.items = feed.allowedRecommendations(DYFeedModel.hashtagFixtures)
+                currentID = feed.items.first?.id
+                scrollID = currentID
+                return
+            }
+            #endif
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
             #if DEBUG
@@ -2767,10 +2878,10 @@ struct DYClassicFeedScreen: View {
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
             if feed.items.isEmpty, let saved = DYFeedSession.load() {
-                feed.items = saved.items
+                feed.items = feed.allowedRecommendations(saved.items)
                 resume = saved.positions
-                currentID = saved.currentID
-                scrollID = saved.currentID
+                currentID = feed.items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : feed.items.first?.id
+                scrollID = currentID
                 for a in saved.items {
                     if a.userDigged == 1 { feed.liked.insert(a.id) }
                     if a.isCollect == 1 { feed.collected.insert(a.id) }
@@ -2812,7 +2923,7 @@ struct DYClassicFeedScreen: View {
             if let o = env["DOUDUO_OPEN"] {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 switch o {
-                case "search": showSearch = true
+                case "search": openSearch()
                 case "mine": showMine = true
                 case "follow": tab = .follow
                 case "author": authorTarget = current?.author
@@ -2861,6 +2972,7 @@ struct DYClassicFeedScreen: View {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
+        .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
@@ -3019,8 +3131,8 @@ struct DYClassicFeedScreen: View {
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let layout = DYCommentPaneMetrics(geo, isPresented: authorTarget != nil || showComments,
-                                          allowsResident: tab != .live, paneFraction: authorTarget == nil ? nil : 0.5)
+        let layout = DYCommentPaneMetrics(geo, isPresented: !showSearch && (authorTarget != nil || showComments),
+                                          allowsResident: !showSearch && tab != .live, paneFraction: authorTarget == nil ? nil : 0.5)
         let w = geo.size.width, h = geo.size.height
 
         return ZStack(alignment: .topLeading) {
@@ -3056,7 +3168,7 @@ struct DYClassicFeedScreen: View {
         .animation(.snappy, value: layout.resident)
         .animation(.snappy, value: showComments)
         .animation(.snappy, value: authorTarget?.id)
-        .dyBottomSheet(isPresented: Binding(get: { showComments && !layout.sideBySide && !layout.resident }, set: { if !supportsSidePanel && !layout.resident { showComments = $0 } }), kind: .comments) {
+        .dyBottomSheet(isPresented: Binding(get: { !showSearch && showComments && !layout.sideBySide && !layout.resident }, set: { if !supportsSidePanel && !layout.resident { showComments = $0 } }), kind: .comments) {
             if let cur = commentAweme {
                 DYCommentSheet(bridge: bridge, aweme: cur, onClose: { showComments = false })
             }
@@ -3082,6 +3194,9 @@ struct DYClassicFeedScreen: View {
     }
 
     private func saveSession() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
         guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
         var positions = resume
         if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
@@ -3153,7 +3268,33 @@ struct DYClassicFeedScreen: View {
         DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
     }
 
+    private func applyHashtagFilter() async {
+        let previousID = currentID
+        currentID = feed.applyHashtagFilter(currentID: currentID)
+        if previousID != currentID {
+            scrollEndTask?.cancel()
+            userScrolling = false
+            showComments = false
+            scrollID = currentID
+            preloader.clear()
+        }
+        saveSession()
+        guard initialized else { return }
+        while feed.loading {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        if feed.items.isEmpty { await feed.loadMore(bridge) }
+        guard !Task.isCancelled else { return }
+        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
+        focusCurrent()
+        saveSession()
+    }
+
     private func focusCurrent() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
         let curID = feed.items[i].id
@@ -3224,7 +3365,7 @@ struct DYClassicFeedScreen: View {
                     DYVideoMoreMenu(extras: AnyView(moreExtrasMenu))
                     Spacer(minLength: 0)
                     Button {
-                        showSearch = true
+                        openSearch()
                     } label: {
                         Image(systemName: "magnifyingglass")
                             .font(.title2)
@@ -3234,6 +3375,9 @@ struct DYClassicFeedScreen: View {
                     .accessibilityLabel("搜索")
                     .accessibilityIdentifier("douyin.search")
                     .accessibilityValue(showSearch ? "已打开" : "未打开")
+                    .opacity(showSearch && searchIsSplit ? 0 : 1)
+                    .allowsHitTesting(!(showSearch && searchIsSplit))
+                    .accessibilityHidden(showSearch && searchIsSplit)
                 }
                 topBar
             }
@@ -3304,6 +3448,7 @@ struct DYClassicFeedScreen: View {
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
                             .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                     }
+                    DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3475,6 +3620,7 @@ struct DYClassicFeedScreen: View {
     @ViewBuilder
     private var moreExtrasMenu: some View {
         Section {
+            DYHashtagFilterButton(tags: (tab == .follow ? visibleVideo : current)?.hashtags ?? [])
             DYChromeModePicker()
             Button("刷新推荐", systemImage: "arrow.clockwise") {
                 Task { await refreshRecommendations() }
@@ -3803,7 +3949,8 @@ struct DYUpstreamVideoPage: View {
             }
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,
-                                  secondary: theme.media.onMediaSecondary.color(for: scheme))
+                                  secondary: theme.media.onMediaSecondary.color(for: scheme),
+                                  hashtagNames: item.hashtagNames ?? [])
             }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
@@ -4238,7 +4385,7 @@ struct DYClassicVideoPage: View {
             .accessibilityIdentifier("douyin.author")
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg.opacity(0.9),
-                                  secondary: fg.opacity(0.7))
+                                  secondary: fg.opacity(0.7), hashtagNames: item.hashtagNames ?? [])
             }
             if let metadata = item.metadataText() {
                 Text(metadata).font(.caption2.weight(.regular))
@@ -4442,6 +4589,7 @@ struct DYCommentPanel: View {
     @State private var diggShown: [String: Int] = [:]
     @State private var relatedWords: [String] = []
     @State private var relatedQuery: DYRelatedQuery?
+    @Environment(\.dyOpenSearch) private var openSearch
     @State private var listAtTop = true
     @State private var bottomSafeArea = DYDuoMetrics.windowBottomInset
     @FocusState private var inputFocused: Bool
@@ -4517,7 +4665,7 @@ struct DYCommentPanel: View {
                     HStack(spacing: 12) {
                         Text("相关搜索").font(.caption).foregroundStyle(.themeTextSecondary)
                         ForEach(relatedWords, id: \.self) { word in
-                            Button { relatedQuery = DYRelatedQuery(word: word) } label: {
+                            Button { searchRelated(word) } label: {
                                 Label(word, systemImage: "magnifyingglass")
                                     .font(.footnote).lineLimit(1)
                                     .foregroundStyle(theme.accent.color(for: scheme))
@@ -4576,7 +4724,7 @@ struct DYCommentPanel: View {
                     HStack(spacing: 12) {
                         Text("相关搜索").font(.caption).foregroundStyle(.themeTextSecondary)
                         ForEach(relatedWords, id: \.self) { word in
-                            Button { relatedQuery = DYRelatedQuery(word: word) } label: {
+                            Button { searchRelated(word) } label: {
                                 Label(word, systemImage: "magnifyingglass")
                                     .font(.footnote).lineLimit(1)
                                     .foregroundStyle(theme.accent.color(for: scheme))
@@ -4647,6 +4795,13 @@ struct DYCommentPanel: View {
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
+    }
+
+    private func searchRelated(_ word: String) {
+        guard let openSearch else { relatedQuery = DYRelatedQuery(word: word); return }
+        onClose?()
+        // Let a compact comment sheet dismiss before the video host presents search.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { openSearch(word) }
     }
 
     private var inputBar: some View {
@@ -5132,3 +5287,19 @@ private struct DYTopChromeFrameKey: PreferenceKey {
         if next.maxY > value.maxY { value = next }
     }
 }
+
+#if DEBUG
+extension DYFeedModel {
+    static var hashtagFixtures: [DYAweme] {
+        [("hashtag-cat", "日常 #猫咪 #旅行\n" + String(repeating: "这段简介用于检查展开后的标签点击与换行。", count: 8) + " #摄影"),
+         ("hashtag-travel", "周末记录 #旅行"),
+         ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
+            DYAweme(id: id, desc: text, width: 1080, height: 1920, duration: 0, play: nil,
+                    cover: nil, images: [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
+                    stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
+                    userDigged: nil, isCollect: nil, publishedAt: 1,
+                    hashtagNames: id == "hashtag-cat" ? ["猫咪", "旅行", "摄影", "美食", "科技", "自然", "城市漫步", "运动"] : nil)
+        }
+    }
+}
+#endif
