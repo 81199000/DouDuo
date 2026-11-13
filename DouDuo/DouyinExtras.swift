@@ -202,9 +202,10 @@ extension DouyinBridge {
         let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
         var lastLog = ""
         // 先确认登录态：私有版是独立 App，没登录时发评论只会拿到空响应，别误报成风控
-        guard let me = try? await selfProfile(), !me.secUid.isEmpty else {
-            DYLiveModel.log("DDSEND blocked: not logged in aweme=\(awemeID)")
-            throw DYError.bad("抖音还没登录（这个版本是独立 App，要重新登录一次）：右上「我的」→「网页版 / 登录」")
+        // 登录校验只作参考：profile/self 有时自己会失败，不能据此拦住发送
+        var myName = ""
+        do { let me = try await selfProfile(); myName = me.name } catch {
+            DYLiveModel.log("DDSEND profile-self failed（不拦发送）\(error.localizedDescription)")
         }
         // 先 v1，空响应/风控页不算失败——抖音经常已经写入但接口不回执，先在评论/楼中楼里核对
         for js in [Self.publishJS] {
@@ -219,7 +220,7 @@ extension DouyinBridge {
             if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
             if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
             // 空响应/非 JSON：核对这条评论是不是已经发出去了
-            if let mine = await findMySentComment(awemeID, text: text, replyID: replyID, myName: me.name) {
+            if let mine = await findMySentComment(awemeID, text: text, replyID: replyID, myName: myName) {
                 DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
                 return mine
             }
