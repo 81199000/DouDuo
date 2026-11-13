@@ -87,7 +87,9 @@ struct DouDuoApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
+            if ProcessInfo.processInfo.environment["REMON_DRAFTPREVIEW"] == "1" {
+                RemonDraftPreview()
+            } else if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
                 DYTitleLayoutProbe()
             } else if let target = LocalVideoLaunch.target {
                 LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)

@@ -998,6 +998,9 @@ struct DYNoticeListScreen: View {
     @State private var replySending = false
     @State private var replyErr: String?
     @State private var replied: Set<String> = []
+    // remon-assist：AI 拟稿
+    @State private var drafting = false
+    @State private var draftResult: RemonDraftResult?
     @State private var toast: String?
     @FocusState private var replyFocused: Bool
 
@@ -1058,7 +1061,7 @@ struct DYNoticeListScreen: View {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(Capsule().fill(.black.opacity(0.7)))
-                    .padding(.bottom, replying == nil ? 40 : 120)
+                    .padding(.bottom, replying == nil ? 40 : (draftResult == nil ? 120 : 230))
                     .allowsHitTesting(false)
             }
         }
@@ -1122,7 +1125,18 @@ struct DYNoticeListScreen: View {
                 }
             }
             if let e = replyErr { Text(e).font(.caption2).foregroundStyle(.red) }
+            if let r = draftResult {
+                RemonDraftStrip(result: r) { replyDraft = $0; replyFocused = true }
+            }
             HStack(spacing: 8) {
+                Button { Task { await aiDraft() } } label: {
+                    if drafting { ProgressView().controlSize(.small).tint(.white) }
+                    else { Image(systemName: "sparkles").font(.body.weight(.semibold)) }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .disabled(drafting)
+                .accessibilityIdentifier("remon.draft.button")
                 TextField("回复评论…", text: $replyDraft, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($replyFocused)
@@ -1146,13 +1160,28 @@ struct DYNoticeListScreen: View {
     }
 
     private func startReply(_ n: DYNotice) {
-        if replying?.id != n.id { replyDraft = "" }
+        if replying?.id != n.id { replyDraft = ""; draftResult = nil }
         replying = n; replyErr = nil
         replyFocused = true
     }
 
     private func closeReply() {
-        replying = nil; replyDraft = ""; replyErr = nil; replyFocused = false
+        replying = nil; replyDraft = ""; replyErr = nil; replyFocused = false; draftResult = nil
+    }
+
+    /// remon-assist：把对方评论交给 Mac Studio 拟稿服务，拿回三条草稿；不自动发送
+    private func aiDraft() async {
+        guard let n = replying, !drafting else { return }
+        let target = n.id
+        drafting = true; replyErr = nil
+        defer { drafting = false }
+        do {
+            let r = try await RemonAssist.draft(author: n.name, text: n.detail, quote: n.quote)
+            guard replying?.id == target else { return }
+            draftResult = r
+        } catch {
+            if replying?.id == target { replyErr = "AI 拟稿失败：\(error.localizedDescription)" }
+        }
     }
 
     private func sendReply() async {
