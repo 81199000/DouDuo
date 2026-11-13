@@ -1514,6 +1514,7 @@ struct DouyinFeedScreen: View {
             let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
             let barW: CGFloat? = panelW > 0 ? geo.size.width - panelW : nil
             flatArrangement(geo)
+                .onChange(of: Self.foldProbe(geo), initial: true) { _, s in DYLiveModel.log(s) }
                 .onAppear { topNudge = nudge; topBarWidth = barW }
                 .onChange(of: nudge) { _, n in topNudge = n }
                 .onChange(of: barW) { _, v in withAnimation(.snappy) { topBarWidth = v } }
@@ -1552,6 +1553,34 @@ struct DouyinFeedScreen: View {
         guard let p = DYLiveAdaptiveLayoutEngine.hingePanes(
             bounds: CGRect(origin: .zero, size: geo.size), divisions: divisions) else { return nil }
         return (p.first, p.second, p.book)
+    }
+
+    /// 真机排查半折叠切分：尺寸、安全区、折痕原始矩形、切分结果，变化时写一行 ddlog（DDFOLD）。
+    private static func foldProbe(_ geo: GeometryProxy) -> String {
+        let r: (CGRect) -> String = { "(\(Int($0.minX)),\(Int($0.minY)),\(Int($0.width))x\(Int($0.height)))" }
+        let s = geo.safeAreaInsets
+        var line = "DDFOLD size=\(Int(geo.size.width))x\(Int(geo.size.height)) safe=\(Int(s.top)),\(Int(s.leading)),\(Int(s.bottom)),\(Int(s.trailing)) fold=\(DYDuoMetrics.foldIsActive(geo))"
+        line += " global=" + r(geo.frame(in: .global))
+        if #available(iOS 27.1, *) {
+            let divs = geo.reservedRegions(kind: .division).map { r($0.frame) + ($0.isActive ? "A" : "-") }
+            let occ = geo.reservedRegions(kind: .occlusion).map { r($0.frame) + ($0.isActive ? "A" : "-") }
+            line += " div=" + divs.joined(separator: ",") + " occ=" + occ.joined(separator: ",")
+        }
+        if let p = hingeSplit(geo) { line += " split=" + (p.book ? "book " : "table ") + r(p.video) + "|" + r(p.panel) }
+        else { line += " split=nil" }
+        return line
+    }
+
+    /// 窗格右侧被系统遮挡区（状态栏时间/信号）占掉的宽度，最多让 120pt。
+    private static func trailingOcclusionInset(_ geo: GeometryProxy, pane: CGRect) -> CGFloat {
+        guard #available(iOS 27.1, *) else { return 0 }
+        var inset: CGFloat = 0
+        for region in geo.reservedRegions(kind: .occlusion) where region.isActive {
+            let f = region.frame
+            guard f.width > 1, f.height > 1, f.intersects(pane), f.midX > pane.midX else { continue }
+            inset = max(inset, pane.maxX - f.minX)
+        }
+        return min(max(0, inset), 120)
     }
 
     private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
@@ -1598,6 +1627,9 @@ struct DouyinFeedScreen: View {
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
         let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
         let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
+        // 书本半折叠：评论起点钉在折痕右侧，右边让开系统状态栏（时间/信号）用内缩，
+        // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移、压回折痕甚至视频区。
+        let panelInset = hinge.map { $0.book ? Self.trailingOcclusionInset(geo, pane: $0.panel) : 0 } ?? 0
 
         return ZStack(alignment: .topLeading) {
             feedArea
@@ -1605,7 +1637,7 @@ struct DouyinFeedScreen: View {
             if showPanel, let cur = current {
                 DYCommentPanel(bridge: bridge, aweme: cur,
                                onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
-                    .frame(width: sideBySide ? panelW : w,
+                    .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
                            height: tableFold ? panelH : h)
                     .offset(x: panelX, y: panelY)
                     .id(cur.id)
