@@ -216,6 +216,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         cfg.allowsInlineMediaPlayback = true
         cfg.allowsPictureInPictureMediaPlayback = false
         cfg.userContentController.addUserScript(WKUserScript(source: Self.noMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        cfg.userContentController.addUserScript(WKUserScript(source: Self.xhrRecorderJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
@@ -311,6 +312,32 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
     /// 自己的 sec_uid（拉「喜欢」列表要用）
     var selfSecCache: String?
+
+
+    /// 在页面加载前包住 XHR：记录写接口最终被 SDK 改写后的 URL（有没有 a_bogus）与头名，
+    /// 用来判断 WKWebView 里抖音安全 SDK 到底有没有对我们的请求签名。
+    private static let xhrRecorderJS = #"""
+    (() => {
+      if (window.__ddCap) return; window.__ddCap = [];
+      const O = XMLHttpRequest.prototype.open, S = XMLHttpRequest.prototype.send, H = XMLHttpRequest.prototype.setRequestHeader;
+      XMLHttpRequest.prototype.open = function (m, u) { this.__ddm = m; this.__ddu0 = u; this.__ddh = []; return O.apply(this, arguments); };
+      XMLHttpRequest.prototype.setRequestHeader = function (k, v) { try { this.__ddh.push(k); } catch (e) {} return H.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function (b) {
+        try {
+          if (/comment\/publish|im\/message|commit\/item/.test(String(this.__ddu0 || ''))) {
+            const x = this;
+            const fin = () => { try {
+              window.__ddCap.push({ m: x.__ddm, u0: String(x.__ddu0).slice(-260), h: (x.__ddh || []).join(',').slice(0, 200),
+                                    st: x.status, len: (x.responseText || '').length });
+              if (window.__ddCap.length > 10) window.__ddCap.shift();
+            } catch (e) {} };
+            x.addEventListener('loadend', fin);
+          }
+        } catch (e) {}
+        return S.apply(this, arguments);
+      };
+    })()
+    """#
 
     private static let noMediaJS = """
     (() => {
@@ -749,7 +776,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? 1 : 0; };
       return JSON.stringify({ acrawler: g('byted_acrawler'), webmsxyw: g('_webmsxyw'), secsdk: g('secsdk'),
         keys, xhrHooked, fetchHooked, ckMsToken: ck('msToken'), ckWebid: ck('webid'), ckUifid: ck('uifid'),
-        ckFp: ck('s_v_web_id'), cookieLen: (document.cookie || '').length, ua: navigator.userAgent.slice(0, 90) });
+        ckFp: ck('s_v_web_id'), cookieLen: (document.cookie || '').length, ua: navigator.userAgent.slice(0, 90),
+        cap: (window.__ddCap || []).slice(-2) });
     })()
     """#
 
