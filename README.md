@@ -12,36 +12,39 @@ v1.3.15 起新增可选的 iPhone Duo **经典布局**（社区 PR #17），在�
 
 ## 界面展示
 
-以下为实际使用截图，保留原始画面，未打码；支持外屏、内屏与横竖屏布局。
+> 以下均为**示意图**（自绘，非实机截图），画面内的视频内容为抽象插画，不含真实用户作品。
 
-### 竖屏播放：外屏 / 内屏
+![DouDuo：默认 / 简洁 / 极简 / 经典 四种界面](docs/screenshots/hero.png)
+
+### 极简模式：抖音只剩视频
+
+在「更多 → 界面」选择**极简**：页签、作者和标题全部收起；手指按到右侧圆形入口时显示作者标题，松手后消失。
+
+![极简模式](docs/screenshots/minimal.png)
+
+### 进度条藏进入口外圈
+
+简洁 / 极简模式下，视频进度画在圆形入口外圈，不再占用底部进度条；1.3.15 起作者标题整体下移，底部不再留白。
+
+![进度环](docs/screenshots/ring.png)
+
+### 可选「经典」布局（1.3.15，感谢 @zenghongjvn PR #17）
+
+系统 Dock、右侧互动胶囊、清屏、双指捏合铺满、长按两侧加速 / 中间设置面板、左滑进作者页。默认不开启，仅 iOS 27.1 及以上显示。
+
+![经典布局](docs/screenshots/classic.png)
+
+### 上下翻页更利落（1.3.15，感谢 @AppleLiang96 PR #23）
+
+松手后滑到位的动画从约 0.43 秒缩短到约 0.1 秒；长按加速从 0.5 秒改为 0.3 秒，手指一拖就取消长按。
+
+![翻页提速](docs/screenshots/swipe.png)
+
+### 动图演示
 
 <p align="center">
-  <img src="docs/screenshots/feed.jpg" width="280" alt="外屏竖屏播放">
-  <img src="docs/screenshots/feed-inner.jpg" width="280" alt="内屏竖屏播放">
+  <img src="docs/screenshots/demo.gif" width="360" alt="极简模式演示（示意动画）">
 </p>
-
-### 内屏横屏播放与侧边评论
-
-![内屏横屏播放](docs/screenshots/feed-landscape.jpg)
-
-![横屏侧边评论](docs/screenshots/comments.jpg)
-
-### 外屏横屏播放
-
-![外屏横屏播放](docs/screenshots/feed-landscape-outer.jpg)
-
-### 直播：内屏横屏 / 外屏竖屏
-
-![内屏横屏直播](docs/screenshots/live.jpg)
-
-<p align="center">
-  <img src="docs/screenshots/live-portrait.jpg" width="320" alt="外屏竖屏直播">
-</p>
-
-[查看截图说明与原图](docs/screenshots/README.md)。
-
-> ⚠️ 非官方项目，仅供个人学习交流，与抖音 / 北京微播视界科技有限公司无关。详见文末[免责声明](#免责声明)。
 
 ## 功能
 
