@@ -2963,3 +2963,43 @@ final class DouDuoUITests: XCTestCase {
         let a = XCTAttachment(screenshot: app.screenshot()); a.name = name; a.lifetime = .keepAlways; add(a)
     }
 }
+
+extension DouDuoUITests {
+    /// Read-only real feed verification: changes only the local paging preference, never likes/posts.
+    func testPagingSpeedSettingAndVerticalNavigation() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"]
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", "-"), evaluatedWith: current)], timeout: 60), .completed)
+        let menu = app.buttons.matching(identifier: "douyin.more")
+        func choose(_ title: String) {
+            let button = menu.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? menu.firstMatch
+            button.tap()
+            app.buttons["翻页设置"].tap()
+            let picker = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "上下翻页 ·")).firstMatch
+            if !picker.waitForExistence(timeout: 3), app.buttons["翻页设置"].exists { app.buttons["翻页设置"].tap() }
+            XCTAssertTrue(picker.waitForExistence(timeout: 5))
+            picker.tap()
+            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5))
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "paging-options-before-\(title)"
+            shot.lifetime = .keepAlways
+            add(shot)
+            app.buttons[title].tap()
+        }
+        choose("快速")
+        choose("更快")
+        let first = current.label
+        app.swipeUp(velocity: .fast)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", first), evaluatedWith: current)], timeout: 5), .completed)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "real-feed-faster-page"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let selected = current.label
+        choose("标准（系统）")
+        XCTAssertEqual(current.label, selected, "Changing speed must preserve the current video")
+    }
+}
