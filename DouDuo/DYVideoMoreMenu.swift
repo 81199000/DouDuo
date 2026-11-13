@@ -13,6 +13,8 @@ struct DYVideoMoreMenu: View {
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
+                // 和顶栏页签同一档阴影：亮色视频上白色三点不再「消失」
+                .themeShadow(.mediaLabel)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)

@@ -3950,9 +3950,6 @@ struct DYUpstreamVideoPage: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
                 })
             }
-            Section {
-                Menu { DYPagingSpeedPicker() } label: { Label("翻页设置", systemImage: "arrow.up.arrow.down") }
-            }
             moreExtras
         } label: {
             Image(systemName: "ellipsis")

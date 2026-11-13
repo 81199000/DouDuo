@@ -15,27 +15,13 @@ enum DYPagingSpeed: String, CaseIterable, Identifiable {
     static func resolved(_ raw: String) -> Self { Self(rawValue: raw) ?? .standard }
 }
 
-struct DYPagingSpeedPicker: View {
-    @AppStorage(DYPagingSpeed.key) private var raw = DYPagingSpeed.standard.rawValue
-    var body: some View {
-        Menu {
-            Picker("上下翻页速度", selection: $raw) {
-                ForEach(DYPagingSpeed.allCases) { speed in Text(speed.title).tag(speed.rawValue) }
-            }
-            Text("仅短视频；不改变播放倍速。减少动态效果开启时使用系统分页。")
-        } label: {
-            Label("上下翻页 · \(DYPagingSpeed.resolved(raw).title)", systemImage: "arrow.up.arrow.down")
-        }
-        .accessibilityIdentifier("douyin.settings.paging-speed")
-    }
-}
-
 /// Attach inside the ScrollView, on its content stack, so it cannot affect nested comment/image scrolls.
 struct DYPagingSpeedBridge: UIViewRepresentable {
     let ids: [String]
     @Binding var currentID: String?
-    @AppStorage(DYPagingSpeed.key) private var raw = DYPagingSpeed.standard.rawValue
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 维护者定稿：固定「更快」（0.10s），不提供菜单。系统开了「减少动态效果」时仍走系统分页。
+    static let fixedSpeed: DYPagingSpeed = .faster
     func makeUIView(context: Context) -> DYPagingSpeedHost { DYPagingSpeedHost() }
     func updateUIView(_ view: DYPagingSpeedHost, context: Context) {
         let listChanged = view.ids != ids
@@ -46,7 +32,7 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
             guard ids.contains(id) else { return }
             currentID = id
         }
-        view.duration = reduceMotion ? nil : DYPagingSpeed.resolved(raw).duration
+        view.duration = reduceMotion ? nil : Self.fixedSpeed.duration
         view.attachWhenReady()
     }
     static func dismantleUIView(_ view: DYPagingSpeedHost, coordinator: ()) { view.detach() }

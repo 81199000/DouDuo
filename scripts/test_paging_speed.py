@@ -10,7 +10,7 @@ SOURCE = (ROOT / 'DouDuo/DYPagingSpeed.swift').read_text()
 
 class PagingSpeedTests(unittest.TestCase):
     def test_preference_defaults_and_durations(self):
-        enum = SOURCE[SOURCE.index('enum DYPagingSpeed:'):SOURCE.index('struct DYPagingSpeedPicker:')]
+        enum = SOURCE[SOURCE.index('enum DYPagingSpeed:'):SOURCE.index('/// Attach inside the ScrollView')]
         code = 'import Foundation\n' + enum + '''
 precondition(DYPagingSpeed.resolved("invalid") == .standard)
 precondition(DYPagingSpeed.resolved("") == .standard)
@@ -40,6 +40,9 @@ print("paging preference passed")
         self.assertNotIn('DYPagingSpeedBridge', live)
         self.assertIn('guard let duration else { detach(); return }', SOURCE)
         self.assertIn('reduceMotion ? nil', SOURCE)
+        # 维护者定稿：固定「更快」，不提供菜单
+        self.assertIn('static let fixedSpeed: DYPagingSpeed = .faster', SOURCE)
+        self.assertNotIn('DYPagingSpeedPicker', SOURCE + feed)
         self.assertNotIn('UIScrollView.appearance', SOURCE)
         self.assertIn('private weak var original', SOURCE)
         self.assertIn('forwardingTarget(for', SOURCE)
