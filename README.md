@@ -6,7 +6,7 @@
 
 界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
-本地测试分支已基于 v1.3.14 整合，并新增可选的 iPhone Duo **经典布局**，保留默认／简洁／极简。详见[经典布局与手势说明](docs/classic-duo-layout.md)。经典模式需要 iOS 27.1+；仅针对 Duo 适配，未测试 iPad。本次尚未更新 PR。
+v1.3.15 起新增可选的 iPhone Duo **经典布局**（社区 PR #17），在「更多 → 界面」切换，默认仍是原有布局，保留默认／简洁／极简三档。详见[经典布局与手势说明](docs/classic-duo-layout.md)。经典布局需要 iOS 27.1+，26.x 使用原有布局；仅针对 Duo 适配，未测试 iPad。
 
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。
 
