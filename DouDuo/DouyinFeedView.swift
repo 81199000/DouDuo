@@ -830,7 +830,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
       // 写接口额外头（如 x-secsdk-csrf-token: DOWNGRADE）
       if (extra) for (const k of Object.keys(extra)) { try { x.setRequestHeader(k, extra[k]) } catch (e) {} }
-      x.onload = () => fin({ s: x.status, t: x.responseText }); x.onerror = () => fin({ s: -1, t: '' });
+      x.onload = () => fin({ s: x.status, t: x.responseText, u: String(x.responseURL || '') }); x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
     const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', pc_client_type: '1', pc_libra_divert: 'Mac',
