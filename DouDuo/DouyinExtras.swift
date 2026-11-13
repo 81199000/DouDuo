@@ -74,7 +74,7 @@ enum DYListKind: String, CaseIterable, Identifiable {
 private struct DYListPage: Decodable { let status: Int; let items: [DYAweme]; let cursor: String; let hasMore: Bool; let code: Int?; let msg: String? }
 private struct DYDanmakuPage: Decodable { let status: Int; let items: [DYDanmaku] }
 private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let msg: String? }
-private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String? }
+private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String?; var hasLoginCookie: Bool? = nil; var cookieKeys: Int? = nil; var rawHead: String? = nil }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 
@@ -199,14 +199,52 @@ extension DouyinBridge {
     /// 发评论 / 回复评论（replyID 非空 = 回复那条）
     /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
     func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
-        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"], attempts: 1)
-        let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
-        DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
-        if r.code == 8 { throw DYError.bad("抖音未登录") }
-        guard r.status == 200, (r.code ?? 0) == 0, let c = r.comment else {
-            throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发送失败（HTTP \(r.status) / \(r.code ?? -1)）")
+        let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
+        var lastLog = ""
+        // 先 v1，空响应/风控页不算失败——抖音经常已经写入但接口不回执，先在评论/楼中楼里核对
+        for js in [Self.publishJS, Self.publishV2JS] {
+            guard let d = try? await call(js, args: args, attempts: 1),
+                  let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else {
+                lastLog += "|call-failed"
+                continue
+            }
+            DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-") cookies=\(r.cookieKeys ?? -1) login=\(String(describing: r.hasLoginCookie)) head=\(r.rawHead ?? "-")")
+            lastLog += "|\(r.diagnostic ?? "?")/\(r.status)/\(r.code ?? -1)"
+            if r.code == 8 { throw DYError.bad("抖音未登录：先到「我的」→ 网页版 / 登录") }
+            if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
+            if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
+            // 空响应/非 JSON：核对这条评论是不是已经发出去了
+            if let mine = await findMySentComment(awemeID, text: text, replyID: replyID) {
+                DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
+                return mine
+            }
         }
-        return c
+        throw DYError.bad("抖音没给回执，评论也没查到，可能被风控限制了（\(lastLog)）。歇一会再试，别连续重发")
+    }
+
+    /// 发送后核对：楼中楼查这一级评论的回复，一级评论查最新评论；按「我的昵称 + 正文开头」匹配
+    private func findMySentComment(_ awemeID: String, text: String, replyID: String?) async -> DYComment? {
+        let norm = { (s: String) in s.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression) }
+        let want = norm(text)
+        guard !want.isEmpty else { return nil }
+        let me = (try? await selfProfile())?.name ?? ""
+        func match(_ items: [DYComment]) -> DYComment? {
+            items.first { c in
+                let t = norm(c.text)
+                let head = String(want.prefix(12))
+                return (t == want || t.hasPrefix(head) || want.hasPrefix(String(t.prefix(12)))) && (me.isEmpty || c.name == me)
+            }
+        }
+        if let rid = replyID, !rid.isEmpty, rid != "0" {
+            if let p = try? await fetchReplies(awemeID, commentID: rid, cursor: 0), let m = match(p.items) { return m }
+        }
+        if let p = try? await fetchComments(awemeID, cursor: 0) {
+            if let m = match(p.items) { return m }
+            for c in p.items where (c.replies > 0) {
+                if let q = try? await fetchReplies(awemeID, commentID: c.id, cursor: 0), let m = match(q.items) { return m }
+            }
+        }
+        return nil
     }
 
     func deleteComment(_ cid: String) async -> Bool {
@@ -253,7 +291,26 @@ extension DouyinBridge {
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';
     const msg = d.status_msg || ((!d.comment || d.status_code !== 0 || r.s !== 200) ? fallback : null);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null, diagnostic });
+    const cookieKeys = (document.cookie || '').split(';').map(c => c.split('=')[0].trim()).filter(Boolean);
+    const hasLoginCookie = cookieKeys.some(k => /^(sessionid|sessionid_ss|sid_tt|sid_guard|passport_csrf_token)$/.test(k));
+    const rawHead = raw.replace(/\s+/g, ' ').slice(0, 120);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null,
+      diagnostic, cookieKeys: cookieKeys.length, hasLoginCookie, rawHead });
+    """#
+
+    // v1 偶发空响应（抖音风控/灰度），v2 端点与楼中楼同源，兜底再试一次
+    static let publishV2JS = cmap + #"""
+    const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
+    const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
+    if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
+    const r = await req('POST', '/aweme/v2/web/comment/publish/?' + P, body.toString());
+    const raw = r.t || '', parsed = parse(raw), d = parsed || {};
+    const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
+    const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
+    const diagnostic = 'v2 kind=' + kind + ' chars=' + raw.length + ' keys=' + keys;
+    const msg = d.status_msg || null;
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null,
+      diagnostic, rawHead: raw.replace(/\s+/g, ' ').slice(0, 120) });
     """#
 
     static let deleteCommentJS = #"""
