@@ -437,6 +437,13 @@ struct PlayerPage: View {
             guard isActive else { return }
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
+            // 1x ↔ 非 1x：当前这条换声音通路（原生 ↔ 独立引擎），从当前画面位置接着放
+            if vlc == nil, let p = player, DDSeamlessController.engineWanted != (seamAudio.mode != .fallbackAVPlayer) {
+                bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
+                if isPlaying { seamAudio.setRate(Float(target)) }
+                dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: target)
+                return
+            }
             if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
             else if isPlaying {
                 seamAudio.setRate(Float(target))

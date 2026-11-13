@@ -418,7 +418,8 @@ final class DDAudioPreloadPool {
     private var byAsset: [ObjectIdentifier: String] = [:]
 
     func prewarm(id: String, asset: AVURLAsset, item: AVPlayerItem) {
-        guard byID[id] == nil else { return }
+        // 1x 不用引擎，就不预解码音频（省掉滑动时主线程上的解码）
+        guard DDSeamlessController.engineWanted, byID[id] == nil else { return }
         let stream = DDAudioStream(asset: asset)
         byID[id] = stream
         byAsset[ObjectIdentifier(asset)] = id
@@ -477,7 +478,15 @@ final class DDSeamlessController {
     private var isMuted = false
     var onBackgroundEnded: (() -> Void)?
 
-    func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool) {
+    /// 设置里的播放速度不是 1x 才启用独立音频引擎；1x 直接用 AVPlayer 原生声音。
+    /// 引擎在主线程解码 AAC，1x 下没有收益反而拖慢滑动（1.3.13 卡顿反馈）。
+    nonisolated static var engineWanted: Bool {
+        let rate = UserDefaults.standard.object(forKey: "douyin_playback_rate_v1") as? Double ?? 1
+        return abs(rate - 1) > 0.001
+    }
+
+    func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool,
+              useEngine: Bool = DDSeamlessController.engineWanted) {
         reset()
         bindGen &+= 1
         let gen = bindGen
@@ -487,6 +496,21 @@ final class DDSeamlessController {
         self.wantPlaying = isActive && isPlaying
         self.isMuted = muted
         self.mode = .preparing
+
+        #if DEBUG
+        ddWrite("DDSEAM bind engine=\(useEngine) rate=\(rate)")
+        #endif
+        // 1x：不建音频流，直接走原生声音（预热池里若有这条的流也一并丢掉，音轨重新打开）
+        if !useEngine {
+            mode = .fallbackAVPlayer
+            if let asset = player.currentItem?.asset as? AVURLAsset {
+                DDAudioPreloadPool.shared.take(for: asset)?.cancel()
+            }
+            if let it = player.currentItem { DDAudioStream.enableAudioTracks(on: it) }
+            player.isMuted = !wantPlaying || muted
+            if wantPlaying { player.rate = targetRate }
+            return
+        }
 
         // 准备期间先保持 AVPlayer 静音，防止未禁用音轨前漏出原生声音
         player.isMuted = true

@@ -1239,7 +1239,6 @@ struct DouyinFeedScreen: View {
     @State private var feedHost = CGRect.zero
     /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
     private let peek = DDPeekInfo.shared
-    @ObservedObject private var railProgress = DDRailProgress.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
@@ -1948,45 +1947,10 @@ struct DouyinFeedScreen: View {
     }
 
     /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
-    @ViewBuilder
+    /// 进度每 0.25 秒更新一次：只让这颗小视图订阅 DDRailProgress，别挂在根视图上（否则整屏跟着重算，1.3.13 卡顿主因）。
     private var railProgressRing: some View {
-        // 简洁 / 极简的推荐页、关注页画进度环；直播没有进度，不画——但占位恒定，切模块时入口位置不动。
-        let show = chromeMode.usesRail && tab != .live
-        let fg = theme.media.onMedia.color(for: scheme)
-        let seeking = railProgress.seeking
-        // 外径 = 右侧胶囊宽度（50pt）。线宽画在圆内侧，所以这个圈的最外沿正好和胶囊左右对齐。
-        let d = DDRailMetrics.entryDiameter
-        let lw: CGFloat = seeking ? 4 : 2.5
-        let r = (d - lw) / 2
-        return ZStack {
-            if show {
-                // 底轨：很淡的整圈
-                Circle().stroke(fg.opacity(0.18), lineWidth: 2.5)
-                // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
-                Circle()
-                    .trim(from: 0, to: max(railProgress.fraction, 0.004))
-                    .stroke(
-                        AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
-                                        startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
-                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                // 弧线终点的小亮点
-                Circle()
-                    .fill(fg)
-                    .frame(width: seeking ? 7 : 4.5, height: seeking ? 7 : 4.5)
-                    .offset(y: -r)
-                    .rotationEffect(.degrees(360 * railProgress.fraction))
-                    .opacity(railProgress.fraction > 0.01 ? 1 : 0)
-            }
-        }
-        .padding(lw / 2)
-        .frame(width: d, height: d)
-        .shadow(color: .black.opacity(0.25), radius: 1.5)
-        .animation(.linear(duration: 0.25), value: railProgress.fraction)
-        .allowsHitTesting(false)
-        .accessibilityIdentifier("douyin.module.ring")
-        .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")
-        .accessibilityHidden(!show)
+        DDRailProgressRing(show: chromeMode.usesRail && tab != .live,
+                           fg: theme.media.onMedia.color(for: scheme))
     }
 
     /// 模块菜单的内容（单击圆形入口时弹出）。
@@ -2433,6 +2397,51 @@ private extension Double {
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
 /// 右侧功能栏的几何：进度环外径 = 玻璃胶囊宽（50pt）；入口到胶囊的间距沿用胶囊到「更多」的间距（actionGroupSpacing）。
+/// 简洁/极简入口外圈的视频进度环。独立订阅 DDRailProgress，进度变化只重画这颗环。
+private struct DDRailProgressRing: View {
+    let show: Bool
+    let fg: Color
+    @ObservedObject private var railProgress = DDRailProgress.shared
+
+    var body: some View {
+        // 简洁 / 极简的推荐页、关注页画进度环；直播没有进度，不画——但占位恒定，切模块时入口位置不动。
+        let seeking = railProgress.seeking
+        // 外径 = 右侧胶囊宽度（50pt）。线宽画在圆内侧，所以这个圈的最外沿正好和胶囊左右对齐。
+        let d = DDRailMetrics.entryDiameter
+        let lw: CGFloat = seeking ? 4 : 2.5
+        let r = (d - lw) / 2
+        return ZStack {
+            if show {
+                // 底轨：很淡的整圈
+                Circle().stroke(fg.opacity(0.18), lineWidth: 2.5)
+                // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
+                Circle()
+                    .trim(from: 0, to: max(railProgress.fraction, 0.004))
+                    .stroke(
+                        AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
+                                        startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
+                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                // 弧线终点的小亮点
+                Circle()
+                    .fill(fg)
+                    .frame(width: seeking ? 7 : 4.5, height: seeking ? 7 : 4.5)
+                    .offset(y: -r)
+                    .rotationEffect(.degrees(360 * railProgress.fraction))
+                    .opacity(railProgress.fraction > 0.01 ? 1 : 0)
+            }
+        }
+        .padding(lw / 2)
+        .frame(width: d, height: d)
+        .shadow(color: .black.opacity(0.25), radius: 1.5)
+        .animation(.linear(duration: 0.25), value: railProgress.fraction)
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("douyin.module.ring")
+        .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")
+        .accessibilityHidden(!show)
+    }
+}
+
 enum DDRailMetrics {
     static let entryDiameter: CGFloat = 50
 }
