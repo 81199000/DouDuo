@@ -292,7 +292,8 @@ extension DouyinBridge {
     const P = q(Object.assign({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' }, ident));
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
-    const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
+    // x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记；缺它抖音会 200 + 空 body 静默丢弃
+    const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
     // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。

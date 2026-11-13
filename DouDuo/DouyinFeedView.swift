@@ -772,7 +772,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const urls = new Set(streams);
       return Object.fromEntries(Object.entries(su.flv_pull_url || {}).filter(([_, u]) => urls.has(u)));
     };
-    const req = (method, path, body) => new Promise(ok => {
+    const req = (method, path, body, extra) => new Promise(ok => {
       const x = new XMLHttpRequest();
       let done = false;
       const fin = r => { if (!done) { done = true; ok(r) } };
@@ -783,6 +783,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       x.open(method, path); x.withCredentials = true;
       x.setRequestHeader('Accept', 'application/json, text/plain, */*');
       if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      // 写接口额外头（如 x-secsdk-csrf-token: DOWNGRADE）
+      if (extra) for (const k of Object.keys(extra)) { try { x.setRequestHeader(k, extra[k]) } catch (e) {} }
       x.onload = () => fin({ s: x.status, t: x.responseText }); x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
