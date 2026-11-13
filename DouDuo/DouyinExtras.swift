@@ -270,7 +270,7 @@ extension DouyinBridge {
     // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
     static let publishJS = cmap + #"""
     // 网页版写接口带这几个身份参数（只在 cookie 里）：msToken / webid / verifyFp(=fp=s_v_web_id)
-    const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };
+    const ck = n => { const c = (typeof document !== 'undefined' && document.cookie) || ''; const m = c.match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };
     const fp = ck('s_v_web_id') || ck('verifyFp');
     const ident = { msToken: ck('msToken'), webid: ck('webid'), verifyFp: fp, fp: fp };
     const haveIdent = Object.keys(ident).filter(k => ident[k]).join(',');
@@ -278,17 +278,18 @@ extension DouyinBridge {
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
     // 等安全 SDK 挂钩完成再发；x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记
-    const sdk = await sdkReady(6000);
+    const sdk = typeof sdkReady === 'function' ? await sdkReady(6000) : false;
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
     // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。
     const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
     const signed = /a_bogus=/.test(r.u || '');
+    const hooked = (f) => { try { return !/native code/.test(f().toString()); } catch (e) { return 'na'; } };
     const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none')
       + ' sdk=' + sdk + ' signed=' + signed
-      + ' xhrHooked=' + (!/native code/.test(XMLHttpRequest.prototype.send.toString()))
-      + ' fetchHooked=' + (!/native code/.test(window.fetch.toString()));
+      + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
+      + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';
@@ -303,7 +304,7 @@ extension DouyinBridge {
     """#
 
     static let danmakuPostJS = #"""
-    await sdkReady(6000);
+    if (typeof sdkReady === 'function') await sdkReady(6000);
     const r = await req('POST', '/aweme/v1/web/danmaku/post_v2/?' + q({ item_id: id, offset_time: offset, text: text, user_id: '', enter_from: 'video_detail', previous_page: 'video_detail' }), '');
     const d = parse(r.t) || {};
     const dm = d.danmaku || d.data || {};
@@ -374,7 +375,7 @@ extension DouyinBridge {
     """#
 
     static let followJS = listTail + #"""
-    await sdkReady(6000);
+    if (typeof sdkReady === 'function') await sdkReady(6000);
     const r = await req('GET', '/aweme/v1/web/follow/feed/?' + q({ cursor: cursor, level: '1', count: '20', pull_type: cursor === '0' ? '0' : '2' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme || x.aweme_info)).filter(Boolean);
