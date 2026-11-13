@@ -3004,7 +3004,8 @@ struct DYClassicFeedScreen: View {
         #endif
         let w = geo.size.width, h = geo.size.height
         guard DYDuoMetrics.foldIsActive(geo) else { return w > h }
-        if let p = DYDuoMetrics.hingeSplit(geo) { return p.video.width > p.video.height }
+        // 与默认布局同一口径：按整屏形状判断横竖，不按半折叠后视频那一块（见 DYUpstreamFeedScreen.playAreaIsWide）。
+        // 按视频块判断会把竖拿的桌面半折叠判成横屏，推荐流只排横屏视频，竖屏短视频几乎刷不到。
         return w > h ? (w * 0.55 > h) : false
     }
 
