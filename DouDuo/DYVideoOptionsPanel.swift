@@ -8,7 +8,6 @@ struct DYVideoOptionsPanel: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
-    @AppStorage(DYPagingSpeed.key) private var pagingSpeed = DYPagingSpeed.standard.rawValue
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
@@ -82,18 +81,6 @@ struct DYVideoOptionsPanel: View {
                         Divider().padding(.leading, 16)
                         Toggle(isOn: $backgroundPlay) {
                             Label("后台播放（听书）", systemImage: "headphones")
-                        }
-                        .padding(.horizontal, 16).frame(minHeight: 52)
-                        Divider().padding(.leading, 16)
-                        // 上下翻页收尾速度（PR #23）：经典布局没有「更多」菜单，入口放这里
-                        HStack {
-                            Label("上下翻页", systemImage: "arrow.up.arrow.down")
-                            Spacer()
-                            Picker("上下翻页", selection: $pagingSpeed) {
-                                ForEach(DYPagingSpeed.allCases) { Text($0.title).tag($0.rawValue) }
-                            }
-                            .labelsHidden()
-                            .accessibilityIdentifier("douyin.options.paging-speed")
                         }
                         .padding(.horizontal, 16).frame(minHeight: 52)
                     }

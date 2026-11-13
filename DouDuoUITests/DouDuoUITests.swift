@@ -2965,7 +2965,7 @@ final class DouDuoUITests: XCTestCase {
 }
 
 extension DouDuoUITests {
-    /// Read-only real feed verification: changes only the local paging preference, never likes/posts.
+    /// 翻页固定「更快」（维护者定稿，无菜单）：上滑能翻到下一条，且连续翻页后当前视频与列表一致。只读，不点赞不发帖。
     func testPagingSpeedSettingAndVerticalNavigation() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -2973,33 +2973,18 @@ extension DouDuoUITests {
         let current = app.staticTexts["douyin.currentID"]
         XCTAssertTrue(current.waitForExistence(timeout: 30))
         XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", "-"), evaluatedWith: current)], timeout: 60), .completed)
-        let menu = app.buttons.matching(identifier: "douyin.more")
-        func choose(_ title: String) {
-            let button = menu.allElementsBoundByIndex.first(where: { $0.isHittable }) ?? menu.firstMatch
-            button.tap()
-            app.buttons["翻页设置"].tap()
-            let picker = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "上下翻页 ·")).firstMatch
-            if !picker.waitForExistence(timeout: 3), app.buttons["翻页设置"].exists { app.buttons["翻页设置"].tap() }
-            XCTAssertTrue(picker.waitForExistence(timeout: 5))
-            picker.tap()
-            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5))
-            let shot = XCTAttachment(screenshot: app.screenshot())
-            shot.name = "paging-options-before-\(title)"
-            shot.lifetime = .keepAlways
-            add(shot)
-            app.buttons[title].tap()
+        XCTAssertFalse(app.buttons["翻页设置"].exists, "翻页速度已固定，不应再有菜单入口")
+        var seen = [current.label]
+        for _ in 0..<3 {
+            let before = current.label
+            app.swipeUp(velocity: .fast)
+            XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", before), evaluatedWith: current)], timeout: 5), .completed)
+            seen.append(current.label)
         }
-        choose("快速")
-        choose("更快")
-        let first = current.label
-        app.swipeUp(velocity: .fast)
-        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", first), evaluatedWith: current)], timeout: 5), .completed)
+        XCTAssertEqual(Set(seen).count, seen.count, "连续翻页不应停在重复的视频")
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "real-feed-faster-page"
         attachment.lifetime = .keepAlways
         add(attachment)
-        let selected = current.label
-        choose("标准（系统）")
-        XCTAssertEqual(current.label, selected, "Changing speed must preserve the current video")
     }
 }

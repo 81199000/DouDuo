@@ -83,7 +83,7 @@
 
 ## 安装
 
-支持 iOS / iPadOS **17.0 及以上**。DouDuo 未在 App Store 上架，需要**自己签名安装**。以下方式任选一种：
+支持 iOS / iPadOS **26.0 及以上**（iPhone Duo 出厂即 iOS 26）。DouDuo 未在 App Store 上架，需要**自己签名安装**。以下方式任选一种：
 
 先到 [Gitee 发行版](https://gitee.com/remon8/douduo/releases) 或 [GitHub Releases](https://github.com/81199000/DouDuo/releases/latest) 下载最新的 `DouDuo-x.y.z-unsigned.ipa`，不要下载源码 ZIP 代替 IPA。
 
