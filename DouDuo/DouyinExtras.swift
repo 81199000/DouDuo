@@ -199,14 +199,43 @@ extension DouyinBridge {
     /// 发评论 / 回复评论（replyID 非空 = 回复那条）
     /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
     func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
-        let d = try await call(Self.publishJS, args: ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"], attempts: 1)
+        let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
+        let d = try await call(Self.publishJS, args: args, attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
-        if r.code == 8 { throw DYError.bad("抖音未登录") }
-        guard r.status == 200, (r.code ?? 0) == 0, let c = r.comment else {
-            throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发送失败（HTTP \(r.status) / \(r.code ?? -1)）")
+        if r.code == 8 { throw DYError.bad("抖音未登录：到「我的」→「网页版 / 登录」登录后再发") }
+        if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
+        if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
+        // 空响应/403 不代表没发出去：抖音常已写入但不回执，先去评论/楼中楼里核对，避免用户重复发送
+        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID) {
+            DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
+            return mine
         }
-        return c
+        throw DYError.bad("抖音没给回执，评论里也没查到这条（HTTP \(r.status) / \(r.diagnostic ?? "-")）。可能被风控限制，歇一会儿再试，别连续重发")
+    }
+
+    /// 发送后核对：楼中楼查这一级评论的回复，一级评论查最新评论；按「我的昵称 + 正文开头」匹配
+    private func findMySentComment(_ awemeID: String, text: String, replyID: String?) async -> DYComment? {
+        let norm = { (s: String) in s.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression) }
+        let want = norm(text)
+        guard !want.isEmpty else { return nil }
+        let me = (try? await selfProfile())?.name ?? ""
+        func match(_ items: [DYComment]) -> DYComment? {
+            items.first { c in
+                let t = norm(c.text)
+                let head = String(want.prefix(12))
+                return (t == want || t.hasPrefix(head) || want.hasPrefix(String(t.prefix(12)))) && (me.isEmpty || c.name == me)
+            }
+        }
+        if let rid = replyID, !rid.isEmpty, rid != "0",
+           let p = try? await fetchReplies(awemeID, commentID: rid, cursor: 0), let m = match(p.items) { return m }
+        if let p = try? await fetchComments(awemeID, cursor: 0) {
+            if let m = match(p.items) { return m }
+            for c in p.items where c.replies > 0 {
+                if let q = try? await fetchReplies(awemeID, commentID: c.id, cursor: 0), let m = match(q.items) { return m }
+            }
+        }
+        return nil
     }
 
     func deleteComment(_ cid: String) async -> Bool {
@@ -240,15 +269,26 @@ extension DouyinBridge {
 
     // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
     static let publishJS = cmap + #"""
-    const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
+    // 网页版写接口带这几个身份参数（只在 cookie 里）：msToken / webid / verifyFp(=fp=s_v_web_id)
+    const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };
+    const fp = ck('s_v_web_id') || ck('verifyFp');
+    const ident = { msToken: ck('msToken'), webid: ck('webid'), verifyFp: fp, fp: fp };
+    const haveIdent = Object.keys(ident).filter(k => ident[k]).join(',');
+    const P = q(Object.assign({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' }, ident));
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
-    const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
+    // 等安全 SDK 挂钩完成再发；x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记
+    const sdk = await sdkReady(6000);
+    const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
     // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。
     const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
-    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys;
+    const signed = /a_bogus=/.test(r.u || '');
+    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none')
+      + ' sdk=' + sdk + ' signed=' + signed
+      + ' xhrHooked=' + (!/native code/.test(XMLHttpRequest.prototype.send.toString()))
+      + ' fetchHooked=' + (!/native code/.test(window.fetch.toString()));
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';
@@ -263,6 +303,7 @@ extension DouyinBridge {
     """#
 
     static let danmakuPostJS = #"""
+    await sdkReady(6000);
     const r = await req('POST', '/aweme/v1/web/danmaku/post_v2/?' + q({ item_id: id, offset_time: offset, text: text, user_id: '', enter_from: 'video_detail', previous_page: 'video_detail' }), '');
     const d = parse(r.t) || {};
     const dm = d.danmaku || d.data || {};
@@ -333,6 +374,7 @@ extension DouyinBridge {
     """#
 
     static let followJS = listTail + #"""
+    await sdkReady(6000);
     const r = await req('GET', '/aweme/v1/web/follow/feed/?' + q({ cursor: cursor, level: '1', count: '20', pull_type: cursor === '0' ? '0' : '2' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme || x.aweme_info)).filter(Boolean);
