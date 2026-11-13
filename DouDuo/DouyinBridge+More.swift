@@ -282,6 +282,7 @@ extension DouyinBridge {
     """#
 
     private static let commentDiggJS = #"""
+    await sdkReady(6000);
     const P = { cid: cid, aweme_id: id, digg_type: type, channel_id: '0', app_name: 'aweme', item_type: '0' };
     const r = await req('POST', '/aweme/v1/web/comment/digg?' + q(P), new URLSearchParams(P).toString());
     const d = parse(r.t) || {};
