@@ -1537,7 +1537,25 @@ struct DouyinFeedScreen: View {
         #endif
         let w = geo.size.width, h = geo.size.height
         guard DYDuoMetrics.foldIsActive(geo) else { return w > h }
+        if let p = hingeSplit(geo) { return p.video.width > p.video.height }
         return w > h ? (w * 0.55 > h) : false
+    }
+
+    /// 半折叠按真实折痕切分（同直播 Layout A/B）：视频占折痕前一块，评论占折痕后一块，折痕本身留空。
+    /// 拿不到折痕几何（旧系统 / DOUDUO_FOLD 模拟）时返回 nil，调用方回退到比例切分。
+    private static func hingeSplit(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
+        guard DYDuoMetrics.foldIsActive(geo) else { return nil }
+        guard #available(iOS 27.1, *) else { return nil }
+        let divisions = geo.reservedRegions(kind: .division).map {
+            DYLiveDivision(frame: $0.frame, isActive: $0.isActive)
+        }
+        guard let p = DYLiveAdaptiveLayoutEngine.hingePanes(
+            bounds: CGRect(origin: .zero, size: geo.size), divisions: divisions) else { return nil }
+        return (p.first, p.second, p.book)
+    }
+
+    private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
+        tab == .recommend ? Self.hingeSplit(geo) : nil
     }
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
@@ -1557,6 +1575,7 @@ struct DouyinFeedScreen: View {
     private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let w = geo.size.width, h = geo.size.height
+        if let p = foldPanes(geo) { return p.book ? max(0, w - p.video.width) : 0 }
         let bookFold = fold && w > h
         let sideBySide = w >= DYDuoMetrics.legacyWideMin || bookFold
         let showPanel = fold || (showComments && sideBySide && tab == .recommend)
@@ -1567,15 +1586,18 @@ struct DouyinFeedScreen: View {
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
         let w = geo.size.width, h = geo.size.height
-        let bookFold = fold && w > h          // 书本姿态：左右分
-        let tableFold = fold && w <= h        // 桌面姿态：上下分
+        let hinge = foldPanes(geo)            // 有真实折痕时按折痕切，评论从折痕另一侧开始
+        let bookFold = fold && (hinge.map { $0.book } ?? (w > h))   // 书本姿态：左右分
+        let tableFold = fold && !bookFold     // 桌面姿态：上下分
         let sideBySide = wide || bookFold
         let showPanel = fold || (showComments && sideBySide && tab == .recommend)
 
-        let panelW = sidePanelWidth(geo)
-        let panelH = tableFold ? h * 0.45 : 0
-        let videoW = sideBySide && panelW > 0 ? w - panelW : w
-        let videoH = tableFold ? h - panelH : h
+        let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
+        let panelH = hinge.map { $0.panel.height } ?? (tableFold ? h * 0.45 : 0)
+        let videoW = hinge?.video.width ?? (sideBySide && panelW > 0 ? w - panelW : w)
+        let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
+        let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
+        let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
 
         return ZStack(alignment: .topLeading) {
             feedArea
@@ -1585,7 +1607,7 @@ struct DouyinFeedScreen: View {
                                onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
                     .frame(width: sideBySide ? panelW : w,
                            height: tableFold ? panelH : h)
-                    .offset(x: sideBySide ? videoW : 0, y: tableFold ? videoH : 0)
+                    .offset(x: panelX, y: panelY)
                     .id(cur.id)
             }
         }
