@@ -1547,7 +1547,9 @@ struct DouyinFeedScreen: View {
         #endif
         let w = geo.size.width, h = geo.size.height
         guard DYDuoMetrics.foldIsActive(geo) else { return w > h }
-        if let p = hingeSplit(geo) { return p.video.width > p.video.height }
+        // 选片方向沿用 1.3.13 的口径：按整屏形状判断，不按半折叠后视频那一块。
+        // 1.3.14 曾改成按视频块判断：竖着拿的桌面半折叠，视频块约 669x455 被判成「横屏」，
+        // 推荐流只放横屏视频，竖屏短视频几乎刷不到（老板反馈「短视频减少了」），已撤回。
         return w > h ? (w * 0.55 > h) : false
     }
 
