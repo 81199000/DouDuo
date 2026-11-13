@@ -172,9 +172,9 @@ class LivePaneBoundsTests(unittest.TestCase):
         self.assertNotIn("VLCPlayerSurface(", page)
         self.assertNotIn("vlc.", page)
         field = (ROOT / "DouDuo/DouyinLiveAmbientBackground.swift").read_text()
-        self.assertIn("Color.clear", field)
-        self.assertIn(".scaledToFill()", field)
-        self.assertLess(field.find("Color.clear"), field.find(".scaledToFill()"))
+        self.assertNotIn(".scaledToFill()", field)
+        self.assertIn(".clipped()", field)
+        self.assertIn(".allowsHitTesting(false)", field)
 
 
 if __name__ == "__main__":
