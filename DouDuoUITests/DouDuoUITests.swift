@@ -24,6 +24,93 @@ final class DouDuoUITests: XCTestCase {
     func testLiveHashtagClassicFlow() throws { verifyLiveHashtags(mode: "duoClassic") }
     func testLiveHashtagDefaultFlow() throws { verifyLiveHashtags(mode: "classic") }
 
+    func testSearchPlaybackClassic() throws { verifySearchPlayback(mode: "duoClassic") }
+    func testSearchPlaybackDefault() throws { verifySearchPlayback(mode: "classic") }
+
+    private func verifySearchPlayback(mode: String) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_SEARCH_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE", "DOUDUO_RESET_HASHTAG_FILTER"] {
+            app.launchEnvironment[flag] = "1"
+        }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douduo_dismissed_update_v1", "1.3.15"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let window = app.windows.firstMatch
+        if ProcessInfo.processInfo.environment["DOUDUO_TEST_DISPLAY"] == "inner" {
+            print("DUODUO_POSTURE open")
+            Thread.sleep(forTimeInterval: 2)
+            print("DUODUO_ROTATE landscape")
+            XCTAssertTrue(waitUntil(timeout: 15) { window.frame.width > window.frame.height })
+        }
+        let split = window.frame.width > 700
+        func snapshot() -> [String: Any] {
+            let label = app.staticTexts["douyin.search.playbackProbe"].firstMatch.label
+            return (try? JSONSerialization.jsonObject(with: Data(label.utf8))) as? [String: Any] ?? [:]
+        }
+        func players() -> [[String: Any]] { snapshot()["players"] as? [[String: Any]] ?? [] }
+        func playingIDs() -> [String] {
+            players().filter { ($0["rate"] as? Double ?? 0) > 0 }.compactMap { $0["id"] as? String }.sorted()
+        }
+        XCTAssertTrue(waitUntil(timeout: 20) { playingIDs() == ["hashtag-cat"] && players().contains { $0["id"] as? String == "hashtag-cat" && $0["ready"] as? Bool == true } })
+        let initialInstance = players().first { $0["id"] as? String == "hashtag-cat" }?["instance"] as? String
+        if split {
+            app.buttons["douyin.comments"].firstMatch.tap()
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 10))
+        }
+        print("DUODUO_RECORD_START playback-" + mode)
+        Thread.sleep(forTimeInterval: 1)
+        app.buttons["douyin.search"].firstMatch.tap()
+        XCTAssertTrue(app.textFields["douyin.search.field"].waitForExistence(timeout: 10))
+        if split {
+            XCTAssertEqual(playingIDs(), ["hashtag-cat"])
+            XCTAssertEqual(players().first { $0["id"] as? String == "hashtag-cat" }?["instance"] as? String, initialInstance)
+            XCTAssertEqual((snapshot()["appearances"] as? [String: Int])?["hashtag-cat"], 1)
+            XCTAssertNil((snapshot()["disappearances"] as? [String: Int])?["hashtag-cat"], "comments → split search must retain the original player")
+        } else {
+            XCTAssertTrue(waitUntil(timeout: 5) { playingIDs().isEmpty })
+        }
+        Thread.sleep(forTimeInterval: 2)
+        print("DUODUO_RECORD_STOP playback-" + mode)
+        app.buttons["douyin.search.hot.1"].tap()
+        let result = app.buttons["douyin.grid.item.hashtag-travel"].firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 10))
+        result.tap()
+        XCTAssertTrue(app.buttons["douyin.list.back"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(timeout: 10) { playingIDs() == ["hashtag-travel"] }, "only the result video may play: \(snapshot())")
+        // Pause before visual inspection; the probe includes the covered feed player.
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4)).tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { playingIDs().isEmpty })
+        attach(app, "playback-" + mode + "-result-paused")
+        app.buttons["douyin.list.back"].firstMatch.tap()
+        XCTAssertTrue(result.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(timeout: 10) { playingIDs() == (split ? ["hashtag-cat"] : []) })
+        app.buttons["douyin.search.back"].tap()
+        XCTAssertTrue(waitUntil(timeout: 10) { playingIDs() == ["hashtag-cat"] })
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4)).tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { playingIDs().isEmpty })
+        // A manually paused feed must stay paused after visiting another result.
+        app.buttons["douyin.search"].firstMatch.tap()
+        app.buttons["douyin.search.hot.1"].tap()
+        result.tap()
+        XCTAssertTrue(waitUntil(timeout: 10) { playingIDs() == ["hashtag-travel"] })
+        app.buttons["douyin.list.back"].firstMatch.tap()
+        app.buttons["douyin.search.back"].tap()
+        XCTAssertTrue(waitUntil(timeout: 10) { playingIDs().isEmpty }, "search must preserve an explicit user pause")
+        attach(app, "playback-" + mode + "-returned-paused")
+        window.swipeUp(velocity: .fast)
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 10) {
+            current.label != "hashtag-cat" && playingIDs() == [current.label]
+        }, "paging still activates only the next video; current=\(current.label), players=\(snapshot())")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4)).tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { playingIDs().isEmpty })
+        attach(app, "playback-" + mode + "-next-paused")
+    }
+
     func testHashtagChipLayout() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

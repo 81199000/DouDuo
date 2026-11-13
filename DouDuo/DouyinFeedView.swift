@@ -1272,7 +1272,9 @@ struct DYUpstreamFeedScreen: View {
     @State private var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
-    private func openSearch() { showComments = false; searchSession = DYSearchSession() }
+    private func openSearch() {
+        DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
+    }
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
@@ -1284,7 +1286,7 @@ struct DYUpstreamFeedScreen: View {
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
-    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && !searchIsSplit) || showMine || showMessages || authorTarget != nil }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || showMessages || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
@@ -1704,7 +1706,7 @@ struct DYUpstreamFeedScreen: View {
         }
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
         .animation(.snappy, value: fold)
-        .animation(.snappy, value: showComments)
+        .animation(showSearch ? nil : .snappy, value: showComments)
         .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
             if let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -2263,7 +2265,9 @@ struct DYUpstreamFeedScreen: View {
                     LazyVStack(spacing: 0) {
                         ForEach(feed.items) { item in
                             page(for: item)
-                                .containerRelativeFrame([.horizontal, .vertical])
+                                // Follow the proposed pane width when search opens;
+                                // only the paging height needs a container-relative size.
+                                .containerRelativeFrame(.vertical)
                                 .id(item.id)
                         }
                     }
@@ -2791,7 +2795,9 @@ struct DYClassicFeedScreen: View {
     @State private var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
-    private func openSearch() { showComments = false; searchSession = DYSearchSession() }
+    private func openSearch() {
+        DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
+    }
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var mainTab: DYMainTab = .home
@@ -2809,7 +2815,7 @@ struct DYClassicFeedScreen: View {
         nonmutating set { mainTab = newValue ? .messages : .home }
     }
     /// A side-by-side author pane leaves the current video visible and playing.
-    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && !searchIsSplit) || showMine || showMessages || authorWorkOpen || (authorTarget != nil && !supportsSidePanel) }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || showMessages || authorWorkOpen || (authorTarget != nil && !supportsSidePanel) }
     /// 全局播放速度；长按临时倍速不修改持久化偏好。
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @State private var noticeUnread = 0
@@ -3165,9 +3171,9 @@ struct DYClassicFeedScreen: View {
         .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in residentComments = resident }
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
-        .animation(.snappy, value: layout.resident)
-        .animation(.snappy, value: showComments)
-        .animation(.snappy, value: authorTarget?.id)
+        .animation(showSearch ? nil : .snappy, value: layout.resident)
+        .animation(showSearch ? nil : .snappy, value: showComments)
+        .animation(showSearch ? nil : .snappy, value: authorTarget?.id)
         .dyBottomSheet(isPresented: Binding(get: { !showSearch && showComments && !layout.sideBySide && !layout.resident }, set: { if !supportsSidePanel && !layout.resident { showComments = $0 } }), kind: .comments) {
             if let cur = commentAweme {
                 DYCommentSheet(bridge: bridge, aweme: cur, onClose: { showComments = false })
@@ -5291,10 +5297,13 @@ private struct DYTopChromeFrameKey: PreferenceKey {
 #if DEBUG
 extension DYFeedModel {
     static var hashtagFixtures: [DYAweme] {
-        [("hashtag-cat", "日常 #猫咪 #旅行\n" + String(repeating: "这段简介用于检查展开后的标签点击与换行。", count: 8) + " #摄影"),
+        let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+        let video = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("search-playback-fixture.mp4")
+        return [("hashtag-cat", "日常 #猫咪 #旅行\n" + String(repeating: "这段简介用于检查展开后的标签点击与换行。", count: 8) + " #摄影"),
          ("hashtag-travel", "周末记录 #旅行"),
          ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
-            DYAweme(id: id, desc: text, width: 1080, height: 1920, duration: 0, play: nil,
+            DYAweme(id: id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
                     cover: nil, images: [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
                     stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
                     userDigged: nil, isCollect: nil, publishedAt: 1,

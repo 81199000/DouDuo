@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import plistlib
 import re
+import signal
 import struct
 import subprocess
 import time
@@ -68,13 +69,24 @@ def main():
         print(f"PASS real data {phase}: {len(session['items'])} recommendations, {len(matches)} matching tags", flush=True)
 
     deadline = time.monotonic() + args.timeout
+    recording = None
     with args.log.open() as stream:
         while time.monotonic() < deadline:
             line = stream.readline()
             if not line:
                 time.sleep(0.1)
                 continue
-            if "DUODUO_CAPTURE " in line:
+            if "DUODUO_RECORD_START " in line:
+                name = line.split("DUODUO_RECORD_START ", 1)[1].strip()
+                recording = subprocess.Popen(["xcrun", "simctl", "io", args.udid, "recordVideo",
+                                              "--display=" + display, str(args.output / (Path(name).name + ".mp4"))],
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif "DUODUO_RECORD_STOP " in line:
+                if recording is not None:
+                    recording.send_signal(signal.SIGINT)
+                    recording.wait(timeout=15)
+                    recording = None
+            elif "DUODUO_CAPTURE " in line:
                 name = line.split("DUODUO_CAPTURE ", 1)[1].strip()
                 path = args.output / (Path(name).name + ".png")
                 capture(path)
@@ -102,7 +114,13 @@ def main():
             elif "DUODUO_AUDIT " in line:
                 audit(json.loads(line.split("DUODUO_AUDIT ", 1)[1]))
             elif "** TEST " in line:
+                if recording is not None:
+                    recording.send_signal(signal.SIGINT)
+                    recording.wait(timeout=15)
                 return
+    if recording is not None:
+        recording.send_signal(signal.SIGINT)
+        recording.wait(timeout=15)
     raise TimeoutError("Duo regression did not finish before the capture timeout")
 
 
