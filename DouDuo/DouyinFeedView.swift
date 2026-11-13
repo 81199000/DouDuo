@@ -1514,7 +1514,6 @@ struct DouyinFeedScreen: View {
             let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
             let barW: CGFloat? = panelW > 0 ? geo.size.width - panelW : nil
             flatArrangement(geo)
-                .onChange(of: Self.foldProbe(geo), initial: true) { _, s in DYLiveModel.log(s) }
                 .onAppear { topNudge = nudge; topBarWidth = barW }
                 .onChange(of: nudge) { _, n in topNudge = n }
                 .onChange(of: barW) { _, v in withAnimation(.snappy) { topBarWidth = v } }
@@ -1553,22 +1552,6 @@ struct DouyinFeedScreen: View {
         guard let p = DYLiveAdaptiveLayoutEngine.hingePanes(
             bounds: CGRect(origin: .zero, size: geo.size), divisions: divisions) else { return nil }
         return (p.first, p.second, p.book)
-    }
-
-    /// 真机排查半折叠切分：尺寸、安全区、折痕原始矩形、切分结果，变化时写一行 ddlog（DDFOLD）。
-    private static func foldProbe(_ geo: GeometryProxy) -> String {
-        let r: (CGRect) -> String = { "(\(Int($0.minX)),\(Int($0.minY)),\(Int($0.width))x\(Int($0.height)))" }
-        let s = geo.safeAreaInsets
-        var line = "DDFOLD size=\(Int(geo.size.width))x\(Int(geo.size.height)) safe=\(Int(s.top)),\(Int(s.leading)),\(Int(s.bottom)),\(Int(s.trailing)) fold=\(DYDuoMetrics.foldIsActive(geo))"
-        line += " global=" + r(geo.frame(in: .global))
-        if #available(iOS 27.1, *) {
-            let divs = geo.reservedRegions(kind: .division).map { r($0.frame) + ($0.isActive ? "A" : "-") }
-            let occ = geo.reservedRegions(kind: .occlusion).map { r($0.frame) + ($0.isActive ? "A" : "-") }
-            line += " div=" + divs.joined(separator: ",") + " occ=" + occ.joined(separator: ",")
-        }
-        if let p = hingeSplit(geo) { line += " split=" + (p.book ? "book " : "table ") + r(p.video) + "|" + r(p.panel) }
-        else { line += " split=nil" }
-        return line
     }
 
     /// 窗格右侧被系统遮挡区（状态栏时间/信号）占掉的宽度，最多让 120pt。
