@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB0000000000000000000001 /* DYPagingSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000002 /* DYPagingSpeed.swift */; };
 		0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */; };
 		0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */; };
 		10144843E364788B2D3A07C6 /* DouyinEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */; };
@@ -54,6 +55,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AB0000000000000000000002 /* DYPagingSpeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPagingSpeed.swift; sourceTree = "<group>"; };
 		001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinPeopleCache.swift; sourceTree = "<group>"; };
 		008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinVideoCache.swift; sourceTree = "<group>"; };
 		016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinMessages.swift; sourceTree = "<group>"; };
@@ -136,6 +138,7 @@
 				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
+				AB0000000000000000000002 /* DYPagingSpeed.swift */,
 				D7CD74B4F7A62B69D376114F /* SeamlessAudioPlayer.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
 				E8C00A82D0DF6727AA1E57D1 /* Theme.swift */,
@@ -313,6 +316,7 @@
 				5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */,
 				DE2A3FB15A8ED7BF07FD37C5 /* FollowLiveLogic.swift in Sources */,
 				B072D11672770FB4836781C5 /* PlayerGestureView.swift in Sources */,
+				AB0000000000000000000001 /* DYPagingSpeed.swift in Sources */,
 				6E758C0AD84D69077D13B626 /* SeamlessAudioPlayer.swift in Sources */,
 				47FEEF8C736CB36FD20BA396 /* ShortVideoPlayer.swift in Sources */,
 				D3DE2156FEFF721744FDB55E /* Theme.swift in Sources */,
