@@ -1,36 +1,45 @@
 import SwiftUI
 
-/// 根据真实可用宽度选布局：完整标题能放下一行时，没有展开按钮；放不下才提供折叠操作。
+/// Keep up to three lines by default. Only overflowing copy exposes expansion.
 struct DYExpandableTitle: View {
     let text: String
     let foreground: Color
     let secondary: Color
     @State private var expanded = false
-
-    private var oneLine: String { text.split(whereSeparator: \.isNewline).joined(separator: " ") }
+    @State private var fullHeight: CGFloat = 0
+    @State private var visibleHeight: CGFloat = 0
+    private var canExpand: Bool { expanded || fullHeight > visibleHeight + 1 }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            Text(oneLine)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+        HStack(alignment: .bottom, spacing: 6) {
+            Text(text)
+                .lineLimit(expanded ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }
+                .background(alignment: .topLeading) {
+                    Text(text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                        .hidden().accessibilityHidden(true)
+                }
+                .onTapGesture { if canExpand { expanded.toggle() } }
                 .accessibilityIdentifier("douyin.description")
-            HStack(alignment: .bottom, spacing: 6) {
-                Text(expanded ? text : oneLine)
-                    .lineLimit(expanded ? nil : 1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onTapGesture { expanded.toggle() }
-                    .accessibilityIdentifier("douyin.description")
-                Button(expanded ? "收起" : "展开") { expanded.toggle() }
-                    .font(.caption)
-                    .foregroundStyle(secondary)
-                    .fixedSize()
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("douyin.description.toggle")
+            ZStack {
+                if canExpand {
+                    Button(expanded ? "收起" : "展开") { expanded.toggle() }
+                        .font(.caption)
+                        .foregroundStyle(secondary)
+                        .fixedSize()
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.description.toggle")
+                }
             }
+            .frame(width: 30)
         }
         .font(.subheadline)
         .foregroundStyle(foreground)
+        .onChange(of: text) { expanded = false }
     }
 }
 

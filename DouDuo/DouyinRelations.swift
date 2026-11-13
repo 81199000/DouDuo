@@ -164,11 +164,13 @@ struct DYRelationsScreen: View {
         .background(Color.black.ignoresSafeArea())
         .task { await model.loadMore() }
         .fullScreenCover(item: $open) { u in
-            DYAuthorScreen(bridge: bridge,
-                           author: DYAweme.Author(name: u.name, avatar: u.avatar,
-                                                  secUid: u.secUid.isEmpty ? nil : u.secUid,
-                                                  uid: u.uid.isEmpty ? nil : u.uid),
-                           onWeb: { _ in })
+            NavigationStack {
+                DYAuthorScreen(bridge: bridge,
+                               author: DYAweme.Author(name: u.name, avatar: u.avatar,
+                                                      secUid: u.secUid.isEmpty ? nil : u.secUid,
+                                                      uid: u.uid.isEmpty ? nil : u.uid),
+                               onWeb: { _ in })
+            }
         }
     }
 

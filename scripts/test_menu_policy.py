@@ -5,7 +5,6 @@ No network, UIKit, simulator, account writes or send callbacks are executed.
 SwiftUI wrappers and DYAweme below are test adapters, not API responses.
 """
 from pathlib import Path
-import os
 import re
 import subprocess
 import tempfile
@@ -13,6 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FEED = (ROOT / "DouDuo/DouyinFeedView.swift").read_text()
+UPSTREAM_ROOT = FEED[FEED.index("struct DYUpstreamFeedScreen:"):FEED.index("enum DDChromeMode:")]
+UPSTREAM_PAGE = FEED[FEED.index("struct DYUpstreamVideoPage:"):FEED.index("struct DYClassicVideoPage:")]
 EXTRAS = (ROOT / "DouDuo/DouyinExtras.swift").read_text()
 
 
@@ -96,7 +97,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertIn("func dismissPreviewOverlays()", room)
 
     def test_top_bar_icons_and_hit_targets(self):
-        top = block(FEED, "private func topBarRow")
+        top = block(UPSTREAM_ROOT, "private func topBarRow")
         self.assertIn("ForEach(DYTab.allCases", top)
         tabs = block(FEED, "enum DYTab:")
         for title in ("关注", "推荐", "直播"):
@@ -110,7 +111,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertEqual(top.count(".frame(minWidth: 44, minHeight: 44)"), 2)
 
     def test_current_item_menu(self):
-        menu = block(FEED, "private func moreMenu")
+        menu = block(UPSTREAM_PAGE, "private func moreMenu")
         quick = block(menu, "ControlGroup")
         self.assertIn("DYForwardMenu(item: item, bridge: bridge, foreground: fg)", quick)
         self.assertIn('"下载"', quick)
@@ -132,7 +133,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertNotIn("弹幕设置 ·", options)
 
     def test_settings_paths_and_duration_preferences(self):
-        menu = block(FEED, "private func moreExtrasMenu")
+        menu = block(UPSTREAM_ROOT, "private func moreExtrasMenu")
         settings = menu_content(menu, "设置")
         playback = menu_content(settings, "播放设置")
         # 2026-11-12 老板定：倍速/自动连播放「更多」第一层，铺满放右侧按钮栏，设置·播放设置里不再重复
@@ -257,7 +258,7 @@ precondition(remix.pool.map(\.id) == ["upcoming-tall"])
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
 print("PASS \(scenarios) legacy/orientation combinations; scarcity fallback; strict wide override; independent durations; remix; gallery classification")
 '''
-        scratch = Path(os.environ.get("TMPDIR", Path.home() / ".hermes/profiles/shayu/cache/scratch"))
+        scratch = Path(tempfile.gettempdir())
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="menu-policy-", dir=scratch) as folder:
             source = Path(folder) / "Policy.swift"
