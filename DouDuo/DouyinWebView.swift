@@ -290,9 +290,50 @@ final class DDAppMessageHandler: NSObject, WKScriptMessageHandler {
     private let model: DouyinWebModel
     init(_ model: DouyinWebModel) { self.model = model }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let s = message.body as? String { model.onAppMessage?(s) }
+        if let s = message.body as? String {
+            if s.contains("\"type\":\"cap\"") { DYLiveModel.log("DDCAP " + s) }
+            model.onAppMessage?(s)
+        }
     }
 }
+
+
+/// 【私有版调试·抓包】把抖音网页版自己发出的写请求（评论/回复/点赞等）连同完整头与 body 回传给 App，
+/// 用来校准我们手动拼的接口。只在用户主动在「网页版」里操作时产生记录，不改任何请求。
+private let ddWriteCaptureJS = #"""
+(() => {
+  if (window.__ddWriteCap) return; window.__ddWriteCap = 1;
+  const post = (o) => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
+  const hit = (u) => /comment\/publish|comment\/digg|comment\/delete|commit\/item|notice\/|im\/message|send_msg/.test(String(u || ''));
+  const trim = (o) => { const r = {}; for (const k in o) { const v = String(o[k]); if (v.length < 300) r[k] = v; } return r; };
+  const OX = XMLHttpRequest.prototype.open, OS = XMLHttpRequest.prototype.send, OSX = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.open = function (m, u) { this.__ddm = m; this.__ddu = u; this.__ddh = {}; return OX.apply(this, arguments); };
+  XMLHttpRequest.prototype.setRequestHeader = function (k, v) { try { this.__ddh[k] = v; } catch (e) {} return OSX.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function (b) {
+    try {
+      if (hit(this.__ddu)) {
+        const x = this;
+        x.addEventListener('loadend', () => post({ type: 'cap', via: 'xhr', m: x.__ddm, u: String(x.__ddu), h: trim(x.__ddh),
+          body: typeof b === 'string' ? b.slice(0, 1200) : '', st: x.status, resp: String(x.responseText || '').slice(0, 600) }));
+      }
+    } catch (e) {}
+    return OS.apply(this, arguments);
+  };
+  const of = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const u = typeof input === 'string' ? input : (input && input.url);
+      if (hit(u)) {
+        const h = {}; const src = (init && init.headers) || (input && input.headers);
+        if (src) { if (typeof src.forEach === 'function') src.forEach((v, k) => h[k] = v); else Object.assign(h, src); }
+        const body = init && typeof init.body === 'string' ? init.body.slice(0, 1200) : '';
+        post({ type: 'cap', via: 'fetch', m: (init && init.method) || 'GET', u: String(u), h: trim(h), body });
+      }
+    } catch (e) {}
+    return of.apply(this, arguments);
+  };
+})();
+"""#
 
 /// 聊天页点「分享视频」卡片 → 拦下点击、抽出 aweme_id 发给 App 跳原生播放（只在 /chat 页生效，别处不动）
 /// 卡片通常是缩略图不是 <video>：从点击处向上找含媒体特征的消息卡，再从 React props 抽 aweme_id；
@@ -384,6 +425,10 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
+        #if DEBUG
+        // 私有版：抓抖音网页版自己的写请求，用于校准手动接口（老板在网页版里发一条即可）
+        cfg.userContentController.addUserScript(WKUserScript(source: ddWriteCaptureJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #endif
         DYLiveModel.log("DDMSG ddmsg-handler registered")
         // 电脑版直播间的播放器要 MediaSource，iPhone 的 WebView 只有 ManagedMediaSource（iOS 17.1+），
         // 没有它就一直「直播加载中」。这里把它补成 MediaSource；ManagedMediaSource 要求关掉隔空播放才能挂到 <video> 上
