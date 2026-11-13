@@ -201,6 +201,11 @@ extension DouyinBridge {
     func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
         let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
         var lastLog = ""
+        // 先确认登录态：私有版是独立 App，没登录时发评论只会拿到空响应，别误报成风控
+        guard let me = try? await selfProfile(), !me.secUid.isEmpty else {
+            DYLiveModel.log("DDSEND blocked: not logged in aweme=\(awemeID)")
+            throw DYError.bad("抖音还没登录（这个版本是独立 App，要重新登录一次）：右上「我的」→「网页版 / 登录」")
+        }
         // 先 v1，空响应/风控页不算失败——抖音经常已经写入但接口不回执，先在评论/楼中楼里核对
         for js in [Self.publishJS, Self.publishV2JS] {
             guard let d = try? await call(js, args: args, attempts: 1),
@@ -214,20 +219,20 @@ extension DouyinBridge {
             if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
             if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
             // 空响应/非 JSON：核对这条评论是不是已经发出去了
-            if let mine = await findMySentComment(awemeID, text: text, replyID: replyID) {
+            if let mine = await findMySentComment(awemeID, text: text, replyID: replyID, myName: me.name) {
                 DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
                 return mine
             }
         }
-        throw DYError.bad("抖音没给回执，评论也没查到，可能被风控限制了（\(lastLog)）。歇一会再试，别连续重发")
+        throw DYError.bad("抖音没给回执，评论里也没查到这条（\(lastLog)）。先别连续重发；去视频评论区确认一下，还是没有就歇几分钟再试")
     }
 
     /// 发送后核对：楼中楼查这一级评论的回复，一级评论查最新评论；按「我的昵称 + 正文开头」匹配
-    private func findMySentComment(_ awemeID: String, text: String, replyID: String?) async -> DYComment? {
+    private func findMySentComment(_ awemeID: String, text: String, replyID: String?, myName: String) async -> DYComment? {
         let norm = { (s: String) in s.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression) }
         let want = norm(text)
         guard !want.isEmpty else { return nil }
-        let me = (try? await selfProfile())?.name ?? ""
+        let me = myName
         func match(_ items: [DYComment]) -> DYComment? {
             items.first { c in
                 let t = norm(c.text)
