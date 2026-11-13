@@ -47,6 +47,8 @@ final class DYLiveModel: ObservableObject {
     @Published var zone: DYLiveZone?
     /// 关注的主播里正在开播的（网页版直播首页顶上那排头像，复用同一个接口）
     @Published var followLive: [DYLiveRoom] = []
+    /// 最近一次关注列表的分类。空数组本身不能当成未登录。
+    @Published var followLiveKind: DYFollowLiveKind?
     private var followLiveFetchedAt = Date.distantPast
     private var loadedFollowSession = -1
     private var followedOnly = false
@@ -686,21 +688,34 @@ final class DYLiveModel: ObservableObject {
 
     func invalidateFollowLive() {
         followLive = []
+        followLiveKind = nil
         followLiveFetchedAt = .distantPast
         loadedFollowSession = -1
     }
 
     /// 关注列表按账号代际隔离。同一账号 2 分钟内不重复请求；换账号立刻丢掉上一份。
-    func loadFollowLive(_ bridge: DouyinBridge) async {
+    /// `refresh` 只在用户点重试时绕过这两分钟，仍走原来的关注列表请求。
+    func loadFollowLive(_ bridge: DouyinBridge, refresh: Bool = false) async {
         let session = bridge.followSession
         let sessionChanged = session != loadedFollowSession
-        guard sessionChanged || Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
-        if sessionChanged { followLive = [] }
+        guard refresh || sessionChanged || Date().timeIntervalSince(followLiveFetchedAt) > 120 else { return }
+        if sessionChanged {
+            followLive = []
+            followLiveKind = nil
+        }
         followLiveFetchedAt = Date()
         loadedFollowSession = session
-        guard let rooms = try? await bridge.fetchFollowLive() else { return }
+        let result = await bridge.followLiveResult(ignoreCache: refresh)
         guard session == bridge.followSession else { return }
-        followLive = rooms
+        followLiveKind = result.kind
+        switch result.kind {
+        case .rooms:
+            followLive = result.items
+        case .nobodyLive, .filtered:
+            followLive = []
+        case .notLoggedIn, .requestFailed, .decodeFailed, .unexpectedShape:
+            break
+        }
     }
 
     /// 一级分类「关注」：把整条流换成关注主播的开播列表，仍可上下滑换台
@@ -951,6 +966,34 @@ private func livePane(_ requested: CGRect, fallback: CGSize) -> CGRect {
 }
 
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
+
+/// 简洁 / 极简模块菜单发给直播页的一次性动作。token 变化才会再次触发。
+struct DYLiveModuleRequest: Equatable {
+    enum Action: Equatable {
+        case followedLive
+        case discover
+    }
+    var token: Int
+    var action: Action
+}
+
+/// 布局 A 时，把下窗格从直播视图坐标换到 `douduo.feed`，供父级摆模块圆钮。
+struct DYLiveModuleAnchor: Equatable {
+    var active = false
+    var pane = CGRect.zero
+    var compact = false
+    var safeBottom: CGFloat = 0
+    var safeTrailing: CGFloat = 0
+}
+
+struct DYLiveModuleAnchorKey: PreferenceKey {
+    static var defaultValue = DYLiveModuleAnchor()
+    static func reduce(value: inout DYLiveModuleAnchor, nextValue: () -> DYLiveModuleAnchor) {
+        let next = nextValue()
+        if next.active || !value.active { value = next }
+    }
+}
+
 struct DYLiveFeed: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -962,6 +1005,9 @@ struct DYLiveFeed: View {
     /// 顶栏在 `douduo.feed` 坐标里的框。位置仍由顶栏自己决定，这里只用来把按钮放到它下面。
     var topChrome: CGRect = .zero
     var screenInsets: EdgeInsets = .init()
+    var moduleRequest: DYLiveModuleRequest? = nil
+    /// 默认模式保留左上角「发现更多 / 正在直播」。简洁和极简只从模块菜单进入。
+    var classicPreviewChrome: Bool = true
     @StateObject private var chat = DYLiveChat()
     @State private var draft = ""
     @State private var sending = false
@@ -972,6 +1018,7 @@ struct DYLiveFeed: View {
     @State private var showDiscover = false
     /// 关注主播头像条：默认收起，只显示「N 位正在直播」胶囊；点胶囊展开，选了主播或离开直播页就收起。
     @State private var followStripExpanded = false
+    @State private var appliedModuleToken = 0
     @State private var selectedCategory = "featured"
     @State private var categoryHint: String?
     @State private var followPick = DYFollowSelection()
@@ -1039,24 +1086,37 @@ struct DYLiveFeed: View {
                               else { performSplitToggle(role: placement.role, eligible: layout.stable.decision.layout) }
                           })
                 }
-                if !model.entered {
-                    let chrome = previewChrome(in: geo)
-                    let paneAtTop = shown.interaction.minY < 24
+                if !model.entered, classicPreviewChrome || showDiscover || followStripExpanded {
+                    let chrome = previewChrome(in: geo, pane: shown.interaction)
                     VStack(alignment: .leading, spacing: 0) {
-                        discoverBar
-                        if followStripExpanded, !model.followLive.isEmpty {
-                            followStrip
-                                .padding(.top, 10)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        if classicPreviewChrome {
+                            discoverBar
+                                .padding(.trailing, chrome.trailing)
+                        } else if followStripExpanded {
+                            // 关闭键只占发现按钮那一行的高度，头像条才和经典模式展开后对齐。
+                            railFollowDismiss
+                                .padding(.trailing, chrome.trailing)
+                        }
+                        if followStripExpanded, (!classicPreviewChrome || !model.followLive.isEmpty) {
+                            Group {
+                                if model.followLive.isEmpty {
+                                    railFollowNote
+                                } else {
+                                    followStrip(scrollTail: chrome.stripTail)
+                                }
+                            }
+                            .padding(.top, 10)
+                            .padding(.trailing, chrome.stripTrailing)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                         if showDiscover {
-                            discoverPanel.transition(.opacity.combined(with: .move(edge: .top)))
+                            discoverPanel
+                                .padding(.trailing, chrome.trailing)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
-                    .modifier(DYRailReservedNudge())
                     .padding(.leading, chrome.leading)
-                    .padding(.trailing, chrome.trailing)
-                    .padding(.top, paneAtTop ? chrome.top : 12)
+                    .padding(.top, chrome.top)
                     .frame(width: shown.interaction.width, height: shown.interaction.height, alignment: .topLeading)
                     .position(x: shown.interaction.midX, y: shown.interaction.midY)
                     .animation(.easeInOut(duration: 0.2), value: showDiscover)
@@ -1075,6 +1135,7 @@ struct DYLiveFeed: View {
                 }.font(.caption2).opacity(0.01).allowsHitTesting(false)
                 #endif
             }
+            .preference(key: DYLiveModuleAnchorKey.self, value: liveModuleAnchor(in: geo, shown: shown))
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
             .onAppear { syncViewport(minY: viewport.minY, maxY: viewport.maxY) }
@@ -1105,6 +1166,7 @@ struct DYLiveFeed: View {
                 model.activate()
                 presentCurrentRoom()
             } else {
+                dismissPreviewOverlays()
                 model.deactivate()
             }
         }
@@ -1142,7 +1204,7 @@ struct DYLiveFeed: View {
             chat.open(id)
         }
         .onChange(of: model.entered) { _, entered in
-            if entered { showDiscover = false }
+            if entered { dismissPreviewOverlays() }
             else {
                 inputFocused = false; draft = ""; sendError = nil
                 if model.isFollowedCatalog, currentRoom?.liveStreams.isEmpty == true { presentCurrentRoom() }
@@ -1155,12 +1217,35 @@ struct DYLiveFeed: View {
         .onChange(of: showFollowLive) { _, shown in
             if shown { cancelFollowPick() }
         }
+        .onChange(of: moduleRequest) { _, request in
+            guard let request, request.token != appliedModuleToken else { return }
+            appliedModuleToken = request.token
+            switch request.action {
+            case .followedLive:
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if followStripExpanded {
+                        followStripExpanded = false
+                    } else {
+                        showDiscover = false
+                        followStripExpanded = true
+                    }
+                }
+            case .discover:
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    followStripExpanded = false
+                    showDiscover = true
+                }
+            }
+        }
+        .onChange(of: classicPreviewChrome) { _, _ in
+            dismissPreviewOverlays()
+        }
         .onChange(of: bridge.followSession) { _, _ in
             cancelFollowPick()
             model.invalidateFollowLive()
             Task { await model.loadFollowLive(bridge) }
         }
-        .onDisappear { scrollEndTask?.cancel(); cancelFollowPick(); model.deactivate(); chat.close() }
+        .onDisappear { dismissPreviewOverlays(); scrollEndTask?.cancel(); cancelFollowPick(); model.deactivate(); chat.close() }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { applyKeyboard($0) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
@@ -1227,6 +1312,17 @@ struct DYLiveFeed: View {
         return (shown, stable)
     }
 
+    /// `shown.interaction` 在直播 GeometryReader 里。换成 `douduo.feed` 后父级才能和自己的坐标相减。
+    private func liveModuleAnchor(in geo: GeometryProxy, shown: DYLiveAdaptiveDecision) -> DYLiveModuleAnchor {
+        let origin = geo.frame(in: .named("douduo.feed")).origin
+        return DYLiveModuleAnchor(
+            active: shown.layout == .layoutA,
+            pane: shown.interaction.offsetBy(dx: origin.x, dy: origin.y),
+            compact: hSize == .compact,
+            safeBottom: inset(geo.safeAreaInsets.bottom, screenInsets.bottom),
+            safeTrailing: inset(geo.safeAreaInsets.trailing, screenInsets.trailing))
+    }
+
     private func layoutTogglePlacement(stable: DYLiveAdaptiveDecision, in geo: GeometryProxy) -> DYLiveLayoutTogglePlacement {
         DYLiveLayoutToggle.place(
             eligible: stable.layout,
@@ -1283,18 +1379,41 @@ struct DYLiveFeed: View {
         .position(x: placement.frame.midX, y: placement.frame.midY)
     }
 
-    /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。左右各自让开安全区。
-    private func previewChrome(in geo: GeometryProxy) -> (top: CGFloat, leading: CGFloat, trailing: CGFloat) {
+    /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。
+    /// 遮挡区和折痕改成窗格内的内边距：整段平移会把左侧按钮和第一颗头像推出外屏。
+    private func previewChrome(in geo: GeometryProxy, pane: CGRect) -> (top: CGFloat, leading: CGFloat, trailing: CGFloat, stripTrailing: CGFloat, stripTail: CGFloat) {
+        let paneAtTop = pane.minY < 24
         let feedTop = geo.frame(in: .named("douduo.feed")).minY
-        let top = DYLivePreviewChrome.buttonOriginY(
-            feedMinY: feedTop,
-            navMaxY: topChrome.maxY,
-            safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
-        return (
-            top,
-            DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.leading, screenInsets.leading)),
-            DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.trailing, screenInsets.trailing))
-        )
+        let top = paneAtTop
+            ? DYLivePreviewChrome.buttonOriginY(
+                feedMinY: feedTop,
+                navMaxY: topChrome.maxY,
+                safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
+            : 12
+        let leading = DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.leading, screenInsets.leading))
+        let trailing = DYLivePreviewChrome.horizontalInset(inset(geo.safeAreaInsets.trailing, screenInsets.trailing))
+        let divisions = previewDivisions(in: geo)
+        var regions = divisions
+        if #available(iOS 27.1, *) {
+            for region in geo.reservedRegions(kind: .occlusion) where region.isActive {
+                regions.append(region.frame)
+            }
+        }
+        let fitted = DYLivePreviewChrome.containedInsets(
+            pane: pane, top: top, leading: leading, trailing: trailing, regions: regions)
+        let strip = DYLivePreviewChrome.avatarStripInsets(
+            conservativeTrailing: fitted.trailing, pane: pane, top: fitted.top,
+            leading: fitted.leading, divisions: divisions)
+        return (fitted.top, fitted.leading, fitted.trailing, strip.trailing, strip.scrollTail)
+    }
+
+    private func previewDivisions(in geo: GeometryProxy) -> [CGRect] {
+        guard #available(iOS 27.1, *) else { return [] }
+        var frames: [CGRect] = []
+        for region in geo.reservedRegions(kind: .division) where region.isActive {
+            frames.append(region.frame)
+        }
+        return frames
     }
 
     private func inset(_ local: CGFloat, _ passed: CGFloat) -> CGFloat {
@@ -1317,22 +1436,33 @@ struct DYLiveFeed: View {
                     .ddGlassCapsule()
             }
             .foregroundStyle(foreground).buttonStyle(.plain)
-            .layoutPriority(0)
             .accessibilityIdentifier("live.discover")
-            if !model.followLive.isEmpty { followLiveButton.layoutPriority(1) }
+            if !model.followLive.isEmpty { followLiveButton }
             Spacer(minLength: 0)
         }
     }
 
     private var discoverPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if !classicPreviewChrome {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { showDiscover = false }
+                } label: {
+                    Text("关闭")
+                        .font(.subheadline.weight(.medium))
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(foreground)
+                .accessibilityIdentifier("live.discover.close")
+            }
             categoryStrip
             if let categoryHint {
                 Text(categoryHint).font(.caption)
                     .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
             }
         }
-        .padding(.top, 14)
+        .padding(.top, classicPreviewChrome ? 14 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1379,6 +1509,15 @@ struct DYLiveFeed: View {
             selectedCategory = c.id; categoryHint = nil
             model.select(zone, bridge)
         }
+        if !classicPreviewChrome {
+            withAnimation(.easeInOut(duration: 0.2)) { showDiscover = false }
+        }
+    }
+
+    private func dismissPreviewOverlays() {
+        showDiscover = false
+        showFollowLive = false
+        followStripExpanded = false
     }
 
     /// 有播放地址就直接播。关注分类里还没有地址的当前房间，只解析这一间。
@@ -1449,7 +1588,7 @@ struct DYLiveFeed: View {
         .accessibilityLabel("\(count) 位关注的主播正在直播")
     }
 
-    private var followStrip: some View {
+    private func followStrip(scrollTail: CGFloat) -> some View {
         ScrollView(.horizontal) {
             HStack(spacing: 14) {
                 ForEach(model.followLive) { r in
@@ -1478,11 +1617,58 @@ struct DYLiveFeed: View {
                     .accessibilityIdentifier("live.strip.\(r.id)")
                 }
             }
-            .padding(.horizontal, 2)
+            .padding(.leading, 2)
+            .padding(.trailing, 2 + scrollTail)
         }
         .scrollIndicators(.hidden)
         .themeShadow(.mediaLabel)
         .accessibilityIdentifier("live.follow.strip")
+    }
+
+    /// 简洁 / 极简没有发现和人数按钮。关闭键单独占这一行，高度与那两个按钮相同。
+    private var railFollowDismiss: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { followStripExpanded = false }
+        } label: {
+            Image(systemName: "xmark")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: DYLivePreviewChrome.minTapHeight, height: DYLivePreviewChrome.minTapHeight)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(foreground)
+        .accessibilityLabel("关闭我的关注")
+        .accessibilityIdentifier("live.follow.strip.close")
+    }
+
+    /// 没有可展示的主播时，说明落在头像条同一条上，不开整页列表。
+    private var railFollowNote: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(followStripNote)
+                .font(.caption)
+                .foregroundStyle(foreground)
+                .accessibilityIdentifier("live.follow.strip.empty")
+            if model.followLiveKind == .notLoggedIn {
+                Button("登录") { onWeb(DouyinWeb.home) }
+                    .font(.caption.weight(.semibold))
+                    .accessibilityIdentifier("live.follow.strip.login")
+            } else if model.followLiveKind == .requestFailed || model.followLiveKind == .decodeFailed || model.followLiveKind == .unexpectedShape {
+                Button("重试") { Task { await model.loadFollowLive(bridge, refresh: true) } }
+                    .font(.caption.weight(.semibold))
+                    .accessibilityIdentifier("live.follow.strip.retry")
+            }
+        }
+        .padding(.leading, 2)
+    }
+
+    private var followStripNote: String {
+        switch model.followLiveKind {
+        case .notLoggedIn: "登录后才能看到关注的直播"
+        case .filtered: "暂时没有可播放的线路"
+        case .requestFailed: "关注直播加载失败"
+        case .decodeFailed, .unexpectedShape: "直播数据无法解析"
+        case .nobodyLive, .rooms: "关注的人现在没有在直播"
+        case nil: "正在查看关注的直播"
+        }
     }
 
     private var emptyState: some View {
@@ -1994,6 +2180,50 @@ enum DYLiveLayoutToggle {
             y: bounds.maxY - bottom - composerHeight,
             width: min(composerMaxWidth, available),
             height: composerHeight)
+    }
+
+    /// 布局 A 的模块圆钮放在下窗格右下。边距沿用分屏按钮的 12pt，再加安全区。
+    /// 窗格太矮、右下角会压住「整屏」或「进入直播间」时，先上移，再改到「整屏」左侧。
+    static func layoutAModuleFrame(
+        interaction: CGRect,
+        button: CGSize,
+        compact: Bool,
+        safeBottom: CGFloat,
+        safeTrailing: CGFloat
+    ) -> CGRect {
+        let margin = spacing
+        let width = max(0, button.width)
+        let height = max(0, button.height)
+        var frame = CGRect(
+            x: interaction.maxX - max(0, safeTrailing) - margin - width,
+            y: interaction.maxY - max(0, safeBottom) - margin - height,
+            width: width,
+            height: height)
+        frame.origin.x = clamped(frame.origin.x, min: interaction.minX + margin, max: interaction.maxX - margin - width)
+        frame.origin.y = clamped(frame.origin.y, min: interaction.minY + margin, max: interaction.maxY - margin - height)
+        let entry = previewEntryFrame(interaction: interaction, safeBottom: safeBottom)
+        if frame.intersects(entry) {
+            let lifted = entry.minY - spacing - height
+            if lifted >= interaction.minY + margin { frame.origin.y = lifted }
+        }
+        let toggle = layoutAFrame(interaction: interaction, compact: compact, safeTrailing: safeTrailing)
+        if frame.intersects(toggle) {
+            let lifted = toggle.minY - spacing - height
+            if lifted >= interaction.minY + margin {
+                frame.origin.y = lifted
+            } else {
+                let beside = toggle.minX - spacing - width
+                if beside >= interaction.minX + margin { frame.origin.x = beside }
+            }
+        }
+        frame.origin.x = clamped(frame.origin.x, min: interaction.minX + margin, max: interaction.maxX - margin - width)
+        frame.origin.y = clamped(frame.origin.y, min: interaction.minY + margin, max: interaction.maxY - margin - height)
+        return frame
+    }
+
+    private static func clamped(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
+        guard upper >= lower else { return lower }
+        return min(max(value, lower), upper)
     }
 }
 // MARK: - live-layout-toggle-end

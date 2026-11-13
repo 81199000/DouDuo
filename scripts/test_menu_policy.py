@@ -42,6 +42,59 @@ class MenuPolicyTests(unittest.TestCase):
                       "portraitRatio", "mixLabel", "竖屏占比", "douyin.mix"):
             self.assertNotIn(token, FEED)
 
+    def test_live_module_menu_actions_follow_the_selected_module(self):
+        menu = block(FEED, "private func minimalModuleButton")
+        live = menu.split("if tab == .live", 1)[1]
+        self.assertLess(live.index("我的关注"), live.index('minimalMenuRow("搜索"'))
+        self.assertLess(live.index("发现更多"), live.index('minimalMenuRow("搜索"'))
+        self.assertIn("douyin.module.live.follow", live)
+        self.assertIn("douyin.module.live.discover", live)
+        self.assertIn("queueLiveModule(.followedLive)", live)
+        self.assertIn("queueLiveModule(.discover)", live)
+        after_live = live.split('minimalMenuRow("搜索"', 1)[1]
+        self.assertNotIn("我的关注", after_live)
+        self.assertNotIn("发现更多", after_live)
+        self.assertIn("publishQueuedLiveModule()", menu)
+        self.assertNotIn("NotificationCenter", menu)
+        room = (ROOT / "DouDuo/DouyinLiveRoom.swift").read_text()
+        preview = room.split("if !model.entered", 1)[1].split("if placement.role", 1)[0]
+        self.assertIn("previewChrome(in: geo, pane: shown.interaction)", preview)
+        self.assertNotIn("DYRailReservedNudge", preview)
+        chrome = block(room, "private func previewChrome")
+        self.assertIn("containedInsets", chrome)
+        self.assertIn("avatarStripInsets", chrome)
+        self.assertIn("case .followedLive:", room)
+        self.assertNotIn("case .followed:", room)
+        followed = room.split("case .followedLive:", 1)[1].split("case .discover:", 1)[0]
+        self.assertIn("followStripExpanded = true", followed)
+        self.assertNotIn("showFollowLive = true", followed)
+        self.assertIn("showDiscover = false", followed)
+        discover = room.split("case .discover:", 1)[1].split(".onChange(of: classicPreviewChrome)", 1)[0]
+        self.assertIn("followStripExpanded = false", discover)
+        self.assertIn("showDiscover = true", discover)
+        self.assertIn("live.follow.strip.close", room)
+        self.assertIn("DYFollowLiveSheet(bridge: bridge)", room)
+        self.assertIn("DYRailReservedNudge()", room.split("private struct DYLiveRoomPage", 1)[1])
+        self.assertIn("if classicPreviewChrome", preview)
+        self.assertIn("discoverBar", preview)
+        self.assertIn("followStrip", preview)
+        self.assertLess(preview.index("railFollowDismiss"), preview.index("followStrip(scrollTail:"))
+        strip = preview.split("followStrip(scrollTail:", 1)[1]
+        self.assertLess(strip.index(".padding(.top, 10)"), strip.index("if showDiscover"))
+        dismiss = block(room, "private var railFollowDismiss")
+        self.assertIn("DYLivePreviewChrome.minTapHeight", dismiss)
+        self.assertNotIn("ddGlassCapsule", dismiss)
+        self.assertNotIn("discoverBar", preview.split("} else if followStripExpanded", 1)[1].split("if followStripExpanded", 1)[0])
+        self.assertIn("classicPreviewChrome: !chromeMode.usesRail", FEED)
+        panel = block(room, "private var discoverPanel")
+        self.assertIn("live.discover.close", panel)
+        self.assertIn("!classicPreviewChrome", panel)
+        self.assertNotIn("发现更多", panel)
+        pick = block(room, "private func pickCategory")
+        self.assertIn("if !classicPreviewChrome", pick)
+        self.assertIn("showDiscover = false", pick)
+        self.assertIn("func dismissPreviewOverlays()", room)
+
     def test_top_bar_icons_and_hit_targets(self):
         top = block(FEED, "private func topBarRow")
         self.assertIn("ForEach(DYTab.allCases", top)

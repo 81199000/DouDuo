@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// 关注直播接口的匿名统计。不含房间、流地址或用户标识。
 struct DYFollowLiveStats: Equatable, Decodable {
@@ -357,6 +358,94 @@ enum DYLivePreviewChrome {
     static func horizontalInset(_ safe: CGFloat) -> CGFloat {
         max(contentMargin, safe)
     }
+
+    /// 预览头和头像条要让开的高度：按钮、展开的头像，以及中间间距。
+    static let controlBandHeight: CGFloat = 160
+    /// 遮挡区外侧留出的空隙，和导航间距同一档。
+    static let reservedGap: CGFloat = 8
+    /// 左右都在让时，仍给两个按钮留下的最小宽度。
+    static let minimumContentWidth: CGFloat = 120
+
+    /// 把遮挡区变成内边距，而不是把整条预览头平移出屏幕。
+    /// 右侧摄像头只增加 trailing；左侧只增加 leading；横跨按钮行才往下移。
+    static func containedInsets(pane: CGRect, top: CGFloat, leading: CGFloat,
+                                trailing: CGFloat, regions: [CGRect]) -> DYLivePreviewInsets {
+        guard pane.width > 1, pane.height > 1 else {
+            return DYLivePreviewInsets(top: top, leading: leading, trailing: trailing)
+        }
+        var top = max(0, top)
+        var leading = max(0, leading)
+        var trailing = max(0, trailing)
+        let locals = regions
+            .map { $0.offsetBy(dx: -pane.minX, dy: -pane.minY) }
+            .filter { $0.width > 1 && $0.height > 1 }
+        guard !locals.isEmpty else {
+            return DYLivePreviewInsets(top: top, leading: leading, trailing: trailing)
+        }
+        for _ in 0..<4 {
+            let band = CGRect(x: leading, y: top,
+                              width: max(0, pane.width - leading - trailing),
+                              height: controlBandHeight)
+            var nextTop = top
+            var nextLeading = leading
+            var nextTrailing = trailing
+            for local in locals {
+                let hit = local.intersection(band)
+                guard hit.width > 0.5, hit.height > 0.5 else { continue }
+                if band.width > 1, hit.width >= band.width * 0.55 {
+                    nextTop = max(nextTop, local.maxY + reservedGap)
+                    continue
+                }
+                if local.midX >= pane.width / 2 {
+                    nextTrailing = max(nextTrailing, pane.width - local.minX + reservedGap)
+                } else {
+                    nextLeading = max(nextLeading, local.maxX + reservedGap)
+                }
+            }
+            let limit = max(0, pane.width - minimumContentWidth)
+            if nextLeading + nextTrailing > limit {
+                let leadGrowth = nextLeading - leading
+                let trailGrowth = nextTrailing - trailing
+                if leadGrowth <= trailGrowth {
+                    nextTrailing = min(nextTrailing, max(trailing, limit - nextLeading))
+                    nextLeading = min(nextLeading, max(0, limit - nextTrailing))
+                } else {
+                    nextLeading = min(nextLeading, max(leading, limit - nextTrailing))
+                    nextTrailing = min(nextTrailing, max(0, limit - nextLeading))
+                }
+            }
+            nextTop = min(max(0, nextTop), max(0, pane.height - minTapHeight))
+            if nextTop == top, nextLeading == leading, nextTrailing == trailing { break }
+            top = nextTop
+            leading = nextLeading
+            trailing = nextTrailing
+        }
+        return DYLivePreviewInsets(top: top, leading: leading, trailing: trailing)
+    }
+
+    /// 头像条可以画到状态栏图标下面，但折痕仍要让开，最后一颗头像要能滑回没有遮挡的位置。
+    /// `conservativeTrailing` 是按钮用的完整右边距。条本身只用内容边距加上折痕，多出来的宽度变成滚动尾距。
+    static func avatarStripInsets(conservativeTrailing: CGFloat, pane: CGRect, top: CGFloat,
+                                  leading: CGFloat, divisions: [CGRect]) -> DYAvatarStripInsets {
+        let hinge = containedInsets(pane: pane, top: top, leading: leading,
+                                    trailing: contentMargin, regions: divisions)
+        let trailing = min(max(contentMargin, hinge.trailing), max(contentMargin, conservativeTrailing))
+        return DYAvatarStripInsets(trailing: trailing,
+                                   scrollTail: max(0, conservativeTrailing - trailing))
+    }
+}
+
+/// 头像条的右边距。`scrollTail` 加在滚动内容末尾，让最后一颗头像能滑出系统图标。
+struct DYAvatarStripInsets: Equatable {
+    var trailing: CGFloat
+    var scrollTail: CGFloat
+}
+
+/// 直播预览头避让遮挡区之后的内边距。原点始终落在窗格内。
+struct DYLivePreviewInsets: Equatable {
+    var top: CGFloat
+    var leading: CGFloat
+    var trailing: CGFloat
 }
 
 #if DEBUG || FOLLOW_LIVE_LOGIC_MAIN
@@ -550,6 +639,42 @@ enum DYFollowLiveLogicTests {
         check(DYLivePreviewChrome.horizontalInset(10) == 18, "小于内容边距时用 18")
         check(DYLivePreviewChrome.horizontalInset(82) == 82, "侧边安全区大于 18 时让开")
         check(DYLivePreviewChrome.minTapHeight == 44, "最小触摸高度 44")
+
+        let outer = CGRect(x: 0, y: 0, width: 320, height: 700)
+        let clear = DYLivePreviewChrome.containedInsets(pane: outer, top: 85, leading: 18, trailing: 18, regions: [])
+        check(clear == DYLivePreviewInsets(top: 85, leading: 18, trailing: 18), "没有遮挡时外屏边距不变")
+        let above = CGRect(x: 250, y: 0, width: 70, height: 50)
+        let status = DYLivePreviewChrome.containedInsets(pane: outer, top: 85, leading: 18, trailing: 18, regions: [above])
+        check(status == clear, "完全在按钮行上方的摄像头不推移预览头")
+        let camera = CGRect(x: 250, y: 40, width: 70, height: 90)
+        let dodged = DYLivePreviewChrome.containedInsets(pane: outer, top: 85, leading: 18, trailing: 18, regions: [camera])
+        check(dodged.leading == 18 && dodged.top == 85, "右侧摄像头不把发现按钮和第一颗头像推出左边界")
+        check(dodged.trailing >= 320 - 250 + DYLivePreviewChrome.reservedGap, "右侧摄像头改为右侧内边距")
+        let leftEdge = CGRect(x: 0, y: 40, width: 70, height: 90)
+        let fromLeft = DYLivePreviewChrome.containedInsets(pane: outer, top: 85, leading: 18, trailing: 18, regions: [leftEdge])
+        check(fromLeft.leading >= 78 && fromLeft.trailing == 18, "左侧遮挡只增加左边距")
+        check(fromLeft.leading + fromLeft.trailing < outer.width, "左边距仍留在窗格内")
+        let across = CGRect(x: 0, y: 70, width: 320, height: 40)
+        let lowered = DYLivePreviewChrome.containedInsets(pane: outer, top: 85, leading: 18, trailing: 18, regions: [across])
+        check(lowered.top >= 118 && lowered.leading == 18, "横跨按钮行的遮挡往下让，左边距不动")
+        let inner = CGRect(x: 0, y: 0, width: 820, height: 600)
+        let innerClear = DYLivePreviewChrome.containedInsets(pane: inner, top: 81, leading: 18, trailing: 18, regions: [])
+        check(innerClear == DYLivePreviewInsets(top: 81, leading: 18, trailing: 18), "内屏没有遮挡时保持导航下沿")
+        let shiftedPane = CGRect(x: 400, y: 20, width: 380, height: 640)
+        let hinge = CGRect(x: 390, y: 0, width: 24, height: 640)
+        let book = DYLivePreviewChrome.containedInsets(pane: shiftedPane, top: 12, leading: 18, trailing: 18, regions: [hinge])
+        check(book.leading >= 18 && book.leading + book.trailing < shiftedPane.width, "分屏窗格里的折痕不把内容推出窗格")
+        let stripClear = DYLivePreviewChrome.avatarStripInsets(conservativeTrailing: 18, pane: outer, top: 85, leading: 18, divisions: [])
+        check(stripClear.trailing == 18 && stripClear.scrollTail == 0, "没有额外避让时头像条不另加尾距")
+        let stripStatus = DYLivePreviewChrome.avatarStripInsets(conservativeTrailing: dodged.trailing, pane: outer, top: 85, leading: 18, divisions: [])
+        check(stripStatus.trailing == 18, "状态栏遮挡不把整条头像行缩进去")
+        check(stripStatus.scrollTail == dodged.trailing - 18, "最后一颗头像仍能滑出遮挡区")
+        check(dodged.trailing > stripStatus.trailing, "发现按钮继续使用更保守的右边距")
+        let fold = CGRect(x: 280, y: 0, width: 40, height: 700)
+        let stripFold = DYLivePreviewChrome.avatarStripInsets(conservativeTrailing: 90, pane: outer, top: 85, leading: 18, divisions: [fold])
+        check(stripFold.trailing >= 48 && stripFold.trailing <= 90, "头像条仍让开窗格里的折痕")
+        check(stripFold.scrollTail == 90 - stripFold.trailing, "折痕之外的遮挡留在滚动尾距")
+        check(stripFold.trailing < 90, "折痕避让不会再占满整个右侧系统区")
         return failures
     }
 }
