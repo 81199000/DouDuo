@@ -191,6 +191,8 @@ let preferences = UserDefaults(suiteName: suiteName)!
 // Explicit in-memory policy fixtures, not captured or synthesized platform responses.
 struct DYAweme {
     let id: String
+    var desc: String = ""
+    var hashtagNames: [String]? = nil
     var images: [String] = []
     var isTallFrame: Bool = false
     var duration: Double = 60
@@ -262,7 +264,9 @@ print("PASS \(scenarios) legacy/orientation combinations; scarcity fallback; str
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="menu-policy-", dir=scratch) as folder:
             source = Path(folder) / "Policy.swift"
-            source.write_text(adapters + model + clamp + checks)
+            hashtags = (ROOT / "DouDuo/DYHashtag.swift").read_text()
+            filters = (ROOT / "DouDuo/DYHashtagFilter.swift").read_text()
+            source.write_text(adapters + hashtags + filters + model + clamp + checks)
             result = subprocess.run(["swift", str(source)], text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         print(result.stdout.strip())

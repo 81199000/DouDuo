@@ -425,6 +425,8 @@ struct PlayerPage: View {
                 .accessibilityIdentifier("douyin.video.boostStarts")
                 .allowsHitTesting(false)
             if isActive {
+                Text(isPlaying ? "playing" : "paused").font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("douyin.video.playback").allowsHitTesting(false)
                 Text(!pictureInPicture.supported ? "unsupported" : pictureInPicture.active ? "active" : (pictureInPicture.canStart ? "ready" : "waiting"))
                     .font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("douyin.video.pipState").allowsHitTesting(false)
