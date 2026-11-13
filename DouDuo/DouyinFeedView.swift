@@ -2180,6 +2180,7 @@ struct DYUpstreamFeedScreen: View {
                         }
                     }
                     .scrollTargetLayout()
+                    .background(DYPagingSpeedBridge(ids: feed.items.map(\.id), currentID: $currentID))
                 }
                 .scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollID, anchor: .center)
@@ -3948,6 +3949,9 @@ struct DYUpstreamVideoPage: View {
                     showDanmakuInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
                 })
+            }
+            Section {
+                Menu { DYPagingSpeedPicker() } label: { Label("翻页设置", systemImage: "arrow.up.arrow.down") }
             }
             moreExtras
         } label: {
