@@ -207,7 +207,7 @@ extension DouyinBridge {
             throw DYError.bad("抖音还没登录（这个版本是独立 App，要重新登录一次）：右上「我的」→「网页版 / 登录」")
         }
         // 先 v1，空响应/风控页不算失败——抖音经常已经写入但接口不回执，先在评论/楼中楼里核对
-        for js in [Self.publishJS, Self.publishV2JS] {
+        for js in [Self.publishJS] {
             guard let d = try? await call(js, args: args, attempts: 1),
                   let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else {
                 lastLog += "|call-failed"
@@ -283,7 +283,13 @@ extension DouyinBridge {
 
     // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
     static let publishJS = cmap + #"""
-    const P = q({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' });
+    // 写接口必须带网页版身份参数：msToken / webid / verifyFp(=fp=s_v_web_id)，只存在 cookie 里。
+    // 少了它们 POST 会 200 + 空 body（静默丢弃），GET 不受影响，所以只有发送失败。
+    const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };
+    const fp = ck('s_v_web_id') || ck('verifyFp');
+    const ident = { msToken: ck('msToken'), webid: ck('webid'), verifyFp: fp, fp: fp };
+    const haveIdent = Object.keys(ident).filter(k => ident[k]).join(',');
+    const P = q(Object.assign({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' }, ident));
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString());
@@ -291,7 +297,7 @@ extension DouyinBridge {
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
     // 只记录形状，不记录响应正文、评论内容、cookie 或 token；写操作不自动重试。
     const keys = Object.keys(d).filter(k => /^[a-zA-Z_]+$/.test(k)).slice(0, 12).join(',');
-    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys;
+    const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none');
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';
