@@ -42,7 +42,7 @@ struct PlayerGestureView: UIViewRepresentable {
         single.require(toFail: double)
 
         let long = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.handleLong(_:)))
-        long.minimumPressDuration = 0.5
+        long.minimumPressDuration = DYBoostTiming.holdSeconds
         // 长按期间要能跟手指：上/下滑 50pt 才判定锁定/解锁（原来 12pt 就取消长按，导致锁不上 2 倍速）
         long.allowableMovement = .greatestFiniteMagnitude
         long.delegate = c

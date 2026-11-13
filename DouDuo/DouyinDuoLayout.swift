@@ -16,6 +16,28 @@ enum DYDuoMetrics {
     /// iOS 17–27.0 的宽屏回退，和改版前同一条线。
     static let legacyWideMin: CGFloat = 700
 
+    /// 是不是 iPhone Duo 真机/模拟器（iPhone19,4）。
+    /// 外屏顶栏的 -80 贴顶只对 Duo 成立：Duo 外屏窗口内容区比物理屏顶端低约 80pt；
+    /// 普通 iPhone 窗口从物理顶端开始，再往上推 80 就把顶栏推出屏幕（issue #16：点不到）。
+    static let isDuoHardware: Bool = {
+        #if targetEnvironment(simulator)
+        let id = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""
+        #else
+        var s = utsname()
+        uname(&s)
+        let id = withUnsafeBytes(of: &s.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        #endif
+        return id == "iPhone19,4"
+    }()
+
+    /// 窗口顶部安全区（状态栏 / 灵动岛高度）。播放页整层忽略了安全区，GeometryProxy 量到的 top 为 0，只能读窗口。
+    @MainActor static var windowSafeTop: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 0
+    }
+
     /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
     static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
         #if DEBUG
