@@ -71,7 +71,13 @@ final class DYLiveModel: ObservableObject {
         UserDefaults.standard.set(q, forKey: "douyin_live_quality_v1")
         retry()
     }
-    @Published var muted = false {
+    @Published var muted: Bool = {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["DOUDUO_TEST_MUTE"] == "1"
+        #else
+        false
+        #endif
+    }() {
         didSet {
             vlc.outputMuted = muted
             if !muted, sessionReleased {

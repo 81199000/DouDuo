@@ -11,7 +11,7 @@ SOURCE = (ROOT / "DouDuo/DouyinLiveRoom.swift").read_text()
 class LiveCategoryTests(unittest.TestCase):
     def test_real_categories_and_partition_mapping(self):
         start = SOURCE.index("private enum DYLiveCategoryKind")
-        end = SOURCE.index("/// 预览和直播间共用", start)
+        end = SOURCE.index("\n]", SOURCE.index("private let ddLiveCategories:", start)) + 2
         swift = "import Foundation\nstruct DYLiveZone { let id: String; let type: String; let name: String }\n"
         swift += SOURCE[start:end]
         swift += '''
@@ -30,7 +30,8 @@ print("Actual category registry passed")
         with tempfile.TemporaryDirectory(prefix=".test-live-categories-", dir=ROOT) as tmp:
             p = Path(tmp) / "main.swift"
             p.write_text(swift)
-            subprocess.run(["swift", str(p)], check=True, capture_output=True, text=True)
+            result = subprocess.run(["swift", str(p)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_removed_standalone_game_entry(self):
         self.assertNotIn('Label("游戏专区"', SOURCE)

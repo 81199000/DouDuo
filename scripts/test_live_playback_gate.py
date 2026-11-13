@@ -274,6 +274,11 @@ class LivePlaybackGateTests(unittest.TestCase):
         self.assertIn(".pause()", background_pause)
         self.assertNotIn("setActive(false", background_pause)
         messages = (ROOT / "DouDuo/DouyinMessages.swift").read_text()
+        # Classic native sharing keeps playing; upstream native and web covers pause.
+        native_share = messages.split("struct DYForwardPresentation:", 1)[1].split("struct DYForwardMenu:", 1)[0]
+        self.assertNotIn("pauseAll", native_share)
+        self.assertIn("if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) }", messages)
+        self.assertIn("if !usesClassicLayout { DDPlayback.shared.releaseCover() }", messages)
         self.assertEqual(messages.count("pauseAll(reason: .cover)"), 2)
         self.assertNotIn("DDPlayback.shared.pauseAll()", messages)
         plist = (ROOT / "DouDuo/Info.plist").read_text()
