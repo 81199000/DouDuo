@@ -707,7 +707,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     """#
 
     private static let diggJS = #"""
-    await sdkReady(6000);
+    if (typeof sdkReady === 'function') await sdkReady(6000);
     const P = Object.assign({}, base, { aweme_id: id, type: type, item_type: '0' });
     const u = '/aweme/v1/web/commit/item/digg/?' + new URLSearchParams(P).toString();
     const r = await req('POST', u, '');
