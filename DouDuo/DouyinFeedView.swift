@@ -250,6 +250,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             self.ready = true
             // 签名 SDK 就绪后把整页 DOM 清空：隐藏页面不再持续渲染（真机上 WebContent 曾占约 43% 一个核，手机发烫）
             self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil")") }
+            self.web.evaluateJavaScript(Self.sdkProbeJS) { r, _ in DYLiveModel.log("DDSDK \(r.map { String(describing: $0) } ?? "nil")") }
             self.readyWaiters.forEach { $0.resume() }
             self.readyWaiters.removeAll()
         }
@@ -736,6 +737,22 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// SDK 就绪后清空隐藏页：停媒体、清 body 与样式表，之后新增元素（脚本除外）也移除。
     /// 清空后签名请求照常（热搜、观看上报、作品列表都验证过）。
+
+    /// 诊断：抖音安全 SDK 在 WKWebView 里是否加载/挂钩（私有版排查发送失败用）
+    private static let sdkProbeJS = #"""
+    (() => {
+      const g = k => typeof window[k];
+      let xhrHooked = false, fetchHooked = false;
+      try { xhrHooked = !/native code/.test(XMLHttpRequest.prototype.send.toString()); } catch (e) {}
+      try { fetchHooked = !/native code/.test(window.fetch.toString()); } catch (e) {}
+      const keys = Object.keys(window).filter(k => /secsdk|acrawler|webmssdk|bogus|bdms|mssdk/i.test(k)).slice(0, 12);
+      const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? 1 : 0; };
+      return JSON.stringify({ acrawler: g('byted_acrawler'), webmsxyw: g('_webmsxyw'), secsdk: g('secsdk'),
+        keys, xhrHooked, fetchHooked, ckMsToken: ck('msToken'), ckWebid: ck('webid'), ckUifid: ck('uifid'),
+        ckFp: ck('s_v_web_id'), cookieLen: (document.cookie || '').length, ua: navigator.userAgent.slice(0, 90) });
+    })()
+    """#
+
     private static let quietPageJS = #"""
     (() => { try {
       document.querySelectorAll('video,audio').forEach(v => { try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {} });
