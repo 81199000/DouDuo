@@ -2071,12 +2071,8 @@ struct DYUpstreamFeedScreen: View {
         moduleCircleLabel
             .contentShape(Circle())
             .modifier(DDPressHold(
-                threshold: DYBoostTiming.holdSeconds,
-                // 按满即加速（推荐/关注页），松手恢复；直播页没有加速
-                onHoldChanged: { holding in
-                    guard tab != .live else { return }
-                    holding ? DYBoostRouter.shared.begin() : DYBoostRouter.shared.end()
-                },
+                // 圆形入口的长按只用来看作者标题（极简模式），不加速——这是原设计，别再接加速。
+                threshold: 0.35,
                 onPressChanged: { pressing in
                     guard chromeMode.hidesInfo else { return }
                     // 抬手时若是单击，菜单会随后打开，标题由菜单状态接管，这里不先关
