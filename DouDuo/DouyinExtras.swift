@@ -990,6 +990,7 @@ struct DYSearchScreen: View {
 
             if let model = state.model {
                 DYSearchResults(model: model, onOpen: { i in
+                    state.presentsVideo = true
                     open = DYListTarget(title: "搜索：\(state.keyword)", items: model.items, start: i, model: model)
                 })
             } else {
@@ -1069,7 +1070,7 @@ struct DYSearchScreen: View {
             guard !Task.isCancelled else { return }
             state.suggestions = result
         }
-        .fullScreenCover(item: $open) { t in
+        .fullScreenCover(item: $open, onDismiss: { state.presentsVideo = false }) { t in
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
         }
@@ -1101,7 +1102,9 @@ struct DYSearchScreen: View {
         state.keyword = w
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_SEARCH_FIXTURE"] == "1" {
-            let model = DYPagedModel { _ in (items: [], cursor: "0", hasMore: false) }
+            let items = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+                ? Array(DYFeedModel.hashtagFixtures.dropFirst()) : []
+            let model = DYPagedModel { _ in (items: items, cursor: "0", hasMore: false) }
             state.model = model
             Task { await model.loadMore() }
             return

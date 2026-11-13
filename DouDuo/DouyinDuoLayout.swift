@@ -525,8 +525,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
                     }
                 }
                 .modifier(DYStandaloneBarPolicy(classic: chromeModeRaw == DDChromeMode.duoClassic.rawValue))
-                .animation(.snappy, value: showComments)
-                .animation(.snappy, value: layout.resident)
+                .animation(searchPresented ? nil : .snappy, value: showComments)
+                .animation(searchPresented ? nil : .snappy, value: layout.resident)
                 .dyBottomSheet(isPresented: Binding(
                     get: { showComments && !searchPresented && !layout.sideBySide && !layout.resident && aweme != nil },
                     set: { if !layout.sideBySide && !layout.resident { showComments = $0 } }

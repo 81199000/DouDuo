@@ -11,8 +11,16 @@ final class DYSearchSession: Identifiable {
     var model: DYPagedModel?
     var lastRun = ""
     var initialized = false
+    // Keep the host suspended through the result player's dismissal animation.
+    var presentsVideo = false
 
     init(query: String = "") { initialQuery = query }
+
+    static func transition(_ update: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, update)
+    }
 }
 
 struct DYSearchPresentation: ViewModifier {
@@ -39,7 +47,7 @@ struct DYSearchPresentation: ViewModifier {
                     .environment(\.dySearchHashtag, { openSearch("#" + $0) })
                     .environment(\.dyOpenSearch, openSearch)
                     .environment(\.dySearchPresented, session != nil)
-                    .environment(\.dySearchCoversVideo, session != nil && !split)
+                    .environment(\.dySearchCoversVideo, session != nil && (!split || session?.presentsVideo == true))
                     .accessibilityHidden(session != nil && !split)
                     .allowsHitTesting(session == nil || split)
                 if split, let session {
@@ -77,16 +85,21 @@ struct DYSearchPresentation: ViewModifier {
         .fullScreenCover(isPresented: fullScreen) {
             if let session { search(session) }
         }
+        #if DEBUG
+        .overlay(alignment: .topLeading) { DYSearchPlaybackProbeView() }
+        #endif
     }
 
     private func openSearch(_ query: String) {
-        onOpen()
-        session = DYSearchSession(query: query)
+        DYSearchSession.transition {
+            onOpen()
+            session = DYSearchSession(query: query)
+        }
     }
 
     private func search(_ value: DYSearchSession) -> some View {
         DYRelatedSearchScreen(bridge: bridge, word: value.initialQuery,
-                              session: value, onClose: { session = nil })
+                              session: value, onClose: { DYSearchSession.transition { session = nil } })
             .id(value.id)
     }
 }
