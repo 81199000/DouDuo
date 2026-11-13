@@ -1001,6 +1001,7 @@ struct DYNoticeListScreen: View {
     // remon-assist：AI 拟稿
     @State private var drafting = false
     @State private var draftResult: RemonDraftResult?
+    @State private var pickedDraft: String?
     @State private var toast: String?
     @FocusState private var replyFocused: Bool
 
@@ -1126,7 +1127,7 @@ struct DYNoticeListScreen: View {
             }
             if let e = replyErr { Text(e).font(.caption2).foregroundStyle(.red) }
             if let r = draftResult {
-                RemonDraftStrip(result: r) { replyDraft = $0; replyFocused = true }
+                RemonDraftStrip(result: r) { replyDraft = $0; pickedDraft = $0; replyFocused = true }
             }
             HStack(spacing: 8) {
                 Button { Task { await aiDraft() } } label: {
@@ -1166,7 +1167,7 @@ struct DYNoticeListScreen: View {
     }
 
     private func closeReply() {
-        replying = nil; replyDraft = ""; replyErr = nil; replyFocused = false; draftResult = nil
+        replying = nil; replyDraft = ""; replyErr = nil; replyFocused = false; draftResult = nil; pickedDraft = nil
     }
 
     /// remon-assist：把对方评论交给 Mac Studio 拟稿服务，拿回三条草稿；不自动发送
@@ -1195,6 +1196,7 @@ struct DYNoticeListScreen: View {
             _ = try await bridge.publishComment(aweme, text: text, replyID: n.parentCid ?? cid,
                                                 replyToReplyID: n.parentCid == nil ? nil : cid)
             replied.insert(n.id)
+            RemonAssist.feedback(author: n.name, text: n.detail, quote: n.quote, draftUsed: pickedDraft, final: text)
             closeReply()
             showToast("已回复")
         } catch {

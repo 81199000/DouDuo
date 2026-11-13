@@ -25,7 +25,7 @@ enum RemonAssist {
     static let base = URL(string: "http://192.168.10.107:8791")!
 
     static func draft(kind: String = "comment", author: String, text: String, quote: String?, video: String? = nil) async throws -> RemonDraftResult {
-        var req = URLRequest(url: base.appendingPathComponent("draft"), timeoutInterval: 45)
+        var req = URLRequest(url: base.appendingPathComponent("draft"), timeoutInterval: 90)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(RemonAssistSecrets.token, forHTTPHeaderField: "X-DD-Token")
@@ -40,6 +40,18 @@ enum RemonAssist {
             throw NSError(domain: "RemonAssist", code: code, userInfo: [NSLocalizedDescriptionKey: msg ?? "拟稿服务不可用（HTTP \(code)），确认手机在家里网络或已连 WG"])
         }
         return try JSONDecoder().decode(RemonDraftResult.self, from: data)
+    }
+
+    /// 发送成功后回传老板实际发出的版本，服务端存作语气样例（越用越像老板本人）；失败静默
+    static func feedback(kind: String = "comment", author: String, text: String, quote: String?, draftUsed: String?, final: String) {
+        var req = URLRequest(url: base.appendingPathComponent("feedback"), timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(RemonAssistSecrets.token, forHTTPHeaderField: "X-DD-Token")
+        let body: [String: String] = ["kind": kind, "author": author, "text": text, "quote": quote ?? "",
+                                      "draft_used": draftUsed ?? "", "final": final]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req).resume()
     }
 }
 
