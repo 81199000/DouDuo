@@ -1230,6 +1230,17 @@ struct DouyinFeedScreen: View {
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
     @State private var topNudge: CGFloat = 0
+    /// 默认模式顶栏的垂直位置：
+    /// - Duo 内屏：0，与系统时间同一行；Duo 外屏：-80，贴物理屏顶（外屏窗口内容区比物理顶端低约 80pt）
+    /// - 其他 iPhone / iPad：放到顶部安全区下沿，避开状态栏和灵动岛（issue #16）
+    private var topBarTopPadding: CGFloat {
+        if DYDuoMetrics.isDuoHardware { return hSize == .regular ? 0 : -80 }
+        // 紧凑宽度下顶栏自带约 80pt 的下沉（Duo 外屏用 -80 抵消贴顶）；
+        // 其他手机先抵消这 80，再让到顶部安全区下沿，避开状态栏和灵动岛。
+        // 这一层忽略了顶部安全区，GeometryProxy 量到的 top 是 0，直接读窗口的安全区。
+        let safeTop = DYDuoMetrics.windowSafeTop
+        return hSize == .regular ? safeTop : safeTop - 80
+    }
     /// 顶栏可用宽度：评论栏从右侧滑出时 = 视频区宽度，顶栏跟着视频居中、自适应收紧（默认模式用）
     @State private var topBarWidth: CGFloat?
     @State private var topChrome = CGRect.zero
@@ -1258,7 +1269,7 @@ struct DouyinFeedScreen: View {
                 VStack(spacing: 6) {
                     topBar
                 }
-                .padding(.top, hSize == .regular ? 0 : -80)
+                .padding(.top, topBarTopPadding)
                 // 评论栏展开：顶栏只占视频那一块，跟着视频缩到左边。直播预览仍量这块的下沿。
                 .frame(width: topBarWidth)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1609,9 +1620,14 @@ struct DouyinFeedScreen: View {
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
         let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
         let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
-        // 书本半折叠：评论起点钉在折痕右侧，右边让开系统状态栏（时间/信号）用内缩，
-        // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移、压回折痕甚至视频区。
-        let panelInset = hinge.map { $0.book ? Self.trailingOcclusionInset(geo, pane: $0.panel) : 0 } ?? 0
+        // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
+        // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
+        // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
+        let panelInset: CGFloat = {
+            guard sideBySide, panelW > 0 else { return 0 }
+            let pane = CGRect(x: panelX, y: panelY, width: panelW, height: h)
+            return Self.trailingOcclusionInset(geo, pane: pane)
+        }()
 
         return ZStack(alignment: .topLeading) {
             feedArea
@@ -1621,6 +1637,7 @@ struct DouyinFeedScreen: View {
                                onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
                     .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
                            height: tableFold ? panelH : h)
+                    .environment(\.dyCommentTrailingCleared, panelInset > 0)
                     .offset(x: panelX, y: panelY)
                     .id(cur.id)
             }
@@ -1923,14 +1940,17 @@ struct DouyinFeedScreen: View {
                 // Preserve the theme's optical inset so the circles align with system status glyphs.
                 let outerPadding = columnInset > 0 ? max(0, (columnInset - 54) / 2 + theme.media.expandedRailOpticalInset) : 12
                 GeometryReader { geometry in
-                    VStack(spacing: theme.media.actionGroupSpacing) {
-                        if selector {
-                            moduleMenu(edge: edge)
-                        } else {
-                            Color.clear.frame(height: 50).allowsHitTesting(false)
-                        }
-                        if let entry {
-                            entry.actions.id("\(entry.tab)-\(entry.id)")
+                    // 长按加速时整列淡出（入口 + 按钮 + 进度环），和默认模式一致（issue #4）
+                    DDBoostFade {
+                        VStack(spacing: theme.media.actionGroupSpacing) {
+                            if selector {
+                                moduleMenu(edge: edge)
+                            } else {
+                                Color.clear.frame(height: 50).allowsHitTesting(false)
+                            }
+                            if let entry {
+                                entry.actions.id("\(entry.tab)-\(entry.id)")
+                            }
                         }
                     }
                     .frame(width: 54, height: railHeight, alignment: .top)
@@ -2052,7 +2072,12 @@ struct DouyinFeedScreen: View {
         moduleCircleLabel
             .contentShape(Circle())
             .modifier(DDPressHold(
-                threshold: 0.35,
+                threshold: DYBoostTiming.holdSeconds,
+                // 按满即加速（推荐/关注页），松手恢复；直播页没有加速
+                onHoldChanged: { holding in
+                    guard tab != .live else { return }
+                    holding ? DYBoostRouter.shared.begin() : DYBoostRouter.shared.end()
+                },
                 onPressChanged: { pressing in
                     guard chromeMode.hidesInfo else { return }
                     // 抬手时若是单击，菜单会随后打开，标题由菜单状态接管，这里不先关
@@ -2451,6 +2476,8 @@ enum DDRailMetrics {
 /// 无法做到「按住期间一直显示、抬手才消失」。
 struct DDPressHold: ViewModifier {
     let threshold: Double
+    /// 按满 threshold 秒进入长按（true），长按后抬起（false）
+    var onHoldChanged: (Bool) -> Void = { _ in }
     /// 按下 / 抬起（按下立即回调 true，抬起回调 false）
     let onPressChanged: (Bool) -> Void
     /// 按下不满 threshold 秒就抬起（且基本没移动）
@@ -2470,6 +2497,7 @@ struct DDPressHold: ViewModifier {
                         try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
                         guard !Task.isCancelled, startedAt != nil else { return }
                         holding = true
+                        onHoldChanged(true)
                     }
                 }
                 .onEnded { value in
@@ -2477,6 +2505,7 @@ struct DDPressHold: ViewModifier {
                     let wasHolding = holding
                     let moved = abs(value.translation.width) >= 20 || abs(value.translation.height) >= 20
                     startedAt = nil; holding = false
+                    if wasHolding { onHoldChanged(false) }
                     if !wasHolding, !moved {
                         onTap()          // 先开菜单（它会接管标题的显示），再回调抬起
                     }
@@ -2672,7 +2701,8 @@ struct DYVideoPage: View {
                         if edge == .trailing { actionRail(fg, edge: edge) }
                     }
                     .padding(.horizontal, chromeSidePadding)
-                    .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
+                    // 简洁/极简没有底部进度条（进度画在入口外圈），底部不用再给它留 36pt（issue #4）
+                    .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 8 : 24))
                 }
                 // 长按加速时淡出按钮和信息，画面干净；不禁用点击区，手指按在按钮上也能继续加速。
                 .opacity(boost.boosting ? 0 : 1)
@@ -2702,7 +2732,11 @@ struct DYVideoPage: View {
         }
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .animation(.snappy, value: heart)
-        .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
+        .onChange(of: isCurrent) { _, c in
+            if !c { showDanmakuInput = false }
+            if c, onBack == nil { DYBoostRouter.shared.adopt(boost) }
+        }
+        .onAppear { if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) } }
         // 弹幕：轮到这条时才拉（一次拉整条视频的）
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
@@ -3050,6 +3084,7 @@ struct DYCommentPanel: View {
     @State private var relatedWords: [String] = []
     @State private var relatedQuery: DYRelatedQuery?
     @FocusState private var inputFocused: Bool
+    @Environment(\.dyCommentTrailingCleared) private var trailingCleared
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?, focus: DYCommentFocus? = nil) {
         self.bridge = bridge; self.aweme = aweme; self.onClose = onClose
@@ -3068,8 +3103,9 @@ struct DYCommentPanel: View {
             }
             .foregroundStyle(.themeTextPrimary)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示挤在一起，整体左移让位
-            .padding(.trailing, hSize == .regular ? 88 : 0)
+            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示挤在一起，整体左移让位；
+            // 外层已按系统竖栏缩窄过面板时不再重复让位（issue #15）
+            .padding(.trailing, hSize == .regular && !trailingCleared ? 88 : 0)
             Divider()
             ScrollViewReader { proxy in
             ScrollView {

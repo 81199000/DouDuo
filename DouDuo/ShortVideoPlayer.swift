@@ -195,7 +195,9 @@ extension PlayerPage {
 /// 所以由 PlayerPage 把「加速开始/结束」交给这个对象，外层控件按住时直接调用。
 @MainActor final class DYBoostControl: ObservableObject {
     /// 正在加速：外层据此淡出按钮和状态图标。
-    @Published var boosting = false
+    @Published var boosting = false {
+        didSet { if DYBoostRouter.shared.control === self { DYBoostRouter.shared.boosting = boosting } }
+    }
     var press: (Bool) -> Void = { _ in }
     private var held = false
     private var lastEnd = Date.distantPast
@@ -205,14 +207,44 @@ extension PlayerPage {
     func end() { guard held else { return }; held = false; lastEnd = Date(); press(false) }
 }
 
-/// 给按钮加「按住 0.5 秒进入加速、松手恢复」。GestureState 在松手和被系统取消时都会复位，不会卡在加速状态。
+/// 长按加速的触发时长。原来 0.5 秒，用户反馈比抖音原版慢、不跟手（issue #4），改 0.3。
+enum DYBoostTiming {
+    static let holdSeconds: Double = 0.3
+}
+
+/// 简洁/极简模式的右侧栏画在首页最外层，拿不到每一页自己的 DYBoostControl。
+/// 当前这一页把自己的控制登记到这里：根层的入口按钮按住可加速，整列按钮跟着淡出（issue #4）。
+@MainActor final class DYBoostRouter: ObservableObject {
+    static let shared = DYBoostRouter()
+    weak var control: DYBoostControl?
+    @Published var boosting = false
+    func adopt(_ c: DYBoostControl) {
+        control = c
+        if boosting != c.boosting { boosting = c.boosting }
+    }
+    func begin() { control?.begin() }
+    func end() { control?.end() }
+}
+
+/// 根层按钮列：当前页长按加速时淡出。单独订阅 DYBoostRouter，不让整页跟着重算。
+struct DDBoostFade<Content: View>: View {
+    @ObservedObject private var router = DYBoostRouter.shared
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .opacity(router.boosting ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: router.boosting)
+    }
+}
+
+/// 给按钮加「按住 0.3 秒进入加速、松手恢复」。GestureState 在松手和被系统取消时都会复位，不会卡在加速状态。
 struct DYHoldBoost: ViewModifier {
     let control: DYBoostControl
     @GestureState private var holding = false
     func body(content: Content) -> some View {
         content
             .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.5)
+                LongPressGesture(minimumDuration: DYBoostTiming.holdSeconds)
                     .sequenced(before: DragGesture(minimumDistance: 0))
                     .updating($holding) { value, state, _ in
                         if case .second(true, _) = value { state = true }
@@ -394,7 +426,8 @@ struct PlayerPage: View {
                 .padding(.horizontal, 9).padding(.vertical, 5)
                 .background(Capsule().fill(.black.opacity(0.45)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.leading, 14).padding(.top, 66 * ui)
+                // Duo 上 66pt 正好在顶栏下面；其他手机的顶栏让到了安全区下沿（#16），角标跟着往下让
+                .padding(.leading, 14).padding(.top, DYDuoMetrics.isDuoHardware ? 66 * ui : DYDuoMetrics.windowSafeTop + 56)
                 .allowsHitTesting(false)
             }
         }
