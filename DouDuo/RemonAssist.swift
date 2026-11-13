@@ -42,6 +42,23 @@ enum RemonAssist {
         return try JSONDecoder().decode(RemonDraftResult.self, from: data)
     }
 
+    /// 走 Mac 上已登录的真浏览器发送（本机 WKWebView 发评论会被抖音静默丢弃时的通道）
+    static func sendViaMac(awemeID: String, text: String, cid: String, replyTo: String?) async throws -> String {
+        var req = URLRequest(url: base.appendingPathComponent("send"), timeoutInterval: 120)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(RemonAssistSecrets.token, forHTTPHeaderField: "X-DD-Token")
+        var body: [String: String] = ["aweme_id": awemeID, "text": text, "cid": cid]
+        if let replyTo, !replyTo.isEmpty { body["reply_to"] = replyTo }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        struct R: Decodable { let cid: String?; let code: Int?; let msg: String?; let error: String? }
+        let r = try? JSONDecoder().decode(R.self, from: data)
+        if code == 200, let cid = r?.cid, !cid.isEmpty { return cid }
+        throw NSError(domain: "RemonAssist", code: code, userInfo: [NSLocalizedDescriptionKey: r?.error ?? r?.msg ?? "云端发送失败"])
+    }
+
     /// 发送成功后回传老板实际发出的版本，服务端存作语气样例（越用越像老板本人）；失败静默
     static func feedback(kind: String = "comment", author: String, text: String, quote: String?, draftUsed: String?, final: String) {
         var req = URLRequest(url: base.appendingPathComponent("feedback"), timeoutInterval: 15)

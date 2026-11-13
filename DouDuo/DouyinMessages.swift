@@ -1200,7 +1200,17 @@ struct DYNoticeListScreen: View {
             closeReply()
             showToast("已回复")
         } catch {
-            replyErr = "发送失败：\(error.localizedDescription)"
+            // 本机 WKWebView 发评论会被抖音静默丢弃 → 换 Mac 上已登录的真浏览器发
+            do {
+                _ = try await RemonAssist.sendViaMac(awemeID: aweme, text: text,
+                                                    cid: n.parentCid ?? cid, replyTo: n.parentCid == nil ? nil : cid)
+                replied.insert(n.id)
+                RemonAssist.feedback(author: n.name, text: n.detail, quote: n.quote, draftUsed: pickedDraft, final: text)
+                closeReply()
+                showToast("已回复（云端通道）")
+            } catch {
+                replyErr = "发送失败：\(error.localizedDescription)"
+            }
         }
     }
 
