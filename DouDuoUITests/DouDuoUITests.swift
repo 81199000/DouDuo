@@ -675,34 +675,32 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(count.label, "2", "中间长按不能启动倍速")
         attach(app, "build95-options-top")
         XCTAssertTrue(app.buttons["douyin.options.fit"].isHittable)
-        XCTAssertTrue(app.switches["横屏时只放横屏内容"].exists, "内容偏好默认展开")
-        attach(app, "build95-options-top")
+        XCTAssertTrue(app.buttons["douyin.options.muted"].isHittable)
+        XCTAssertTrue(app.buttons["douyin.options.bgplay"].isHittable)
+        // 2026-11-14：全局偏好只在设置页，长按面板不再重复
+        XCTAssertFalse(app.switches["横屏时只放横屏内容"].exists)
+        XCTAssertFalse(app.switches["显示弹幕"].exists)
+        attach(app, "options-current-video-only")
         app.buttons["douyin.options.rate.1.5"].tap()
-        attach(app, "build95-options-rate-selected")
         let selectedRate = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.buttons["douyin.options.rate.1.5"].isSelected
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [selectedRate], timeout: 5), .completed)
         app.buttons["douyin.options.rate.1.0"].tap()
-        let list = app.scrollViews["douyin.options.list"].firstMatch
-        list.swipeUp()
-        XCTAssertTrue(app.switches["显示弹幕"].isHittable, app.debugDescription)
-        XCTAssertTrue(app.switches["10秒内重复去重"].isHittable)
-        attach(app, "build95-options-danmaku-expanded")
         app.buttons["douyin.options.close"].tap()
         XCTAssertTrue(options.waitForNonExistence(timeout: 5))
         app.buttons["douyin.more"].firstMatch.tap()
         XCTAssertFalse(app.buttons["douyin.dislike"].exists)
-        XCTAssertFalse(app.buttons["douyin.danmaku.settings"].exists)
-        XCTAssertFalse(app.buttons["转发"].exists)
-        XCTAssertFalse(app.buttons["douyin.save"].exists)
-        XCTAssertFalse(app.buttons["设置"].exists, "更多直接显示设置内的栏目")
+        XCTAssertFalse(app.buttons["刷新推荐"].exists, "刷新推荐只在设置页")
         XCTAssertFalse(app.buttons["播放设置"].exists)
-        XCTAssertFalse(app.buttons["内容偏好"].exists)
-        XCTAssertTrue(app.buttons["缓存管理"].exists)
-        XCTAssertTrue(app.buttons["账号与登录"].exists)
-        XCTAssertTrue(app.buttons["关于"].exists)
-        attach(app, "build95-more-retained-settings")
+        XCTAssertFalse(app.buttons["缓存管理"].exists)
+        let settings = app.buttons["douyin.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        attach(app, "more-surface-mute-listen-settings")
+        settings.tap()
+        XCTAssertTrue(app.buttons["settings.refresh"].waitForExistence(timeout: 5))
+        attach(app, "settings-screen")
+        app.buttons["settings.done"].tap()
     }
 
     func testCommentsPullDownAndHeaderSpacing() throws {
@@ -1102,40 +1100,29 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(moreQuery.firstMatch.waitForExistence(timeout: 40))
         sleep(4)
         attach(app, "video-danmaku-upper-third-synthetic-stress")
-        func openMore() {
-            // Picker / Toggle 的原生菜单可能留在父菜单；先在左侧菜单外收起。
+        func openSettings() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
             moreButton().tap()
-        }
-        func openSettings() {
-            openMore()
-            let settings = app.buttons["douyin.danmaku.settings"]
+            let settings = app.buttons["douyin.settings"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             settings.tap()
-        }
-        for title in ["稀疏", "密集", "标准"] {
-            openSettings()
-            let option = app.buttons[title]
-            if !option.exists { app.buttons["douyin.danmaku.density"].tap() }
-            XCTAssertTrue(option.waitForExistence(timeout: 5))
-            option.tap()
-            openMore()
-            let settings = app.buttons["douyin.danmaku.settings"]
-            XCTAssertTrue(settings.waitForExistence(timeout: 5))
-            XCTAssertTrue(settings.label.contains(title), settings.debugDescription)
-            attach(app, "video-danmaku-density-\(title)")
-            // 点击内容区收起菜单，避免下一轮误点。
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.5)).tap()
+            XCTAssertTrue(app.switches["douyin.danmaku.enabled"].waitForExistence(timeout: 5))
         }
         openSettings()
-        // UIKit 原生菜单不透传 Toggle 的 identifier，以实际按钮标题和勾选态验收。
-        let toggle = app.buttons["10秒内重复去重"]
+        for title in ["稀疏", "密集", "标准"] {
+            app.buttons["douyin.danmaku.density"].tap()
+            let option = app.buttons[title]
+            XCTAssertTrue(option.waitForExistence(timeout: 5))
+            option.tap()
+            attach(app, "video-danmaku-density-\(title)")
+        }
+        let toggle = app.switches["douyin.danmaku.deduplicate"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        let before = toggle.isSelected
+        let before = toggle.value as? String
         toggle.tap()
-        if !toggle.exists { openSettings() }
-        XCTAssertNotEqual(toggle.isSelected, before)
+        XCTAssertNotEqual(toggle.value as? String, before)
         toggle.tap() // 恢复用户原去重设置。
+        app.buttons["settings.done"].tap()
         print("DD_DANMAKU_SETTINGS: density=standard; dedup-toggle=verified")
     }
 

@@ -1537,6 +1537,7 @@ struct DYUpstreamFeedScreen: View {
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
+                             onRefresh: { Task { await refreshRecommendations() } },
                              onCacheCleared: { focusCurrent() })
         }
         .fullScreenCover(item: $web, onDismiss: {
@@ -2336,16 +2337,10 @@ struct DYUpstreamFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 「更多」最后一节：刷新推荐 + 设置（点进完整设置页）。全局偏好都在设置页里。
+    /// 「更多」最后一节：设置（点进完整设置页）。刷新推荐 / 弹幕 / 界面都在设置页里。
     @ViewBuilder
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
-        Section {
-            Button("刷新推荐", systemImage: "arrow.clockwise") {
-                Task { await refreshRecommendations() }
-            }
-            .disabled(refreshing)
-            DYSettingsButton()
-        }
+        Section { DYSettingsButton() }
     }
 
 }
@@ -2587,28 +2582,14 @@ struct DouyinFeedScreen: View {
     }
 }
 
-struct DYChromeModePicker: View {
-    @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
-    var body: some View {
-        Menu {
-            Picker("界面模式", selection: $mode) {
-                ForEach(DDChromeMode.availableCases) { choice in
-                    Label(choice.title, systemImage: choice.symbol).tag(choice.rawValue)
-                }
-            }
-        } label: {
-            Label("界面 · \(DDChromeMode(rawValue: mode)?.title ?? "默认")", systemImage: "rectangle.3.group")
-        }
-        .accessibilityIdentifier("douyin.quick.chrome")
-    }
-}
-
 extension EnvironmentValues {
     @Entry var dyStandaloneBack: (() -> Void)? = nil
 }
 
 @available(iOS 27.1, *)
 struct DYClassicFeedScreen: View {
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
@@ -2807,6 +2788,7 @@ struct DYClassicFeedScreen: View {
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
+                             onRefresh: { Task { await refreshRecommendations() } },
                              onCacheCleared: { focusCurrent() })
         }
         .fullScreenCover(item: $web, onDismiss: {
@@ -3356,17 +3338,16 @@ struct DYClassicFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 「更多」最后一节：界面模式快捷切换 + 刷新推荐 + 设置（点进完整设置页）。
+    /// 经典顶栏「更多」：静音 / 听书在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
     @ViewBuilder
     private var moreExtrasMenu: some View {
         Section {
-            DYChromeModePicker()
-            Button("刷新推荐", systemImage: "arrow.clockwise") {
-                Task { await refreshRecommendations() }
-            }
-            .disabled(refreshing)
-            DYSettingsButton()
+            Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
+                .accessibilityIdentifier("douyin.quick.muted")
+            Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
+                .accessibilityIdentifier("douyin.quick.bgplay")
         }
+        Section { DYSettingsButton() }
     }
 
 }
@@ -3416,6 +3397,8 @@ struct DYUpstreamVideoPage: View {
     var onEnded: (() -> Void)? = nil
     var onBack: (() -> Void)? = nil
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
@@ -3756,7 +3739,7 @@ struct DYUpstreamVideoPage: View {
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
-    /// 「更多」：转发 / 不感兴趣 / 下载 快捷入口 → 倍速等 → 弹幕 → 刷新推荐 / 设置。
+    /// 「更多」：转发 / 不感兴趣 / 下载 → 倍速 / 静音 / 听书 → 发弹幕 → 设置。
     @ViewBuilder
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
@@ -3774,7 +3757,7 @@ struct DYUpstreamVideoPage: View {
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
             }
-            // 常用播放设置放在「更多」第一层：点「倍速」弹出速度列表，选哪个就切到哪个，当前视频立刻生效
+            // 表层只放跟「正在看的这条」有关的：倍速 / 静音 / 听书。其余全局偏好都在设置页，不重复。
             Section {
                 Menu {
                     Picker("倍速", selection: Binding(
@@ -3786,24 +3769,17 @@ struct DYUpstreamVideoPage: View {
                     Label("倍速 · \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
-                Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
-                    .accessibilityIdentifier("douyin.quick.autonext")
-                Menu {
-                    Picker("界面模式", selection: $chromeModeRaw) {
-                        ForEach(DDChromeMode.availableCases) { m in
-                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
-                        }
-                    }
-                } label: {
-                    Label("界面 · \(chromeMode.title)", systemImage: "rectangle.3.group")
-                }
-                .accessibilityIdentifier("douyin.quick.chrome")
+                Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
+                    .accessibilityIdentifier("douyin.quick.muted")
+                Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
+                    .accessibilityIdentifier("douyin.quick.bgplay")
             }
-            if item.images.isEmpty {
-                DYDanmakuOptions(onSend: bridge == nil ? nil : {
+            if item.images.isEmpty, bridge != nil {
+                Button("发弹幕", systemImage: "text.bubble") {
                     showDanmakuInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
-                })
+                }
+                .accessibilityIdentifier("douyin.danmaku.open")
             }
             moreExtras
         } label: {

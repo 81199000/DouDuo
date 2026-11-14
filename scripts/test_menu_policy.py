@@ -122,33 +122,37 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertLess(quick.index('"不感兴趣"'), quick.index('"下载"'))
         self.assertNotIn("role: .destructive", quick)
         self.assertEqual(menu.count('"不感兴趣"'), 1)
-        self.assertLess(menu.index("DYDanmakuOptions"), menu.index("moreExtras"))
-        self.assertIn("onSend: bridge == nil ? nil", menu)
-        self.assertIn("showDanmakuInput = true", menu)
-        self.assertIn("danmakuFocused = true", menu)
+        # 表层：倍速 / 静音 / 听书 + 发弹幕；刷新推荐、弹幕设置、界面、自动连播都只在设置页
+        for token in ('"douyin.quick.speed"', "$muted", "$bgPlay", '"发弹幕"', "showDanmakuInput = true",
+                      "danmakuFocused = true", "moreExtras"):
+            self.assertIn(token, menu)
+        for gone in ("DYDanmakuOptions", "$autoNext", "$chromeModeRaw", '"刷新推荐"', "界面模式"):
+            self.assertNotIn(gone, menu)
+        self.assertLess(menu.index('"发弹幕"'), menu.index("moreExtras"))
 
-    def test_danmaku_single_entry_and_defaults(self):
-        options = block(EXTRAS, "struct DYDanmakuOptions:")
-        for token in ('Label("弹幕', 'Button("发弹幕",', 'Toggle("显示弹幕",',
-                      'Picker("弹幕密度",', 'Toggle("10秒内重复去重",',
-                      'private var deduplicate = true', 'Density.standard.rawValue'):
-            self.assertIn(token, options)
-        self.assertIn("if let onSend", options)
-        self.assertNotIn("弹幕设置 ·", options)
+    def test_danmaku_settings_only_in_settings_screen(self):
+        self.assertNotIn("struct DYDanmakuOptions", EXTRAS)
+        screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
+        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"', 'Toggle("10 秒内重复去重"'):
+            self.assertIn(token, screen)
 
     def test_settings_paths_and_duration_preferences(self):
-        # 2026-11-14 老板定：「更多 → 设置」点进完整设置页，不再是多层子菜单；按标签过滤也收进设置页。
-        for source, marker in ((UPSTREAM_ROOT, "private func moreExtrasMenu"),
-                               (FEED, "    private var moreExtrasMenu: some View")):
-            menu = block(source, marker)
-            self.assertIn('"刷新推荐"', menu)
+        # 2026-11-14 老板定：「更多」最后一节只有「设置」，点进完整设置页；刷新推荐 / 弹幕 / 界面都在设置页。
+        upstream = block(UPSTREAM_ROOT, "private func moreExtrasMenu")
+        classic = block(FEED, "    private var moreExtrasMenu: some View")
+        for menu in (upstream, classic):
             self.assertIn("DYSettingsButton()", menu)
-            self.assertLess(menu.index('"刷新推荐"'), menu.index("DYSettingsButton()"))
-            for gone in ("DYHashtagFilterButton", "Label(\"设置\"", "$muted", "$cacheCount", "播放设置", "内容偏好"):
+            for gone in ("DYHashtagFilterButton", "Label(\"设置\"", "$cacheCount", "播放设置", "内容偏好",
+                         '"刷新推荐"', "DYChromeModePicker", "DYDanmakuOptions"):
                 self.assertNotIn(gone, menu)
             self.assertNotIn("@State", menu)
+        # 经典顶栏「更多」表层：静音 / 听书
+        self.assertIn("$muted", classic)
+        self.assertIn("$bgPlay", classic)
+        self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
+        self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        for section in ('Section("界面")', 'Text("播放")', 'Text("内容偏好")', 'Text("弹幕")',
+        for section in ('Label("刷新推荐"', 'Section("界面")', 'Text("播放")', 'Text("内容偏好")', 'Text("弹幕")',
                         'Text("缓存")', 'Section("账号")', 'Section("关于")'):
             self.assertIn(section, screen)
         for token in ('"douyin_autoplay_v1"', '"douyin_muted_v1"', '"douyin_autofit_v1"', '"douyin_bg_play_v1"',
@@ -156,11 +160,18 @@ class MenuPolicyTests(unittest.TestCase):
                       '"douyin_short_ratio_landscape_v1"', "DYHashtagFilterScreen(currentTags: [], embedded: true)",
                       '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
                       "DYVideoCache.countKey", "DYVideoCache.shared.clear()", "DDUpdateChecker.repoURL",
-                      "DDAppVersion.display"):
+                      "DDAppVersion.display", "DDChromeMode.key"):
             self.assertIn(token, screen)
-        # 两种 feed 屏都挂了设置页和打开入口
         self.assertEqual(FEED.count(".environment(\\.dyOpenSettings, { showSettings = true })"), 2)
-        self.assertEqual(FEED.count("DYSettingsScreen(onOpenWeb:"), 2)
+        self.assertEqual(FEED.count("onRefresh: { Task { await refreshRecommendations() } }"), 2)
+        # 经典长按面板只留当前视频相关：铺满 / 静音 / 听书 / 不感兴趣 / 倍速 / 发弹幕
+        panel = (ROOT / "DouDuo/DYVideoOptionsPanel.swift").read_text()
+        for token in ('"douyin.options.fit"', '"douyin.options.muted"', '"douyin.options.bgplay"',
+                      '"douyin.dislike"', '"douyin.options.rate.', '"发弹幕"'):
+            self.assertIn(token, panel)
+        for gone in ("autoNext", "ambientLevel", "landscapeOnly", "portraitRatio", "landscapeRatio",
+                     "danmakuEnabled", "弹幕密度", "内容偏好"):
+            self.assertNotIn(gone, panel)
         load = block(FEED, "func loadMore(_ bridge:")
         self.assertIn("if added == 0, let r = targetRatio, r > 0, r < 1", load)
         self.assertIn("fill(want, relaxed: true)", load)
