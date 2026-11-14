@@ -2131,7 +2131,7 @@ struct DYUpstreamFeedScreen: View {
         let glass: CGFloat = ringOn ? DDRailMetrics.entryDiameter - 8 : DDRailMetrics.entryDiameter
         return ZStack {
             Image(systemName: tab.symbol)
-                .font(.system(size: ringOn ? 20 : 23, weight: .medium))
+                .font(.system(size: theme.media.moduleGlyphSize, weight: .regular, design: .rounded))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: glass, height: glass)
                 .contentShape(Circle())
@@ -2351,41 +2351,26 @@ struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 /// 右侧功能栏的几何：进度环外径 = 玻璃胶囊宽（50pt）；入口到胶囊的间距沿用胶囊到「更多」的间距（actionGroupSpacing）。
 /// 简洁/极简入口外圈的视频进度环。独立订阅 DDRailProgress，进度变化只重画这颗环。
 private struct DDRailProgressRing: View {
+    @Environment(\.appTheme) private var theme
     let show: Bool
     let fg: Color
     @ObservedObject private var railProgress = DDRailProgress.shared
 
     var body: some View {
         // 简洁 / 极简的推荐页、关注页画进度环；直播没有进度，不画——但占位恒定，切模块时入口位置不动。
-        let seeking = railProgress.seeking
-        // 外径 = 右侧胶囊宽度（50pt）。线宽画在圆内侧，所以这个圈的最外沿正好和胶囊左右对齐。
         let d = DDRailMetrics.entryDiameter
-        let lw: CGFloat = seeking ? 4 : 2.5
-        let r = (d - lw) / 2
+        let lw = theme.media.progressRingWidth
         return ZStack {
             if show {
-                // 底轨：很淡的整圈
-                Circle().stroke(fg.opacity(0.18), lineWidth: 2.5)
-                // 进度弧：白色渐变（起点淡、终点亮），末端圆头，从 12 点顺时针走
+                Circle().stroke(fg.opacity(theme.media.progressRingTrackOpacity), lineWidth: lw)
                 Circle()
                     .trim(from: 0, to: max(railProgress.fraction, 0.004))
-                    .stroke(
-                        AngularGradient(colors: [fg.opacity(0.55), fg], center: .center,
-                                        startAngle: .degrees(0), endAngle: .degrees(360 * max(railProgress.fraction, 0.05))),
-                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                    .stroke(fg, style: StrokeStyle(lineWidth: lw, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                // 弧线终点的小亮点
-                Circle()
-                    .fill(fg)
-                    .frame(width: seeking ? 7 : 4.5, height: seeking ? 7 : 4.5)
-                    .offset(y: -r)
-                    .rotationEffect(.degrees(360 * railProgress.fraction))
-                    .opacity(railProgress.fraction > 0.01 ? 1 : 0)
             }
         }
         .padding(lw / 2)
         .frame(width: d, height: d)
-        .shadow(color: .black.opacity(0.25), radius: 1.5)
         .animation(.linear(duration: 0.25), value: railProgress.fraction)
         .allowsHitTesting(false)
         .accessibilityIdentifier("douyin.module.ring")
@@ -3923,10 +3908,18 @@ struct DYUpstreamVideoPage: View {
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
         Button(action: { if !boost.blocksTap { act() } }) {
             VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .regular))
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
+                Group {
+                    if id == "douyin.fit" {
+                        DYFitCornerGlyph(inward: autoFit)
+                            .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
+                            .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
+                    } else {
+                        Image(systemName: icon)
+                            .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
+                            .foregroundStyle(tint)
+                    }
+                }
+                .frame(width: 34, height: 34)
                 if !text.isEmpty {
                     Text(text).font(.caption2.weight(.medium)).monospacedDigit()
                         .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
@@ -3990,7 +3983,7 @@ struct DYUpstreamVideoPage: View {
             moreExtras
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: theme.typography.pointSize(.displayLarge), weight: .semibold))
+                .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
                 .foregroundStyle(fg)
                 .frame(width: 50, height: 50)
                 .contentShape(Circle())
@@ -5321,5 +5314,23 @@ extension DYFeedModel {
             guard let self else { return }
             if self.toast == s { self.toast = nil }
         }
+    }
+}
+
+/// 铺满/还原：两枚对角框，统一圆头笔画，不使用粗箭头。
+private struct DYFitCornerGlyph: Shape {
+    var inward: Bool
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let a = rect.width * 0.17, b = rect.width * 0.83
+        let leg = rect.width * 0.29
+        if inward {
+            p.move(to: CGPoint(x: a, y: a + leg)); p.addLine(to: CGPoint(x: a + leg, y: a + leg)); p.addLine(to: CGPoint(x: a + leg, y: a))
+            p.move(to: CGPoint(x: b, y: b - leg)); p.addLine(to: CGPoint(x: b - leg, y: b - leg)); p.addLine(to: CGPoint(x: b - leg, y: b))
+        } else {
+            p.move(to: CGPoint(x: a, y: a + leg)); p.addLine(to: CGPoint(x: a, y: a)); p.addLine(to: CGPoint(x: a + leg, y: a))
+            p.move(to: CGPoint(x: b - leg, y: b)); p.addLine(to: CGPoint(x: b, y: b)); p.addLine(to: CGPoint(x: b, y: b - leg))
+        }
+        return p
     }
 }
