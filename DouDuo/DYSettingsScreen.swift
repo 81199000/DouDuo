@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// 完整设置页：「更多 → 设置」点进来。所有全局偏好集中在这里，菜单里不再层层嵌套。
-/// 当前视频相关的操作（转发 / 下载 / 不感兴趣 / 弹幕 / 倍速）仍留在「更多」第一层。
+/// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 发弹幕）留在「更多」表层。
 struct DYSettingsScreen: View {
     /// 打开「网页版 / 登录」：由宿主页面负责弹出网页并在关闭后重载签名页
     var onOpenWeb: () -> Void
+    /// 刷新推荐：先收起设置页再刷，刷完 toast 由宿主页面显示
+    var onRefresh: () -> Void = {}
     /// 清缓存后让宿主把当前视频重新挂回播放器
     var onCacheCleared: () -> Void = {}
 
@@ -37,6 +39,18 @@ struct DYSettingsScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Button {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onRefresh() }
+                    } label: {
+                        Label("刷新推荐", systemImage: "arrow.clockwise")
+                    }
+                    .accessibilityIdentifier("settings.refresh")
+                } footer: {
+                    Text("换一批推荐，当前在看的这条保留。")
+                }
+
                 Section("界面") {
                     Picker("界面模式", selection: $chromeMode) {
                         ForEach(DDChromeMode.availableCases) { m in
@@ -50,7 +64,7 @@ struct DYSettingsScreen: View {
                     Toggle("自动连播", isOn: $autoNext).accessibilityIdentifier("settings.autonext")
                     Toggle("静音", isOn: $muted).accessibilityIdentifier("settings.muted")
                     Toggle("铺满宽度（视频与屏幕同向时）", isOn: $autoFit).accessibilityIdentifier("settings.autofit")
-                    Toggle("后台播放（听书）", isOn: $backgroundPlay).accessibilityIdentifier("settings.bgplay")
+                    Toggle("听书模式（后台播放）", isOn: $backgroundPlay).accessibilityIdentifier("settings.bgplay")
                     Picker("环境光", selection: $ambientLevel) {
                         ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
                     }
@@ -58,7 +72,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("播放")
                 } footer: {
-                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速在「更多」里直接切换。")
+                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速、静音、听书模式在「更多」里直接切换。")
                 }
 
                 Section {
@@ -96,7 +110,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("弹幕")
                 } footer: {
-                    Text("显示区域：屏幕上方 1/3。发弹幕在「更多 → 弹幕」。")
+                    Text("显示区域：屏幕上方 1/3。发弹幕在「更多」里。")
                 }
 
                 Section {
