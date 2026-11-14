@@ -1,8 +1,8 @@
-#if DEBUG
 import SwiftUI
 import QuartzCore
 
-/// 只在 DEBUG 包里跑的主线程开销探针（不进 Release）。
+/// 主线程开销探针：默认不启动，只有 `-DDPERF 1` 启动参数（或用 UserDefaults 打开）时才开始记录，
+/// 所以正式包里带着也几乎零开销，需要时可以现场测量。
 /// 目的：老板报「经典模式滑动卡、极简丝滑」时，用数字确认是 body 求值贵还是掉帧，
 /// 而不是靠猜。日志前缀 `DDPERF`，写在 Documents/ddlog.txt。
 @MainActor
@@ -45,7 +45,7 @@ final class DDPerf {
                 self?.flush()
             }
         }
-        ddWrite("DDPERF start maxfps=\(UIScreen.main.maximumFramesPerSecond)")
+        DDProbeLog.write("DDPERF start maxfps=\(UIScreen.main.maximumFramesPerSecond)")
     }
 
     func tick(_ ts: CFTimeInterval) {
@@ -64,7 +64,7 @@ final class DDPerf {
         let parts = totals.sorted { $0.key < $1.key }
             .map { "\($0.key):\(String(format: "%.2f", $0.value.ms / Double(max($0.value.n, 1))))ms×\($0.value.n)" }
             .joined(separator: " ")
-        ddWrite("DDPERF fps=\(String(format: "%.1f", fps)) hitch=\(hitches)/\(frames) worst=\(String(format: "%.0f", worstFrame))ms \(parts)")
+        DDProbeLog.write("DDPERF fps=\(String(format: "%.1f", fps)) hitch=\(hitches)/\(frames) worst=\(String(format: "%.0f", worstFrame))ms \(parts)")
         frames = 0; hitches = 0; worstFrame = 0
         totals.removeAll()
     }
@@ -76,4 +76,17 @@ private final class TargetBox {
         MainActor.assumeIsolated { DDPerf.shared.tick(link.timestamp) }
     }
 }
-#endif
+
+/// 探针自己的日志（Release 里没有 ddWrite）。写 Documents/ddlog.txt，和调试日志同一份文件。
+enum DDProbeLog {
+    static func write(_ s: String) {
+        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let url = dir.appendingPathComponent("ddlog.txt")
+        let line = "\(Date()) \(s)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }
+}
