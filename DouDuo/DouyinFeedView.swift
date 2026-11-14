@@ -264,11 +264,78 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
             self.ready = true
-            // 签名 SDK 就绪后把整页 DOM 清空：隐藏页面不再持续渲染（真机上 WebContent 曾占约 43% 一个核，手机发烫）
-            self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil")") }
             self.readyWaiters.forEach { $0.resume() }
             self.readyWaiters.removeAll()
+            // 签名 SDK 完全挂好（XHR + fetch 都被接管）后再把整页 DOM 清空：隐藏页面不再持续渲染
+            // （真机上 WebContent 曾占约 43% 一个核，手机发烫）。
+            // 以前固定 1.2 秒就清：SDK 的 fetch 挂钩还没装上就被清掉，之后评论 POST 一律 200 空回执（发不出去）。
+            Task { @MainActor in
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["DOUDUO_HOOKPROBE"] == "1" {
+                    DYLiveModel.log("DDHOOK start \(await self.writeHookState())")
+                    if self.startURL.host == "www.douyin.com", !Self.hookProbeStarted {
+                        Self.hookProbeStarted = true
+                        Task { @MainActor in try? await Task.sleep(nanoseconds: 3_000_000_000); _ = await self.ensureWriteReady() }
+                    }
+                }
+                #endif
+                let hooked = await self.waitWriteHooks(seconds: 10)
+                let state = await self.writeHookState()
+                self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in
+                    DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil") hooked=\(hooked) \(state) \(self.startURL.host ?? "")")
+                }
+            }
         }
+    }
+
+    #if DEBUG
+    private static var hookProbeStarted = false
+    #endif
+
+    /// 页面安全 SDK 是否已同时接管 XHR 和 fetch（写接口签名靠它）
+    private static let hookStateJS = #"""
+    (() => { const n = f => { try { return !/native code/.test(f().toString()) } catch (e) { return false } };
+      return 'a' + (typeof window.byted_acrawler !== 'undefined' ? 1 : 0) + 'x' + (n(() => XMLHttpRequest.prototype.send) ? 1 : 0)
+        + 'f' + (n(() => window.fetch) ? 1 : 0); })()
+    """#
+
+    /// a1x1f1 = SDK 对象在、XHR 与 fetch 都已被接管
+    func writeHookState() async -> String {
+        ((try? await web.evaluateJavaScript(Self.hookStateJS)) as? String) ?? "?"
+    }
+
+    func writeHooksReady() async -> Bool { await writeHookState() == "a1x1f1" }
+
+    @discardableResult
+    func waitWriteHooks(seconds: Double) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if await writeHooksReady() { return true }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return false
+    }
+
+    /// 写操作（发评论）前确认签名页完整：抖音安全 SDK 在 WKWebView 里每次加载不一定把 fetch 挂钩装上，
+    /// 没装上的那一轮发评论会被抖音 200 空回执静默丢弃（真机日志：成功的发送全是 fetchHooked=true，失败的全是 false）。
+    /// 这里只在发送前检查，没装全就重开签名页再等，最多 3 轮；不会重发已经发出的请求，所以不会重复评论。
+    @discardableResult
+    func ensureWriteReady() async -> Bool {
+        await waitReady()
+        if await waitWriteHooks(seconds: 2) { return true }
+        for round in 1...3 {
+            DYLiveModel.log("DDSEND rearm round=\(round) state=\(await writeHookState())")
+            // 只重开签名页本身：不动直播页、不清关注缓存（reload() 会让界面以为换了账号）
+            ready = false
+            web.load(URLRequest(url: startURL))
+            await waitReady()
+            if await waitWriteHooks(seconds: 8) {
+                DYLiveModel.log("DDSEND rearm ok round=\(round)")
+                return true
+            }
+        }
+        DYLiveModel.log("DDSEND rearm gave-up state=\(await writeHookState())")
+        return false
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
@@ -763,7 +830,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       document.querySelectorAll('video,audio').forEach(v => { try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {} });
       if (document.body) {
         document.body.replaceChildren();
-        new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1 && n.tagName !== 'SCRIPT') n.remove(); })))
+        new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1 && n.tagName !== 'SCRIPT' && n.tagName !== 'IFRAME') n.remove(); })))
           .observe(document.body, { childList: true });
       }
       document.querySelectorAll('style,link[rel=stylesheet]').forEach(e => e.remove());
@@ -821,7 +888,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const t0 = Date.now();
       while (Date.now() - t0 < (ms || 6000)) {
         let hooked = false;
-        try { hooked = !/native code/.test(XMLHttpRequest.prototype.send.toString()) } catch (e) {}
+        try { hooked = !/native code/.test(XMLHttpRequest.prototype.send.toString()) && !/native code/.test(window.fetch.toString()) } catch (e) {}
         if (typeof window.byted_acrawler !== 'undefined' && hooked) return true;
         await new Promise(r => setTimeout(r, 150));
       }
@@ -1677,6 +1744,7 @@ struct DYUpstreamFeedScreen: View {
                                onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
                     .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
                            height: tableFold ? panelH : h)
+                    .dyDeskLight(tableFold)
                     .environment(\.dyCommentTrailingCleared, panelInset > 0)
                     .offset(x: panelX, y: panelY)
                     .id(cur.id)
@@ -3011,6 +3079,7 @@ struct DYClassicFeedScreen: View {
                 }
                 .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                 .clipped()
+                .dyDeskLight(layout.resident && !layout.sideBySide && authorTarget == nil)
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                 }

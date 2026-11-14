@@ -212,6 +212,7 @@ extension DouyinBridge {
     /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
     func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
         let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
+        await ensureWriteReady()
         let d = try await call(Self.publishJS, args: args, attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")

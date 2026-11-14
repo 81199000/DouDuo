@@ -97,7 +97,8 @@ final class DYAmbientFrameView: UIView {
     }
 
     fileprivate func tick() {
-        guard !covered, let item = player.currentItem else { return }
+        // 画面铺满时背景看不见，但桌面姿态的评论区还在等投光，照样取帧
+        guard !covered || DYDeskLightHub.wanted, let item = player.currentItem else { return }
         // 秒开高清接管、头部缓存接在线流都会换 item，跟着换
         if attachedItem !== item {
             attachedItem?.remove(output)
@@ -114,6 +115,7 @@ final class DYAmbientFrameView: UIView {
             .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.85])
         guard let cg = Self.ci.createCGImage(blurred, from: small.extent) else { return }
         imageView.image = UIImage(cgImage: cg)
+        DYDeskLightHub.publish(cg)
         if imageView.alpha == 0 {
             UIView.animate(withDuration: 0.25) { self.imageView.alpha = 1; self.dimView.alpha = 1 }
         }
