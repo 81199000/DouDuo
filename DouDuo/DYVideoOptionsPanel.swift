@@ -7,17 +7,10 @@ struct DYVideoOptionsPanel: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
-    @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
-    @AppStorage("douyin_short_ratio_portrait_v1") private var portraitRatio = 70
-    @AppStorage("douyin_short_ratio_landscape_v1") private var landscapeRatio = 70
-    @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
-    @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
-    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
     @State private var listAtTop = true
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
@@ -43,10 +36,10 @@ struct DYVideoOptionsPanel: View {
                                  selected: autoFit, id: "douyin.options.fit") { autoFit.toggle() }
                         shortcut("静音", icon: muted ? "speaker.slash" : "speaker.wave.2",
                                  selected: muted, id: "douyin.options.muted") { muted.toggle() }
-                        shortcut("自动连播", icon: "play.square.stack",
-                                 selected: autoNext, id: "douyin.options.autoplay") { autoNext.toggle() }
+                        shortcut("听书模式", icon: "headphones",
+                                 selected: backgroundPlay, id: "douyin.options.bgplay") { backgroundPlay.toggle() }
                         if let onDislike {
-                            shortcut("不感兴趣", icon: "heart.slash", selected: false,
+                            shortcut("不感兴趣", icon: "hand.thumbsdown", selected: false,
                                      id: "douyin.dislike") {
                                 dismiss()
                                 onDislike()
@@ -78,57 +71,23 @@ struct DYVideoOptionsPanel: View {
                             }
                         }
                         .padding(16)
-                        Divider().padding(.leading, 16)
-                        Toggle(isOn: $backgroundPlay) {
-                            Label("后台播放（听书）", systemImage: "headphones")
+                        if let onSendDanmaku {
+                            Divider().padding(.leading, 16)
+                            Button("发弹幕", systemImage: "text.bubble") {
+                                dismiss()
+                                onSendDanmaku()
+                            }
+                            .padding(.horizontal, 16)
+                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                            .accessibilityIdentifier("douyin.danmaku.open")
                         }
-                        .padding(.horizontal, 16).frame(minHeight: 52)
                     }
                     .optionGroup()
 
-                    VStack(alignment: .leading, spacing: 0) {
-                        Label("内容偏好", systemImage: "slider.horizontal.3")
-                            .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
-                        Divider()
-                        VStack(spacing: 4) {
-                            Toggle("横屏时只放横屏内容", isOn: $landscapeOnly)
-                                .accessibilityIdentifier("douyin.landscape.only")
-                                .frame(minHeight: 48)
-                            ratioPicker("竖屏短视频占比", selection: $portraitRatio, id: "douyin.short.portrait")
-                            ratioPicker("横屏短视频占比", selection: $landscapeRatio, id: "douyin.short.landscape")
-                            Text("短视频指 3 分钟以内的视频")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(.bottom, 12)
-                    }
-                    .padding(.horizontal, 16).optionGroup()
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        Label("弹幕设置", systemImage: "text.bubble")
-                            .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
-                        Divider()
-                        VStack(spacing: 4) {
-                            Toggle("显示弹幕", isOn: $danmakuEnabled)
-                                .accessibilityIdentifier("douyin.danmaku.enabled").frame(minHeight: 48)
-                            choiceRow("弹幕密度", values: DYDanmakuPolicy.Density.allCases.map(\.rawValue),
-                                      selection: $density, id: "douyin.danmaku.density") {
-                                (DYDanmakuPolicy.Density(rawValue: $0) ?? .standard).title
-                            }
-                            Toggle("10秒内重复去重", isOn: $deduplicate)
-                                .accessibilityIdentifier("douyin.danmaku.deduplicate").frame(minHeight: 48)
-                            if let onSendDanmaku {
-                                Button("发弹幕", systemImage: "text.bubble") {
-                                    dismiss()
-                                    onSendDanmaku()
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                .accessibilityIdentifier("douyin.danmaku.open")
-                            }
-                            Text("显示区域：屏幕上方 1/3").font(.caption).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(.bottom, 12)
-                    }
-                    .padding(.horizontal, 16).optionGroup()
+                    Text("自动连播、环境光、推荐筛选、弹幕、界面等在「更多 → 设置」里")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
                 }
                 .padding(.horizontal, 16).padding(.top, 4)
                 .padding(.bottom, max(16, DYDuoMetrics.windowBottomInset + 4))
@@ -163,32 +122,6 @@ struct DYVideoOptionsPanel: View {
         .accessibilityValue(selected ? "开启" : "关闭")
     }
 
-    private func ratioPicker(_ title: String, selection: Binding<Int>, id: String) -> some View {
-        choiceRow(title, values: [-1, 30, 50, 70, 100], selection: selection, id: id) {
-            $0 == -1 ? "不限" : "\($0)%"
-        }
-    }
-
-    private func choiceRow(_ title: String, values: [Int], selection: Binding<Int>,
-                           id: String, label: @escaping (Int) -> String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline)
-            HStack(spacing: 6) {
-                ForEach(values, id: \.self) { value in
-                    Button { selection.wrappedValue = value } label: {
-                        Text(label(value))
-                            .font(.subheadline.weight(selection.wrappedValue == value ? .semibold : .regular))
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .background(.black.opacity(selection.wrappedValue == value ? 0.30 : 0.12), in: .capsule)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityIdentifier(id + "." + String(value))
-                    .accessibilityLabel(title + "，" + label(value))
-                    .accessibilityAddTraits(selection.wrappedValue == value ? .isSelected : [])
-                }
-            }
-        }.padding(.vertical, 6)
-    }
 }
 
 private extension View {

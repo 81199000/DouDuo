@@ -2,6 +2,8 @@ import SwiftUI
 
 struct DYHashtagFilterScreen: View {
     let currentTags: [String]
+    /// 从设置页推进来时不再包一层 NavigationStack，也不显示「完成」
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @AppStorage(DYHashtagFilter.storageKey) private var rawValue = ""
     @State private var input = ""
@@ -9,7 +11,10 @@ struct DYHashtagFilterScreen: View {
     private var filter: DYHashtagFilter { DYHashtagFilter(rawValue: rawValue) }
 
     var body: some View {
-        NavigationStack {
+        if embedded { form } else { NavigationStack { form } }
+    }
+
+    private var form: some View {
             Form {
                 Section {
                     HStack(spacing: 12) {
@@ -92,12 +97,13 @@ struct DYHashtagFilterScreen: View {
             .navigationTitle("按标签过滤视频")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                        .accessibilityIdentifier("douyin.hashtags.done")
+                if !embedded {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { dismiss() }
+                            .accessibilityIdentifier("douyin.hashtags.done")
+                    }
                 }
             }
-        }
     }
 
     private func tagChip(_ tag: String, symbol: String, selected: Bool = false) -> some View {
