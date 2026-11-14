@@ -588,17 +588,45 @@ struct DYCommentPlayerLayout<Video: View>: View {
         }
     }
 
+    /// 默认 / 简洁 / 极简：与推荐页同一套评论几何——横屏（宽 ≥700）评论从右侧滑出、视频缩窄；
+    /// 半折叠按折痕常驻分屏（书本左右、桌面上下）；窄屏才走底部半屏 sheet。
     private var upstreamBody: some View {
         GeometryReader { geo in
-            video(geo.safeAreaInsets)
-                .environment(\.dyStandaloneBack, onBack)
-                .sheet(isPresented: Binding(get: { showComments && !searchPresented }, set: { showComments = $0 })) {
-                    if let aweme {
-                        DYCommentPanel(bridge: bridge, aweme: aweme,
-                                       onClose: { showComments = false }, focus: focus)
-                            .presentationDetents([.fraction(0.62)])
-                    }
+            let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented,
+                                              allowsResident: !searchPresented)
+            let paneWidth = layout.sideBySide ? max(0, layout.paneSize.width - layout.trailingInset) : layout.paneSize.width
+            ZStack(alignment: .topLeading) {
+                video(geo.safeAreaInsets)
+                    .environment(\.dyStandaloneBack, onBack)
+                    .frame(width: layout.videoSize.width, height: layout.videoSize.height)
+                if layout.showsPane, let aweme {
+                    DYCommentPanel(bridge: bridge, aweme: aweme,
+                                   onClose: layout.resident ? nil : { withAnimation(.snappy) { showComments = false } },
+                                   focus: focus)
+                        .id(aweme.id)
+                        .frame(width: paneWidth, height: layout.paneSize.height)
+                        .dyDeskLight(layout.resident && !layout.sideBySide)
+                        .environment(\.dyCommentTrailingCleared, layout.sideBySide && layout.trailingInset > 0)
+                        .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
+                        .accessibilityIdentifier("douyin.list.commentPane")
                 }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .background(Color.black.ignoresSafeArea())
+            .animation(searchPresented ? nil : .snappy, value: showComments)
+            .animation(searchPresented ? nil : .snappy, value: layout.resident)
+            .sheet(isPresented: Binding(
+                get: { showComments && !searchPresented && !layout.sideBySide && !layout.resident && aweme != nil },
+                set: { if !layout.sideBySide && !layout.resident { showComments = $0 } }
+            )) {
+                if let aweme {
+                    DYCommentPanel(bridge: bridge, aweme: aweme,
+                                   onClose: { showComments = false }, focus: focus)
+                        // 与推荐页一致：竖屏锁死半屏，上滑不撑满
+                        .presentationDetents([.fraction(0.62)])
+                        .presentationDragIndicator(.visible)
+                }
+            }
         }
     }
 

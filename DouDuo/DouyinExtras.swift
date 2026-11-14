@@ -817,6 +817,8 @@ struct DYListPlayer: View {
     @State private var showComments = false
     @State private var toast: String?
     @State private var loadingMore = false
+    @State private var showSettings = false
+    @State private var web: DYWebTarget?
     /// 从消息点评论进来：自动开评论区并定位那条评论
     let commentFocus: DYCommentFocus?
 
@@ -847,10 +849,13 @@ struct DYListPlayer: View {
                                         resume: resume[item.id], liked: liked.contains(item.id), collected: collected.contains(item.id),
                                         onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
                                         onDoubleTap: { toggleLike(item.id, force: true) },
-                                        onComments: { showComments = true },
+                                        onComments: { withAnimation(.snappy) { showComments.toggle() } },
+                                        onSearch: { DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() } },
                                         onAuthor: { onAuthor(item) },
                                         onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
-                                        bridge: bridge, onToast: { show($0) })
+                                        bridge: bridge, onToast: { show($0) },
+                                        moreExtras: AnyView(Section { DYSettingsButton() }),
+                                        onEnded: { playNext(after: item.id) })
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
@@ -873,6 +878,8 @@ struct DYListPlayer: View {
                 }
             }
         }
+        // 左缘右滑返回上一层（博主主页 / 我的 / 搜索结果 / 消息里点开的视频）
+        .dyEdgeBack(enabled: searchSession == nil) { dismiss() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.list.player")
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
@@ -899,6 +906,29 @@ struct DYListPlayer: View {
         }
         .onAppear { if let i = items.firstIndex(where: { $0.id == currentID }) { preloader.update(items, current: i) } }
         .onDisappear { preloader.clear() }
+        .environment(\.dyOpenSettings, { showSettings = true })
+        .sheet(isPresented: $showSettings) {
+            DYSettingsScreen(onOpenWeb: { showSettings = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } })
+        }
+        .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
+    }
+
+    /// 「自动连播」打开时播完切下一条；到尾部先拉下一页
+    private func playNext(after id: String) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        if i + 1 < items.count { withAnimation { currentID = items[i + 1].id }; return }
+        guard let loadMore, !loadingMore else { return }
+        loadingMore = true
+        Task {
+            let more = await loadMore()
+            let seen = Set(items.map(\.id))
+            items.append(contentsOf: more.filter { !seen.contains($0.id) })
+            loadingMore = false
+            if let j = items.firstIndex(where: { $0.id == id }), j + 1 < items.count {
+                withAnimation { currentID = items[j + 1].id }
+            }
+        }
     }
 
     private func show(_ s: String) {
@@ -997,6 +1027,7 @@ struct DYSearchScreen: View {
     }
 
     @FocusState private var focused: Bool
+    @Environment(\.dySearchInSplitPane) private var edgeIsSplitDivider
     @AppStorage("douyin_search_history_v1") private var historyRaw = ""
 
     private var history: [String] { historyRaw.split(separator: "\n").map(String.init) }
@@ -1007,6 +1038,8 @@ struct DYSearchScreen: View {
                 .modifier(DYSearchBackToolbar(onBack: { if let onClose { onClose() } else { dismiss() } }))
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         }
+        // 左缘右滑返回；Duo 内屏左右分栏时搜索在右半屏，左缘是分界线，不挂
+        .dyEdgeBack(enabled: !edgeIsSplitDivider) { if let onClose { onClose() } else { dismiss() } }
         .preferredColorScheme(.dark)
     }
 
@@ -1240,6 +1273,8 @@ struct DYMineScreen: View {
     var body: some View {
         NavigationStack {
             content
+                // 左缘右滑返回（和左上「返回」同条件：经典模式下「我的」是底部 Tab，没有上一层）
+                .dyEdgeBack(enabled: chromeModeRaw != DDChromeMode.duoClassic.rawValue) { dismiss() }
                 .modifier(DYSystemTabBar())
                 .navigationTitle(user?.name ?? "我的")
                 .navigationBarTitleDisplayMode(.inline)
@@ -1488,6 +1523,7 @@ struct DYAuthorScreen: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .background(Color.black)
+        .dyEdgeBack(enabled: edgeBackEnabled) { close() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.author.panel")
         .navigationBarBackButtonHidden()
@@ -1529,6 +1565,8 @@ struct DYAuthorScreen: View {
     }
 
     private func close() { if let onClose { onClose() } else { dismiss() } }
+    /// 经典模式右半屏博主窗格（onClose 由宿主给）左缘是分界线，不挂边缘返回
+    private var edgeBackEnabled: Bool { onClose == nil }
 
     @ViewBuilder
     private var followButton: some View {

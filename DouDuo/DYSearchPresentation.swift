@@ -52,6 +52,7 @@ struct DYSearchPresentation: ViewModifier {
                     .allowsHitTesting(session == nil || split)
                 if split, let session {
                     search(session)
+                        .environment(\.dySearchInSplitPane, true)
                         .frame(width: geometry.size.width / 2, height: geometry.size.height)
                         .accessibilityIdentifier("douyin.search.pane")
                 }
@@ -110,6 +111,8 @@ extension EnvironmentValues {
     @Entry var dySearchCoversVideo = false
     @Entry var dySearchPresented = false
     @Entry var dyOpenSearch: ((String) -> Void)? = nil
+    /// 搜索在 Duo 内屏左右分栏的右半屏：左缘是分界线，不做边缘返回
+    @Entry var dySearchInSplitPane = false
 }
 
 /// The system places this independent item in Duo's native vertical toolbar.

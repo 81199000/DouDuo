@@ -5247,6 +5247,7 @@ struct DYCommentImageViewer: View {
             .padding(16)
             .accessibilityIdentifier("douyin.comment.viewer.close")
         }
+        .dyEdgeBack { dismiss() }
         .onAppear { page = target.start }
     }
 }

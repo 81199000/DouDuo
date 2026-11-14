@@ -162,6 +162,7 @@ struct DYRelationsScreen: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .dyEdgeBack { dismiss() }
         .task { await model.loadMore() }
         .fullScreenCover(item: $open) { u in
             NavigationStack {
