@@ -2561,6 +2561,7 @@ struct DYVideoPage: View {
                     onDislike: onDislike, moreExtras: moreExtras, onEnded: onEnded, onBack: onBack ?? standaloneBack)
             }
         }
+        .modifier(DYForwardFeedbackPresentation(bottomInset: insets.bottom, isCurrent: isCurrent))
     }
 }
 
@@ -2621,6 +2622,7 @@ struct DYClassicFeedScreen: View {
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var mainTab: DYMainTab = .home
+    @State private var forwardedChat: DYForwardReceipt?
     @State private var visibleVideo: DYAweme?
     @State private var cleanScreen = false
     private var showMine: Bool {
@@ -2864,11 +2866,11 @@ struct DYClassicFeedScreen: View {
                              onMessages: { mainTab = .messages })
                     .tint(nil)
             }
-            Tab("私信", systemImage: "bubble.left.and.bubble.right", value: DYMainTab.messages) {
+            Tab("消息", systemImage: "bubble.left.and.bubble.right", value: DYMainTab.messages) {
                 DYMessagesScreen(bridge: bridge, onWeb: { url in
                     mainTab = .home
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: url) }
-                })
+                }, forwardedShare: forwardedChat)
                 .tint(nil)
             }
             .badge(noticeUnread)
@@ -2897,6 +2899,10 @@ struct DYClassicFeedScreen: View {
                 .tint(nil)
             }
         }
+        .environment(\.dyForwardOpenChat, { receipt in
+            forwardedChat = receipt
+            mainTab = .messages
+        })
         // Only the tab selector inherits this accent. Every tab restores the
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))

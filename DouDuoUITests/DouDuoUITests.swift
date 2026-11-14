@@ -2,6 +2,282 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 左滑作者/右滑关注 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testClassicShareNoteAndSuccess() throws { try verifyShareNoteAndSuccess(mode: "duoClassic", group: false) }
+    func testOrdinaryShareNoteAndSuccess() throws { try verifyShareNoteAndSuccess(mode: "classic", group: true) }
+
+    func testClassicShareCanCloseWhilePreparing() throws { try verifyShareCanClose(mode: "duoClassic") }
+    func testOrdinaryShareCanCloseWhilePreparing() throws { try verifyShareCanClose(mode: "classic") }
+
+    func testShareCanCloseAfterDispatch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_SHARE_LAYOUT":"1", "DOUDUO_FORWARD_LAYOUT_FIXTURE":"1",
+            "DOUDUO_MESSAGE_FIXTURE":"1", "DOUDUO_CHROME_MODE":"duoClassic", "DOUDUO_SHARE_DELAY":"dispatched"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.buttons["douyin.share"].waitForExistence(timeout: 10))
+        app.buttons["douyin.share"].tap()
+        let person = app.buttons["douyin.forward.contact.1|fixture-user-a"]
+        XCTAssertTrue(person.waitForExistence(timeout: 10))
+        person.tap()
+        app.buttons["douyin.forward.send"].tap()
+        app.buttons["douyin.forward.close"].tap()
+        XCTAssertTrue(app.buttons["douyin.forward.close"].waitForNonExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["douyin.forward.success.open"].waitForExistence(timeout: 8), "A dispatched request still reports its confirmed result after dismissal")
+    }
+
+    private func verifyShareCanClose(mode: String) throws {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_SHARE_LAYOUT":"1", "DOUDUO_FORWARD_LAYOUT_FIXTURE":"1",
+            "DOUDUO_MESSAGE_FIXTURE":"1", "DOUDUO_CHROME_MODE":mode, "DOUDUO_SHARE_DELAY":"1"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.buttons["douyin.share"].waitForExistence(timeout: 10))
+        app.buttons["douyin.share"].tap()
+        let person = app.buttons["douyin.forward.contact.1|fixture-user-a"]
+        XCTAssertTrue(person.waitForExistence(timeout: 10))
+        person.tap()
+        app.buttons["douyin.forward.send"].tap()
+        app.buttons["douyin.forward.close"].tap()
+        XCTAssertTrue(app.buttons["douyin.forward.close"].waitForNonExistence(timeout: 2))
+        let success = app.descendants(matching: .any).matching(identifier: "douyin.forward.success").firstMatch
+        XCTAssertFalse(success.waitForExistence(timeout: 6), "Closing before dispatch cancels the send")
+        app.buttons["douyin.share"].tap()
+        XCTAssertTrue(person.waitForExistence(timeout: 5))
+        person.tap()
+        XCTAssertTrue(app.buttons["douyin.forward.send"].isEnabled, "Cancellation must release the sending state")
+    }
+
+    private func verifyShareNoteAndSuccess(mode: String, group: Bool) throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_SHARE_LAYOUT"] = "1"
+        app.launchEnvironment["DOUDUO_FORWARD_LAYOUT_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_MESSAGE_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.staticTexts["离线分享测试"].waitForExistence(timeout: 10))
+        app.buttons["douyin.share"].tap()
+        let person = app.buttons["douyin.forward.contact.1|fixture-user-a"]
+        XCTAssertTrue(person.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["douyin.forward.send"].exists, "Selecting a recipient must precede confirmation")
+        person.tap()
+        let note = app.textViews["douyin.forward.note"].exists
+            ? app.textViews["douyin.forward.note"] : app.textFields["douyin.forward.note"]
+        XCTAssertTrue(note.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.staticTexts["暂无可分享的联系人"].exists, "Loaded contacts must not show the empty-state message")
+        note.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        note.typeText("local note only")
+        if group {
+            // Wait until keyboard avoidance settles before tapping a moving recipient.
+            attach(app, "share-keyboard-ready")
+            app.buttons["douyin.forward.contact.2|fixture-group"].tap()
+            XCTAssertTrue(app.staticTexts["发送给 一起去看海"].waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue((note.value as? String ?? "").contains("local note only"), "Switching recipient preserves the draft")
+        }
+        attach(app, "share-\(mode)-note-confirmation")
+        app.buttons["douyin.forward.send"].tap() // DEBUG-only receipt; fixture has no network/send implementation.
+        let success = app.descendants(matching: .any).matching(identifier: "douyin.forward.success").firstMatch
+        XCTAssertTrue(success.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertFalse(app.buttons["douyin.forward.close"].exists)
+        XCTAssertFalse(app.buttons["douyin.forward.success.close"].exists)
+        XCTAssertTrue(app.staticTexts[group ? "已私信给 一起去看海" : "已私信给 青禾"].exists)
+        attach(app, "share-\(mode)-success")
+        app.buttons["douyin.forward.success.open"].tap()
+        let header = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header").firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 20), app.debugDescription)
+        XCTAssertTrue(header.label.contains(group ? "一起去看海" : "青禾") || app.staticTexts[group ? "一起去看海" : "青禾"].exists)
+        XCTAssertTrue(app.textViews["douyin.messages.composer.editor"].waitForExistence(timeout: 10), app.debugDescription)
+        if mode == "duoClassic" {
+            let home = app.buttons["首页"].firstMatch
+            XCTAssertTrue(home.exists, app.debugDescription)
+            let editor = app.textViews["douyin.messages.composer.editor"]
+            if home.frame.midY > app.frame.height * 0.75 && home.frame.intersects(CGRect(x: editor.frame.minX, y: home.frame.minY, width: editor.frame.width, height: home.frame.height)) {
+                XCTAssertLessThan(editor.frame.maxY, home.frame.minY, "Composer must stay above the bottom Dock")
+            }
+        }
+        attach(app, "share-\(mode)-destination")
+        if mode == "duoClassic" {
+            app.buttons["douyin.messages.back"].tap()
+            let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout: 8))
+            app.buttons["首页"].firstMatch.tap()
+            XCTAssertTrue(app.buttons["douyin.share"].waitForExistence(timeout: 5))
+            app.buttons["消息"].firstMatch.tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 5), "Returning to Messages must not reopen a previously handled share")
+        }
+    }
+
+    /// Explicit opt-in only. Opens existing conversations without typing or sending.
+    func testOnlineMessageNavigation() throws {
+        guard ProcessInfo.processInfo.environment["DOUDUO_RUN_ONLINE_READONLY"] == "1" else {
+            throw XCTSkip("Requires explicit permission and user login on the dedicated device")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_CHROME_MODE": "duoClassic"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 40))
+        let editor = app.textViews["douyin.messages.composer.editor"]
+        for attempt in 0..<3 {
+            let start = Date()
+            row.tap()
+            XCTAssertTrue(editor.waitForExistence(timeout: 8))
+            print("ONLINE_TIMING open[\(attempt)]=\(Date().timeIntervalSince(start))")
+            app.buttons["douyin.messages.back"].firstMatch.tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 3))
+            XCTAssertTrue(row.isEnabled)
+        }
+        func enterStrangers() {
+            if app.buttons["douyin.messages.categories"].exists {
+                app.buttons["douyin.messages.categories"].tap()
+                app.buttons["陌生人消息"].firstMatch.tap()
+            } else { app.buttons["douyin.messages.stranger"].tap() }
+        }
+        enterStrangers()
+        do {
+            app.buttons["douyin.messages.back"].firstMatch.tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 3))
+            let start = Date()
+            row.tap()
+            XCTAssertTrue(editor.waitForExistence(timeout: 5), "Chat must not wait for the full stranger scan")
+            print("ONLINE_TIMING after_scan_cancel=\(Date().timeIntervalSince(start))")
+            app.buttons["douyin.messages.back"].firstMatch.tap()
+        }
+        // Give the explicitly opened category time to finish full collection,
+        // then reopen to verify the native cache path on the real website.
+        enterStrangers()
+        sleep(30)
+        app.buttons["douyin.messages.back"].firstMatch.tap()
+        enterStrangers()
+        sleep(1)
+        app.buttons["douyin.messages.back"].firstMatch.tap()
+    }
+
+    func testShareLargeText() throws {
+        for mode in ["duoClassic", "classic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment = ["DOUDUO_SHARE_LAYOUT": "1", "DOUDUO_FORWARD_LAYOUT_FIXTURE": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": mode, "DOUDUO_FORWARD_LONG_NAMES": "1"]
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
+            addTeardownBlock { app.terminate() }
+            app.launch()
+            XCTAssertTrue(app.buttons["douyin.share"].waitForExistence(timeout: 10))
+            app.buttons["douyin.share"].tap()
+            let contact = app.buttons["douyin.forward.contact.1|fixture-user-a"]
+            XCTAssertTrue(contact.waitForExistence(timeout: 10))
+            XCTAssertTrue(contact.isHittable)
+            let name = contact.staticTexts.firstMatch
+            XCTAssertGreaterThan(name.frame.height, 40, "Long names should retain two lines at accessibility sizes")
+            XCTAssertTrue(app.buttons["douyin.forward.close"].isHittable)
+            attach(app, "share-large-text-\(mode)")
+            app.buttons["douyin.forward.close"].tap()
+            app.terminate()
+        }
+    }
+
+    func testMessageRepeatedOpenBack() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": "classic"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row").matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+        let editor = app.textViews["douyin.messages.composer.editor"]
+        for attempt in 0..<4 {
+            XCTAssertTrue(row.waitForExistence(timeout: 15))
+            let started = Date()
+            row.tap()
+            XCTAssertTrue(editor.waitForExistence(timeout: 3))
+            print("MESSAGE_LATENCY open[\(attempt)]=\(Date().timeIntervalSince(started))")
+            let returning = Date()
+            app.buttons["douyin.messages.back"].firstMatch.tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 2))
+            XCTAssertTrue(row.isEnabled)
+            print("MESSAGE_LATENCY back[\(attempt)]=\(Date().timeIntervalSince(returning))")
+        }
+    }
+
+    func testMessageDraftFailureKeepsNavigationAvailable() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1",
+                                 "DOUDUO_FIXTURE_REJECT_DRAFT": "1", "DOUDUO_CHROME_MODE": "duoClassic"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        let qinghe = rows.matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+        let other = rows.matching(NSPredicate(format: "label CONTAINS %@", "一起去看海")).firstMatch
+        let editor = app.textViews["douyin.messages.composer.editor"].firstMatch
+        let error = app.descendants(matching: .any).matching(identifier: "douyin.messages.composer.error").firstMatch
+        let back = app.buttons["douyin.messages.back"].firstMatch
+        XCTAssertTrue(qinghe.waitForExistence(timeout: 15))
+        qinghe.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(error.exists)
+        editor.typeText("offline")
+        XCTAssertFalse(error.exists, "Typing must not write to the webpage")
+        app.buttons["douyin.messages.composer.send"].tap() // Offline fixture rejects the draft; no send handler exists.
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+
+        app.buttons["douyin.messages.more"].firstMatch.tap()
+        let close = app.buttons["douyin.messages.options.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        if !other.isHittable { back.tap() }
+        XCTAssertTrue(other.waitForExistence(timeout: 5))
+        other.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header")
+            .matching(NSPredicate(format: "label CONTAINS %@", "一起去看海")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertFalse((editor.value as? String ?? "").contains("offline"))
+        if !qinghe.isHittable { back.tap() }
+        qinghe.tap()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (editor.value as? String ?? "").contains("offline")
+        }, object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        XCTAssertFalse(error.exists)
+    }
+
+    func testMessageHideAndRestore() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1",
+            "DOUDUO_CHROME_MODE": "classic", "DOUDUO_HIDE_FIXTURE": "1"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        let person = rows.matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+        XCTAssertTrue(person.waitForExistence(timeout: 20))
+        person.swipeLeft()
+        XCTAssertTrue(app.buttons["删除"].firstMatch.waitForExistence(timeout: 5))
+        app.buttons["不显示"].firstMatch.tap()
+        XCTAssertTrue(person.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(rows.count, 3)
+        attach(app, "hidden-conversation-retained-locally")
+        app.buttons["fixture.receive"].tap() // Changes only the disconnected HTML fixture.
+        XCTAssertTrue(person.waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 4)
+        person.tap()
+        let header = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header").firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["douyin.messages.composer.editor"].waitForExistence(timeout: 5))
+        attach(app, "hidden-conversation-restored-with-history")
+    }
+
     override func setUpWithError() throws {
         // Device Hub selects the physical Duo display. Match that display's
         // orientation before launch so XCTest does not use stale portrait
@@ -61,6 +337,200 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(more.isEnabled, "收起键盘后菜单恢复")
         XCTAssertTrue(like.isEnabled)
         app.terminate()
+    }
+
+    /// Local-only document: no cookies, networking, or send implementation.
+    func testMessageNativeComposerPortrait() throws {
+        XCUIDevice.shared.orientation = .portrait
+        try verifyMessageGlassLayoutAndActions(innerLandscape: false)
+    }
+
+    func testMessageNativeComposerLandscape() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        try verifyMessageGlassLayoutAndActions(innerLandscape: true)
+    }
+
+    func testMessageGlassLayoutAndActions() throws {
+        try verifyMessageGlassLayoutAndActions()
+    }
+
+    func testMessageDefaultPortrait() throws {
+        XCUIDevice.shared.orientation = .portrait
+        try verifyMessageGlassLayoutAndActions(mode: "classic")
+    }
+
+    func testMessageDefaultLandscape() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        try verifyMessageGlassLayoutAndActions(mode: "classic")
+    }
+
+    private func verifyMessageGlassLayoutAndActions(innerLandscape: Bool? = nil, mode: String = "duoClassic") throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_MESSAGE_LAYOUT"] = "1"
+        app.launchEnvironment["DOUDUO_MESSAGE_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 20), app.debugDescription)
+        func row(_ name: String) -> XCUIElement {
+            rows.matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
+        }
+        let qinghe = row("青禾")
+        attach(app, "message-list-before-actions")
+        if let innerLandscape {
+            let window = app.windows.firstMatch.frame
+            guard window.width >= 560, (window.width > window.height) == innerLandscape else {
+                throw XCTSkip("Duo did not enter the required inner-screen posture: \(window)")
+            }
+        }
+        if !qinghe.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(qinghe.isHittable, app.debugDescription)
+        qinghe.swipeRight()
+        let pin = app.buttons["置顶"].firstMatch
+        XCTAssertTrue(pin.waitForExistence(timeout: 5), app.debugDescription)
+        pin.tap()
+        let pinned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "已置顶"), object: qinghe)
+        XCTAssertEqual(XCTWaiter.wait(for: [pinned], timeout: 8), .completed, app.debugDescription)
+        qinghe.tap()
+        let header = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header").firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10), app.debugDescription)
+        let more = app.buttons["douyin.messages.more"].firstMatch
+        XCTAssertTrue(more.isHittable)
+        more.tap()
+        let options = app.descendants(matching: .any).matching(identifier: "douyin.messages.options").firstMatch
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["消息免打扰"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        app.buttons["douyin.messages.options.close"].firstMatch.tap()
+        XCTAssertTrue(options.waitForNonExistence(timeout: 5))
+        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        if !app.descendants(matching: .any).matching(identifier: "douyin.messages.divider").firstMatch.exists {
+            XCTAssertFalse(app.tabBars.buttons["消息"].isHittable, "Single-column chats are detail pages without Dock")
+        }
+        let editor = app.textViews["douyin.messages.composer.editor"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5), app.debugDescription)
+        editor.tap()
+        editor.typeText("local draft only")
+        XCTAssertTrue((editor.value as? String ?? "").contains("local draft only"))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.buttons["Previous"].exists || app.buttons["Next"].exists,
+            "Native text input has no web form-navigation accessory")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "douyin.messages.composer.error").firstMatch.exists, app.debugDescription)
+        let divider = app.descendants(matching: .any).matching(identifier: "douyin.messages.divider").firstMatch
+        if divider.exists {
+            let window = app.windows.firstMatch.frame
+            if window.height > window.width {
+                XCTAssertGreaterThanOrEqual(header.frame.minY, more.frame.maxY + 4,
+                    "Portrait header must clear the system toolbar")
+            }
+            let before = web.frame
+            let maximumListWidth = min(380, (before.width + before.minX) / 2)
+            let start = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -300, dy: 0)))
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in web.frame.width > before.width + 60 }, object: web)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "Divider must change actual pane width")
+            XCTAssertTrue((editor.value as? String ?? "").contains("local draft only"), "Resizing must preserve the same editor and draft")
+            let dock = app.descendants(matching: .any).matching(identifier: "douyin.messages.sidebarDock").firstMatch
+            XCTAssertEqual(web.frame.minX, 96, accuracy: 2, "Dragging beyond the list minimum collapses to the avatar rail")
+            XCTAssertFalse(dock.exists, "Narrow rail returns Dock to the system status column")
+            let narrow = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            narrow.press(forDuration: 0.1, thenDragTo: narrow.withOffset(CGVector(dx: 240, dy: 0)))
+            XCTAssertEqual(web.frame.minX, maximumListWidth, accuracy: 2, "Expanded list has a bounded maximum")
+            XCTAssertFalse(dock.exists, "All large-screen widths use the system Dock")
+            attach(app, "message-glass-expanded-maximum")
+            let wide = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            wide.press(forDuration: 0.1, thenDragTo: wide.withOffset(CGVector(dx: 280 - maximumListWidth, dy: 0)))
+            XCTAssertEqual(web.frame.minX, 280, accuracy: 2, "Normal list reaches its minimum before collapsing")
+            attach(app, "message-glass-expanded-minimum")
+            let minimum = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            minimum.press(forDuration: 0.1, thenDragTo: minimum.withOffset(CGVector(dx: -60, dy: 0)))
+            XCTAssertEqual(web.frame.minX, 96, accuracy: 2)
+            more.tap()
+            XCTAssertTrue(options.waitForExistence(timeout: 5))
+            attach(app, "message-compact-sidebar-options")
+            app.buttons["douyin.messages.options.close"].firstMatch.tap()
+            XCTAssertTrue(options.waitForNonExistence(timeout: 5))
+        }
+        if app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width {
+            XCTAssertFalse(divider.exists, "Portrait remains single-column with the keyboard open")
+            XCTAssertFalse(app.collectionViews["douyin.messages.list"].isHittable)
+        }
+        attach(app, "message-glass-draft-and-resize")
+        print("MESSAGE_NATIVE_KEYBOARD \(app.windows.firstMatch.frame)")
+        Thread.sleep(forTimeInterval: 4) // Allows host capture of the physical inner display.
+        app.buttons["douyin.messages.back"].firstMatch.tap()
+        let target = row("青禾")
+        XCTAssertTrue(target.waitForExistence(timeout: 5))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: target)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 8), .completed)
+        if !target.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        target.swipeLeft()
+        let delete = app.buttons["删除"].firstMatch
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        XCTAssertTrue(app.alerts["删除这条会话？"].waitForExistence(timeout: 5))
+        app.alerts.buttons["取消"].tap()
+        XCTAssertTrue(target.exists, "Cancel must preserve the conversation")
+        target.swipeLeft()
+        app.buttons["删除"].firstMatch.tap()
+        app.alerts.buttons["删除"].tap()
+        XCTAssertTrue(target.waitForNonExistence(timeout: 8), app.debugDescription)
+        attach(app, "message-glass-list-after-delete")
+    }
+
+    func testMessageHalfFoldLayout() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_MESSAGE_LAYOUT"] = "1"
+        app.launchEnvironment["DOUDUO_MESSAGE_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20))
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header").firstMatch.waitForExistence(timeout: 10))
+        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        let list = app.collectionViews["douyin.messages.list"]
+        print("HALF_FOLD_FRAMES window=\(app.windows.firstMatch.frame) list=\(list.frame) detail=\(web.frame)")
+        XCTAssertEqual(web.frame.minX, app.windows.firstMatch.frame.midX, accuracy: 4, "Half-fold boundary follows the physical hinge, including the status column")
+        XCTAssertGreaterThan(list.frame.width, 280)
+        XCTAssertGreaterThan(web.frame.width, 280, "The chat pane must retain usable width beside the hinge")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "douyin.messages.divider").firstMatch.exists)
+        let editor = app.textViews["douyin.messages.composer.editor"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), app.debugDescription)
+        attach(app, "message-half-fold-equal-panes")
+        editor.tap()
+        editor.typeText("local draft only")
+        attach(app, "message-half-fold-keyboard")
+    }
+
+    func testMessageCompactOptionsScreenshot() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_MESSAGE_LAYOUT"] = "1"
+        app.launchEnvironment["DOUDUO_MESSAGE_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let row = app.buttons.matching(identifier: "douyin.conversation.row")
+            .matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20))
+        row.tap()
+        XCTAssertTrue(app.textViews["douyin.messages.composer.editor"].waitForExistence(timeout: 10))
+        let divider = app.descendants(matching: .any).matching(identifier: "douyin.messages.divider").firstMatch
+        XCTAssertTrue(divider.exists)
+        let start = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -300, dy: 0)))
+        let web = app.webViews.matching(identifier: "douyin.messages.chat.detail").firstMatch
+        XCTAssertEqual(web.frame.minX, 96, accuracy: 2)
+        app.buttons["douyin.messages.more"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["消息免打扰"].waitForExistence(timeout: 5))
+        attach(app, "message-compact-sidebar-options-final")
     }
 
     func testHashtagClassicFlow() throws { verifyHashtags(mode: "duoClassic") }
@@ -1114,8 +1584,8 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertLessThan(contact.frame.maxY, copy.frame.minY)
         attach(app, "friend-forward-native-SYNTHETIC-layout-no-send")
         contact.tap()
-        XCTAssertTrue(app.alerts["确认转发"].waitForExistence(timeout: 5))
-        app.alerts.buttons["取消"].tap()
+        XCTAssertTrue(app.buttons["douyin.forward.send"].waitForExistence(timeout: 5))
+        contact.tap() // Deselect the draft; no send action.
         let panel = app.otherElements["douyin.sheet.edgeSurface"]
         XCTAssertGreaterThan(panel.frame.minY, app.frame.height * 0.1)
         XCTAssertGreaterThan(panel.frame.maxY, app.frame.height * 0.9)
@@ -2120,7 +2590,7 @@ final class DouDuoUITests: XCTestCase {
         let originalID = current.label
         home.tap()
         let mine = app.buttons["我的"].firstMatch
-        let messages = app.buttons["私信"].firstMatch
+        let messages = app.buttons["消息"].firstMatch
         if app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height || app.windows.firstMatch.frame.width < 600 {
             XCTAssertLessThan(mine.frame.minY, messages.frame.minY)
             XCTAssertLessThan(messages.frame.minY, home.frame.minY)
