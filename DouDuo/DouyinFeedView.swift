@@ -1087,101 +1087,47 @@ final class DYFeedModel: ObservableObject {
         if let currentID, items.contains(where: { $0.id == currentID }) { return currentID }
         let survivingIDs = Set(items.map(\.id))
         let next = previous.dropFirst(index).first { survivingIDs.contains($0.id) }?.id
-        if items.isEmpty { fill(6, relaxed: true); return items.first?.id }
+        if items.isEmpty { fill(6); return items.first?.id }
         return currentID == nil ? items.first?.id : (next ?? items.last?.id)
     }
 
-    /// 推荐方向固定目标由 targetRatio 给出，不读取旧版方向偏好。
-    /// 候选池保留暂未排入的素材；素材不足仍允许放宽，横屏限定除外。
-    /// 竖屏播放时「短视频」的目标占比（0–100）
-    @AppStorage("douyin_short_ratio_portrait_v1") var shortRatioPortrait = 70
-    /// 横屏播放时「短视频」的目标占比（0–100）
-    @AppStorage("douyin_short_ratio_landscape_v1") var shortRatioLandscape = 70
+    /// 推荐按接口原顺序播放；只有「横着看 + 只放横屏内容」时跳过竖屏，暂存到候选池。
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage("douyin_autofit_v1") var autoFit = true
     /// 当前播放区是不是横的（宽 > 高），由页面布局同步
     var screenWide = false
-    /// 候选池：拉到了但按比例暂时没排进列表的（保持推荐原顺序），以及启动时本地已缓存没看过的
+    /// 候选池：拉到了但横屏限定下暂时不放的（保持推荐原顺序），以及启动时本地已缓存没看过的
     var pool: [DYAweme] = []
     static let poolCap = 80
-    private var mixCredit: Double = 0
-    private var shortCredit: Double = 0
-    /// 短视频判定：3 分钟内（网页推荐里 60 秒内的几乎为 0，用 3 分钟才凑得出占比）
-    static func isShort(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= 180 }
 
     static func isPortrait(_ a: DYAweme) -> Bool { !a.images.isEmpty || a.isTallFrame }
 
-    /// 固定竖屏目标；横屏限定优先，不依赖任何历史方向偏好或迁移。
-    var targetRatio: Double? {
-        screenWide && landscapeWhenWide ? 0 : 0.7
-    }
+    /// 横屏限定时只要横屏；其余情况不挑，推荐什么放什么。
+    var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
 
-    /// 从候选池按比例往列表里排最多 maxN 条；relaxed = 比例凑不齐时也照原顺序放（别让列表断粮）
+    /// 从候选池按推荐顺序往列表里排最多 maxN 条；横屏限定时只取横屏。
     @discardableResult
-    func fill(_ maxN: Int, relaxed: Bool = false) -> Int {
+    func fill(_ maxN: Int) -> Int {
         pool = allowedRecommendations(pool)
         var n = 0
         while n < maxN, !pool.isEmpty {
-            var idx: Int?
-            var wantPortrait: Bool?
-            if let r = targetRatio, !relaxed || r == 0 {
-                // 均匀穿插（类似 Bresenham）：每条攒 r 份「竖屏额度」，满 1 份就放竖屏，例如 70% → 竖横竖竖横竖竖…
-                wantPortrait = r >= 1 ? true : r <= 0 ? false : (mixCredit + r >= 1)
-                idx = pickIndex(wantPortrait: wantPortrait!, wantShort: wantedShort())
-            } else {
-                idx = 0
-            }
+            let idx = landscapeOnlyActive ? pool.firstIndex { !Self.isPortrait($0) } : 0
             guard let i = idx else { break }
-            let a = pool.remove(at: i)
-            items.append(a)
-            if let r = targetRatio, r > 0, r < 1 {
-                mixCredit = (mixCredit + r - (Self.isPortrait(a) ? 1 : 0)).clamped(-1, 1)
-            }
-            let pct = screenWide ? shortRatioLandscape : shortRatioPortrait
-            if pct > 0, pct < 100 {
-                let sr = Double(pct) / 100
-                shortCredit = (shortCredit + sr - (Self.isShort(a) ? 1 : 0)).clamped(-1, 1)
-            }
+            items.append(pool.remove(at: i))
             n += 1
         }
         return n
     }
 
-    /// 竖屏优先短视频、横屏优先长视频：只在同方向的候选里、前 8 条内挑，
-    /// 不会把推荐顺序整体打乱（网页推荐里 60 秒以下几乎没有，竖屏也常是中长视频）。
-    /// 当前方向下这一条要不要短视频（按设置比例均匀穿插）
-    private func wantedShort() -> Bool? {
-        let pct = screenWide ? shortRatioLandscape : shortRatioPortrait
-        guard pct >= 0, pct <= 100 else { return nil }
-        if pct >= 100 { return true }
-        if pct <= 0 { return false }
-        let r = Double(pct) / 100
-        return shortCredit + r >= 1
-    }
-
-    private func pickIndex(wantPortrait: Bool, wantShort: Bool?) -> Int? {
-        let matches = pool.indices.filter { Self.isPortrait(pool[$0]) == wantPortrait }
-        guard let first = matches.first else { return nil }
-        if let wantShort {
-            // 先找「方向 + 长短」都符合的；凑不到就退到只按方向挑（别让列表断粮）
-            let window = Array(matches.prefix(24))
-            if let i = window.first(where: { Self.isShort(pool[$0]) == wantShort }) { return i }
-            return first
-        }
-        return first
-    }
-
-    /// 方向 / 比例变了：当前条之后的重新按比例排（当前这条不动，不打断播放）
+    /// 横屏限定开关 / 方向变了：当前条之后的重新排（当前这条不动，不打断播放）
     func remix(after index: Int?) {
         let keep = (index ?? -1) + 1
         guard keep <= items.count else { return }
         let upcoming = Array(items[keep...])
         items.removeSubrange(keep...)
         pool = upcoming + pool
-        mixCredit = 0
-        shortCredit = 0
         fill(max(upcoming.count, 6))
         trimPool()
     }
@@ -1193,10 +1139,9 @@ final class DYFeedModel: ObservableObject {
     }
 
     private func trimPool() {
-        // 超上限先丢多出来的那一类里最早的（网页推荐横屏多，通常丢横屏）
+        // 超上限：横屏限定时先丢竖屏（暂时放不了），否则丢最早的
         while pool.count > Self.poolCap {
-            let wantPortrait = (targetRatio ?? 0.5) >= 0.5
-            if let i = pool.firstIndex(where: { Self.isPortrait($0) != wantPortrait }) { pool.remove(at: i) }
+            if landscapeOnlyActive, let i = pool.firstIndex(where: Self.isPortrait) { pool.remove(at: i) }
             else { pool.removeFirst() }
         }
     }
@@ -1230,10 +1175,8 @@ final class DYFeedModel: ObservableObject {
                 hasMore = r.hasMore || !r.items.isEmpty
                 added += fill(want - added)
             }
-            // 素材不足时放宽固定目标，但不放宽横屏限定。
-            if added == 0, let r = targetRatio, r > 0, r < 1 { added += fill(want, relaxed: true) }
             trimPool()
-            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(targetRatio.map { String(format: "%.2f", $0) } ?? "free") wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
+            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
@@ -1241,7 +1184,7 @@ final class DYFeedModel: ObservableObject {
         }
     }
 
-    func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 0; shortCredit = 0 }
+    func reset() { items = []; hasMore = true; error = nil; pool = [] }
 }
 
 private struct DYFeedHostFrameKey: PreferenceKey {
@@ -1534,8 +1477,6 @@ struct DYUpstreamFeedScreen: View {
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
-        .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
     }
 
@@ -2645,6 +2586,7 @@ extension EnvironmentValues {
 struct DYClassicFeedScreen: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
+    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
@@ -2846,8 +2788,6 @@ struct DYClassicFeedScreen: View {
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
-        .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings) {
@@ -3543,7 +3483,7 @@ struct DYClassicFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 经典顶栏「更多」：静音 / 听书在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
+    /// 经典顶栏「更多」：静音 / 听书 / 自动连播在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
     @ViewBuilder
     private var moreExtrasMenu: some View {
         Section {
@@ -3551,6 +3491,8 @@ struct DYClassicFeedScreen: View {
                 .accessibilityIdentifier("douyin.quick.muted")
             Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
                 .accessibilityIdentifier("douyin.quick.bgplay")
+            Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+                .accessibilityIdentifier("douyin.quick.autonext")
         }
         Section { DYSettingsButton() }
     }
@@ -3963,7 +3905,7 @@ struct DYUpstreamVideoPage: View {
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
-    /// 「更多」：转发 / 不感兴趣 / 下载 → 倍速 / 静音 / 听书 → 发弹幕 → 设置。
+    /// 「更多」：转发 / 不感兴趣 / 下载 → 倍速 / 静音 / 听书 / 自动连播 → 发弹幕 → 设置。
     @ViewBuilder
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
@@ -3981,7 +3923,7 @@ struct DYUpstreamVideoPage: View {
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
             }
-            // 表层只放跟「正在看的这条」有关的：倍速 / 静音 / 听书。其余全局偏好都在设置页，不重复。
+            // 表层：倍速 / 静音 / 听书 / 自动连播。其余全局偏好都在设置页，不重复。
             Section {
                 Menu {
                     Picker("倍速", selection: Binding(
@@ -3997,6 +3939,8 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.muted")
                 Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
                     .accessibilityIdentifier("douyin.quick.bgplay")
+                Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
+                    .accessibilityIdentifier("douyin.quick.autonext")
             }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {

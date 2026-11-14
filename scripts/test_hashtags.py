@@ -81,14 +81,14 @@ private extension Double {
         defaults.set(filter.rawValue, forKey: DYHashtagFilter.storageKey)
         let model = DYFeedModel(defaults: defaults)
         check(model.allowedRecommendations([cat, kitten, prose, metadata]).map(\.id) == ["kitten", "prose"], "caption and platform metadata, whole tags only")
-        model.seedPool([cat, kitten, metadata]); model.fill(6, relaxed: true)
+        model.seedPool([cat, kitten, metadata]); model.fill(6)
         check(model.items.map(\.id) == ["kitten"], "cached seed filtered")
         model.items = [prose, cat, kitten, metadata]; model.pool = [cat, metadata]
         check(model.applyHashtagFilter(currentID: "cat") == "kitten", "current blocked video advances to next survivor")
         check(model.items.map(\.id) == ["prose", "kitten"] && model.pool.isEmpty, "already loaded and queued videos removed")
         check(model.applyHashtagFilter(currentID: "prose") == "prose", "unblocked active video retained")
-        model.pool = [cat, kitten]; model.fill(6, relaxed: true)
-        check(!model.items.contains(where: { $0.id == "cat" }), "relaxed ratio never bypasses tag filter")
+        model.pool = [cat, kitten]; model.fill(6)
+        check(!model.items.contains(where: { $0.id == "cat" }), "fill never bypasses tag filter")
         model.reset(); model.pool = [cat, kitten]
         check(model.applyHashtagFilter(currentID: nil) == "kitten", "empty list replenished from allowed pool")
         model.reset()

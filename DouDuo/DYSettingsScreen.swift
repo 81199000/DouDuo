@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 完整设置页：「更多 → 设置」点进来。所有全局偏好集中在这里，菜单里不再层层嵌套。
-/// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 发弹幕）留在「更多」表层。
+/// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 自动连播 / 发弹幕）和铺满宽度都在表层菜单，这里不重复。
 struct DYSettingsScreen: View {
     /// 打开「网页版 / 登录」：由宿主页面负责弹出网页并在关闭后重载签名页
     var onOpenWeb: () -> Void
@@ -14,15 +14,9 @@ struct DYSettingsScreen: View {
     // 界面
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     // 播放
-    @AppStorage("douyin_autoplay_v1") private var autoNext = false
-    @AppStorage("douyin_muted_v1") private var muted = false
-    @AppStorage("douyin_autofit_v1") private var autoFit = true
-    @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     // 内容
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
-    @AppStorage("douyin_short_ratio_portrait_v1") private var portraitRatio = 70
-    @AppStorage("douyin_short_ratio_landscape_v1") private var landscapeRatio = 70
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     // 弹幕
     @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
@@ -33,7 +27,6 @@ struct DYSettingsScreen: View {
     @State private var clearing = false
     @State private var cacheNote: String?
 
-    private static let ratioChoices: [(Int, String)] = [(-1, "不限"), (30, "30%"), (50, "50%"), (70, "70%"), (100, "只看短视频")]
     private static let cacheChoices: [(Int, String)] = [(5, "5 条"), (10, "10 条"), (20, "20 条"), (50, "50 条"), (100, "100 条"), (0, "关闭")]
 
     var body: some View {
@@ -61,10 +54,6 @@ struct DYSettingsScreen: View {
                 }
 
                 Section {
-                    Toggle("自动连播", isOn: $autoNext).accessibilityIdentifier("settings.autonext")
-                    Toggle("静音", isOn: $muted).accessibilityIdentifier("settings.muted")
-                    Toggle("铺满宽度（视频与屏幕同向时）", isOn: $autoFit).accessibilityIdentifier("settings.autofit")
-                    Toggle("听书模式（后台播放）", isOn: $backgroundPlay).accessibilityIdentifier("settings.bgplay")
                     Picker("环境光", selection: $ambientLevel) {
                         ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
                     }
@@ -72,7 +61,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("播放")
                 } footer: {
-                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速、静音、听书模式在「更多」里直接切换。")
+                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。")
                 }
 
                 Section {
@@ -86,18 +75,10 @@ struct DYSettingsScreen: View {
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
                     Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
-                    Picker("竖屏短视频占比", selection: $portraitRatio) {
-                        ForEach(Self.ratioChoices, id: \.0) { Text($0.1).tag($0.0) }
-                    }
-                    .accessibilityIdentifier("douyin.short.portrait")
-                    Picker("横屏短视频占比", selection: $landscapeRatio) {
-                        ForEach(Self.ratioChoices, id: \.0) { Text($0.1).tag($0.0) }
-                    }
-                    .accessibilityIdentifier("douyin.short.landscape")
                 } header: {
                     Text("内容偏好")
                 } footer: {
-                    Text("短视频指 3 分钟以内的视频。标签过滤只作用于推荐页。")
+                    Text("推荐按抖音推荐顺序播放；横着看且开启「只放横屏内容」时跳过竖屏视频。标签过滤只作用于推荐页。")
                 }
 
                 Section {

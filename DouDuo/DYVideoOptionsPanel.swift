@@ -11,6 +11,7 @@ struct DYVideoOptionsPanel: View {
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
+    @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var listAtTop = true
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
@@ -38,6 +39,8 @@ struct DYVideoOptionsPanel: View {
                                  selected: muted, id: "douyin.options.muted") { muted.toggle() }
                         shortcut("听书模式", icon: "headphones",
                                  selected: backgroundPlay, id: "douyin.options.bgplay") { backgroundPlay.toggle() }
+                        shortcut("自动连播", icon: "play.square.stack",
+                                 selected: autoNext, id: "douyin.options.autonext") { autoNext.toggle() }
                         if let onDislike {
                             shortcut("不感兴趣", icon: "hand.thumbsdown", selected: false,
                                      id: "douyin.dislike") {
