@@ -1087,11 +1087,12 @@ final class DYFeedModel: ObservableObject {
         if let currentID, items.contains(where: { $0.id == currentID }) { return currentID }
         let survivingIDs = Set(items.map(\.id))
         let next = previous.dropFirst(index).first { survivingIDs.contains($0.id) }?.id
-        if items.isEmpty { fill(6); return items.first?.id }
+        if items.isEmpty { fill(6, relaxed: true); return items.first?.id }
         return currentID == nil ? items.first?.id : (next ?? items.last?.id)
     }
 
-    /// 推荐按接口原顺序播放；只有「横着看 + 只放横屏内容」时跳过竖屏，暂存到候选池。
+    /// 竖着看时按约 70% 竖屏均匀穿插（网页推荐接口本身竖屏只占 1～3 成，原序播放几乎全是横屏）；
+    /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
@@ -1104,18 +1105,38 @@ final class DYFeedModel: ObservableObject {
 
     static func isPortrait(_ a: DYAweme) -> Bool { !a.images.isEmpty || a.isTallFrame }
 
-    /// 横屏限定时只要横屏；其余情况不挑，推荐什么放什么。
-    var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
+    /// 竖着看（或关掉横屏限定）时的竖屏目标占比。
+    static let portraitTarget = 0.7
+    /// 穿插额度（类似 Bresenham）：初值 1 - 目标，保证每次重排后第一条先放竖屏。
+    private var mixCredit = 1 - DYFeedModel.portraitTarget
 
-    /// 从候选池按推荐顺序往列表里排最多 maxN 条；横屏限定时只取横屏。
+    /// 横屏限定时只要横屏。
+    var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
+    /// 当前竖屏目标：横屏限定 0，其余 70%。
+    var targetRatio: Double { landscapeOnlyActive ? 0 : Self.portraitTarget }
+
+    /// 从候选池往列表里排最多 maxN 条：竖横按目标比例均匀穿插（70% → 竖横竖竖横竖竖…），
+    /// 同方向内保持推荐原顺序；横屏限定时只取横屏。
+    /// relaxed = 比例凑不齐时照原顺序放（别让列表断粮）；横屏限定不放宽。
     @discardableResult
-    func fill(_ maxN: Int) -> Int {
+    func fill(_ maxN: Int, relaxed: Bool = false) -> Int {
         pool = allowedRecommendations(pool)
+        let r = targetRatio
         var n = 0
         while n < maxN, !pool.isEmpty {
-            let idx = landscapeOnlyActive ? pool.firstIndex { !Self.isPortrait($0) } : 0
+            let idx: Int?
+            if r <= 0 {
+                idx = pool.firstIndex { !Self.isPortrait($0) }
+            } else if relaxed {
+                idx = 0
+            } else {
+                let wantPortrait = mixCredit + r >= 1 - 1e-9
+                idx = pool.firstIndex { Self.isPortrait($0) == wantPortrait }
+            }
             guard let i = idx else { break }
-            items.append(pool.remove(at: i))
+            let a = pool.remove(at: i)
+            items.append(a)
+            if r > 0 { mixCredit = (mixCredit + r - (Self.isPortrait(a) ? 1 : 0)).clamped(-1, 1) }
             n += 1
         }
         return n
@@ -1128,6 +1149,7 @@ final class DYFeedModel: ObservableObject {
         let upcoming = Array(items[keep...])
         items.removeSubrange(keep...)
         pool = upcoming + pool
+        mixCredit = 1 - Self.portraitTarget
         fill(max(upcoming.count, 6))
         trimPool()
     }
@@ -1139,9 +1161,10 @@ final class DYFeedModel: ObservableObject {
     }
 
     private func trimPool() {
-        // 超上限：横屏限定时先丢竖屏（暂时放不了），否则丢最早的
+        // 超上限：先丢当前用得少的那一类里最早的（横屏限定丢竖屏；竖着看丢横屏，接口横屏本来就多）
         while pool.count > Self.poolCap {
-            if landscapeOnlyActive, let i = pool.firstIndex(where: Self.isPortrait) { pool.remove(at: i) }
+            let dropPortrait = landscapeOnlyActive
+            if let i = pool.firstIndex(where: { Self.isPortrait($0) == dropPortrait }) { pool.remove(at: i) }
             else { pool.removeFirst() }
         }
     }
@@ -1175,8 +1198,10 @@ final class DYFeedModel: ObservableObject {
                 hasMore = r.hasMore || !r.items.isEmpty
                 added += fill(want - added)
             }
+            // 竖横凑不齐（如接口连着几页没竖屏）时按原顺序补，横屏限定不放宽
+            if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }
             trimPool()
-            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
+            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(String(format: "%.2f", targetRatio)) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
@@ -1184,7 +1209,7 @@ final class DYFeedModel: ObservableObject {
         }
     }
 
-    func reset() { items = []; hasMore = true; error = nil; pool = [] }
+    func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 1 - Self.portraitTarget }
 }
 
 private struct DYFeedHostFrameKey: PreferenceKey {
@@ -5266,7 +5291,7 @@ extension DYFeedModel {
             let cached = DYVideoCache.pendingSnapshot()
             if !cached.isEmpty {
                 seedPool(cached)
-                fill(6)
+                if fill(6) == 0 { fill(6, relaxed: true) }
                 markAccountState(cached)
                 result = (items.first?.id, [:])
                 DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(items.count)/\(cached.count)")

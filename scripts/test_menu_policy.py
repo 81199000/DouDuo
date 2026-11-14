@@ -42,7 +42,7 @@ class MenuPolicyTests(unittest.TestCase):
         for token in ("douyin_portrait_ratio_v1", "douyin_portrait_only_v2",
                       "portraitRatio", "mixLabel", "竖屏占比", "douyin.mix",
                       "douyin_short_ratio_portrait_v1", "douyin_short_ratio_landscape_v1",
-                      "shortRatio", "targetRatio", "mixCredit", "relaxed:"):
+                      "shortRatio", "isShort(", "wantedShort"):
             self.assertNotIn(token, FEED)
 
     def test_live_module_menu_actions_follow_the_selected_module(self):
@@ -181,7 +181,9 @@ class MenuPolicyTests(unittest.TestCase):
             self.assertNotIn(gone, panel)
         load = block(FEED, "func loadMore(_ bridge:")
         self.assertIn("added += fill(want - added)", load)
-        self.assertNotIn("relaxed", load)
+        # 2026-11-15 老板定：恢复竖着看约 70% 竖屏穿插（原序播放几乎全是横屏）；凑不齐才放宽，横屏限定不放宽
+        self.assertIn("if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }", load)
+        self.assertIn("static let portraitTarget = 0.7", FEED)
 
     def test_feed_uses_recommend_endpoint_only(self):
         # 2026-11-14 老板定：只保留网页首页「推荐」(tab/feed)，精选(module/feed)删掉，也不给切换
@@ -226,16 +228,29 @@ struct DYAweme {
 '''
         checks = r'''
 defer { preferences.removePersistentDomain(forName: suiteName) }
-// 1) 竖屏 / 横屏限定关闭：完全按推荐原顺序，不重排、不挑长短
+// 1) 竖屏 / 横屏限定关闭：约 70% 竖屏均匀穿插，首条竖屏，同方向内保持推荐原顺序
 for (wide, only) in [(false, false), (false, true), (true, false)] {
     preferences.removePersistentDomain(forName: suiteName)
     preferences.set(only, forKey: "douyin_wide_landscape_v1")
     let feed = DYFeedModel()
     feed.screenWide = wide
-    feed.pool = (0..<50).map { DYAweme(id: "r\($0)", isTallFrame: $0 % 3 != 0, duration: Double($0 * 17 % 600)) }
-    let order = feed.pool.map(\.id)
-    precondition(!feed.landscapeOnlyActive)
-    precondition(feed.fill(50) == 50 && feed.items.map(\.id) == order, "order changed wide=\(wide) only=\(only)")
+    // 接口式素材：竖屏只占 1/5
+    feed.pool = (0..<100).map { DYAweme(id: "r\($0)", isTallFrame: $0 % 5 == 0) }
+    let tallOrder = feed.pool.filter(DYFeedModel.isPortrait).map(\.id)
+    let wideOrder = feed.pool.filter { !DYFeedModel.isPortrait($0) }.map(\.id)
+    precondition(!feed.landscapeOnlyActive && feed.targetRatio == 0.7)
+    let n = feed.fill(20)
+    precondition(n == 20, "filled \(n) wide=\(wide) only=\(only)")
+    precondition(DYFeedModel.isPortrait(feed.items[0]), "first should be portrait")
+    let tall = feed.items.filter(DYFeedModel.isPortrait)
+    precondition(tall.count == 14, "portrait \(tall.count)/20")
+    precondition(tall.map(\.id) == Array(tallOrder.prefix(14)), "portrait order changed")
+    precondition(feed.items.filter { !DYFeedModel.isPortrait($0) }.map(\.id) == Array(wideOrder.prefix(6)), "landscape order changed")
+    // 竖屏用完：严格比例停住等下一页，relaxed 才按原顺序补
+    let more = feed.fill(20)
+    precondition(more < 20 && !feed.pool.contains(where: DYFeedModel.isPortrait), "strict fill should stop when portraits run out: \(more)")
+    let before = feed.items.count
+    precondition(feed.fill(5, relaxed: true) == 5 && feed.items.count == before + 5)
 }
 // 2) 横着看 + 只放横屏：只取横屏，保持横屏之间的原顺序，竖屏留在候选池
 preferences.removePersistentDomain(forName: suiteName)
@@ -247,9 +262,9 @@ precondition(wide.landscapeOnlyActive)
 precondition(wide.fill(20) == 10)
 precondition(wide.items.map(\.id) == (0..<20).filter { $0 % 2 == 1 }.map { "w\($0)" })
 precondition(wide.pool.allSatisfy(DYFeedModel.isPortrait) && wide.pool.count == 10)
-// 3) 关掉横屏限定后，后续按原顺序继续
+// 3) 关掉横屏限定后，池里留着的竖屏按原顺序接着放
 wide.landscapeWhenWide = false
-precondition(!wide.landscapeOnlyActive && wide.fill(3) == 3 && wide.items.suffix(3).map(\.id) == ["w0", "w2", "w4"])
+precondition(!wide.landscapeOnlyActive && wide.fill(3, relaxed: true) == 3 && wide.items.suffix(3).map(\.id) == ["w0", "w2", "w4"])
 // 4) remix：当前条不动，后面的按当前规则重排
 let remix = DYFeedModel()
 remix.items = [DYAweme(id: "current", isTallFrame: true), DYAweme(id: "upcoming-tall", isTallFrame: true), DYAweme(id: "upcoming-wide")]
@@ -260,9 +275,9 @@ precondition(remix.items.map(\.id) == ["current", "upcoming-wide"])
 precondition(remix.pool.map(\.id) == ["upcoming-tall"])
 remix.landscapeWhenWide = false
 remix.remix(after: 0)
-precondition(remix.items.map(\.id) == ["current", "upcoming-wide", "upcoming-tall"])
+precondition(remix.items.map(\.id) == ["current", "upcoming-tall", "upcoming-wide"], "\(remix.items.map(\.id))")
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
-print("PASS recommend order kept; landscape-only filter; toggle back; remix; gallery classification")
+print("PASS 70% portrait interleave; per-orientation order kept; relaxed fallback; landscape-only filter; toggle back; remix; gallery classification")
 '''
         scratch = Path(tempfile.gettempdir())
         scratch.mkdir(parents=True, exist_ok=True)
