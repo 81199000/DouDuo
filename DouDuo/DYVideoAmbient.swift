@@ -126,14 +126,3 @@ private final class DYAmbientTick: NSObject {
     @objc func tick() { view?.tick() }
 }
 
-/// 推荐流数据来源。网页版「精选」= module/feed（横屏、长视频多，偏大众）；
-/// 「推荐」= tab/feed（网页版首页竖屏推荐流，更接近 App）。
-enum DYFeedSource: String, CaseIterable, Identifiable {
-    case recommend, featured
-    static let key = "douyin_feed_source_v1"
-    var id: String { rawValue }
-    var title: String { self == .recommend ? "推荐（竖屏流）" : "精选（网页版）" }
-    static var current: DYFeedSource {
-        DYFeedSource(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .recommend
-    }
-}

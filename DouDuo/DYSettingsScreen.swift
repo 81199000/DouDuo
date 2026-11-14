@@ -1,0 +1,172 @@
+import SwiftUI
+
+/// 完整设置页：「更多 → 设置」点进来。所有全局偏好集中在这里，菜单里不再层层嵌套。
+/// 当前视频相关的操作（转发 / 下载 / 不感兴趣 / 弹幕 / 倍速）仍留在「更多」第一层。
+struct DYSettingsScreen: View {
+    /// 打开「网页版 / 登录」：由宿主页面负责弹出网页并在关闭后重载签名页
+    var onOpenWeb: () -> Void
+    /// 清缓存后让宿主把当前视频重新挂回播放器
+    var onCacheCleared: () -> Void = {}
+
+    @Environment(\.dismiss) private var dismiss
+    // 界面
+    @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
+    // 播放
+    @AppStorage("douyin_autoplay_v1") private var autoNext = false
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @AppStorage("douyin_autofit_v1") private var autoFit = true
+    @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    // 内容
+    @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
+    @AppStorage("douyin_short_ratio_portrait_v1") private var portraitRatio = 70
+    @AppStorage("douyin_short_ratio_landscape_v1") private var landscapeRatio = 70
+    @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    // 弹幕
+    @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
+    @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
+    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
+    // 缓存
+    @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
+    @State private var clearing = false
+    @State private var cacheNote: String?
+
+    private static let ratioChoices: [(Int, String)] = [(-1, "不限"), (30, "30%"), (50, "50%"), (70, "70%"), (100, "只看短视频")]
+    private static let cacheChoices: [(Int, String)] = [(5, "5 条"), (10, "10 条"), (20, "20 条"), (50, "50 条"), (100, "100 条"), (0, "关闭")]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("界面") {
+                    Picker("界面模式", selection: $chromeMode) {
+                        ForEach(DDChromeMode.availableCases) { m in
+                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.chrome")
+                }
+
+                Section {
+                    Toggle("自动连播", isOn: $autoNext).accessibilityIdentifier("settings.autonext")
+                    Toggle("静音", isOn: $muted).accessibilityIdentifier("settings.muted")
+                    Toggle("铺满宽度（视频与屏幕同向时）", isOn: $autoFit).accessibilityIdentifier("settings.autofit")
+                    Toggle("后台播放（听书）", isOn: $backgroundPlay).accessibilityIdentifier("settings.bgplay")
+                    Picker("环境光", selection: $ambientLevel) {
+                        ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
+                    }
+                    .accessibilityIdentifier("settings.ambient")
+                } header: {
+                    Text("播放")
+                } footer: {
+                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速在「更多」里直接切换。")
+                }
+
+                Section {
+                    NavigationLink {
+                        DYHashtagFilterScreen(currentTags: [], embedded: true)
+                    } label: {
+                        LabeledContent("按标签过滤视频") {
+                            let n = DYHashtagFilter(rawValue: blockedHashtags).tags.count
+                            Text(n == 0 ? "未设置" : "已屏蔽 \(n) 个")
+                        }
+                    }
+                    .accessibilityIdentifier("douyin.hashtags.manage")
+                    Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
+                    Picker("竖屏短视频占比", selection: $portraitRatio) {
+                        ForEach(Self.ratioChoices, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    .accessibilityIdentifier("douyin.short.portrait")
+                    Picker("横屏短视频占比", selection: $landscapeRatio) {
+                        ForEach(Self.ratioChoices, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    .accessibilityIdentifier("douyin.short.landscape")
+                } header: {
+                    Text("内容偏好")
+                } footer: {
+                    Text("短视频指 3 分钟以内的视频。标签过滤只作用于推荐页。")
+                }
+
+                Section {
+                    Toggle("显示弹幕", isOn: $danmakuEnabled).accessibilityIdentifier("douyin.danmaku.enabled")
+                    Picker("弹幕密度", selection: $density) {
+                        ForEach(DYDanmakuPolicy.Density.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .accessibilityIdentifier("douyin.danmaku.density")
+                    Toggle("10 秒内重复去重", isOn: $deduplicate).accessibilityIdentifier("douyin.danmaku.deduplicate")
+                } header: {
+                    Text("弹幕")
+                } footer: {
+                    Text("显示区域：屏幕上方 1/3。发弹幕在「更多 → 弹幕」。")
+                }
+
+                Section {
+                    Picker("预缓存数量", selection: $cacheCount) {
+                        ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    .accessibilityIdentifier("settings.cache.count")
+                    Button(role: .destructive) {
+                        clearing = true
+                        Task {
+                            let b = await DYVideoCache.shared.clear()
+                            cacheNote = "已清除 \(b / 1024 / 1024) MB"
+                            clearing = false
+                            onCacheCleared()
+                        }
+                    } label: {
+                        LabeledContent(clearing ? "清除中…" : "清除视频缓存") {
+                            if let cacheNote { Text(cacheNote) }
+                        }
+                    }
+                    .disabled(clearing)
+                    .accessibilityIdentifier("settings.cache.clear")
+                } header: {
+                    Text("缓存")
+                }
+
+                Section("账号") {
+                    Button {
+                        dismiss()
+                        // 先收起设置页再弹网页，避免两层全屏叠在一起
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onOpenWeb() }
+                    } label: {
+                        Label("网页版 / 登录", systemImage: "safari")
+                    }
+                    .accessibilityIdentifier("settings.web")
+                }
+
+                Section("关于") {
+                    LabeledContent("当前版本", value: DDAppVersion.display)
+                        .accessibilityIdentifier("douyin.about.version")
+                    Button {
+                        UIApplication.shared.open(DDUpdateChecker.repoURL)
+                    } label: {
+                        Label("开源仓库", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    .accessibilityIdentifier("douyin.about")
+                }
+            }
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }.accessibilityIdentifier("settings.done")
+                }
+            }
+        }
+    }
+}
+
+/// 「更多」菜单里的设置入口：点一下打开完整设置页（不再是层层子菜单）。
+struct DYSettingsButton: View {
+    @Environment(\.dyOpenSettings) private var open
+    var body: some View {
+        if let open {
+            Button("设置", systemImage: "gearshape") { open() }
+                .accessibilityIdentifier("douyin.settings")
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var dyOpenSettings: (() -> Void)? = nil
+}
