@@ -1327,6 +1327,7 @@ struct DYUpstreamFeedScreen: View {
     @State private var layoutAModuleAnchor = DYLiveModuleAnchor()
     /// 本视图在 `douduo.feed` 里的框，用来把窗格坐标换成 overlay 的本地坐标。
     @State private var feedHost = CGRect.zero
+    @State private var railInputActive = false
     /// 极简模式：长按模块入口时显示当前视频的作者和标题，松开消失
     private let peek = DDPeekInfo.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
@@ -1367,12 +1368,21 @@ struct DYUpstreamFeedScreen: View {
         .overlay {
             if railMode, !(tab == .live && (live.clean || live.entered)) {
                 if tab == .live, layoutAModuleAnchor.active, feedHost.width > 1 {
-                    layoutAModuleButton
+                    layoutAModuleButton.modifier(DYRailInputLock())
                 } else {
                     rootActionRail(nil, selector: true)
                 }
             }
         }
+        // 放在全部菜单栏 overlay 之后，确保发送键视觉和触摸层级都在最前。
+        .overlayPreferenceValue(DYFeedComposerPreference.self) { entries in
+            if let composer = entries.first(where: { $0.tab == tab && (tab != .recommend || $0.id == currentID) }) {
+                composer.content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+        }
+        .onPreferenceChange(DYFeedInputActivePreference.self) { railInputActive = $0 }
+        .environment(\.dyRailInputActive, railInputActive)
         .onPreferenceChange(DYTopChromeFrameKey.self) { next in
             guard abs(next.maxY - topChrome.maxY) > 0.5 || abs(next.minY - topChrome.minY) > 0.5 else { return }
             topChrome = next
@@ -2061,6 +2071,7 @@ struct DYUpstreamFeedScreen: View {
             // 仅忽略 keyboard，保留 container 安全区和分屏窗格，避免破坏信号栏对齐。
             .ignoresSafeArea(.keyboard)
         }
+        .modifier(DYRailInputLock())
     }
 
     /// 极简模式：视频进度画成包住圆形入口的外圈。从 12 点方向顺时针走；拖动进度时变粗变亮。
@@ -3710,8 +3721,12 @@ struct DYUpstreamVideoPage: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6) }
+            if showDanmakuInput, rootRailTab == nil || onBack != nil {
+                danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6)
+            }
         }
+        .preference(key: DYFeedInputActivePreference.self, value: isCurrent && showDanmakuInput)
+        .preference(key: DYFeedComposerPreference.self, value: composerEntry)
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in
@@ -3730,6 +3745,12 @@ struct DYUpstreamVideoPage: View {
                 DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
             }
         }
+    }
+
+    private var composerEntry: [DYFeedComposerEntry] {
+        guard isCurrent, showDanmakuInput, onBack == nil, let rootRailTab else { return [] }
+        return [DYFeedComposerEntry(id: item.id, tab: rootRailTab,
+                                   content: AnyView(danmakuBar.padding(.bottom, 8)))]
     }
 
     private func railEntry(_ fg: Color) -> [DYFeedRailEntry] {
@@ -3760,6 +3781,7 @@ struct DYUpstreamVideoPage: View {
                 Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
                     .frame(width: 36, height: 40)
             }
+            .accessibilityIdentifier("douyin.danmaku.close")
         }
         .padding(.horizontal, 12)
     }

@@ -133,6 +133,60 @@ struct DYFeedRailPreference: PreferenceKey {
     }
 }
 
+/// 输入区独立提升到 feed 最前层，不能留在视频页里被根菜单栏 overlay 盖住。
+struct DYFeedComposerEntry {
+    let id: String
+    let tab: DYTab
+    let content: AnyView
+}
+struct DYFeedInputActivePreference: PreferenceKey {
+    static var defaultValue: Bool { false }
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+extension EnvironmentValues {
+    @Entry var dyRailInputActive = false
+}
+
+struct DYFeedComposerPreference: PreferenceKey {
+    static var defaultValue: [DYFeedComposerEntry] { [] }
+    static func reduce(value: inout [DYFeedComposerEntry], nextValue: () -> [DYFeedComposerEntry]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+/// 键盘状态独立于菜单栏视图生命周期；输入内容更新 preference 时，不能重置禁用状态。
+@MainActor
+final class DYKeyboardInputState: ObservableObject {
+    static let shared = DYKeyboardInputState()
+    @Published private(set) var visible = false
+    private var observers: [NSObjectProtocol] = []
+    private init() {
+        let nc = NotificationCenter.default
+        observers = [
+            nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.visible = true }
+            },
+            nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.visible = false }
+            }
+        ]
+    }
+}
+
+/// 键盘输入期间整列变灰且不响应点击；位置、尺寸和分屏边缘不变。
+struct DYRailInputLock: ViewModifier {
+    @Environment(\.appTheme) private var theme
+    @ObservedObject private var keyboard = DYKeyboardInputState.shared
+    @Environment(\.dyRailInputActive) private var composerActive
+    private var inactive: Bool { keyboard.visible || composerActive }
+    func body(content: Content) -> some View {
+        content
+            .opacity(inactive ? theme.media.inputInactiveRailOpacity : 1)
+            .disabled(inactive)
+            .allowsHitTesting(!inactive)
+    }
+}
+
 /// Read the system bar edge beside the controls; older systems keep the trailing rail.
 struct DYAdaptiveActionRail<Content: View>: View {
     @ViewBuilder var content: (HorizontalEdge) -> Content

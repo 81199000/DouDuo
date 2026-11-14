@@ -43,8 +43,20 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(likeBefore.midX, likeAfter.midX, accuracy: 2)
         XCTAssertEqual(likeBefore.midY, likeAfter.midY, accuracy: 2)
         let send = app.buttons["douyin.danmaku.send"]
-        XCTAssertFalse(send.frame.intersects(likeAfter))
-        attach(app, "rail-keyboard-fixed")
+        XCTAssertFalse(more.isEnabled, "输入时更多按钮必须禁用")
+        XCTAssertFalse(like.isEnabled, "输入时点赞必须禁用")
+        input.typeText("layout test do not send")
+        XCTAssertTrue(send.isEnabled)
+        XCTAssertTrue(send.isHittable, "发送按钮必须在最前层，不能被菜单遮住")
+        let keyboardTop = app.keyboards.firstMatch.frame.minY
+        print("COMPOSER send=\(send.frame) keyboardTop=\(keyboardTop)")
+        XCTAssertLessThanOrEqual(send.frame.maxY, keyboardTop + 2)
+        XCTAssertLessThan(keyboardTop - send.frame.maxY, 70, "输入区要紧贴键盘上方，不能被重复安全区抬到屏幕顶部")
+        attach(app, "rail-keyboard-disabled-composer-front")
+        app.buttons["douyin.danmaku.close"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 8))
+        XCTAssertTrue(more.isEnabled, "收起键盘后菜单恢复")
+        XCTAssertTrue(like.isEnabled)
         app.terminate()
     }
 

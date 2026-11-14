@@ -30,6 +30,7 @@ struct DDTheme {
         let actionGlyphSize: CGFloat = 27
         let moduleGlyphSize: CGFloat = 20
         let moreGlyphSize: CGFloat = 23
+        let inputInactiveRailOpacity: Double = 0.25
         let progressRingWidth: CGFloat = 3.2
         let progressRingTrackOpacity: Double = 0.22
         let actionItemSpacing: CGFloat = 9     // 原 12，整体缩 1/4
