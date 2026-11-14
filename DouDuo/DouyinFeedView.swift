@@ -2019,12 +2019,7 @@ struct DYUpstreamFeedScreen: View {
             // Read the current container's inset before expanding into the outer column.
             // A size class does not describe the width of the system's vertical bar.
             GeometryReader { safeGeometry in
-                // 外层搜索分栏（DYSearchPresentation）忽略了水平安全区，这里会读到 0；
-                // 读 0 时退回前台 key window 的系统侧栏宽度，保持按钮列与信号栏同一中线。
-                let localInset = edge == .leading ? safeGeometry.safeAreaInsets.leading : safeGeometry.safeAreaInsets.trailing
-                // 左右分栏搜索时视频右缘是分界线、不是系统侧栏，不套用窗口侧栏宽度。
-                let splitOpen = searchSession != nil && searchIsSplit
-                let columnInset = splitOpen ? localInset : max(localInset, DYDuoMetrics.windowHorizontalInset(edge))
+                let columnInset = edge == .leading ? safeGeometry.safeAreaInsets.leading : safeGeometry.safeAreaInsets.trailing
                 // Preserve the theme's optical inset so the circles align with system status glyphs.
                 let outerPadding = columnInset > 0 ? max(0, (columnInset - 54) / 2 + theme.media.expandedRailOpticalInset) : 12
                 GeometryReader { geometry in

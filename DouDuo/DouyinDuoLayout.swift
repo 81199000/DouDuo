@@ -36,15 +36,6 @@ enum DYDuoMetrics {
     }
 
 
-    /// System vertical column width on one side, read from the foreground key window.
-    /// Ancestors that ignore horizontal safe area report 0 to their children.
-    static func windowHorizontalInset(_ edge: HorizontalEdge) -> CGFloat {
-        let insets = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets
-        return (edge == .leading ? insets?.left : insets?.right) ?? 0
-    }
-
     /// Full-bleed media and sheets deliberately extend past SwiftUI's safe
     /// area. Their controls still clear the physical home-indicator region.
     static var windowBottomInset: CGFloat {
