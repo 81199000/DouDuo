@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Declaration order is also the system vertical tab bar's order.
 enum DYMainTab: String, CaseIterable, Hashable {
-    case mine = "我的", messages = "私信", home = "首页"
+    case mine = "我的", messages = "消息", home = "首页"
 }
 
 /// Let the system compress tabs before video actions when its shared vertical

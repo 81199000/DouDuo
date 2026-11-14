@@ -6,6 +6,7 @@ struct DYForwardContact: Identifiable, Codable, Equatable {
     let avatar: String?
     /// 1：个人；2：群聊。
     let kind: Int
+    var secUid: String? = nil
 }
 
 struct DYForwardPanelAction: Identifiable {
@@ -31,8 +32,10 @@ struct DYClassicNativeForwardPanel: View {
     let onContact: (DYForwardContact) -> Void
     let onAction: (String) -> Void
     let onClose: () -> Void
+    var selectedID: String? = nil
+    var composer: AnyView? = nil
 
-    @ScaledMetric(relativeTo: .body) private var itemWidth: CGFloat = 72
+    @ScaledMetric(relativeTo: .subheadline) private var itemWidth: CGFloat = 84
     private let avatarSize: CGFloat = 54
     private let inset = WuWeiDesign.Spacing.lg
 
@@ -46,7 +49,7 @@ struct DYClassicNativeForwardPanel: View {
                     .padding(.horizontal, inset)
             } else {
                 contactRow
-                if status.contains("已复制") || status.contains("失败") || status.contains("未发送") || status.contains("合成") || status.contains("保存") {
+                if loading || (!status.isEmpty && (selectedID != nil || status.contains("已复制") || status.contains("失败") || status.contains("未发送") || status.contains("合成") || status.contains("保存") || status.contains("未确认") || status.contains("未接受"))) {
                     contactStatus
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, inset)
@@ -55,9 +58,13 @@ struct DYClassicNativeForwardPanel: View {
             }
 
             Divider().padding(.top, 14)
-            actionRow(actions)
-                .padding(.top, 14)
-                .padding(.bottom, max(20, DYDuoMetrics.windowBottomInset + 4))
+            if let composer {
+                composer.padding(.horizontal, inset).padding(.top, 16).padding(.bottom, 20)
+            } else {
+                actionRow(actions)
+                    .padding(.top, 14)
+                    .padding(.bottom, max(20, DYDuoMetrics.windowBottomInset + 4))
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
         .background {
@@ -107,13 +114,23 @@ struct DYClassicNativeForwardPanel: View {
                             }
                             .frame(width: avatarSize, height: avatarSize)
                             .clipShape(Circle())
+                            .overlay(alignment: .bottomTrailing) {
+                                if selectedID == contact.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, Color(red: 1, green: 0.17, blue: 0.33))
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .background(.black, in: .circle).offset(x: 2, y: 2)
+                                }
+                            }
                             .accessibilityHidden(true)
 
                             Text(contact.name)
-                                .font(.caption)
+                                .font(.subheadline)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
                                 .truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity)
                         }
                         .frame(width: itemWidth)
@@ -121,6 +138,7 @@ struct DYClassicNativeForwardPanel: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(contact.name)
+                    .accessibilityAddTraits(selectedID == contact.id ? .isSelected : [])
                     .accessibilityHint(contact.kind == 2 ? "选择群聊，确认后发送" : "选择联系人，确认后发送")
                     .accessibilityIdentifier("douyin.forward.contact.\(contact.id)")
                 }
@@ -137,7 +155,7 @@ struct DYClassicNativeForwardPanel: View {
                     .accessibilityLabel("正在加载分享联系人")
             }
             Text(statusText)
-                .font(.body)
+                .font(.subheadline)
                 .foregroundStyle(.themeTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -162,7 +180,7 @@ struct DYClassicNativeForwardPanel: View {
                                 .background(actionColor(action.id), in: Circle())
                                 .accessibilityHidden(true)
                             Text(action.title)
-                                .font(.caption)
+                                .font(.subheadline)
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -201,8 +219,10 @@ struct DYUpstreamNativeForwardPanel: View {
     let onContact: (DYForwardContact) -> Void
     let onAction: (String) -> Void
     let onClose: () -> Void
+    var selectedID: String? = nil
+    var composer: AnyView? = nil
 
-    @ScaledMetric(relativeTo: .body) private var itemWidth: CGFloat = 84
+    @ScaledMetric(relativeTo: .subheadline) private var itemWidth: CGFloat = 84
     private let avatarSize: CGFloat = 60
     private let inset = WuWeiDesign.Spacing.lg
 
@@ -224,7 +244,10 @@ struct DYUpstreamNativeForwardPanel: View {
                 }
             }
 
-            if !actions.isEmpty {
+            if let composer {
+                Divider().padding(.vertical, 16)
+                composer.padding(.horizontal, inset)
+            } else if !actions.isEmpty {
                 actionRow
                     .padding(.top, inset * 2)
             }
@@ -243,7 +266,7 @@ struct DYUpstreamNativeForwardPanel: View {
     private var header: some View {
         HStack(spacing: WuWeiDesign.Spacing.md) {
             Text("分享给")
-                .font(.title3.weight(.semibold))
+                .font(.headline)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
             Button(action: onClose) {
@@ -283,12 +306,23 @@ struct DYUpstreamNativeForwardPanel: View {
                             }
                             .frame(width: avatarSize, height: avatarSize)
                             .clipShape(Circle())
+                            .overlay(alignment: .bottomTrailing) {
+                                if selectedID == contact.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, Color(red: 1, green: 0.17, blue: 0.33))
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .background(.black, in: .circle).offset(x: 2, y: 2)
+                                }
+                            }
                             .accessibilityHidden(true)
 
                             Text(contact.name)
-                                .font(.body)
-                                .lineLimit(1)
+                                .font(.subheadline)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
                                 .truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity)
                         }
                         .frame(width: itemWidth)
@@ -296,6 +330,7 @@ struct DYUpstreamNativeForwardPanel: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(contact.name)
+                    .accessibilityAddTraits(selectedID == contact.id ? .isSelected : [])
                     .accessibilityHint(contact.kind == 2 ? "选择群聊，确认后发送" : "选择联系人，确认后发送")
                     .accessibilityIdentifier("douyin.forward.contact.\(contact.id)")
                 }
@@ -312,7 +347,7 @@ struct DYUpstreamNativeForwardPanel: View {
                     .accessibilityLabel("正在加载分享联系人")
             }
             Text(statusText)
-                .font(.body)
+                .font(.subheadline)
                 .foregroundStyle(.themeTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -336,7 +371,7 @@ struct DYUpstreamNativeForwardPanel: View {
                                 .background(Color(uiColor: .systemBackground), in: Circle())
                                 .accessibilityHidden(true)
                             Text(action.title)
-                                .font(.body)
+                                .font(.subheadline)
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -363,14 +398,16 @@ struct DYNativeForwardPanel: View {
     let onContact: (DYForwardContact) -> Void
     let onAction: (String) -> Void
     let onClose: () -> Void
+    var selectedID: String? = nil
+    var composer: AnyView? = nil
     @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
     var body: some View {
         if #available(iOS 27.1, *), mode == DDChromeMode.duoClassic.rawValue {
             DYClassicNativeForwardPanel(contacts: contacts, loading: loading, status: status, actions: actions,
-                                       onContact: onContact, onAction: onAction, onClose: onClose)
+                                       onContact: onContact, onAction: onAction, onClose: onClose, selectedID: selectedID, composer: composer)
         } else {
             DYUpstreamNativeForwardPanel(contacts: contacts, loading: loading, status: status, actions: actions,
-                                        onContact: onContact, onAction: onAction, onClose: onClose)
+                                        onContact: onContact, onAction: onAction, onClose: onClose, selectedID: selectedID, composer: composer)
         }
     }
 }
