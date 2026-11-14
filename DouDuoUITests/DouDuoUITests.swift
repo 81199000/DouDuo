@@ -1984,6 +1984,29 @@ final class DouDuoUITests: XCTestCase {
     }
 
     /// 压测：连续滑 8 条视频，每条停几秒（触发预加载解码音频），期间改倍速。App 不能崩。
+    /// 主线程开销对照：同一个账号、同样滑 8 条，只换界面模式（日志 DDPERF / DDSTART）。
+    func testPerfSweepClassic() throws { try perfSweep(mode: "duoClassic") }
+    func testPerfSweepMinimal() throws { try perfSweep(mode: "minimal") }
+    func testPerfSweepDefault() throws { try perfSweep(mode: "classic") }
+
+    private func perfSweep(mode: String) throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchEnvironment["DOUDUO_PERF"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9",
+                                "-douyin_cache_count_v2", "20"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        sleep(8)                      // 先让预加载/缓存跑起来
+        for _ in 0..<8 {
+            app.windows.firstMatch.swipeUp(velocity: .fast)
+            sleep(3)
+        }
+        print("PERF_SWEEP_DONE mode=\(mode)")
+        sleep(6)                      // 等最后一次 DDPERF 输出
+    }
+
     func testSwipeManyVideosWithSeamlessAudioDoesNotCrash() throws {
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"

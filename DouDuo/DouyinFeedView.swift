@@ -2650,10 +2650,7 @@ struct DYClassicFeedScreen: View {
     private var headerTopInset: CGFloat {
         // NavigationStack's inset includes a horizontal toolbar after rotation.
         // The fixed video header needs only the physical window's safe area.
-        let physicalTop = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.top ?? 0
-        return max(physicalTop, 8)
+        return max(DYWindowInsetsCache.current.top, 8)
     }
 
     private var currentIndex: Int? { feed.currentIndex }
@@ -3155,8 +3152,7 @@ struct DYClassicFeedScreen: View {
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
                 DYFeedPager(items: feed.items, currentID: $feed.currentID, scrollID: $feed.scrollID,
-                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
-                            pageAxes: [.horizontal, .vertical]) { item in
+                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
                     page(for: item)
                 }
             }
@@ -3261,14 +3257,7 @@ struct DYUpstreamVideoPage: View {
     private var chromeSidePadding: CGFloat { 12 }
     // Full-bleed ancestors may report zero safe-area insets. Read the app's
     // foreground key window as a fallback, never a guessed device/rail width.
-    private var systemColumnInset: CGFloat {
-        let windowInset = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
-        return max(insets.trailing, windowInset)
-    }
+    private var systemColumnInset: CGFloat { max(insets.trailing, DYWindowInsetsCache.current.right) }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -3330,6 +3319,14 @@ struct DYUpstreamVideoPage: View {
     }
 
     var body: some View {
+        #if DEBUG
+        DDPerf.timed("upstreamPage") { pageContent }
+        #else
+        pageContent
+        #endif
+    }
+
+    @ViewBuilder private var pageContent: some View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
@@ -3433,6 +3430,7 @@ struct DYUpstreamVideoPage: View {
             }
         }
     }
+
 
     private func railEntry(_ fg: Color) -> [DYFeedRailEntry] {
         guard isCurrent, onBack == nil, let rootRailTab else { return [] }
@@ -3695,14 +3693,7 @@ struct DYClassicVideoPage: View {
     private var chromeSidePadding: CGFloat { 12 }
     // Full-bleed ancestors may report zero safe-area insets. Read the app's
     // foreground key window as a fallback, never a guessed device/rail width.
-    private var systemColumnInset: CGFloat {
-        let windowInset = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
-        return max(insets.trailing, windowInset)
-    }
+    private var systemColumnInset: CGFloat { max(insets.trailing, DYWindowInsetsCache.current.right) }
     private var actionRailTrailingPadding: CGFloat {
         guard !inlineNavigation else { return chromeSidePadding }
         // Follow the runtime system column, including the existing optical inset
@@ -3718,10 +3709,7 @@ struct DYClassicVideoPage: View {
     }
     private var contentInsets: EdgeInsets {
         guard systemBars else { return EdgeInsets() }
-        let left = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.left ?? 0
+        let left = DYWindowInsetsCache.current.left
         // The 24 pt edge tuck is for the trailing Duo column. Restore the
         // complete system bottom inset when tabs become horizontal in portrait.
         let bottom = verticalBarEdge == nil && !inlineNavigation ? min(insets.bottom, 24) : 0
@@ -3766,6 +3754,16 @@ struct DYClassicVideoPage: View {
     @State private var danmakuLoaded = false
     @State private var showShare = false
     @State private var showOptions = false
+    /// 发布给系统 toolbar 的动作（缓存值，见 body 里的说明）
+    @State private var publishedActions: DYVideoToolbarActions?
+    private var actionSignature: String {
+        "\(item.id)|\(liked)|\(collected)|\(authorFollowed)|\(item.stats.digg)|\(item.stats.comment)|\(item.stats.collect)|\(item.stats.share)|\(systemBars)|\(inlineNavigation)|\(isCurrent)"
+    }
+    private func publishActions(_ fg: Color) {
+        guard systemBars, isCurrent, !inlineNavigation else { publishedActions = nil; return }
+        publishedActions = toolbarActions(fg)
+    }
+
     @State private var showDanmakuInput = false
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
@@ -3792,6 +3790,14 @@ struct DYClassicVideoPage: View {
     }
 
     var body: some View {
+        #if DEBUG
+        DDPerf.timed("classicPage") { pageContent }
+        #else
+        pageContent
+        #endif
+    }
+
+    @ViewBuilder private var pageContent: some View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
@@ -3855,8 +3861,12 @@ struct DYClassicVideoPage: View {
                     .padding(.trailing, actionRailTrailingPadding)
             }
         }
+        // ⚠️ toolbar 动作以前每次 body 求值都重建 4 个 AnyView 并发一遍 preference，
+        // 经典页每秒要重算上百次 body → 系统 toolbar 被反复重建（真机上手感就是卡）。
+        // 现在只在真正影响按钮内容的状态变化时发布一次，其余重算沿用同一个值。
         .preference(key: DYActiveVideoActionsKey.self,
-                    value: systemBars && isCurrent && !inlineNavigation ? toolbarActions(fg) : nil)
+                    value: systemBars && isCurrent && !inlineNavigation ? publishedActions : nil)
+        .onChange(of: actionSignature, initial: true) { _, _ in publishActions(fg) }
         .overlay(alignment: .bottom) {
             if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 0) + 4) }
         }
@@ -3895,6 +3905,7 @@ struct DYClassicVideoPage: View {
             }
         }
     }
+
 
     /// 只有关注流需要把「当前可见视频」报给根视图（评论/标签用）；推荐流根视图自己有 currentID。
     /// 同一条不重复写，避免翻页时根视图多重算一轮。
