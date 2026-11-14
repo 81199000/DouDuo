@@ -5,25 +5,37 @@ struct DYExpandableTitle: View {
     let text: String
     let foreground: Color
     let secondary: Color
+    var hashtagNames: [String] = []
+    @Environment(\.dySearchHashtag) private var searchHashtag
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var visibleHeight: CGFloat = 0
     private var canExpand: Bool { expanded || fullHeight > visibleHeight + 1 }
 
+    private var caption: AttributedString {
+        var result = AttributedString(text)
+        for match in DYHashtag.matches(in: text, knownNames: hashtagNames) {
+            guard let range = Range(match.range, in: result) else { continue }
+            result[range].font = .subheadline.bold()
+            result[range].foregroundColor = foreground
+            if searchHashtag != nil { result[range].link = DYHashtag.searchURL(for: match.name) }
+        }
+        return result
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            Text(text)
+            Text(caption)
                 .lineLimit(expanded ? nil : 3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }
                 .background(alignment: .topLeading) {
-                    Text(text)
+                    Text(caption)
                         .fixedSize(horizontal: false, vertical: true)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
                         .hidden().accessibilityHidden(true)
                 }
-                .onTapGesture { if canExpand { expanded.toggle() } }
                 .accessibilityIdentifier("douyin.description")
             ZStack {
                 if canExpand {
@@ -39,6 +51,12 @@ struct DYExpandableTitle: View {
         }
         .font(.subheadline)
         .foregroundStyle(foreground)
+        .tint(foreground)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let name = DYHashtag.searchName(from: url), let searchHashtag else { return .discarded }
+            searchHashtag(name)
+            return .handled
+        })
         .onChange(of: text) { expanded = false }
     }
 }
