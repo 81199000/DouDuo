@@ -1056,7 +1056,9 @@ final class DYFeedModel: ObservableObject {
     @Published var items: [DYAweme] = []
     /// 当前看的这一条 + 列表滚动位置（默认/简洁/极简 与 经典共用）
     @Published var currentID: String?
-    @Published var scrollID: String?
+    /// 仅供参考的滚动位置（分页器内部自己管，见 DYFeedPager）；不要改成 @Published，
+    /// 否则滚动中每帧都会让整棵树重算。
+    var scrollID: String?
     /// 各条续播进度
     @Published var resume: [String: Double] = [:]
     @Published var error: String?
@@ -2179,7 +2181,7 @@ struct DYUpstreamFeedScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
-                DYFeedPager(items: feed.items, currentID: $feed.currentID, scrollID: $feed.scrollID,
+                DYFeedPager(items: feed.items, currentID: $feed.currentID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
                     page(for: item)
                 }
@@ -3151,7 +3153,7 @@ struct DYClassicFeedScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
-                DYFeedPager(items: feed.items, currentID: $feed.currentID, scrollID: $feed.scrollID,
+                DYFeedPager(items: feed.items, currentID: $feed.currentID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
                     page(for: item)
                 }
@@ -3319,11 +3321,7 @@ struct DYUpstreamVideoPage: View {
     }
 
     var body: some View {
-        #if DEBUG
         DDPerf.timed("upstreamPage") { pageContent }
-        #else
-        pageContent
-        #endif
     }
 
     @ViewBuilder private var pageContent: some View {
@@ -3790,11 +3788,7 @@ struct DYClassicVideoPage: View {
     }
 
     var body: some View {
-        #if DEBUG
         DDPerf.timed("classicPage") { pageContent }
-        #else
-        pageContent
-        #endif
     }
 
     @ViewBuilder private var pageContent: some View {
