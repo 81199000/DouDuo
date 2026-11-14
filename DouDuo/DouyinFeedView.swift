@@ -1326,6 +1326,7 @@ struct DYUpstreamFeedScreen: View {
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -2339,6 +2340,11 @@ struct DYUpstreamFeedScreen: View {
                 Menu {
                     Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
                     Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
+                    Picker(selection: $ambientLevel) {
+                        ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
+                    } label: { Label("环境光", systemImage: "light.max") }
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("douyin.ambient")
                 } label: { Label("播放设置", systemImage: "play.circle") }
                 Menu {
                     Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
