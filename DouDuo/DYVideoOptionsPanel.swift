@@ -13,6 +13,7 @@ struct DYVideoOptionsPanel: View {
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    @AppStorage(DYFeedSource.key) private var feedSource = DYFeedSource.recommend.rawValue
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage("douyin_short_ratio_portrait_v1") private var portraitRatio = 70
     @AppStorage("douyin_short_ratio_landscape_v1") private var landscapeRatio = 70
@@ -96,6 +97,12 @@ struct DYVideoOptionsPanel: View {
                             .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
                         Divider()
                         VStack(spacing: 4) {
+                            Picker("推荐来源", selection: $feedSource) {
+                                ForEach(DYFeedSource.allCases) { Text($0.title).tag($0.rawValue) }
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("douyin.feed.source")
+                            .padding(.vertical, 8)
                             Toggle("横屏时只放横屏内容", isOn: $landscapeOnly)
                                 .accessibilityIdentifier("douyin.landscape.only")
                                 .frame(minHeight: 48)
