@@ -10,7 +10,6 @@ struct DYChatComposer: View {
             if let error = model.error {
                 HStack(spacing: 12) {
                     Text(error)
-                    Button("重试") { model.retry() }
                     Button("复制输入并恢复") { Task { await model.copyAndRecover() } }
                 }
                     .font(.footnote)
@@ -19,7 +18,7 @@ struct DYChatComposer: View {
                     .accessibilityIdentifier("douyin.messages.composer.error")
             }
             HStack(spacing: 0) {
-                DYChatTextEditor(text: model.text, active: active, focused: $focused, onEdit: model.edit)
+                DYChatTextEditor(text: model.text, active: active, editable: !model.working, focused: $focused, onEdit: model.edit)
                     .padding(.vertical, 8)
                     .overlay(alignment: .topLeading) {
                         if model.text.isEmpty {
@@ -33,7 +32,7 @@ struct DYChatComposer: View {
                 action(.emoji, label: "表情", image: "MessageEmoji", size: 28)
                 action(.send, label: "发送", image: "MessageSend", size: 32)
                     .opacity(model.canSend ? 1 : 0.35)
-                    .disabled(!model.canSend || model.error != nil)
+                    .disabled(!model.canSend)
             }
             .padding(.trailing, 8)
             .frame(minHeight: 44)
@@ -58,6 +57,6 @@ struct DYChatComposer: View {
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .accessibilityIdentifier("douyin.messages.composer." + action.rawValue)
-        .disabled(model.working)
+        .disabled(model.working || !active)
     }
 }

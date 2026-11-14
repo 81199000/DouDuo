@@ -6,6 +6,10 @@ import Foundation
 enum DYMessageFixture {
     static var enabled: Bool { ProcessInfo.processInfo.environment["DOUDUO_MESSAGE_FIXTURE"] == "1" }
     static let scope = "message-layout-fixture"
+    static var page: String {
+        guard ProcessInfo.processInfo.environment["DOUDUO_FIXTURE_REJECT_DRAFT"] == "1" else { return html }
+        return html.replacingOccurrences(of: "<script>", with: "<script>window.fixtureRejectDraft = true;")
+    }
 
     static let html = #"""
     <!doctype html><html><head>
@@ -82,7 +86,11 @@ enum DYMessageFixture {
         getLine:i=>({getOps:()=>[{insert:plain().split('\n')[i]+'\n'}],hasLineMarker:()=>false}),
         offsetToPoint:offset=>{const lines=plain().split('\n');let line=0;while(line<lines.length-1&&offset>lines[line].length){offset-=lines[line].length+1;line++;}return {line,offset};}
       };
-      const state={getZoneState:()=>zone,replaceText:(range,text)=>{editorElement.textContent=plain().slice(0,position(range.start))+text+plain().slice(position(range.end));p.draft=plain();}};
+      const state={getZoneState:()=>zone,replaceText:(range,text)=>{
+        if(window.fixtureRejectDraft && p.id==='fixture-a') throw Error('Offline draft write failure');
+        editorElement.textContent=plain().slice(0,position(range.start))+text+plain().slice(position(range.end));
+        p.draft=plain();
+      }};
       const editor={getText:()=>plain()+'\n',getContentState:()=>state,pluginManager:{call(){}},
         modulesContainer:{get:()=>class{constructor(value){Object.assign(this,value)}}},selection:{setSelection(){}},setPreventUpdateDomSelection(){}};
       editorElement.__reactFiber$fixture={memoizedProps:{editor}};

@@ -6,6 +6,7 @@ import UIKit
 struct DYChatTextEditor: UIViewRepresentable {
     let text: String
     let active: Bool
+    let editable: Bool
     @Binding var focused: Bool
     let onEdit: (String, NSRange) -> Void
 
@@ -34,6 +35,7 @@ struct DYChatTextEditor: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
+        view.isEditable = editable
         if view.text != text, view.markedTextRange == nil {
             context.coordinator.updating = true
             let selection = view.selectedRange

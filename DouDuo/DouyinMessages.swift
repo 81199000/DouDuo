@@ -548,7 +548,8 @@ struct DYMessagesScreen: View {
             guard let id = navigation.chatID else { return }
             while !Task.isCancelled, navigation.chatID == id {
                 if let web = chatModel.web, let snapshot = await DYChatWebBridge.snapshot(web, headerInset: messageTopInset + 72),
-                   snapshot.id == id, navigation.chatID == id {
+                   !Task.isCancelled, snapshot.id == id, navigation.chatID == id {
+                    composer.setAccountScope(cache.accountScope)
                     await composer.refresh(web: web, id: id)
                     if var row = cache.selectedChat, row.id == id, row.streak != snapshot.streak {
                         row.streak = snapshot.streak
@@ -559,6 +560,10 @@ struct DYMessagesScreen: View {
                 do { try await Task.sleep(for: .seconds(composer.isEditing ? 2 : 1)) } catch { return }
             }
         }
+        .onChange(of: navigation.chatID) { _, id in
+            if id == nil { composer.disconnect() }
+        }
+        .onChange(of: cache.accountScope) { _, scope in composer.setAccountScope(scope) }
         .onAppear {
             if let row = selectedChat { navigation.openChat(row.id, from: navigation.category) }
             else if navigation.isChat { _ = navigation.back() }
@@ -781,7 +786,8 @@ struct DYMessagesScreen: View {
         changingConversation = row.id
         defer { changingConversation = nil }
         if navigation.chatID == row.id {
-            guard await composer.flush(), cache.accountScope == account else { return }
+            guard !composer.working else { return }
+            guard cache.accountScope == account else { return }
             openedFromShare = false
             _ = navigation.back()
             restoreConversationList()
@@ -906,7 +912,7 @@ struct DYMessagesScreen: View {
         #endif
         openingChat = row.id
         defer { openingChat = nil }
-        guard await composer.flush() else { return }
+        guard !composer.working else { return }
         guard let web = chatModel.web else { return }
         var result = await DYChatOpener.open(row, web: web)
         if case .notReady = result {
@@ -937,7 +943,7 @@ struct DYMessagesScreen: View {
             actionError = "登录账号已变化，请在消息列表中重新选择会话。"
             return
         }
-        guard await composer.flush() else { return }
+        guard !composer.working else { return }
         navigation = DYMessageNavigation()
         cache.selectedChat = nil
         for _ in 0..<80 {
@@ -966,10 +972,7 @@ struct DYMessagesScreen: View {
         let started = Date()
         #endif
         Task {
-            openingChat = "leaving-chat"
-            let ready = await composer.flush()
-            openingChat = nil
-            guard ready else { return }
+            guard !composer.working else { return }
             openedFromShare = false
             let wasChat = navigation.isChat
             if navigation.back() { return }
@@ -995,7 +998,7 @@ struct DYMessagesScreen: View {
     }
 
     private func selectCategory(_ route: DYMsgRoute) {
-        guard openingChat == nil else { return }
+        guard openingChat == nil, !composer.working else { return }
         openedFromShare = false
         visitedRoutes.insert(route)
         let wasChat = navigation.isChat
@@ -1057,7 +1060,7 @@ struct DYMessagesScreen: View {
         }
         .overlay(alignment: .bottom) {
             if composer.isConnected(to: navigation.chatID) {
-                DYChatComposer(model: composer, active: navigation.isChat)
+                DYChatComposer(model: composer, active: navigation.isChat && openingChat == nil)
                     .padding(.horizontal, 16).padding(.bottom, composer.bottomInset)
             }
         }
