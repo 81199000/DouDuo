@@ -8,6 +8,19 @@ DouDuo 发版不需要发布管家：负责该版本的维护者（人或 Agent�
 - `gh` 已登录；Gitee token 在 `~/.hermes/shared-credentials/gitee-remon8.json`（不入库）。
 - 版本号、构建号在 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`），发行说明写 `docs/releases/vX.Y.Z.md`，README「下载与签名安装」列表加一行。
 
+## 一键发版（推荐）
+
+写好 `docs/releases/vX.Y.Z.md`（第一行 `# 标题` 会作为 Release 标题），在主干 main 上：
+
+```bash
+scripts/publish.sh X.Y.Z --dry-run   # 先演练：检查 + 编译 + 打包 + 全部测试，不提交不推送
+scripts/publish.sh X.Y.Z             # 正式发版
+```
+
+脚本会依次完成：改版本号（构建号自动 +1）→ 模拟器与真机未签名包编译 → 全部脚本测试 → 提交并打 tag → 推 GitHub / Gitee → GitHub Release（带发行说明和 IPA）→ Gitee 发行版 → 更新全能签 / 轻松签软件源 → 用手机 UA 匿名验收。任何一步失败都会停下；修好后用同一个版本号重跑，已完成的步骤会跳过，已上传的 IPA 不会被覆盖。
+
+下面是脚本内部的手动步骤，排查时对照用。
+
 ## 步骤
 
 1. **合并 + 验证**：要发的分支 / PR 合进 `main`，`xcodegen generate`，模拟器和真机 Release 都 `BUILD SUCCEEDED`，`scripts/test_*.js` / `scripts/test_*.py` 全过。
