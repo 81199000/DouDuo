@@ -1054,11 +1054,24 @@ final class DYPreloader {
 @MainActor
 final class DYFeedModel: ObservableObject {
     @Published var items: [DYAweme] = []
+    /// 当前看的这一条 + 列表滚动位置（默认/简洁/极简 与 经典共用）
+    @Published var currentID: String?
+    @Published var scrollID: String?
+    /// 各条续播进度
+    @Published var resume: [String: Double] = [:]
     @Published var error: String?
     @Published var loading = false
     @Published var liked: Set<String> = []
     @Published var collected: Set<String> = []
     @Published var toast: String?
+    /// 刷新推荐进行中（期间不做预取/缓存调度，避免旧请求覆盖新列表）
+    @Published var refreshing = false
+    /// 启动流程只跑一次
+    var initialized = false
+    /// 上次补推荐的时间（4 秒节流）
+    var lastFeedPull = Date.distantPast
+    var currentIndex: Int? { currentID.flatMap { id in items.firstIndex { $0.id == id } } }
+    var current: DYAweme? { currentIndex.map { items[$0] } }
     /// 是否已登录抖音（登录后推荐流才按账号个性化，点赞/收藏才能进账号）
     @Published var isLoggedIn = false
     private var hasMore = true
@@ -1261,17 +1274,37 @@ struct DYUpstreamFeedScreen: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var bridge = DouyinBridge()
     @StateObject private var feed = DYFeedModel()
+    // 推荐流状态在 DYFeedModel 里（默认/简洁/极简 与 经典 共用，别再各存一份）
+    private var currentID: String? {
+        get { feed.currentID }
+        nonmutating set { feed.currentID = newValue }
+    }
+    private var scrollID: String? {
+        get { feed.scrollID }
+        nonmutating set { feed.scrollID = newValue }
+    }
+    private var resume: [String: Double] {
+        get { feed.resume }
+        nonmutating set { feed.resume = newValue }
+    }
+    private var lastFeedPull: Date {
+        get { feed.lastFeedPull }
+        nonmutating set { feed.lastFeedPull = newValue }
+    }
+    private var refreshing: Bool {
+        get { feed.refreshing }
+        nonmutating set { feed.refreshing = newValue }
+    }
+    private var initialized: Bool {
+        get { feed.initialized }
+        nonmutating set { feed.initialized = newValue }
+    }
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State private var preloader = DYPreloader()
-    @State private var resume: [String: Double] = [:]
-    @State private var currentID: String?
-    @State private var scrollID: String?
     @State private var userScrolling = false
     @State private var scrollEndTask: Task<Void, Never>?
-    @State private var initialized = false
-    @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
     @State private var tab: DYTab = {
@@ -1287,7 +1320,6 @@ struct DYUpstreamFeedScreen: View {
     private func openSearch() {
         DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
     }
-    @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
     /// 顶栏「我的」按钮用的账号头像
@@ -1329,8 +1361,10 @@ struct DYUpstreamFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
-    private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
-    private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
+    private var currentIndex: Int? { feed.currentIndex }
+
+    private var current: DYAweme? { feed.current }
+
 
     private var chrome: some View {
         let railMode = chromeMode.usesRail
@@ -1631,14 +1665,8 @@ struct DYUpstreamFeedScreen: View {
     }
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
-    private func remixUpcoming() {
-        guard tab == .recommend || !feed.items.isEmpty else { return }
-        feed.remix(after: currentIndex)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        lastFeedPull = .distantPast
-        focusCurrent()
-    }
+    private func remixUpcoming() { feed.remixUpcoming(isRecommend: tab == .recommend, bridge: bridge, preloader: preloader) }
+
 
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
@@ -1709,49 +1737,19 @@ struct DYUpstreamFeedScreen: View {
     }
 
     private func refreshNoticeUnread() async {
-        guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
+        if let badge = await feed.noticeBadge(bridge: bridge) { noticeUnread = badge }
     }
 
     /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
-    private func reportWatch(old: String?, new: String?) {
-        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
-        var seen = false
-        if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
-           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard currentID == new else { return }
-            await bridge.reportWatch(item, preID: old, preSeen: seen)
-        }
-    }
+    private func reportWatch(old: String?, new: String?) { feed.reportWatch(old: old, new: new, bridge: bridge) }
 
-    private func saveSession() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
-        var positions = resume
-        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
-            positions[id] = max(0, DDNowPlaying.time)
-        }
-        DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
-    }
+
+    private func saveSession() { feed.saveSession() }
+
 
     /// 自动连播：播完滑到下一条；快到底时先补一页
-    private func playNext(after id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
-        } else {
-            Task {
-                await feed.loadMore(bridge)
-                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
-                }
-            }
-        }
-    }
+    private func playNext(after id: String) { feed.playNext(after: id, bridge: bridge) }
+
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
     /// 要换一批推荐走「更多 → 刷新推荐」。
@@ -1765,94 +1763,22 @@ struct DYUpstreamFeedScreen: View {
     }
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
-    @MainActor private func refreshRecommendations() async {
-        guard !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
-        while feed.loading {
-            do { try await Task.sleep(nanoseconds: 100_000_000) }
-            catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        let previous = Set(feed.items.map(\.id))
-        let replacement = DYFeedModel()
-        replacement.screenWide = feed.screenWide
-        await replacement.loadMore(bridge)
-        guard !Task.isCancelled else { return }
-        let fresh = replacement.items.filter { !previous.contains($0.id) }
-        guard !fresh.isEmpty else {
-            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
-            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
-            return
-        }
-        showComments = false
-        scrollEndTask?.cancel(); userScrolling = false
-        preloader.clear()
-        feed.reset()
-        feed.items = fresh
-        feed.pool = replacement.pool
-        feed.liked.formUnion(replacement.liked)
-        feed.collected.formUnion(replacement.collected)
-        resume = [:]
-        currentID = fresh.first?.id
-        scrollID = currentID
-        lastFeedPull = Date()
-        saveSession()
-        showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+    private func refreshRecommendations() async {
+        await feed.refreshRecommendations(bridge: bridge, preloader: preloader,
+                                          stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                                          hideComments: { showComments = false })
     }
+
 
     private func applyHashtagFilter() async {
-        let previousID = currentID
-        currentID = feed.applyHashtagFilter(currentID: currentID)
-        if previousID != currentID {
-            scrollEndTask?.cancel()
-            userScrolling = false
-            showComments = false
-            scrollID = currentID
-            preloader.clear()
-        }
-        saveSession()
-        guard initialized else { return }
-        while feed.loading {
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        if feed.items.isEmpty { await feed.loadMore(bridge) }
-        guard !Task.isCancelled else { return }
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        focusCurrent()
-        saveSession()
+        await feed.applyHashtagFilterAndRefill(bridge: bridge, preloader: preloader,
+                                              stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                                              hideComments: { showComments = false })
     }
 
-    private func focusCurrent() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard !refreshing, let i = currentIndex else { return }
-        preloader.update(feed.items, current: i)
-        let curID = feed.items[i].id
-        let ahead = Array(feed.items.dropFirst(i + 1))
-        let currentItem = feed.items[i]
-        Task {
-            await DYVideoCache.shared.markWatched(curID)
-            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
-        }
-        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
-        let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
-            lastFeedPull = Date()
-            Task {
-                await feed.loadMore(bridge)
-                if let j = currentIndex {
-                    preloader.update(feed.items, current: j)
-                    await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
-                    if feed.items.count - j - 1 < want { focusCurrent() }
-                }
-            }
-        }
-    }
+
+    private func focusCurrent() { feed.focusCurrent(bridge: bridge, preloader: preloader) }
+
 
     @ViewBuilder
     private var feedArea: some View {
@@ -2253,7 +2179,7 @@ struct DYUpstreamFeedScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
-                DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
+                DYFeedPager(items: feed.items, currentID: $feed.currentID, scrollID: $feed.scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
                     page(for: item)
                 }
@@ -2293,29 +2219,11 @@ struct DYUpstreamFeedScreen: View {
 
     /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
     private func dislike(_ id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        let next = i + 1 < feed.items.count ? feed.items[i + 1].id : (i > 0 ? feed.items[i - 1].id : nil)
-        scrollEndTask?.cancel(); userScrolling = false
-        showComments = false
-        if currentID == id { currentID = next; scrollID = next }
-        feed.items.remove(at: i)
-        resume[id] = nil
-        saveSession()
-        showToast("将减少此类推荐")
-        Task {
-            await DYVideoCache.shared.markWatched(id)
-            do {
-                switch try await bridge.dislike(id) {
-                case .ok: break
-                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
-                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
-                }
-            } catch {
-                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
-            }
-        }
-        if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
+        feed.dislike(id, bridge: bridge,
+                     stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                     hideComments: { showComments = false })
     }
+
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
     private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
@@ -2666,17 +2574,37 @@ struct DYClassicFeedScreen: View {
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
     @StateObject private var feed = DYFeedModel()
+    // 推荐流状态在 DYFeedModel 里（默认/简洁/极简 与 经典 共用，别再各存一份）
+    private var currentID: String? {
+        get { feed.currentID }
+        nonmutating set { feed.currentID = newValue }
+    }
+    private var scrollID: String? {
+        get { feed.scrollID }
+        nonmutating set { feed.scrollID = newValue }
+    }
+    private var resume: [String: Double] {
+        get { feed.resume }
+        nonmutating set { feed.resume = newValue }
+    }
+    private var lastFeedPull: Date {
+        get { feed.lastFeedPull }
+        nonmutating set { feed.lastFeedPull = newValue }
+    }
+    private var refreshing: Bool {
+        get { feed.refreshing }
+        nonmutating set { feed.refreshing = newValue }
+    }
+    private var initialized: Bool {
+        get { feed.initialized }
+        nonmutating set { feed.initialized = newValue }
+    }
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State private var preloader = DYPreloader()
-    @State private var resume: [String: Double] = [:]
-    @State private var currentID: String?
-    @State private var scrollID: String?
     @State private var userScrolling = false
     @State private var scrollEndTask: Task<Void, Never>?
-    @State private var initialized = false
-    @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
     @State private var tab: DYTab = {
@@ -2692,7 +2620,6 @@ struct DYClassicFeedScreen: View {
     private func openSearch() {
         DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
     }
-    @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var mainTab: DYMainTab = .home
     @State private var visibleVideo: DYAweme?
@@ -2729,8 +2656,10 @@ struct DYClassicFeedScreen: View {
         return max(physicalTop, 8)
     }
 
-    private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
-    private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
+    private var currentIndex: Int? { feed.currentIndex }
+
+    private var current: DYAweme? { feed.current }
+
     private var commentAweme: DYAweme? { tab == .follow ? visibleVideo : current }
 
     var body: some View {
@@ -2997,14 +2926,8 @@ struct DYClassicFeedScreen: View {
     }
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
-    private func remixUpcoming() {
-        guard tab == .recommend || !feed.items.isEmpty else { return }
-        feed.remix(after: currentIndex)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        lastFeedPull = .distantPast
-        focusCurrent()
-    }
+    private func remixUpcoming() { feed.remixUpcoming(isRecommend: tab == .recommend, bridge: bridge, preloader: preloader) }
+
 
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
@@ -3055,49 +2978,19 @@ struct DYClassicFeedScreen: View {
     }
 
     private func refreshNoticeUnread() async {
-        guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
+        if let badge = await feed.noticeBadge(bridge: bridge) { noticeUnread = badge }
     }
 
     /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
-    private func reportWatch(old: String?, new: String?) {
-        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
-        var seen = false
-        if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
-           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard currentID == new else { return }
-            await bridge.reportWatch(item, preID: old, preSeen: seen)
-        }
-    }
+    private func reportWatch(old: String?, new: String?) { feed.reportWatch(old: old, new: new, bridge: bridge) }
 
-    private func saveSession() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
-        var positions = resume
-        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
-            positions[id] = max(0, DDNowPlaying.time)
-        }
-        DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
-    }
+
+    private func saveSession() { feed.saveSession() }
+
 
     /// 自动连播：播完滑到下一条；快到底时先补一页
-    private func playNext(after id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
-        } else {
-            Task {
-                await feed.loadMore(bridge)
-                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
-                }
-            }
-        }
-    }
+    private func playNext(after id: String) { feed.playNext(after: id, bridge: bridge) }
+
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
     /// 要换一批推荐走「更多 → 刷新推荐」。
@@ -3109,94 +3002,22 @@ struct DYClassicFeedScreen: View {
     }
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
-    @MainActor private func refreshRecommendations() async {
-        guard !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
-        while feed.loading {
-            do { try await Task.sleep(nanoseconds: 100_000_000) }
-            catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        let previous = Set(feed.items.map(\.id))
-        let replacement = DYFeedModel()
-        replacement.screenWide = feed.screenWide
-        await replacement.loadMore(bridge)
-        guard !Task.isCancelled else { return }
-        let fresh = replacement.items.filter { !previous.contains($0.id) }
-        guard !fresh.isEmpty else {
-            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
-            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
-            return
-        }
-        showComments = false
-        scrollEndTask?.cancel(); userScrolling = false
-        preloader.clear()
-        feed.reset()
-        feed.items = fresh
-        feed.pool = replacement.pool
-        feed.liked.formUnion(replacement.liked)
-        feed.collected.formUnion(replacement.collected)
-        resume = [:]
-        currentID = fresh.first?.id
-        scrollID = currentID
-        lastFeedPull = Date()
-        saveSession()
-        showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+    private func refreshRecommendations() async {
+        await feed.refreshRecommendations(bridge: bridge, preloader: preloader,
+                                          stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                                          hideComments: { showComments = false })
     }
+
 
     private func applyHashtagFilter() async {
-        let previousID = currentID
-        currentID = feed.applyHashtagFilter(currentID: currentID)
-        if previousID != currentID {
-            scrollEndTask?.cancel()
-            userScrolling = false
-            showComments = false
-            scrollID = currentID
-            preloader.clear()
-        }
-        saveSession()
-        guard initialized else { return }
-        while feed.loading {
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        if feed.items.isEmpty { await feed.loadMore(bridge) }
-        guard !Task.isCancelled else { return }
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        focusCurrent()
-        saveSession()
+        await feed.applyHashtagFilterAndRefill(bridge: bridge, preloader: preloader,
+                                              stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                                              hideComments: { showComments = false })
     }
 
-    private func focusCurrent() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard !refreshing, let i = currentIndex else { return }
-        preloader.update(feed.items, current: i)
-        let curID = feed.items[i].id
-        let ahead = Array(feed.items.dropFirst(i + 1))
-        let currentItem = feed.items[i]
-        Task {
-            await DYVideoCache.shared.markWatched(curID)
-            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
-        }
-        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
-        let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
-            lastFeedPull = Date()
-            Task {
-                await feed.loadMore(bridge)
-                if let j = currentIndex {
-                    preloader.update(feed.items, current: j)
-                    await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
-                    if feed.items.count - j - 1 < want { focusCurrent() }
-                }
-            }
-        }
-    }
+
+    private func focusCurrent() { feed.focusCurrent(bridge: bridge, preloader: preloader) }
+
 
     @ViewBuilder
     private var feedArea: some View {
@@ -3333,7 +3154,7 @@ struct DYClassicFeedScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
-                DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
+                DYFeedPager(items: feed.items, currentID: $feed.currentID, scrollID: $feed.scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
                             pageAxes: [.horizontal, .vertical]) { item in
                     page(for: item)
@@ -3372,29 +3193,11 @@ struct DYClassicFeedScreen: View {
 
     /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
     private func dislike(_ id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        let next = i + 1 < feed.items.count ? feed.items[i + 1].id : (i > 0 ? feed.items[i - 1].id : nil)
-        scrollEndTask?.cancel(); userScrolling = false
-        showComments = false
-        if currentID == id { currentID = next; scrollID = next }
-        feed.items.remove(at: i)
-        resume[id] = nil
-        saveSession()
-        showToast("将减少此类推荐")
-        Task {
-            await DYVideoCache.shared.markWatched(id)
-            do {
-                switch try await bridge.dislike(id) {
-                case .ok: break
-                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
-                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
-                }
-            } catch {
-                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
-            }
-        }
-        if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
+        feed.dislike(id, bridge: bridge,
+                     stopScroll: { scrollEndTask?.cancel(); userScrolling = false },
+                     hideComments: { showComments = false })
     }
+
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
     private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
@@ -5201,11 +5004,176 @@ extension DYFeedModel {
         }
     }
 
+    func remixUpcoming(isRecommend: Bool, bridge: DouyinBridge, preloader: DYPreloader) {
+        guard isRecommend || !items.isEmpty else { return }
+        remix(after: currentIndex)
+        DYLiveModel.log("DDMIX remix wide=\(screenWide) upcoming=\(items.count - (currentIndex ?? -1) - 1)")
+        if currentID == nil { currentID = items.first?.id; scrollID = currentID }
+        lastFeedPull = .distantPast
+        focusCurrent(bridge: bridge, preloader: preloader)
+    }
+
+    func saveSession() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        guard let id = currentID, items.contains(where: { $0.id == id }) else { return }
+        var positions = resume
+        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
+            positions[id] = max(0, DDNowPlaying.time)
+        }
+        DYFeedSession(items: items, currentID: id, positions: positions).save()
+    }
+
+    func reportWatch(old: String?, new: String?, bridge: DouyinBridge) {
+        guard let new, let item = items.first(where: { $0.id == new }) else { return }
+        var seen = false
+        if let old, let prev = items.first(where: { $0.id == old }), prev.duration > 0,
+           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard currentID == new else { return }
+            await bridge.reportWatch(item, preID: old, preSeen: seen)
+        }
+    }
+
+    func playNext(after id: String, bridge: DouyinBridge) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        if i + 1 < items.count {
+            withAnimation { currentID = items[i + 1].id }
+        } else {
+            Task {
+                await loadMore(bridge)
+                if let j = items.firstIndex(where: { $0.id == id }), j + 1 < items.count {
+                    withAnimation { currentID = items[j + 1].id }
+                }
+            }
+        }
+    }
+
+    func dislike(_ id: String, bridge: DouyinBridge, stopScroll: () -> Void, hideComments: () -> Void) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        let next = i + 1 < items.count ? items[i + 1].id : (i > 0 ? items[i - 1].id : nil)
+        stopScroll()
+        hideComments()
+        if currentID == id { currentID = next; scrollID = next }
+        items.remove(at: i)
+        resume[id] = nil
+        saveSession()
+        showToast("将减少此类推荐")
+        Task {
+            await DYVideoCache.shared.markWatched(id)
+            do {
+                switch try await bridge.dislike(id) {
+                case .ok: break
+                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
+                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
+                }
+            } catch {
+                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
+            }
+        }
+        if next == nil { Task { await loadMore(bridge); currentID = items.first?.id; scrollID = currentID } }
+    }
+
+    func applyHashtagFilterAndRefill(bridge: DouyinBridge, preloader: DYPreloader, stopScroll: () -> Void, hideComments: () -> Void) async {
+        let previousID = currentID
+        currentID = self.applyHashtagFilter(currentID: currentID)
+        if previousID != currentID {
+            stopScroll()
+            hideComments()
+            scrollID = currentID
+            preloader.clear()
+        }
+        saveSession()
+        guard initialized else { return }
+        while loading {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        if items.isEmpty { await loadMore(bridge) }
+        guard !Task.isCancelled else { return }
+        if currentID == nil { currentID = items.first?.id; scrollID = currentID }
+        focusCurrent(bridge: bridge, preloader: preloader)
+        saveSession()
+    }
+
+    func refreshRecommendations(bridge: DouyinBridge, preloader: DYPreloader, stopScroll: () -> Void, hideComments: () -> Void) async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false; focusCurrent(bridge: bridge, preloader: preloader) }
+        showToast("正在刷新推荐…")
+        while loading {
+            do { try await Task.sleep(nanoseconds: 100_000_000) }
+            catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        let previous = Set(items.map(\.id))
+        let replacement = DYFeedModel()
+        replacement.screenWide = screenWide
+        await replacement.loadMore(bridge)
+        guard !Task.isCancelled else { return }
+        let fresh = replacement.items.filter { !previous.contains($0.id) }
+        guard !fresh.isEmpty else {
+            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
+            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
+            return
+        }
+        hideComments()
+        stopScroll()
+        preloader.clear()
+        reset()
+        items = fresh
+        pool = replacement.pool
+        liked.formUnion(replacement.liked)
+        collected.formUnion(replacement.collected)
+        resume = [:]
+        currentID = fresh.first?.id
+        scrollID = currentID
+        lastFeedPull = Date()
+        saveSession()
+        showToast("推荐已刷新")
+        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+    }
+
+    func focusCurrent(bridge: DouyinBridge, preloader: DYPreloader) {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        guard !refreshing, let i = currentIndex else { return }
+        preloader.update(items, current: i)
+        let curID = items[i].id
+        let ahead = Array(items.dropFirst(i + 1))
+        let currentItem = items[i]
+        Task {
+            await DYVideoCache.shared.markWatched(curID)
+            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
+        }
+        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
+        let want = max(6, min(DYVideoCache.limit, 60))
+        if items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
+            lastFeedPull = Date()
+            Task {
+                await loadMore(bridge)
+                if let j = currentIndex {
+                    preloader.update(items, current: j)
+                    await DYVideoCache.shared.focus(current: items[j], ahead: Array(items.dropFirst(j + 1)))
+                    if items.count - j - 1 < want { focusCurrent(bridge: bridge, preloader: preloader) }
+                }
+            }
+        }
+    }
     func showToast(_ s: String) {
         self.toast = s
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
             guard let self else { return }
             if self.toast == s { self.toast = nil }
         }
+    }
+
+    /// 消息未读数（视图只负责显示，取值逻辑两边一致）
+    func noticeBadge(bridge: DouyinBridge) async -> Int? {
+        guard let groups = try? await bridge.noticeCounts() else { return nil }
+        return DYMessagesScreen.badge(groups)
     }
 }
