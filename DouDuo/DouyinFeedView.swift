@@ -1269,7 +1269,6 @@ struct DYUpstreamFeedScreen: View {
     @State private var currentID: String?
     @State private var scrollID: String?
     @State private var userScrolling = false
-    @State private var dragStartID: String?
     @State private var scrollEndTask: Task<Void, Never>?
     @State private var initialized = false
     @State private var refreshing = false
@@ -1443,33 +1442,12 @@ struct DYUpstreamFeedScreen: View {
             #endif
             Task { myUser = try? await bridge.selfProfile() }
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
-            // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
-            if feed.items.isEmpty, let saved = DYFeedSession.load() {
-                feed.items = feed.allowedRecommendations(saved.items)
-                resume = saved.positions
-                currentID = feed.items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : feed.items.first?.id
+            // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
+            if let restored = feed.restoreForLaunch() {
+                resume = restored.positions
+                currentID = restored.currentID
                 scrollID = currentID
-                for a in saved.items {
-                    if a.userDigged == 1 { feed.liked.insert(a.id) }
-                    if a.isCollect == 1 { feed.collected.insert(a.id) }
-                }
-                DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0)")
             }
-            if feed.items.isEmpty {
-                // 没有会话：本地缓存好、没看过的按竖横比例挑出来先播
-                let cached = DYVideoCache.pendingSnapshot()
-                if !cached.isEmpty {
-                    feed.seedPool(cached)
-                    feed.fill(6)
-                    for a in cached {
-                        if a.userDigged == 1 { feed.liked.insert(a.id) }
-                        if a.isCollect == 1 { feed.collected.insert(a.id) }
-                    }
-                    currentID = feed.items.first?.id
-                    DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(feed.items.count)/\(cached.count)")
-                }
-            }
-            feed.seedPool(DYVideoCache.pendingSnapshot())
             // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
             if currentIndex != nil { feed.remix(after: currentIndex) }
             await feed.loadMore(bridge)
@@ -2274,44 +2252,11 @@ struct DYUpstreamFeedScreen: View {
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(feed.items) { item in
-                            page(for: item)
-                                // Follow the proposed pane width when search opens;
-                                // only the paging height needs a container-relative size.
-                                .containerRelativeFrame(.vertical)
-                                .id(item.id)
-                        }
-                    }
-                    .scrollTargetLayout()
-                    .background(DYPagingSpeedBridge(ids: feed.items.map(\.id), currentID: $currentID))
+                // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
+                DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
+                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
+                    page(for: item)
                 }
-                .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $scrollID, anchor: .center)
-                .onAppear { scrollID = currentID }
-                .simultaneousGesture(DragGesture(minimumDistance: 8)
-                    .onChanged { value in
-                        if abs(value.translation.height) > abs(value.translation.width) {
-                            if !userScrolling { dragStartID = currentID }
-                            scrollEndTask?.cancel(); userScrolling = true
-                        }
-                    }
-                    .onEnded { _ in
-                        // 下拉不再触发刷新（顶部点击/轻扫会误判成刷新）；刷新走「更多 → 刷新推荐」。
-                        dragStartID = nil
-                        scrollEndTask = Task {
-                            try? await Task.sleep(nanoseconds: 800_000_000)
-                            if !Task.isCancelled { userScrolling = false }
-                        }
-                    })
-                .onChange(of: scrollID) { _, id in
-                    guard let id, feed.items.contains(where: { $0.id == id }) else { return }
-                    if userScrolling { currentID = id }
-                    else if id != currentID { scrollID = currentID }
-                }
-                .scrollIndicators(.hidden)
-                .ignoresSafeArea()
             }
         }
     }
@@ -2343,38 +2288,8 @@ struct DYUpstreamFeedScreen: View {
 
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
     /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
-    private func toggleLike(_ id: String, force: Bool?) {
-        let has = feed.liked.contains(id)
-        let want = force ?? !has
-        guard want != has else { return }
-        if want { feed.liked.insert(id) } else { feed.liked.remove(id) }
-        Task {
-            do {
-                switch try await bridge.digg(id, like: want) {
-                case .ok:
-                    break
-                case .notLoggedIn:
-                    await MainActor.run {
-                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                        showToast("抖音未登录：菜单 → 网页版 / 登录")
-                    }
-                case .failed(let why):
-                    await MainActor.run {
-                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                        showToast("点赞失败：\(why)")
-                    }
-                }
-            } catch {
-                #if DEBUG
-                ddWrite("DDACT digg ERROR \(error)")
-                #endif
-                await MainActor.run {
-                    if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                    showToast("点赞失败：\(error.localizedDescription)")
-                }
-            }
-        }
-    }
+    private func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
+
 
     /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
     private func dislike(_ id: String) {
@@ -2403,46 +2318,13 @@ struct DYUpstreamFeedScreen: View {
     }
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
-    private func toggleCollect(_ id: String) {
-        let has = feed.collected.contains(id)
-        let want = !has
-        if want { feed.collected.insert(id) } else { feed.collected.remove(id) }
-        Task {
-            do {
-                switch try await bridge.favorite(id, add: want) {
-                case .ok:
-                    await MainActor.run { showToast(want ? "已收藏" : "已取消收藏") }
-                case .notLoggedIn:
-                    await MainActor.run {
-                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                        showToast("抖音未登录：菜单 → 网页版 / 登录")
-                    }
-                case .failed(let why):
-                    await MainActor.run {
-                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                        showToast("收藏失败：\(why)")
-                    }
-                }
-            } catch {
-                #if DEBUG
-                ddWrite("DDACT fav ERROR \(error)")
-                #endif
-                await MainActor.run {
-                    if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                    showToast("收藏失败：\(error.localizedDescription)")
-                }
-            }
-        }
-    }
+    private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
+
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
-    private func showToast(_ s: String) {
-        feed.toast = s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-            if feed.toast == s { feed.toast = nil }
-        }
-    }
+    private func showToast(_ s: String) { feed.showToast(s) }
+
 
     /// 当前作品操作留在第一层，全局偏好统一收进设置。
     @ViewBuilder
@@ -2792,7 +2674,6 @@ struct DYClassicFeedScreen: View {
     @State private var currentID: String?
     @State private var scrollID: String?
     @State private var userScrolling = false
-    @State private var dragStartID: String?
     @State private var scrollEndTask: Task<Void, Never>?
     @State private var initialized = false
     @State private var refreshing = false
@@ -2895,33 +2776,12 @@ struct DYClassicFeedScreen: View {
             }
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
-            // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补
-            if feed.items.isEmpty, let saved = DYFeedSession.load() {
-                feed.items = feed.allowedRecommendations(saved.items)
-                resume = saved.positions
-                currentID = feed.items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : feed.items.first?.id
+            // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
+            if let restored = feed.restoreForLaunch() {
+                resume = restored.positions
+                currentID = restored.currentID
                 scrollID = currentID
-                for a in saved.items {
-                    if a.userDigged == 1 { feed.liked.insert(a.id) }
-                    if a.isCollect == 1 { feed.collected.insert(a.id) }
-                }
-                DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0)")
             }
-            if feed.items.isEmpty {
-                // 没有会话：本地缓存好、没看过的按竖横比例挑出来先播
-                let cached = DYVideoCache.pendingSnapshot()
-                if !cached.isEmpty {
-                    feed.seedPool(cached)
-                    feed.fill(6)
-                    for a in cached {
-                        if a.userDigged == 1 { feed.liked.insert(a.id) }
-                        if a.isCollect == 1 { feed.collected.insert(a.id) }
-                    }
-                    currentID = feed.items.first?.id
-                    DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(feed.items.count)/\(cached.count)")
-                }
-            }
-            feed.seedPool(DYVideoCache.pendingSnapshot())
             // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
             if currentIndex != nil { feed.remix(after: currentIndex) }
             await feed.loadMore(bridge)
@@ -3472,41 +3332,12 @@ struct DYClassicFeedScreen: View {
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(feed.items) { item in
-                            page(for: item)
-                                .containerRelativeFrame([.horizontal, .vertical])
-                                .id(item.id)
-                        }
-                    }
-                    .scrollTargetLayout()
+                // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
+                DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
+                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
+                            pageAxes: [.horizontal, .vertical]) { item in
+                    page(for: item)
                 }
-                .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $scrollID, anchor: .center)
-                .onAppear { scrollID = currentID }
-                .simultaneousGesture(DragGesture(minimumDistance: 8)
-                    .onChanged { value in
-                        if abs(value.translation.height) > abs(value.translation.width) {
-                            if !userScrolling { dragStartID = currentID }
-                            scrollEndTask?.cancel(); userScrolling = true
-                        }
-                    }
-                    .onEnded { _ in
-                        // 下拉不再触发刷新（顶部点击/轻扫会误判成刷新）；刷新走「更多 → 刷新推荐」。
-                        dragStartID = nil
-                        scrollEndTask = Task {
-                            try? await Task.sleep(nanoseconds: 800_000_000)
-                            if !Task.isCancelled { userScrolling = false }
-                        }
-                    })
-                .onChange(of: scrollID) { _, id in
-                    guard let id, feed.items.contains(where: { $0.id == id }) else { return }
-                    if userScrolling { currentID = id }
-                    else if id != currentID { scrollID = currentID }
-                }
-                .scrollIndicators(.hidden)
-                .ignoresSafeArea()
             }
         }
     }
@@ -3536,38 +3367,8 @@ struct DYClassicFeedScreen: View {
 
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
     /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
-    private func toggleLike(_ id: String, force: Bool?) {
-        let has = feed.liked.contains(id)
-        let want = force ?? !has
-        guard want != has else { return }
-        if want { feed.liked.insert(id) } else { feed.liked.remove(id) }
-        Task {
-            do {
-                switch try await bridge.digg(id, like: want) {
-                case .ok:
-                    break
-                case .notLoggedIn:
-                    await MainActor.run {
-                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                        showToast("抖音未登录：菜单 → 网页版 / 登录")
-                    }
-                case .failed(let why):
-                    await MainActor.run {
-                        if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                        showToast("点赞失败：\(why)")
-                    }
-                }
-            } catch {
-                #if DEBUG
-                ddWrite("DDACT digg ERROR \(error)")
-                #endif
-                await MainActor.run {
-                    if want { feed.liked.remove(id) } else { feed.liked.insert(id) }
-                    showToast("点赞失败：\(error.localizedDescription)")
-                }
-            }
-        }
-    }
+    private func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
+
 
     /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
     private func dislike(_ id: String) {
@@ -3596,44 +3397,11 @@ struct DYClassicFeedScreen: View {
     }
 
     /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
-    private func toggleCollect(_ id: String) {
-        let has = feed.collected.contains(id)
-        let want = !has
-        if want { feed.collected.insert(id) } else { feed.collected.remove(id) }
-        Task {
-            do {
-                switch try await bridge.favorite(id, add: want) {
-                case .ok:
-                    await MainActor.run { showToast(want ? "已收藏" : "已取消收藏") }
-                case .notLoggedIn:
-                    await MainActor.run {
-                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                        showToast("抖音未登录：菜单 → 网页版 / 登录")
-                    }
-                case .failed(let why):
-                    await MainActor.run {
-                        if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                        showToast("收藏失败：\(why)")
-                    }
-                }
-            } catch {
-                #if DEBUG
-                ddWrite("DDACT fav ERROR \(error)")
-                #endif
-                await MainActor.run {
-                    if want { feed.collected.remove(id) } else { feed.collected.insert(id) }
-                    showToast("收藏失败：\(error.localizedDescription)")
-                }
-            }
-        }
-    }
+    private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
 
-    private func showToast(_ s: String) {
-        feed.toast = s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-            if feed.toast == s { feed.toast = nil }
-        }
-    }
+
+    private func showToast(_ s: String) { feed.showToast(s) }
+
 
     /// 常用设置直接放在更多菜单第一层，省去重复的“设置”入口。
     @ViewBuilder
@@ -4200,6 +3968,7 @@ struct DYClassicVideoPage: View {
     var onEnded: (() -> Void)? = nil
     var onShowFollowing: (() -> Void)? = nil
     var onNavigateLeft: (() -> Void)? = nil
+    /// 已裁成圆形的头像（只在头像加载完时画一次；以前每次 body 重算都重画两遍，滑动时主线程掉帧）
     @State private var authorImage: UIImage?
     @State private var followedOverride: Bool?
     @State private var followBusy = false
@@ -4318,16 +4087,16 @@ struct DYClassicVideoPage: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
             })
         }
-        .onAppear { if isCurrent { visibleVideo.wrappedValue = item } }
+        .onAppear { if isCurrent { publishVisible() } }
         .onReceive(followStates) { states in
             followedOverride = states[item.author.secUid ?? ""] ?? states[item.author.uid ?? ""]
         }
-        .onChange(of: isCurrent) { _, active in if active { visibleVideo.wrappedValue = item } }
+        .onChange(of: isCurrent) { _, active in if active { publishVisible() } }
         .task(id: item.author.avatar) {
             guard let url = item.author.avatar.flatMap(URL.init(string:)) else { authorImage = nil; return }
             let image = await ImageCache.shared.load(url)
             guard !Task.isCancelled else { return }
-            authorImage = image
+            authorImage = image.map(circularAvatar)
         }
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
@@ -4342,6 +4111,13 @@ struct DYClassicVideoPage: View {
                 DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
             }
         }
+    }
+
+    /// 只有关注流需要把「当前可见视频」报给根视图（评论/标签用）；推荐流根视图自己有 currentID。
+    /// 同一条不重复写，避免翻页时根视图多重算一轮。
+    private func publishVisible() {
+        guard visibleVideo.wrappedValue?.id != item.id else { return }
+        visibleVideo.wrappedValue = item
     }
 
     private var danmakuBar: some View {
@@ -4425,7 +4201,7 @@ struct DYClassicVideoPage: View {
     }
 
     private var authorButton: some View {
-        DYAuthorAvatarControl(image: authorImage.map(circularAvatar), name: item.author.name,
+        DYAuthorAvatarControl(image: authorImage, name: item.author.name,
                               onAuthor: onAuthor, follow: followBadge)
             .frame(width: railWidth)
     }
@@ -4473,7 +4249,7 @@ struct DYClassicVideoPage: View {
 
     private func toolbarActions(_ fg: Color) -> DYVideoToolbarActions {
         DYVideoToolbarActions(
-            avatarImage: authorImage.map(circularAvatar), authorName: item.author.name,
+            avatarImage: authorImage, authorName: item.author.name,
             onAuthor: onAuthor, follow: followBadge,
             like: AnyView(railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)),
@@ -5325,3 +5101,111 @@ extension DYFeedModel {
     }
 }
 #endif
+
+// MARK: - 推荐流共用操作（默认/简洁/极简 与 经典 两套根视图共用，别再各写一份）
+
+@MainActor
+extension DYFeedModel {
+    func toggleLike(_ id: String, force: Bool?, bridge: DouyinBridge) {
+        let has = self.liked.contains(id)
+        let want = force ?? !has
+        guard want != has else { return }
+        if want { self.liked.insert(id) } else { self.liked.remove(id) }
+        Task {
+            do {
+                switch try await bridge.digg(id, like: want) {
+                case .ok:
+                    break
+                case .notLoggedIn:
+                    await MainActor.run {
+                        if want { self.liked.remove(id) } else { self.liked.insert(id) }
+                        self.showToast("抖音未登录：菜单 → 网页版 / 登录")
+                    }
+                case .failed(let why):
+                    await MainActor.run {
+                        if want { self.liked.remove(id) } else { self.liked.insert(id) }
+                        self.showToast("点赞失败：\(why)")
+                    }
+                }
+            } catch {
+                #if DEBUG
+                ddWrite("DDACT digg ERROR \(error)")
+                #endif
+                await MainActor.run {
+                    if want { self.liked.remove(id) } else { self.liked.insert(id) }
+                    self.showToast("点赞失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    func toggleCollect(_ id: String, bridge: DouyinBridge) {
+        let has = self.collected.contains(id)
+        let want = !has
+        if want { self.collected.insert(id) } else { self.collected.remove(id) }
+        Task {
+            do {
+                switch try await bridge.favorite(id, add: want) {
+                case .ok:
+                    await MainActor.run { self.showToast(want ? "已收藏" : "已取消收藏") }
+                case .notLoggedIn:
+                    await MainActor.run {
+                        if want { self.collected.remove(id) } else { self.collected.insert(id) }
+                        self.showToast("抖音未登录：菜单 → 网页版 / 登录")
+                    }
+                case .failed(let why):
+                    await MainActor.run {
+                        if want { self.collected.remove(id) } else { self.collected.insert(id) }
+                        self.showToast("收藏失败：\(why)")
+                    }
+                }
+            } catch {
+                #if DEBUG
+                ddWrite("DDACT fav ERROR \(error)")
+                #endif
+                await MainActor.run {
+                    if want { self.collected.remove(id) } else { self.collected.insert(id) }
+                    self.showToast("收藏失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    /// 启动秒开：先恢复上次会话；没有会话就从本地已缓存未看的视频按竖横比例挑 6 条。
+    /// 返回要定位的当前条和各条进度；都没有返回 nil。
+    func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
+        var result: (currentID: String?, positions: [String: Double])?
+        if items.isEmpty, let saved = DYFeedSession.load() {
+            items = allowedRecommendations(saved.items)
+            let cur = items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : items.first?.id
+            result = (cur, saved.positions)
+            markAccountState(saved.items)
+            DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0)")
+        }
+        if items.isEmpty {
+            let cached = DYVideoCache.pendingSnapshot()
+            if !cached.isEmpty {
+                seedPool(cached)
+                fill(6)
+                markAccountState(cached)
+                result = (items.first?.id, [:])
+                DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(items.count)/\(cached.count)")
+            }
+        }
+        seedPool(DYVideoCache.pendingSnapshot())
+        return result
+    }
+
+    private func markAccountState(_ list: [DYAweme]) {
+        for a in list {
+            if a.userDigged == 1 { liked.insert(a.id) }
+            if a.isCollect == 1 { collected.insert(a.id) }
+        }
+    }
+
+    func showToast(_ s: String) {
+        self.toast = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+            guard let self else { return }
+            if self.toast == s { self.toast = nil }
+        }
+    }
+}

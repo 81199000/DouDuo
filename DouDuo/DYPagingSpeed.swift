@@ -67,6 +67,9 @@ final class DYPagingSpeedHost: UIView {
             didSettle: { [weak self] id in self?.didSettle(id) })
         proxy = next
         scroll.delegate = next
+        #if DEBUG
+        ddWrite("DDPAGE attach duration=\(duration)")
+        #endif
     }
     func reconcileAfterLayout() { proxy?.reconcileAfterLayout() }
     func detach() { proxy?.detach(); proxy = nil }
@@ -159,6 +162,9 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         if fraction >= 1 {
             stop()
             // SwiftUI may suppress its final scrollPosition write when there is no native deceleration.
+            #if DEBUG
+            ddWrite("DDPAGE settle id=\(targetID) ms=\(Int((CACurrentMediaTime() - startTime) * 1000))")
+            #endif
             didSettle(targetID)
         }
     }
