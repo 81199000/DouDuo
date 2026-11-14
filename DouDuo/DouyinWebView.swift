@@ -425,7 +425,7 @@ struct DouyinWebContainer: UIViewRepresentable {
         model.attach(wv)
         #if DEBUG
         if DYMessageFixture.enabled && start.path == "/chat" {
-            wv.loadHTMLString(DYMessageFixture.html, baseURL: URL(string: "https://www.douyin.com/chat"))
+            wv.loadHTMLString(DYMessageFixture.page, baseURL: URL(string: "https://www.douyin.com/chat"))
             return wv
         }
         #endif

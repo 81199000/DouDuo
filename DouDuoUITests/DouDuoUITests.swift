@@ -205,6 +205,51 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    func testMessageDraftFailureKeepsNavigationAvailable() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1",
+                                 "DOUDUO_FIXTURE_REJECT_DRAFT": "1", "DOUDUO_CHROME_MODE": "duoClassic"]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        let qinghe = rows.matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+        let other = rows.matching(NSPredicate(format: "label CONTAINS %@", "一起去看海")).firstMatch
+        let editor = app.textViews["douyin.messages.composer.editor"].firstMatch
+        let error = app.descendants(matching: .any).matching(identifier: "douyin.messages.composer.error").firstMatch
+        let back = app.buttons["douyin.messages.back"].firstMatch
+        XCTAssertTrue(qinghe.waitForExistence(timeout: 15))
+        qinghe.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(error.exists)
+        editor.typeText("offline")
+        XCTAssertFalse(error.exists, "Typing must not write to the webpage")
+        app.buttons["douyin.messages.composer.send"].tap() // Offline fixture rejects the draft; no send handler exists.
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+
+        app.buttons["douyin.messages.more"].firstMatch.tap()
+        let close = app.buttons["douyin.messages.options.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        if !other.isHittable { back.tap() }
+        XCTAssertTrue(other.waitForExistence(timeout: 5))
+        other.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header")
+            .matching(NSPredicate(format: "label CONTAINS %@", "一起去看海")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertFalse((editor.value as? String ?? "").contains("offline"))
+        if !qinghe.isHittable { back.tap() }
+        qinghe.tap()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (editor.value as? String ?? "").contains("offline")
+        }, object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        XCTAssertFalse(error.exists)
+    }
+
     func testMessageHideAndRestore() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
