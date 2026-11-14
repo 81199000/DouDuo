@@ -3403,9 +3403,15 @@ final class DouDuoUITests: XCTestCase {
 
 extension DouDuoUITests {
     /// 翻页固定「更快」（维护者定稿，无菜单）：上滑能翻到下一条，且连续翻页后当前视频与列表一致。只读，不点赞不发帖。
-    func testPagingSpeedSettingAndVerticalNavigation() throws {
+    func testPagingSpeedSettingAndVerticalNavigation() throws { try verifyFastPaging(mode: nil) }
+    /// 经典布局以前自己复制了一份分页 ScrollView、漏挂了「更快」收尾；现在四种界面共用 DYFeedPager。
+    func testPagingSpeedClassicLayout() throws { try verifyFastPaging(mode: "duoClassic") }
+
+    private func verifyFastPaging(mode: String?) throws {
         continueAfterFailure = false
         let app = XCUIApplication()
+        if let mode { app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9"]
         app.launch()
         let current = app.staticTexts["douyin.currentID"]
         XCTAssertTrue(current.waitForExistence(timeout: 30))
