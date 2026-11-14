@@ -6,12 +6,12 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DouyinMessages.swift'), 'utf8');
-const bridge = src.match(/static let nativeBridgeJS = #"""\n([\s\S]*?)\n\s*"""#/)[1];
+const bridge = src.match(/static let nativeBridgeJS = officialRuntimeJS \+ #"""\n([\s\S]*?)\n\s*"""#/)[1];
 const work = '7705789488781932361';
 const alice = {uid:'1234567890123456789', nickname:'测试朋友', remark_name:'测试备注', avatar_thumb:{url_list:['https://example.invalid/avatar']},type:1};
 const group = {uid:'2234567890123456789', nickname:'测试群',type:2};
 function fixture(options={}) {
-  const sends = [], timers = [];
+  const sends = [], timers = [], notes = [];
   const list = options.list || [alice,group];
   const confirm = (...args) => {
     sends.push(args);
@@ -33,8 +33,19 @@ function fixture(options={}) {
   const c = {window:{},location:{hostname: options.hostname || 'www.douyin.com',pathname:'/video/'+work},
     document:{querySelector:()=>options.missing ? null : panel},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout:()=>{}};
+  if(options.noteAdapter) c.window.__ddOfficialIM=()=>({
+    buildText:({text})=>({type:7,content:JSON.stringify({text})}),
+    adapter:{sendMessage:request=>{
+      notes.push(request);
+      if(options.noteThrow) throw Error('synthetic note');
+      // The official new-SDK adapter invokes this without checking the function.
+      request.options.beforeSend([[{clientId:'offline-only'}]]);
+      if(!options.noteTimeout) request.options.afterSend([[{res:{success:options.noteSuccess !== false}}]]);
+      return Promise.resolve();
+    }}
+  });
   vm.runInNewContext(bridge,c);
-  return {api:c.window.__ddNativeForward,sends,timers,panel,root};
+  return {api:c.window.__ddNativeForward,sends,notes,timers,panel,root};
 }
 (async()=>{
   let total = 0;
@@ -117,6 +128,43 @@ function fixture(options={}) {
     const list=[alice,group],f=fixture({list});const first=f.api.read(work,true), second=f.api.read(work,true);
     assert.equal(second.items.length,2);assert.equal(f.api.ack(first.revision),false);f.api.ack(second.revision);
     list.pop();const removed=f.api.read(work,true);assert.equal(removed.items.length,0);assert.equal(removed.removed[0],'2|'+group.uid);
+  });
+  await check('note uses official text builder and the exact individual recipient',async()=>{
+    const f=fixture({noteAdapter:true}), text='一起看看 🙂\n第二行';
+    assert.equal((await f.api.send(work,'1|'+alice.uid,text)).state,'sent');
+    assert.equal(f.sends.length,1);assert.equal(f.notes.length,1);
+    assert.equal(f.notes[0].uid,alice.uid);assert.equal(f.notes[0].conversationType,1);
+    assert.equal(JSON.parse(f.notes[0].messageInfo.content).text,text);
+  });
+  await check('new SDK before-send lifecycle does not abort the note',async()=>{
+    const f=fixture({noteAdapter:true});
+    const r=await f.api.send(work,'1|'+alice.uid,'note');
+    assert.equal(r.state,'sent');assert.equal(typeof f.notes[0].options.beforeSend,'function');
+  });
+  await check('group note preserves group ID and kind',async()=>{
+    const f=fixture({noteAdapter:true});assert.equal((await f.api.send(work,'2|'+group.uid,'note')).state,'sent');
+    assert.equal(f.notes[0].conversationId,group.uid);assert.equal(f.notes[0].conversationType,2);assert.equal(f.notes[0].uid,undefined);
+  });
+  await check('unsupported note fails before any video is dispatched',async()=>{
+    const f=fixture();assert.equal((await f.api.send(work,'1|'+alice.uid,'note')).state,'note-unavailable');
+    assert.equal(f.sends.length,0);assert.equal(f.notes.length,0);
+  });
+  await check('rejected video never dispatches the note',async()=>{
+    const f=fixture({noteAdapter:true,success:false});assert.equal((await f.api.send(work,'1|'+alice.uid,'note')).state,'rejected');
+    assert.equal(f.notes.length,0);
+  });
+  await check('partial note failure is never full success and never repeats the video',async()=>{
+    const f=fixture({noteAdapter:true,noteSuccess:false});assert.equal((await f.api.send(work,'1|'+alice.uid,'note')).state,'note-rejected');
+    assert.equal(f.sends.length,1);assert.equal(f.notes.length,1);
+  });
+  await check('note timeout is unconfirmed, not a Promise-based false success',async()=>{
+    const f=fixture({noteAdapter:true,noteTimeout:true}),pending=f.api.send(work,'1|'+alice.uid,'note');
+    for(let i=0;i<6;i++)await Promise.resolve();f.timers.forEach(fn=>fn());
+    assert.equal((await pending).state,'note-unconfirmed');assert.equal(f.sends.length,1);assert.equal(f.notes.length,1);
+  });
+  await check('blank optional note sends only the video',async()=>{
+    const f=fixture();assert.equal((await f.api.send(work,'1|'+alice.uid,'  \n')).state,'sent');
+    assert.equal(f.sends.length,1);assert.equal(f.notes.length,0);
   });
   console.log(`Native forward bridge: ${total} synthetic tests passed; real sends=0`);
 })().catch(e=>{console.error(e);process.exitCode=1;});
