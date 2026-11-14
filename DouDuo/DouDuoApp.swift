@@ -157,7 +157,8 @@ struct LocalVideoPlaybackView: View {
             PlayerPage.external(id: "local", title: url.lastPathComponent, url: url, durationSec: 20,
                                 isActive: true, topInset: 0, bottomInset: 0, resumePosition: nil,
                                 compactChrome: true, onEnded: nil, onDoubleTap: nil,
-                                onSavePosition: { _ in }, onClose: {}, fillWidth: fillWidth)
+                                onSavePosition: { _ in }, onClose: {}, fillWidth: fillWidth,
+                                videoAspect: Double(ProcessInfo.processInfo.environment["DOUDUO_LOCALASPECT"] ?? "") ?? 0)
         }
         .preferredColorScheme(.dark)
     }

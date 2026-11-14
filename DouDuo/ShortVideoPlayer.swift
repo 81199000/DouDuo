@@ -373,6 +373,7 @@ struct PlayerPage: View {
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
     @State private var playbackID = UUID()
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
     @State private var pinchMagnitude: CGFloat = 1
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
@@ -397,13 +398,20 @@ struct PlayerPage: View {
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("douyin.video.backdrop")
             }
+            // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
+            if ambientLevel > 0, vlc == nil, let player {
+                DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("douyin.video.ambient")
+            }
             videoPlane
                 .mask {
                     GeometryReader { geometry in
                         let size = geometry.size
                         let screenAspect = size.width / max(size.height, 1)
                         let aspect = videoAspect > 0 ? videoAspect : screenAspect
-                        let fills = fillWidth && ((aspect < 1) == (screenAspect < 1))
+                        let fills = (fillWidth && ((aspect < 1) == (screenAspect < 1)))
                         let fitted = aspect > screenAspect
                             ? CGSize(width: size.width, height: size.width / aspect)
                             : CGSize(width: size.height * aspect, height: size.height)

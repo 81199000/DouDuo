@@ -3,7 +3,7 @@
 // - 一个看不见的 WKWebView（电脑版 UA）挂在抖音页面上，只当「签名代理」：在页面里发 XHR，
 //   抖音自己的安全 SDK 自动补 a_bogus 等签名，签名算法跟着官方更新走，我们不用逆向。
 // - 登录态与「网页版」共用 WKWebsiteDataStore.default()，在网页版登录后原生模式即带账号。
-// - 推荐流：POST /aweme/v2/web/module/feed/（module_id=3003101，绝大多数竖屏）；
+// - 推荐流：GET /aweme/v1/web/tab/feed/（网页首页「推荐」竖屏流，不用精选 module/feed）；
 //   播放用 /aweme/v1/play/ 链接（302 到 CDN mp4，不需要 cookie，系统播放器直接播）。
 // - 评论：GET /aweme/v1/web/comment/list/。
 import SwiftUI
@@ -177,7 +177,7 @@ struct DYLiveZone: Hashable {
     ].map { DYLiveZone(id: $0.0, type: "1", name: $0.1) }
 }
 
-private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String? }
+private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil }
 private struct DYCommentPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let total: Int; let msg: String? }
 
 enum DYError: LocalizedError {
@@ -357,10 +357,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     func fetchFeed() async throws -> (items: [DYAweme], hasMore: Bool) {
         refreshIndex += 1
-        let d = try await call(Self.feedJS, args: ["refresh": String(refreshIndex),
-                                                   "install": String(Self.installTime),
-                                                   "pull": refreshIndex <= 2 ? "0" : "2"])
-        let p = try JSONDecoder().decode(DYFeedPage.self, from: d)
+        let args: [String: Any] = ["refresh": String(refreshIndex), "install": String(Self.installTime),
+                                   "pull": refreshIndex <= 2 ? "0" : "2"]
+        let p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.tabFeedJS, args: args))
+        DYLiveModel.log("DDFEED idx=\(refreshIndex) \(p.diag ?? "-") more=\(p.hasMore) msg=\(p.msg ?? "-")")
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
         return (p.items, p.hasMore)
@@ -878,18 +878,24 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     };
     """#
 
-    private static let feedJS = #"""
-    const P = Object.assign({}, base, { module_id: '3003101', count: '20', screen_width: '430', screen_height: '932', filterGids: '', presented_ids: '', refresh_index: refresh,
-      refer_id: '', refer_type: '10', pull_type: pull,
-      awemePcRecRawData: JSON.stringify({ is_xigua_user: 0, danmaku_switch_status: 0, is_client: false }),
-      'Seo-Flag': '0', install_time: install, tag_id: '', active_id: '', is_active_tab: 'false', use_lite_type: '0',
-      xigua_user: '0', is_out_feed: '1', enable_ad: '1' });
-    const r = await req('POST', '/aweme/v2/web/module/feed/?' + new URLSearchParams(P).toString(), '');
+    /// 推荐流：网页版首页「推荐」竖屏流（tab/feed）。
+    /// 不用 module/feed（module_id=3003101）：那是网页「精选」，横屏长视频多、偏大众，跟 App 推荐差很远（2026-11 老板实测确认）。
+    private static let tabFeedJS = #"""
+    const P = Object.assign({}, base, { count: '10', refresh_index: refresh, video_type_select: '1',
+      aweme_pc_rec_raw_data: JSON.stringify({ is_client: false, ff_danmaku_status: 0, danmaku_switch_status: 0 }),
+      globalwid: '', pull_type: pull, min_window: '0', free_right: '0', ug_source: '', creative_id: '' });
+    const r = await req('GET', '/aweme/v1/web/tab/feed/?' + new URLSearchParams(P).toString());
     const d = parse(r.t);
-    if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20) });
-    const items = (d.aweme_list || []).filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
-    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null });
+    if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20),
+      diag: 'tab s=' + r.s + ' signed=' + /a_bogus=/.test(r.u || '') + ' len=' + (r.t || '').length });
+    const raw = d.aweme_list || [];
+    const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
+    const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
+    const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
+    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null,
+      diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
+
 
     private static let watchJS = #"""
     const s = await req('POST', '/aweme/v2/web/aweme/stats/?' + q({}),
@@ -1274,6 +1280,7 @@ struct DYUpstreamFeedScreen: View {
     @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
+    @State private var showSettings = false
     @State private var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
@@ -1294,7 +1301,6 @@ struct DYUpstreamFeedScreen: View {
     @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
-    @AppStorage("douyin_muted_v1") private var muted = false
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
@@ -1325,7 +1331,6 @@ struct DYUpstreamFeedScreen: View {
     private let peek = DDPeekInfo.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
-    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1529,6 +1534,12 @@ struct DYUpstreamFeedScreen: View {
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
+        .environment(\.dyOpenSettings, { showSettings = true })
+        .sheet(isPresented: $showSettings) {
+            DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
+                             onRefresh: { Task { await refreshRecommendations() } },
+                             onCacheCleared: { focusCurrent() })
+        }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
             live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
@@ -2326,81 +2337,12 @@ struct DYUpstreamFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 当前作品操作留在第一层，全局偏好统一收进设置。
+    /// 「更多」最后一节：设置（点进完整设置页）。刷新推荐 / 弹幕 / 界面都在设置页里。
     @ViewBuilder
     private func moreExtrasMenu(_ item: DYAweme) -> some View {
-        Section {
-            DYHashtagFilterButton(tags: item.hashtags)
-            Button("刷新推荐", systemImage: "arrow.clockwise") {
-                Task { await refreshRecommendations() }
-            }
-            .disabled(refreshing)
-            Menu {
-                Menu {
-                    Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
-                    Toggle(isOn: $bgPlay) { Label("后台播放（听书）", systemImage: "headphones") }
-                } label: { Label("播放设置", systemImage: "play.circle") }
-                Menu {
-                    Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
-                        .accessibilityIdentifier("douyin.landscape.only")
-                    Menu {
-                        Picker(selection: $feed.shortRatioPortrait) {
-                            Text("不限").tag(-1)
-                            Text("短视频 30%").tag(30)
-                            Text("短视频 50%").tag(50)
-                            Text("短视频 70%").tag(70)
-                            Text("只看短视频").tag(100)
-                        } label: { Label("竖屏短视频占比（3 分钟内）", systemImage: "rectangle.portrait") }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("douyin.short.portrait")
-                        Picker(selection: $feed.shortRatioLandscape) {
-                            Text("不限").tag(-1)
-                            Text("短视频 30%").tag(30)
-                            Text("短视频 50%").tag(50)
-                            Text("短视频 70%").tag(70)
-                            Text("只看短视频").tag(100)
-                        } label: { Label("横屏短视频占比（3 分钟内）", systemImage: "rectangle") }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("douyin.short.landscape")
-                    } label: { Label("高级筛选", systemImage: "line.3.horizontal.decrease") }
-                } label: { Label("内容偏好", systemImage: "slider.horizontal.3") }
-                Menu {
-                    Picker(selection: $cacheCount) {
-                        Text("5 条").tag(5)
-                        Text("10 条").tag(10)
-                        Text("20 条").tag(20)
-                        Text("50 条").tag(50)
-                        Text("100 条").tag(100)
-                        Text("关闭").tag(0)
-                    } label: { Label("预缓存数量", systemImage: "arrow.down.circle") }
-                    .pickerStyle(.menu)
-                    Button("清除视频缓存", systemImage: "trash") {
-                        Task {
-                            let b = await DYVideoCache.shared.clear()
-                            showToast("已清除 \(b / 1024 / 1024) MB")
-                            focusCurrent()
-                        }
-                    }
-                } label: { Label("缓存管理", systemImage: "internaldrive") }
-                Menu {
-                    Button("官网 / 登录（备用入口）", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
-                } label: { Label("账号与登录", systemImage: "person.crop.circle") }
-                Menu {
-                    // 当前版本号：菜单里的灰色说明行，不可点
-                    Text("当前版本 \(DDAppVersion.display)")
-                        .accessibilityIdentifier("douyin.about.version")
-                    Button {
-                        UIApplication.shared.open(DDUpdateChecker.repoURL)
-                    } label: {
-                        Label("开源仓库", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    .accessibilityIdentifier("douyin.about")
-                } label: { Label("关于", systemImage: "info.circle") }
-            } label: {
-                Label("设置", systemImage: "gearshape")
-            }
-        }
+        Section { DYSettingsButton() }
     }
+
 }
 
 
@@ -2696,28 +2638,14 @@ struct DouyinFeedScreen: View {
     }
 }
 
-struct DYChromeModePicker: View {
-    @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
-    var body: some View {
-        Menu {
-            Picker("界面模式", selection: $mode) {
-                ForEach(DDChromeMode.availableCases) { choice in
-                    Label(choice.title, systemImage: choice.symbol).tag(choice.rawValue)
-                }
-            }
-        } label: {
-            Label("界面 · \(DDChromeMode(rawValue: mode)?.title ?? "默认")", systemImage: "rectangle.3.group")
-        }
-        .accessibilityIdentifier("douyin.quick.chrome")
-    }
-}
-
 extension EnvironmentValues {
     @Entry var dyStandaloneBack: (() -> Void)? = nil
 }
 
 @available(iOS 27.1, *)
 struct DYClassicFeedScreen: View {
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
@@ -2735,6 +2663,7 @@ struct DYClassicFeedScreen: View {
     @State private var refreshing = false
     @State private var showComments = false
     @State private var web: DYWebTarget?
+    @State private var showSettings = false
     @State private var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
@@ -2921,6 +2850,12 @@ struct DYClassicFeedScreen: View {
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
+        .environment(\.dyOpenSettings, { showSettings = true })
+        .sheet(isPresented: $showSettings) {
+            DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
+                             onRefresh: { Task { await refreshRecommendations() } },
+                             onCacheCleared: { focusCurrent() })
+        }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
             live.reset(); preloader.clear(); feed.reset(); currentID = nil
@@ -3609,48 +3544,18 @@ struct DYClassicFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 常用设置直接放在更多菜单第一层，省去重复的“设置”入口。
+    /// 经典顶栏「更多」：静音 / 听书在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
     @ViewBuilder
     private var moreExtrasMenu: some View {
         Section {
-            DYHashtagFilterButton(tags: (tab == .follow ? visibleVideo : current)?.hashtags ?? [])
-            DYChromeModePicker()
-            Button("刷新推荐", systemImage: "arrow.clockwise") {
-                Task { await refreshRecommendations() }
-            }
-            .disabled(refreshing)
-            Menu {
-                Picker(selection: $cacheCount) {
-                    Text("5 条").tag(5)
-                    Text("10 条").tag(10)
-                    Text("20 条").tag(20)
-                    Text("50 条").tag(50)
-                    Text("100 条").tag(100)
-                    Text("关闭").tag(0)
-                } label: { Label("预缓存数量", systemImage: "arrow.down.circle") }
-                .pickerStyle(.menu)
-                Button("清除视频缓存", systemImage: "trash") {
-                    Task {
-                        let b = await DYVideoCache.shared.clear()
-                        showToast("已清除 \(b / 1024 / 1024) MB")
-                        focusCurrent()
-                    }
-                }
-            } label: { Label("缓存管理", systemImage: "internaldrive") }
-            Menu {
-                Button("官网 / 登录（备用入口）", systemImage: "safari") { web = DYWebTarget(url: DouyinWeb.home) }
-            } label: { Label("账号与登录", systemImage: "person.crop.circle") }
-            Menu {
-                Button {
-                    UIApplication.shared.open(DDUpdateChecker.repoURL)
-                } label: {
-                    Label("开源仓库", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-                .accessibilityIdentifier("douyin.about")
-                Text("当前版本 \(DDAppVersion.display)")
-            } label: { Label("关于", systemImage: "info.circle") }
+            Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
+                .accessibilityIdentifier("douyin.quick.muted")
+            Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
+                .accessibilityIdentifier("douyin.quick.bgplay")
         }
+        Section { DYSettingsButton() }
     }
+
 }
 
 private extension Double {
@@ -3698,6 +3603,8 @@ struct DYUpstreamVideoPage: View {
     var onEnded: (() -> Void)? = nil
     var onBack: (() -> Void)? = nil
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
+    @AppStorage("douyin_muted_v1") private var muted = false
+    @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
@@ -4038,12 +3945,16 @@ struct DYUpstreamVideoPage: View {
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
-    /// 「更多」：转发 / 下载快捷入口 → 不感兴趣 → 弹幕 → 刷新推荐 / 设置。
+    /// 「更多」：转发 / 不感兴趣 / 下载 → 倍速 / 静音 / 听书 → 发弹幕 → 设置。
     @ViewBuilder
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
             ControlGroup {
                 DYForwardMenu(item: item, bridge: bridge, foreground: fg)
+                if let onDislike {
+                    Button("不感兴趣", systemImage: "hand.thumbsdown") { onDislike() }
+                        .accessibilityIdentifier("douyin.dislike")
+                }
                 Button {
                     save()
                 } label: {
@@ -4052,7 +3963,7 @@ struct DYUpstreamVideoPage: View {
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
             }
-            // 常用播放设置放在「更多」第一层：点「倍速」弹出速度列表，选哪个就切到哪个，当前视频立刻生效
+            // 表层只放跟「正在看的这条」有关的：倍速 / 静音 / 听书。其余全局偏好都在设置页，不重复。
             Section {
                 Menu {
                     Picker("倍速", selection: Binding(
@@ -4064,28 +3975,17 @@ struct DYUpstreamVideoPage: View {
                     Label("倍速 · \(playbackRate == playbackRate.rounded() ? String(format: "%.0f", playbackRate) : String(format: "%g", playbackRate))×", systemImage: "speedometer")
                 }
                 .accessibilityIdentifier("douyin.quick.speed")
-                Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
-                    .accessibilityIdentifier("douyin.quick.autonext")
-                Menu {
-                    Picker("界面模式", selection: $chromeModeRaw) {
-                        ForEach(DDChromeMode.availableCases) { m in
-                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
-                        }
-                    }
-                } label: {
-                    Label("界面 · \(chromeMode.title)", systemImage: "rectangle.3.group")
-                }
-                .accessibilityIdentifier("douyin.quick.chrome")
+                Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
+                    .accessibilityIdentifier("douyin.quick.muted")
+                Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
+                    .accessibilityIdentifier("douyin.quick.bgplay")
             }
-            if let onDislike {
-                Button("不感兴趣", systemImage: "hand.thumbsdown", role: .destructive) { onDislike() }
-                    .accessibilityIdentifier("douyin.dislike")
-            }
-            if item.images.isEmpty {
-                DYDanmakuOptions(onSend: bridge == nil ? nil : {
+            if item.images.isEmpty, bridge != nil {
+                Button("发弹幕", systemImage: "text.bubble") {
                     showDanmakuInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
-                })
+                }
+                .accessibilityIdentifier("douyin.danmaku.open")
             }
             moreExtras
         } label: {

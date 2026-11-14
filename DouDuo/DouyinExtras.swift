@@ -1821,34 +1821,7 @@ extension ToolbarContent {
     }
 }
 
-struct DYDanmakuOptions: View {
-    var onSend: (() -> Void)? = nil
-    @AppStorage("douyin_danmaku_v1") private var enabled = true
-    @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
-    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
 
-    var body: some View {
-        Menu {
-            if let onSend {
-                Button("发弹幕", systemImage: "text.bubble", action: onSend)
-                    .accessibilityIdentifier("douyin.danmaku.open")
-            }
-            Toggle("显示弹幕", isOn: $enabled)
-                .accessibilityIdentifier("douyin.danmaku.enabled")
-            Picker("弹幕密度", selection: $density) {
-                ForEach(DYDanmakuPolicy.Density.allCases) { option in Text(option.title).tag(option.rawValue) }
-            }
-            .accessibilityIdentifier("douyin.danmaku.density")
-            Toggle("10秒内重复去重", isOn: $deduplicate)
-                .accessibilityIdentifier("douyin.danmaku.deduplicate")
-            Text("显示区域：屏幕上方 1/3")
-        } label: {
-            Label("弹幕 · \((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)", systemImage: "text.bubble")
-        }
-        .accessibilityIdentifier("douyin.danmaku.settings")
-        .accessibilityValue("\((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)，去重\(deduplicate ? "开启" : "关闭")")
-    }
-}
 
 #if DEBUG
 private struct DYSelfProfileBackdropPreview: View {

@@ -32,8 +32,10 @@ class UpstreamLiveQualityTests(unittest.TestCase):
         self.assertNotIn("qualityOptions", playback)
 
     def test_short_video_background_setting_is_separate(self):
-        feed = (ROOT / "DouDuo/DouyinFeedView.swift").read_text()
-        self.assertIn('Label("后台播放（听书）"', feed)
+        # 短视频「后台播放（听书）」在完整设置页里，跟直播的后台声音是两个独立开关
+        settings = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
+        self.assertIn('Toggle("听书模式（后台播放）"', settings)
+        self.assertIn('"douyin_bg_play_v1"', settings)
         live = SOURCE.split("private struct DYLiveRoomPage", 1)[1].split("private struct DYLiveCategories", 1)[0]
         self.assertIn('Toggle("后台播放"', live)
         self.assertNotIn("听书", live)
