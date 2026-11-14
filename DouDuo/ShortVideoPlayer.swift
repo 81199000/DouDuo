@@ -366,7 +366,7 @@ struct PlayerPage: View {
     @State private var stalledTicks = 0
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
-    private let playbackID = UUID()
+    @State private var playbackID = UUID()
     @State private var videoScale: CGFloat = 1
     @State private var pinchMagnitude: CGFloat = 1
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
@@ -425,6 +425,8 @@ struct PlayerPage: View {
                 .accessibilityIdentifier("douyin.video.boostStarts")
                 .allowsHitTesting(false)
             if isActive {
+                Text(isPlaying ? "playing" : "paused").font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("douyin.video.playback").allowsHitTesting(false)
                 Text(!pictureInPicture.supported ? "unsupported" : pictureInPicture.active ? "active" : (pictureInPicture.canStart ? "ready" : "waiting"))
                     .font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("douyin.video.pipState").allowsHitTesting(false)
@@ -471,12 +473,23 @@ struct PlayerPage: View {
         .sensoryFeedback(.impact(weight: .light), trigger: rateBoost) { old, new in !old && new }
         .onAppear {
             if player == nil { setup() }
+            #if DEBUG
+            DYSearchPlaybackProbe.register(playbackID, id: id) {
+                ["id": id, "instance": playbackID.uuidString,
+                 "rate": player?.rate ?? (vlc?.isPlaying == true ? 1 : 0),
+                 "time": player?.currentTime().seconds ?? vlc?.current ?? 0,
+                 "ready": firstFrame]
+            }
+            #endif
             boost?.press = { handleLongPress($0) }
             if isActive { bindRemote() }
             DDPlayback.shared.register(playbackID, stop: { pauseForBackground() }, start: { resumeAfterBackground() },
                                        retainsAudioSession: { !DDPlayback.shared.coverHold && pictureInPicture.keepsPlaybackOnExit })
         }
         .onDisappear {
+            #if DEBUG
+            DYSearchPlaybackProbe.unregister(playbackID, id: id)
+            #endif
             DDPlayback.shared.unregister(playbackID)
             teardown()
         }
@@ -531,6 +544,9 @@ struct PlayerPage: View {
         .onChange(of: isActive) { _, active in
             if !active { lockedBoost = false; videoScale = 1; pinchMagnitude = 1 }   // 滑走就解锁：只锁「当前这条」
             if active { bindRemote() }
+            // Returning from a search result is not a request to play a video
+            // the user paused before opening search.
+            if active && userPaused { return }
             if let v = vlc {
                 if active { v.mediaPlayer.audio?.isMuted = muted; v.mediaPlayer.play(); isPlaying = true }
                 else { v.mediaPlayer.pause(); isPlaying = false; onSavePosition(v.current) }
@@ -890,20 +906,21 @@ struct PlayerPage: View {
         imgGen = gen
         attachObservers(p)
         if let r = resumePosition, r > 1 { p.seek(to: CMTime(seconds: r, preferredTimescale: 600)) }
-        if isActive, shouldFastStart(p) {
+        let shouldPlay = isActive && !userPaused
+        if shouldPlay, shouldFastStart(p) {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
             startFast(hd: p)
             return
         }
-        isPlaying = isActive
-        bindSeamlessAudio(to: p, initialPos: (resumePosition ?? 0) > 1 ? resumePosition : nil, active: isActive, playing: isActive)
-        if isActive {
+        isPlaying = shouldPlay
+        bindSeamlessAudio(to: p, initialPos: (resumePosition ?? 0) > 1 ? resumePosition : nil, active: isActive, playing: shouldPlay)
+        if shouldPlay {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
             p.rate = playRate
         }
-        if isActive { watchdog(p) }
+        if shouldPlay { watchdog(p) }
         #if DEBUG
         if isActive {
             let t0 = Date()
@@ -1180,13 +1197,13 @@ struct PlayerPage: View {
                 if let onEnded { onEnded() } else if let v, isActive { v.seekTo(0); v.mediaPlayer.play() }
             }
         }
-        v.play(url: url, autoplay: isActive, headers: DYMedia.headers)
+        v.play(url: url, autoplay: isActive && !userPaused, headers: DYMedia.headers)
         vlc = v
         #if DEBUG
         ddWrite("DDVLC takeover \(id)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { ddWrite("DDVLC \(id) t=\(v.current) playing=\(v.isPlaying)") }
         #endif
-        isPlaying = isActive
+        isPlaying = isActive && !userPaused
     }
 
     private func attachObservers(_ p: AVPlayer) {
