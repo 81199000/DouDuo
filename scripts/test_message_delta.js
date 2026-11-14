@@ -5,7 +5,7 @@ const src=fs.readFileSync(path.join(__dirname,'../DouDuo/DouyinMessages.swift'),
 const read=src.match(/static let conversationsJS = #"""\n([\s\S]*?)\n\s*"""#/)[1];
 const ack=src.match(/static let conversationsAckJS = #"""\n([\s\S]*?)\n\s*"""#/)?.[1];
 function row(id,name='测试会话',avatar='https://example.invalid/a') {
- const e={name,avatar,preview:'合成预览',time:'刚刚',badge:'',__reactFiber$test:{memoizedProps:{conversation:{id,type:1,toParticipantSecUserId:'sec-'+id}}},closest:()=>null};
+ const e={name,avatar,preview:'合成预览',time:'刚刚',badge:'',className:'',streak:null,__reactFiber$test:{memoizedProps:{conversation:{id,type:1,toParticipantSecUserId:'sec-'+id}}},closest:()=>null};
  Object.defineProperty(e,'innerText',{get:()=>e.name+'\n'+e.preview});
  e.querySelector=s=>{
   if(s==='img')return {src:e.avatar};
@@ -13,6 +13,7 @@ function row(id,name='测试会话',avatar='https://example.invalid/a') {
   if(s.includes('HinttextBox'))return {textContent:e.preview};
   if(s.includes('timeStr'))return {textContent:e.time};
   if(s.includes('semi-badge'))return e.badge?{textContent:e.badge}:null;
+  if(s.includes('commonStreakstreakContainer'))return e.streak?{textContent:e.streak.text,querySelector:()=>({src:e.streak.icon})}:null;
   return null;
  };return e;
 }
@@ -42,5 +43,21 @@ test('new conversation transmits only the added row',()=>{
 });
 test('account switch resets delta baseline and invalidates old ACK',()=>{
  const old=scan();context.window.__ddAccountScope='scope-B';const current=scan();assert.equal(current.items.length,2);assert.equal(commit(old.revision),false);commit(current.revision);
+});
+test('streak icon/text and pin changes reach native rows',()=>{
+ rows[0].streak={text:'128',icon:'https://example.invalid/flame.png'};
+ rows[0].className='conversationConversationItemisStickOnTop';
+ const r=scan();assert.equal(r.items.length,1);assert.deepEqual(r.items[0].streak,rows[0].streak);assert.equal(r.items[0].isPinned,true);commit(r.revision);
+ rows[0].streak=null;rows[0].className='';
+ const ended=scan();assert.equal(ended.items[0].streak,null);assert.equal(ended.items[0].isPinned,false);commit(ended.revision);
+});
+test('new message identity and server time survive identical previews',()=>{
+ const c=rows[0].__reactFiber$test.memoizedProps.conversation;
+ c.lastVisibleMessage={serverId:'m1',createdAt:1700000000000};
+ let r=scan();assert.equal(r.items[0].lastMessageID,'m1');assert.equal(r.items[0].lastMessageTime,1700000000);commit(r.revision);
+ c.lastVisibleMessage={serverId:'m2',createdAt:1700000000000};
+ r=scan();assert.equal(r.items.length,1);assert.equal(r.items[0].lastMessageID,'m2');commit(r.revision);
+ delete c.lastVisibleMessage.createdAt;c.lastMessage={createdAt:1700000001};
+ r=scan();assert.equal(r.items[0].lastMessageTime,1700000001);commit(r.revision);
 });
 console.log(`Message delta: ${count} synthetic tests passed; network requests=0`);

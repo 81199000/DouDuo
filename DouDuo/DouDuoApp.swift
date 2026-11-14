@@ -27,6 +27,7 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
         }
         // 自动测试用：DOUDUO_CHROME_MODE=classic|rail|minimal 启动时写入界面模式（不用 -key 启动参数，那会盖住运行时修改）
         if let m = ProcessInfo.processInfo.environment["DOUDUO_CHROME_MODE"] { UserDefaults.standard.set(m, forKey: "douyin_chrome_mode_v1") }
+        if DYMessageFixture.enabled { UserDefaults.standard.set(0.36, forKey: "douyin_message_sidebar_fraction_v1") }
         #endif
         #if DEBUG
         // 自动测试用：DOUDUO_ACTTEST=<aweme_id> → 起播后直接打点赞/收藏接口，结果写 ddlog
@@ -90,7 +91,11 @@ struct DouDuoApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
+            if ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
+                DYForwardLayoutProbe()
+            } else if ProcessInfo.processInfo.environment["DOUDUO_MESSAGE_LAYOUT"] == "1" {
+                DYMessageLayoutProbe()
+            } else if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
                 DYTitleLayoutProbe()
             } else if let target = LocalVideoLaunch.target {
                 LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)

@@ -1415,17 +1415,19 @@ struct DYUserHeader: View {
             Text(t).font(.caption).foregroundStyle(.white.opacity(0.6))
         }
     }
+    @ViewBuilder
     private func statTap(_ n: Int, _ t: String, _ act: (() -> Void)?, _ id: String) -> some View {
-        Button { act?() } label: {
-            HStack(spacing: 4) {
-                Text(DYFormat.count(n)).font(.subheadline.weight(.bold)).foregroundStyle(.white)
-                Text(t).font(.caption).foregroundStyle(.white.opacity(0.6))
+        if let act {
+            Button(action: act) {
+                stat(n, t).contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(id)
+        } else {
+            // Read-only author statistics use the same colors as interactive
+            // account statistics; a disabled Button would dim only these two.
+            stat(n, t).accessibilityIdentifier(id)
         }
-        .buttonStyle(.plain)
-        .disabled(act == nil)
-        .accessibilityIdentifier(id)
     }
 }
 

@@ -150,6 +150,7 @@ struct DouyinWebScreen: View {
 
 @MainActor
 final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    @Published var windowSize: CGSize = .zero
     @Published var canGoBack = false
     @Published var progress: Double = 0
     weak var web: WKWebView?
@@ -369,6 +370,9 @@ struct DouyinWebContainer: UIViewRepresentable {
         if reuseExisting, let existing = model.web { return existing }
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()            // 登录态持久化
+        #if DEBUG
+        if DYMessageFixture.enabled && start.path == "/chat" { cfg.websiteDataStore = .nonPersistent() }
+        #endif
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []
         // 网页全屏按钮走网页自己的全屏（同电脑版），不弹系统播放器；系统播放器退出后网页还以为在全屏，再点就没反应
@@ -401,17 +405,30 @@ struct DouyinWebContainer: UIViewRepresentable {
         })();
         """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let wv = DouyinFitWebView(frame: .zero, configuration: cfg)
+        wv.onWindowSizeChange = { [weak model] size in model?.windowSize = size }
         wv.customUserAgent = DouyinWeb.userAgent
         wv.navigationDelegate = model
         wv.uiDelegate = model
         wv.allowsBackForwardNavigationGestures = true
         wv.isOpaque = false
+        wv.backgroundColor = .clear
+        wv.scrollView.backgroundColor = .clear
+        if start.path == "/chat" {
+            wv.underPageBackgroundColor = .clear
+            wv.scrollView.keyboardDismissMode = .interactive
+        }
         wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.userZoom = zoom
         #if DEBUG
         wv.isInspectable = true
         #endif
         model.attach(wv)
+        #if DEBUG
+        if DYMessageFixture.enabled && start.path == "/chat" {
+            wv.loadHTMLString(DYMessageFixture.html, baseURL: URL(string: "https://www.douyin.com/chat"))
+            return wv
+        }
+        #endif
         wv.load(URLRequest(url: start))
         return wv
     }
@@ -423,11 +440,17 @@ struct DouyinWebContainer: UIViewRepresentable {
 
 /// 把当前宽度和缩放档同步给页面脚本（开合 / 旋转 / 换档 / 每次页面提交都同步一次）
 final class DouyinFitWebView: WKWebView {
+    var onWindowSizeChange: ((CGSize) -> Void)?
+    private var lastWindowSize: CGSize = .zero
     var userZoom: Double = 1 { didSet { if oldValue != userZoom { syncViewport() } } }
     private var lastWidth: CGFloat = 0
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if let size = window?.bounds.size, size != lastWindowSize {
+            lastWindowSize = size
+            DispatchQueue.main.async { [weak self] in self?.onWindowSizeChange?(size) }
+        }
         if abs(bounds.width - lastWidth) > 0.5 { lastWidth = bounds.width; syncViewport() }
     }
 

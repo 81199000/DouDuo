@@ -25,6 +25,29 @@ final class DYMessageCache: ObservableObject {
     /// sec_uid → follow_status（0 未关注 / 1 已关注 / 2 互关），落盘让下次进来分类不闪
     @Published var follow: [String: Int] = [:]
     private var followChecked = Set<String>()
+    /// Local to this account. Hiding never deletes the official conversation or history.
+    @Published private(set) var hiddenConversations: [String: DYConversationRow] = [:]
+
+    func hide(_ row: DYConversationRow) {
+        hiddenConversations[row.id] = row
+        persistHiddenConversations()
+    }
+    func unhide(_ id: String) {
+        guard hiddenConversations.removeValue(forKey: id) != nil else { return }
+        persistHiddenConversations()
+    }
+    func reconcileHiddenConversations(_ rows: [DYConversationRow]) {
+        let restored = rows.filter { row in
+            hiddenConversations[row.id].map { row.hasNewMessage(since: $0) } ?? false
+        }
+        guard !restored.isEmpty else { return }
+        for row in restored { hiddenConversations.removeValue(forKey: row.id) }
+        persistHiddenConversations()
+    }
+    private func persistHiddenConversations() {
+        snapshot.hiddenConversations = hiddenConversations
+        save()
+    }
 
     func isUnfollowed(_ row: DYConversationRow) -> Bool {
         guard !row.stranger, row.kind == 1, let sec = row.sec, !sec.isEmpty else { return false }
@@ -71,6 +94,7 @@ final class DYMessageCache: ObservableObject {
         var follow: [String: Int]?
         var friendCursor: String?
         var friendHasMore: Bool?
+        var hiddenConversations: [String: DYConversationRow]?
     }
     var snapshot = { var s = Snapshot(); s.v = Snapshot.currentV; return s }()
     let chatModel = DouyinWebModel()
@@ -81,11 +105,25 @@ final class DYMessageCache: ObservableObject {
     private var friendsRefreshing = Set<String>()
     private var lastSavedData: Data?
     private var file: URL? {
+        #if DEBUG
+        if DYMessageFixture.enabled { return nil }
+        #endif
         guard !scope.isEmpty else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("message-cache-v3", isDirectory: true).appendingPathComponent(scope + ".json")
     }
     func prepare() async {
+        #if DEBUG
+        if DYMessageFixture.enabled {
+            if scope != DYMessageFixture.scope {
+                scope = DYMessageFixture.scope
+                snapshot = Snapshot()
+                selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
+                follow = [:]; followChecked = []; hiddenConversations = [:]
+            }
+            return
+        }
+        #endif
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
         }
@@ -108,6 +146,7 @@ final class DYMessageCache: ObservableObject {
         }
         selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
         follow = snapshot.follow ?? [:]; followChecked = []
+        hiddenConversations = snapshot.hiddenConversations ?? [:]
         DYPeopleCache.shared.activate(scope: scope)
         if !DYPeopleCache.shared.hasFriendsSnapshot && !snapshot.friends.isEmpty {
             DYPeopleCache.shared.mergeFriends(snapshot.friends, scope: scope)
@@ -197,13 +236,31 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
     var kind: Int?
     /// 单聊对方 sec_uid，用来查关注关系
     var sec: String?
-    /// 时间文案抓取时刻；兼容旧缓存，无值时使用当前时间。
     var observedAt: Double? = nil
+    var streak: DYConversationStreak?
+    var isPinned: Bool?
+    /// Server message time (seconds since 1970), independent of relative labels.
+    var lastMessageTime: Double?
+    var lastMessageID: String?
 }
 
 extension DYConversationRow {
-    /// 相对时间必须锚定抓取时刻，不能在排序比较器里每次重新 Date()。
-    var sortTime: Double { Self.parseTime(time, now: Date(timeIntervalSince1970: observedAt ?? Date().timeIntervalSince1970)) }
+    /// Ignore clock labels, read receipts, pin/name/avatar changes and older pages.
+    func hasNewMessage(since hidden: DYConversationRow) -> Bool {
+        if let current = lastMessageTime, let previous = hidden.lastMessageTime {
+            if current != previous { return current > previous }
+        }
+        if let current = lastMessageID, let previous = hidden.lastMessageID,
+           !current.isEmpty, !previous.isEmpty { return current != previous }
+        return preview != hidden.preview || (Int(badge) ?? 0) > (Int(hidden.badge) ?? 0)
+    }
+
+    var sortTime: Double { sortTime(at: Date()) }
+    func sortTime(at now: Date) -> Double {
+        if let lastMessageTime, lastMessageTime.isFinite, lastMessageTime > 0 { return lastMessageTime }
+        let captured = observedAt.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+        return Self.parseTime(time, now: captured ?? now)
+    }
 
     static func parseTime(_ value: String, now: Date) -> Double {
         let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -222,7 +279,8 @@ extension DYConversationRow {
             guard (0...23).contains(h), (0...59).contains(m) else { return 0 }
             return cal.date(bySettingHour: h, minute: m, second: 0, of: base)?.timeIntervalSince1970 ?? 0
         }
-        if ["现在", "刚刚"].contains(t) { return now.timeIntervalSince1970 }
+        if ["现在", "刚刚", "刚才"].contains(t) { return now.timeIntervalSince1970 }
+        if let p = groups(#"^(\d+)\s*秒前$"#) { return now.timeIntervalSince1970 - Double(p[0]) }
         if let p = groups(#"^(\d+)\s*分钟前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 60 }
         if let p = groups(#"^(\d+)\s*小时前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 3600 }
         if let p = groups(#"^(\d+)\s*天前$"#) { return cal.date(byAdding: .day, value: -p[0], to: day)?.timeIntervalSince1970 ?? 0 }
@@ -253,10 +311,9 @@ extension DYConversationRow {
         return 0
     }
     static func byTimeDesc(_ a: DYConversationRow, _ b: DYConversationRow) -> Bool {
-        let now = Date()
-        let ta = parseTime(a.time, now: a.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
-        let tb = parseTime(b.time, now: b.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
-        return ta != tb ? ta > tb : a.id < b.id
+        if (a.isPinned == true) != (b.isPinned == true) { return a.isPinned == true }
+        let now = Date(), first = a.sortTime(at: now), second = b.sortTime(at: now)
+        return first != second ? first > second : a.id < b.id
     }
 }
 
@@ -333,25 +390,38 @@ enum DYNoticeKind {
 
 // MARK: - 根页
 
-private struct DYChatPaneBoundsKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = nextValue() ?? value
-    }
-}
-
 struct DYMessagesScreen: View {
     @Environment(\.dismiss) private var dismissRoot
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     let bridge: DouyinBridge
     var onClose: (() -> Void)? = nil
     let onWeb: (URL) -> Void
+    var forwardedShare: DYForwardReceipt? = nil
 
     @State private var navigation = DYMessageNavigation()
     @State private var visitedRoutes: Set<DYMsgRoute> = []
     @State private var openingChat: String?
-    @State private var restoringList = false
     @State private var sidebarVisible = false
+    @AppStorage("douyin_message_sidebar_fraction_v1") private var sidebarFraction = 0.36
+    @State private var sidebarWidth: CGFloat = 320
+    @State private var messageSize: CGSize = .zero
+    @State private var messageTopInset: CGFloat = 0
+    @State private var isHalfFolded = false
+    @StateObject private var composer = DYChatComposerModel()
+    @State private var chatAuthor: DYAweme.Author?
+    @State private var showChatOptions = false
+    @State private var changingConversation: String?
+    @State private var deletingConversation: DYConversationRow?
+    @State private var actionError: String?
+    @State private var openedFromShare = false
+    @State private var shareOpenFailed = false
+    @State private var shareOpenAttempt = 0
+    @State private var handledShareRequest = ""
+    private var keepsSharedChatDock: Bool { openedFromShare && chromeModeRaw == DDChromeMode.duoClassic.rawValue }
+    private var compactSidebar: Bool { sidebarVisible && sidebarWidth < 250 }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var chatModel = DYMessageCache.shared.chatModel
@@ -371,36 +441,132 @@ struct DYMessagesScreen: View {
 
     var body: some View {
         NavigationStack {
-            messageContent
-                .accessibilityIdentifier("douyin.messages.root")
-                .modifier(DYSystemTabBar())
-                .navigationTitle(sidebarVisible ? "" : "消息")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    // The message center is a root tab. Only its detail pages go back.
-                    if !navigation.hasDetail && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("返回", systemImage: "chevron.backward") { if let onClose { onClose() } else { dismissRoot() } }
+            GeometryReader { safeGeometry in
+                messageContent
+                    .onChange(of: safeGeometry.safeAreaInsets.top, initial: true) { _, value in messageTopInset = value }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("douyin.messages.root")
+                    .modifier(DYSystemTabBar(hidden: !sidebarVisible && navigation.hasDetail && !keepsSharedChatDock))
+                    .ignoresSafeArea(.container, edges: keepsSharedChatDock ? [.top] : [.top, .bottom])
+                    .navigationTitle("")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .backgroundPreferenceValue(DYMessageRowBoundsKey.self) { bounds in
+                        GeometryReader { geo in
+                            if !sidebarVisible && !navigation.hasDetail, let viewport = bounds["viewport"] {
+                                let visible = geo[viewport]
+                                ForEach(friendConversations.filter { $0.isPinned == true }) { row in
+                                    if let anchor = bounds[row.id] {
+                                        let rect = geo[anchor].intersection(visible)
+                                        if !rect.isNull, rect.height > 0 {
+                                            theme.messages.pinnedRow
+                                                .frame(width: geo.size.width, height: rect.height)
+                                                .position(x: geo.size.width / 2, y: rect.midY)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .ignoresSafeArea(.container, edges: .horizontal)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    }
+                    .background {
+                        GeometryReader { _ in
+                            if sidebarVisible {
+                                Rectangle().fill(.regularMaterial).overlay(theme.messages.sidebarTint)
+                                    .frame(width: sidebarWidth)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .ignoresSafeArea(.all, edges: [.top, .bottom])
+                            } else if !navigation.hasDetail {
+                                theme.messages.sidebarTint.ignoresSafeArea()
+                            }
                         }
                     }
-                    if navigation.hasDetail {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("返回", systemImage: "chevron.backward", action: backFromMessage)
-                                .disabled(openingChat != nil || restoringList)
-                                .accessibilityIdentifier("douyin.messages.back")
+                    .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                    .scrollEdgeEffectHidden(true, for: .all)
+                    .toolbar {
+                        // The message center is a root tab. Only its detail pages go back.
+                        if !navigation.hasDetail && (chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil) {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("返回", systemImage: "chevron.backward") { if let onClose { onClose() } else { dismissRoot() } }
+                                    .tint(.white)
+                            }
+                        }
+                        if navigation.hasDetail {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("返回", systemImage: "chevron.backward", action: backFromMessage)
+                                    .tint(.white)
+                                    .disabled(openingChat != nil)
+                                    .accessibilityIdentifier("douyin.messages.back")
+                            }
+                        }
+                        if navigation.isChat {
+                            if #available(iOS 27.1, *) {
+                                ToolbarItem(placement: .primaryAction) { chatOptionsButton }
+                                    .axisBehavior(.verticalPreferred)
+                                    .visibilityPriority(.high)
+                            } else {
+                                ToolbarItem(placement: .primaryAction) { chatOptionsButton }
+                            }
                         }
                     }
-                }
+            }
 
         }
         .preferredColorScheme(.dark)
+        .overlay {
+            if openingChat == "forwarded-share", let forwardedShare {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("正在打开“\(forwardedShare.contact.name)”")
+                }
+                .padding(24).glassEffect(.regular, in: .rect(cornerRadius: 20))
+            }
+        }
+        .alert("暂未打开会话", isPresented: $shareOpenFailed) {
+            Button("重试") { shareOpenAttempt += 1 }
+            Button("返回", role: .cancel) { onClose?() }
+        } message: { Text("会话可能还在同步，请稍后重试。重试只打开聊天，不会再次发送。") }
+        .task(id: "\(forwardedShare?.id.uuidString ?? "")-\(shareOpenAttempt)") {
+            guard let forwardedShare else { return }
+            let request = "\(forwardedShare.id.uuidString)-\(shareOpenAttempt)"
+            guard handledShareRequest != request else { return }
+            await openSharedConversation(forwardedShare)
+            if !Task.isCancelled { handledShareRequest = request }
+        }
+        .alert("操作未完成", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("好", role: .cancel) { actionError = nil }
+        } message: { Text(actionError ?? "请稍后重试") }
+        .alert("删除这条会话？", isPresented: Binding(get: { deletingConversation != nil }, set: { if !$0 { deletingConversation = nil } })) {
+            Button("删除", role: .destructive) {
+                if let row = deletingConversation { Task { await changeConversation(row, action: .delete) } }
+                deletingConversation = nil
+            }
+            Button("取消", role: .cancel) { deletingConversation = nil }
+        } message: { Text("会话将从消息列表移除。") }
+        .task(id: navigation.chatID) {
+            guard let id = navigation.chatID else { return }
+            while !Task.isCancelled, navigation.chatID == id {
+                if let web = chatModel.web, let snapshot = await DYChatWebBridge.snapshot(web, headerInset: messageTopInset + 72),
+                   snapshot.id == id, navigation.chatID == id {
+                    await composer.refresh(web: web, id: id)
+                    if var row = cache.selectedChat, row.id == id, row.streak != snapshot.streak {
+                        row.streak = snapshot.streak
+                        cache.selectedChat = row
+                        updateConversation(row)
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(composer.isEditing ? 2 : 1)) } catch { return }
+            }
+        }
         .onAppear {
-            if let row = selectedChat, !navigation.hasDetail { navigation.openChat(row.id, from: nil) }
+            if let row = selectedChat { navigation.openChat(row.id, from: navigation.category) }
+            else if navigation.isChat { _ = navigation.back() }
         }
         .task { await loadRoot() }
         .task {
             // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
-            if #available(iOS 27.1, *) { DYLiveModel.log("DDMSG layout=arrangement") } else { DYLiveModel.log("DDMSG layout=legacy") }
+            if #available(iOS 27.1, *) { DYLiveModel.log("DDMSG layout=resizable") } else { DYLiveModel.log("DDMSG layout=legacy") }
             chatModel.onAppMessage = { json in
                 guard let data = json.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
@@ -431,23 +597,15 @@ struct DYMessagesScreen: View {
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc,
                          items: [p.item], start: 0, onAuthor: { _ in })
         }
-        .task {
-            // 预读陌生人面板：入口角标显示真实未读、二级页秒开
-            try? await Task.sleep(for: .seconds(3))
-            // 网页首屏可能还没挂上，最多等 ~20s
-            for _ in 0..<10 {
-                if let web = chatModel.web, let rows = await DYChatOpener.strangerRows(web) {
-                    cache.strangerRows = rows
-                    cache.strangerUnread = rows.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
-                    DYLiveModel.log("DDSTRANGER preload rows=\(rows.count) unread=\(cache.strangerUnread ?? 0)")
-                    break
-                }
-                try? await Task.sleep(for: .seconds(2))
+        .sheet(item: $chatAuthor) { author in
+            NavigationStack {
+                DYAuthorScreen(bridge: bridge, author: author, onWeb: onWeb)
             }
+            .preferredColorScheme(.dark)
         }
         .task {
             while !Task.isCancelled {
-                if selectedChat == nil { await readConversations() }
+                if !navigation.isChat && openingChat == nil && changingConversation == nil { await readConversations() }
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
@@ -464,52 +622,67 @@ struct DYMessagesScreen: View {
         .onDisappear { DYMessageCache.shared.retainChat() }
     }
 
-    /// System split owns pane placement; all details live in a persistent overlay.
-    /// A split may place secondary offscreen on compact displays. In that case the
-    /// selected detail covers primary instead of becoming unreachable.
-    @ViewBuilder
+    /// Both panes keep their identity while resizing. Explicit widths make the
+    /// divider authoritative; ArrangementView treats layout ratios as preferences.
+    @ContentBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
-            ArrangementView {
-                root
-                    .splitArrangementLayoutRatio(0.4)
-                    .layoutPriority(1)
-                    .opacity(!navigation.hasDetail || sidebarVisible ? 1 : 0)
-                    .allowsHitTesting(!navigation.hasDetail || sidebarVisible)
-                    .accessibilityHidden(navigation.hasDetail && !sidebarVisible)
-                    .clipped()
-            } secondary: {
-                ZStack {
-                    Color.black
-                    if !navigation.hasDetail {
-                        VStack(spacing: 10) {
-                            Image(systemName: "bubble.left.and.bubble.right.fill")
-                                .font(.title2).foregroundStyle(.secondary)
-                            Text("选择左侧消息查看详情").font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .anchorPreference(key: DYChatPaneBoundsKey.self, value: .bounds) { $0 }
-            }
-            .arrangementViewStyle(.split.axes(.horizontal))
-            .overlayPreferenceValue(DYChatPaneBoundsKey.self) { anchor in
-                GeometryReader { geo in
-                    let full = CGRect(origin: .zero, size: geo.size)
-                    let candidate = anchor.map { geo[$0] } ?? .zero
-                    let visible = full.intersection(candidate)
-                    let split = !visible.isNull && visible.width > 1 && candidate.minX > 1
-                        && candidate.maxX <= full.maxX + 1
-                    let area = split ? candidate : full
-                    detailPane
-                        .frame(width: max(1, area.width), height: max(1, area.height))
+            GeometryReader { geo in
+                let split = horizontalSizeClass == .regular && DYMessageSidebarLayout.showsSplit(in: geo.size, window: chatModel.windowSize)
+                let folded = isHalfFolded || DYDuoMetrics.foldIsActive(geo)
+                let hinge = DYDuoMetrics.hingeSplit(geo)
+                let foldCenter = hinge.flatMap { $0.book ? ($0.video.maxX + $0.panel.minX) / 2 : nil }
+                    ?? (geo.size.width + geo.safeAreaInsets.trailing - geo.safeAreaInsets.leading) / 2
+                let listWidth = split ? (folded ? foldCenter : DYMessageSidebarLayout.listWidth(fraction: sidebarFraction, in: geo.size.width)) : geo.size.width
+                let detailWidth = split ? geo.size.width - listWidth : geo.size.width
+                let rtl = layoutDirection == .rightToLeft
+                let direction: CGFloat = rtl ? -1 : 1
+                let routeAnimation: Animation? = split ? nil : .easeInOut(duration: reduceMotion ? 0.12 : 0.26)
+                ZStack(alignment: .topLeading) {
+                    root
+                        .frame(width: listWidth, height: geo.size.height)
                         .clipped()
+                        .padding(.trailing, split ? detailWidth : 0)
+                        .offset(x: !split && navigation.hasDetail && !reduceMotion ? -direction * geo.size.width * 0.18 : 0)
+                        .opacity(!navigation.hasDetail || split ? 1 : 0)
+                        .animation(routeAnimation, value: navigation.hasDetail)
+                        .allowsHitTesting(!navigation.hasDetail || split)
+                        .accessibilityHidden(navigation.hasDetail && !split)
+                    if split && !navigation.hasDetail {
+                        ContentUnavailableView("选择一条消息", systemImage: "bubble.left.and.bubble.right",
+                            description: Text("在左侧选择会话，继续聊天。"))
+                            .frame(width: detailWidth, height: geo.size.height)
+                            .padding(.leading, listWidth)
+                    }
+                    detailPane
+                        .frame(width: detailWidth, height: geo.size.height)
+                        .clipped()
+                        // Place the pane in layout coordinates. A visual offset
+                        // leaves Duo's half-fold clipping on the original pane.
+                        .padding(.leading, split ? listWidth : 0)
+                        .offset(x: !split && !navigation.hasDetail && !reduceMotion ? direction * geo.size.width : 0)
                         .opacity(navigation.hasDetail ? 1 : 0.001)
+                        .animation(routeAnimation, value: navigation.hasDetail)
                         .allowsHitTesting(navigation.hasDetail)
                         .accessibilityHidden(!navigation.hasDetail)
-                        .position(x: area.midX, y: area.midY)
-                        .onChange(of: split, initial: true) { _, visible in sidebarVisible = visible }
+                    if split && !folded {
+                        let dragTop = messageTopInset + 72
+                        let dragHeight = max(44, geo.size.height - dragTop - 88)
+                        DYMessageDivider(fraction: $sidebarFraction, width: geo.size.width)
+                            .frame(height: dragHeight)
+                            // Keep the hit target on the chat side so swiping a
+                            // conversation works. Leave the avatar and composer
+                            // clear so the transparent target never swallows taps.
+                            .position(x: rtl ? detailWidth - 22 : listWidth + 22, y: dragTop + dragHeight / 2)
+                    }
                 }
+                .clipped()
+                .onChange(of: split, initial: true) { _, value in sidebarVisible = value }
+                .onChange(of: listWidth, initial: true) { _, value in sidebarWidth = value }
+                .onChange(of: geo.size, initial: true) { _, size in
+                    messageSize = size
+                }
+                .onHingeChange { _, context in isHalfFolded = context.hinge?.status == .partiallyOpen }
             }
             .modifier(DYEdgeSwipeBack(action: backFromMessage))
         } else {
@@ -533,6 +706,7 @@ struct DYMessagesScreen: View {
                     .accessibilityHidden(!navigation.hasDetail)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .onChange(of: geo.size, initial: true) { _, value in messageSize = value }
         }
         .clipped()
         .modifier(DYEdgeSwipeBack(action: backFromMessage))
@@ -549,50 +723,46 @@ struct DYMessagesScreen: View {
         guard let box = strangerConversations.first else { return "非好友发来的私信" }
         return box.preview.isEmpty ? "非好友发来的私信" : box.preview
     }
-    private var friendConversations: [DYConversationRow] { conversations.filter { !$0.stranger && !cache.isUnfollowed($0) } }
+    private var friendConversations: [DYConversationRow] { conversations.filter { !$0.stranger && !cache.isUnfollowed($0) && cache.hiddenConversations[$0.id] == nil } }
     private var unfollowedConversations: [DYConversationRow] { conversations.filter { cache.isUnfollowed($0) } }
     private var strangerConversations: [DYConversationRow] { conversations.filter(\.stranger) }
 
     private var conversationRows: some View {
-        VStack(spacing: 0) {
+        Group {
             if conversations.isEmpty {
                 Text(chatStatus).font(.footnote).foregroundStyle(.secondary).padding(20)
             }
             ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
-                    HStack(spacing: 12) {
-                        CachedAsyncImage(url: row.avatar.flatMap(URL.init(string:))) { image in
-                            image.resizable().scaledToFill()
-                        } placeholder: {
-                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
-                        }
-                        .frame(width: 50, height: 50).clipShape(Circle())
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
-                            Text(row.preview).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 8)
-                        VStack(alignment: .trailing, spacing: 7) {
-                            Text(row.time).font(.caption2).foregroundStyle(.secondary)
-                            if !row.badge.isEmpty {
-                                Text(row.badge).font(.caption2.weight(.bold))
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.red))
-                            }
-                        }
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .contentShape(Rectangle())
+                    DYConversationCell(row: row, compact: compactSidebar)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
-                .background(navigation.chatID == row.id ? theme.media.onMedia.color(for: scheme).opacity(0.1) : .clear)
+                .listRowBackground(navigation.chatID == row.id ? theme.messages.selectedRow : row.isPinned == true ? theme.messages.pinnedRow : .clear)
                 .accessibilityAddTraits(navigation.chatID == row.id ? .isSelected : [])
-                .disabled(openingChat != nil || restoringList)
-                .accessibilityValue(row.stranger ? "stranger" : "friend")
+                .disabled(openingChat != nil || changingConversation != nil)
+                .accessibilityValue(row.isPinned == true ? "已置顶" : "")
+                .anchorPreference(key: DYMessageRowBoundsKey.self, value: .bounds) {
+                    row.isPinned == true ? [row.id: $0] : [:]
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button(row.isPinned == true ? "取消置顶" : "置顶", systemImage: row.isPinned == true ? "pin.slash" : "pin.fill") {
+                        Task { await changeConversation(row, action: row.isPinned == true ? .unpin : .pin) }
+                    }
+                    .tint(.orange)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button("删除", systemImage: "trash", role: .destructive) { deletingConversation = row }
+                    Button("不显示", systemImage: "eye.slash") {
+                        Task { await hideConversation(row) }
+                    }
+                    .tint(.gray)
+                    .accessibilityHint("仅从此账号的本机列表隐藏，收到新消息时恢复，聊天记录保留")
+                }
             }
-            if !friendConversations.isEmpty {
+            // Hidden rows still belong to the official list; keep pagination available
+            // even when every loaded friend conversation is hidden locally.
+            if conversations.contains(where: { !$0.stranger && !cache.isUnfollowed($0) }) {
                 Button("加载更多会话") {
                     Task {
                         _ = try? await chatModel.web?.evaluateJavaScript(Self.scrollConversationsJS)
@@ -603,6 +773,74 @@ struct DYMessagesScreen: View {
                 .font(.footnote).padding(16)
             }
         }
+    }
+
+    private func hideConversation(_ row: DYConversationRow) async {
+        guard changingConversation == nil, openingChat == nil else { return }
+        let account = cache.accountScope
+        changingConversation = row.id
+        defer { changingConversation = nil }
+        if navigation.chatID == row.id {
+            guard await composer.flush(), cache.accountScope == account else { return }
+            openedFromShare = false
+            _ = navigation.back()
+            restoreConversationList()
+        }
+        cache.hide(row)
+    }
+
+    private func updateConversation(_ row: DYConversationRow) {
+        if let index = conversations.firstIndex(where: { $0.id == row.id }) { conversations[index] = row }
+        conversations.sort(by: DYConversationRow.byTimeDesc)
+        cache.snapshot.conversations = conversations
+        cache.save()
+    }
+
+    private func changeConversation(_ row: DYConversationRow, action: DYChatWebBridge.Action) async {
+        guard changingConversation == nil, openingChat == nil, let web = chatModel.web else { return }
+        changingConversation = row.id
+        let scope = cache.accountScope
+        defer { changingConversation = nil }
+        do {
+            try await DYChatOpener.change(row, action: action, web: web)
+            guard cache.accountScope == scope else { return }
+            if action == .delete {
+                cache.unhide(row.id)
+                conversations.removeAll { $0.id == row.id }
+                cache.snapshot.conversations = conversations
+                cache.save()
+                if navigation.chatID == row.id { backFromMessage() }
+            } else {
+                var updated = row
+                updated.isPinned = action == .pin
+                updateConversation(updated)
+                if cache.selectedChat?.id == row.id { cache.selectedChat = updated }
+            }
+            await readConversations()
+        } catch {
+            guard cache.accountScope == scope else { return }
+            actionError = "操作未完成，请刷新会话后重试。"
+        }
+    }
+
+    private var chatOptionsButton: some View {
+        Button("更多", systemImage: "ellipsis") { showChatOptions = true }
+            .tint(.white)
+            .accessibilityIdentifier("douyin.messages.more")
+            .popover(isPresented: $showChatOptions) {
+                if let web = chatModel.web, let id = navigation.chatID {
+                    DYChatOptionsPopover(web: web, conversationID: id) {
+                        Task { await readConversations() }
+                    }
+                    .presentationCompactAdaptation(.popover)
+                    .preferredColorScheme(.dark)
+                }
+            }
+            .onChange(of: showChatOptions) { _, showing in
+                if !showing, let web = chatModel.web, let id = navigation.chatID {
+                    Task { await DYChatWebBridge.closeOptions(web, id: id) }
+                }
+            }
     }
 
     private func readConversations() async {
@@ -635,10 +873,14 @@ struct DYMessagesScreen: View {
                 return next
             }
             let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            if let selected = cache.selectedChat, let row = updated[selected.id], row != selected {
+                cache.selectedChat = row
+            }
             let existing = Set(conversations.map(\.id))
             // 按最后消息时间倒序：有新信息的朋友排最上面
             let merged = (rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
                 .sorted(by: DYConversationRow.byTimeDesc)
+            cache.reconcileHiddenConversations(merged)
             if merged != conversations {
                 conversations = merged
                 DYMessageCache.shared.snapshot.conversations = merged
@@ -657,9 +899,14 @@ struct DYMessagesScreen: View {
     }
 
     private func openConversation(_ row: DYConversationRow) async {
-        guard openingChat == nil, !restoringList else { return }
+        guard openingChat == nil else { return }
+        #if DEBUG
+        let started = Date()
+        defer { DYLiveModel.log("DDCHAT_TIMING open_ms=\(Int(Date().timeIntervalSince(started) * 1000))") }
+        #endif
         openingChat = row.id
         defer { openingChat = nil }
+        guard await composer.flush() else { return }
         guard let web = chatModel.web else { return }
         var result = await DYChatOpener.open(row, web: web)
         if case .notReady = result {
@@ -668,42 +915,88 @@ struct DYMessagesScreen: View {
         }
         switch result {
         case .opened:
+            openedFromShare = false
             cache.selectedChat = row
-            DYLiveModel.log("DDCHAT open stranger=\(row.stranger) name=\(row.name)")
+            DYLiveModel.log("DDCHAT open stranger=\(row.stranger)")
             navigation.openChat(row.id, from: nil)
         case .notReady:
             chatStatus = "私信页面还没加载好，请稍后重试"
-            DYLiveModel.log("DDCHAT open miss dom-not-ready name=\(row.name)")
+            DYLiveModel.log("DDCHAT open miss dom-not-ready")
         case .notFound:
             chatStatus = "会话位置已变化，正在刷新，请再点一次"
             await readConversations()
         }
     }
 
+    private func openSharedConversation(_ receipt: DYForwardReceipt) async {
+        guard openingChat == nil else { return }
+        openingChat = "forwarded-share"
+        defer { openingChat = nil }
+        await cache.prepare()
+        guard cache.accountScope == receipt.accountScope else {
+            actionError = "登录账号已变化，请在消息列表中重新选择会话。"
+            return
+        }
+        guard await composer.flush() else { return }
+        navigation = DYMessageNavigation()
+        cache.selectedChat = nil
+        for _ in 0..<80 {
+            guard !Task.isCancelled, cache.accountScope == receipt.accountScope else { return }
+            if let web = chatModel.web, !web.isLoading {
+                await DYChatOpener.restoreList(web)
+                if let row = await DYChatOpener.openForwarded(receipt.contact, web: web),
+                   cache.accountScope == receipt.accountScope {
+                    cache.unhide(row.id)
+                    cache.selectedChat = row
+                    updateConversation(row)
+                    openedFromShare = true
+                    navigation.openChat(row.id, from: nil)
+                    return
+                }
+                break
+            }
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+        }
+        shareOpenFailed = true
+    }
+
     private func backFromMessage() {
-        guard navigation.hasDetail, openingChat == nil, !restoringList else { return }
-        let wasChat = navigation.isChat
-        if navigation.back() { return }
-        guard wasChat else { return }
-        restoreConversationList()
+        guard navigation.hasDetail, openingChat == nil else { return }
+        #if DEBUG
+        let started = Date()
+        #endif
+        Task {
+            openingChat = "leaving-chat"
+            let ready = await composer.flush()
+            openingChat = nil
+            guard ready else { return }
+            openedFromShare = false
+            let wasChat = navigation.isChat
+            if navigation.back() { return }
+            #if DEBUG
+            DYLiveModel.log("DDCHAT_TIMING back_native_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+            #endif
+            guard wasChat else { return }
+            restoreConversationList()
+        }
     }
 
     private func restoreConversationList() {
-        restoringList = true
+        // Native cached rows are available immediately; web cleanup is serialized below.
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
+        chatModel.web?.endEditing(true)
         Task {
-            defer { restoringList = false }
             if let web = chatModel.web {
-                await DYChatOpener.restoreList(web)
-                if wasStranger { await DYChatOpener.collapseStranger(web) }
+                await DYChatOpener.restoreList(web, collapseStrangerPanel: wasStranger)
             }
             await readConversations()
         }
     }
 
     private func selectCategory(_ route: DYMsgRoute) {
-        guard openingChat == nil, !restoringList else { return }
+        guard openingChat == nil else { return }
+        openedFromShare = false
         visitedRoutes.insert(route)
         let wasChat = navigation.isChat
         navigation.select(route)
@@ -715,7 +1008,8 @@ struct DYMessagesScreen: View {
         ZStack {
             ForEach([DYMsgRoute.interactive, .fans, .system, .stranger], id: \.self) { route in
                 if visitedRoutes.contains(route) {
-                    let active = !restoringList && !navigation.isChat && navigation.category == route
+                    let visible = !navigation.isChat && navigation.category == route
+                    let active = visible
                     Group {
                         if route == .stranger {
                             DYStrangerListScreen(isActive: active, embedded: true,
@@ -727,19 +1021,47 @@ struct DYMessagesScreen: View {
                                 isActive: active, embedded: true)
                         }
                     }
-                    .opacity(active ? 1 : 0)
+                    .offset(x: !sidebarVisible && !reduceMotion && navigation.isChat && navigation.category == route
+                        ? (layoutDirection == .rightToLeft ? 1 : -1) * messageSize.width * 0.18 : 0)
+                    .opacity(visible ? 1 : 0)
+                    .animation(sidebarVisible ? nil : .easeInOut(duration: reduceMotion ? 0.12 : 0.26), value: navigation.isChat)
                     .allowsHitTesting(active)
                     .accessibilityElement(children: .contain)
                     .accessibilityHidden(!active)
                 }
             }
-            DouyinWebContainer(model: chatModel, zoom: 1,
-                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+            chatPane
+                .offset(x: !sidebarVisible && !reduceMotion && navigation.category != nil && !navigation.isChat
+                    ? (layoutDirection == .rightToLeft ? -1 : 1) * messageSize.width : 0)
                 .opacity(navigation.isChat ? 1 : 0.001)
+                .animation(sidebarVisible ? nil : .easeInOut(duration: reduceMotion ? 0.12 : 0.26), value: navigation.isChat)
                 .allowsHitTesting(navigation.isChat)
                 .accessibilityHidden(!navigation.isChat)
-                .accessibilityIdentifier("douyin.messages.chat.detail")
         }
+    }
+
+    private var chatPane: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black
+            DouyinWebContainer(model: chatModel, zoom: 1,
+                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+                .accessibilityIdentifier("douyin.messages.chat.detail")
+            if navigation.isChat, let row = selectedChat {
+                let author: DYAweme.Author? = row.kind == 1 && !(row.sec ?? "").isEmpty
+                    ? .init(name: row.name, avatar: row.avatar, secUid: row.sec) : nil
+                DYChatHeader(row: row, maximumWidth: max(160, messageSize.width - (sidebarVisible ? sidebarWidth : 0) - 24),
+                    onProfile: author.map { target in { chatAuthor = target } })
+                .padding(12)
+                .padding(.top, messageTopInset)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if composer.isConnected(to: navigation.chatID) {
+                DYChatComposer(model: composer, active: navigation.isChat)
+                    .padding(.horizontal, 16).padding(.bottom, composer.bottomInset)
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 
     /// 陌生人聚合项展开后，进第一屏里第一个真实会话（没有则停在陌生人列表，也能返回）
@@ -771,8 +1093,16 @@ struct DYMessagesScreen: View {
         const preview = txt('[class*="HinttextBox"]') || txt('[class*="StrangerBoxdesc"]') || txt('[class*="ConversationItemDescleft"]');
         const time = txt('[class*="timeStr"]') || txt('[class*="TimeStr"]');
         const c = stranger ? null : convOf(e);
+        const lastMessage = c?.lastVisibleMessage || c?.lastMessage;
+        const created = Number(c?.lastVisibleMessage?.createdAt || c?.lastMessage?.createdAt);
+        const messageID = lastMessage?.serverId || lastMessage?.clientId || lastMessage?.id;
+        const lastMessageID = messageID == null ? null : String(messageID);
+        const lastMessageTime = Number.isFinite(created) && created > 0 ? (created > 1e11 ? created / 1000 : created) : null;
         const id = stranger ? 'stranger-aggregate' : typeof c?.id === 'string' && c.id ? 'conversation:' + c.id : name + '|' + (avatar || '') + '|' + stranger;
-        return { id, name, avatar, preview, time, badge: badgeOf(e), index: String(idx), stranger,
+        const flame = e.querySelector('[class*="commonStreakstreakContainer"]');
+        const streak = flame ? {text:flame.textContent.trim(),icon:flame.querySelector('img')?.src || null} : null;
+        return { id, name, avatar, preview, time, badge: badgeOf(e), index: String(idx), stranger, streak, lastMessageTime, lastMessageID,
+                 isPinned: String(e.className || '').includes('isStickOnTop'),
                  kind: c ? Number(c.type) : null, sec: c?.toParticipantSecUserId || null };
       }).filter(x => x.name);
       let state = window.__ddConversationDelta;
@@ -819,34 +1149,20 @@ struct DYMessagesScreen: View {
 
     private var root: some View {
         VStack(spacing: 0) {
-            if sidebarVisible {
-                HStack {
-                    Text("消息").font(.headline)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 16)
-                .frame(height: theme.messages.headerHeight)
-                Divider()
+            HStack {
+                Text("消息").font(compactSidebar ? .headline : .title2.weight(.semibold))
+                Spacer(minLength: 0)
             }
-            ScrollView {
-                LazyVStack(spacing: 0) {
+            .padding(.horizontal, 20)
+            .frame(height: theme.messages.headerHeight)
+            .padding(.top, messageTopInset)
+            .background(theme.messages.sidebarTint)
+            .accessibilityIdentifier("douyin.messages.list.title")
+            Divider()
+            List {
+                Group {
                     friendStrip
-                    entry(icon: "heart.fill", tint: Color(red: 0.95, green: 0.30, blue: 0.55),
-                          title: "互动消息", subtitle: interactSummary,
-                          badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0),
-                          id: "douyin.messages.interactive", selected: navigation.category == .interactive) { selectCategory(.interactive) }
-                    entry(icon: "person.fill", tint: Color(red: 0.25, green: 0.55, blue: 0.95),
-                          title: "粉丝消息", subtitle: fansSummary,
-                          badge: counts[DYNoticeGroup.fans.rawValue] ?? 0,
-                          id: "douyin.messages.fans", selected: navigation.category == .fans) { selectCategory(.fans) }
-                    entry(icon: "bell.fill", tint: Color(red: 0.55, green: 0.55, blue: 0.60),
-                          title: "系统通知", subtitle: (counts[DYNoticeGroup.system.rawValue] ?? 0) > 0 ? "有新通知" : "没有新通知",
-                          badge: counts[DYNoticeGroup.system.rawValue] ?? 0,
-                          id: "douyin.messages.system", selected: navigation.category == .system) { selectCategory(.system) }
-                    entry(icon: "person.crop.circle.badge.questionmark", tint: Color(red: 0.98, green: 0.62, blue: 0.20),
-                          title: "陌生人消息", subtitle: strangerSummary,
-                          badge: strangerBadge,
-                          id: "douyin.messages.stranger", selected: navigation.category == .stranger) { selectCategory(.stranger) }
+                    categoryStrip
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
@@ -856,10 +1172,21 @@ struct DYMessagesScreen: View {
                         .padding(24)
                     }
                 }
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .scrollEdgeEffectHidden(true, for: .all)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .accessibilityIdentifier("douyin.messages.list")
+            .transformAnchorPreference(key: DYMessageRowBoundsKey.self, value: .bounds) { bounds, viewport in
+                bounds["viewport"] = viewport
             }
             .refreshable { await loadRoot() }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(theme.messages.sidebarTint)
         .foregroundStyle(.white)
     }
 
@@ -898,51 +1225,59 @@ struct DYMessagesScreen: View {
         }
     }
 
-    private var interactSummary: String {
-        guard let h = recent.first(where: DYNoticeKind.isInteractive) else { return "没有新互动" }
-        let who = h.name.isEmpty ? "抖音用户" : h.name
-        return "\(who) \(h.action)"
-    }
-
-    private var fansSummary: String {
-        guard let h = recent.first(where: { $0.type == DYNoticeKind.follow }) else {
-            return (counts[DYNoticeGroup.fans.rawValue] ?? 0) > 0 ? "有新的粉丝" : "没有新粉丝"
-        }
-        return "\(h.name) 关注了你"
-    }
-
-    private func entry(icon: String, tint: Color, title: String, subtitle: String, badge: Int,
-                       id: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(tint).frame(width: 50, height: 50)
-                    Image(systemName: icon).font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+    private var categoryStrip: some View {
+        Group {
+            if compactSidebar {
+                Menu {
+                    Button("互动消息", systemImage: "heart") { selectCategory(.interactive) }
+                    Button("粉丝消息", systemImage: "person") { selectCategory(.fans) }
+                    Button("系统消息", systemImage: "bell") { selectCategory(.system) }
+                    Button("陌生人消息", systemImage: "person.crop.circle.badge.questionmark") { selectCategory(.stranger) }
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: "square.grid.2x2").font(.title3)
+                        Text("消息分类").font(.caption2)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 64)
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.body.weight(.semibold)).foregroundStyle(.white)
-                    Text(subtitle).font(.footnote).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                .accessibilityIdentifier("douyin.messages.categories")
+            } else {
+                HStack(alignment: .top, spacing: 0) {
+                    category(.interactive, icon: "heart.fill", tint: .pink,
+                        badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
+                    category(.fans, icon: "person.fill", tint: .blue, badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
+                    category(.system, icon: "bell.fill", tint: .gray, badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
+                    category(.stranger, icon: "person.crop.circle.badge.questionmark", tint: .orange, badge: strangerBadge)
                 }
-                Spacer(minLength: 8)
-                if badge > 0 {
-                    Text(badge > 99 ? "99+" : "\(badge)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.red))
-                }
+                .padding(.horizontal, 8).padding(.vertical, 10)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
-        .accessibilityValue(String(badge))
-        .background(selected ? theme.media.onMedia.color(for: scheme).opacity(0.1) : .clear)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .disabled(openingChat != nil || restoringList)
-        .accessibilityLabel(title)
+    }
+
+    private func category(_ route: DYMsgRoute, icon: String, tint: Color, badge: Int) -> some View {
+        Button { selectCategory(route) } label: {
+            VStack(spacing: 7) {
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white).frame(width: 34, height: 34)
+                    .background(tint, in: .circle)
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            Text(badge > 99 ? "99+" : String(badge)).font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4).padding(.vertical, 2)
+                                .background(theme.accent.color(for: scheme), in: .capsule)
+                                .offset(x: 8, y: -4)
+                        }
+                    }
+                Text(route == .system ? "系统消息" : route.title).font(.caption2)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .foregroundStyle(navigation.category == route ? theme.accent.color(for: scheme) : .primary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .contentShape(.rect)
+        }
+        .accessibilityIdentifier("douyin.messages.\(route)")
+        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : "")
     }
 
     private func loadRoot() async {
@@ -958,6 +1293,9 @@ struct DYMessagesScreen: View {
             conversations = cache.snapshot.conversations.sorted(by: DYConversationRow.byTimeDesc)
         }
         recent = cache.page(700)?.items ?? []
+        #if DEBUG
+        if DYMessageFixture.enabled { return }
+        #endif
         DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count) friends=\(friends.count)")
         if let groups = try? await bridge.noticeCounts() {
             counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
@@ -983,10 +1321,10 @@ struct DYMessagesScreen: View {
         cache.save()
     }
 
-    /// 点朋友头像：打开他的主页（网页版）
+    /// Use the same native author screen as the recommendation feed.
     private func openFriend(_ f: DYFriend) {
-        guard !f.secUid.isEmpty, let u = URL(string: "https://www.douyin.com/user/\(f.secUid)") else { return }
-        onWeb(u)
+        guard !f.secUid.isEmpty else { return }
+        chatAuthor = .init(name: f.name, avatar: f.avatar, secUid: f.secUid)
     }
 }
 
@@ -1445,49 +1783,147 @@ struct DYNoticeListScreen: View {
 enum DYChatOpener {
     enum Result { case opened, notReady, notFound }
 
-    /// 网页私信页只有一个：预读陌生人（展开→采集→收起）和打开会话不能交错，
-    /// 否则预读收起面板时会把刚选中的会话清掉（表现为聊天页一片空白）。
+    /// Serialize DOM mutations. Foreground navigation cancels the scan before
+    /// acquiring this lock; scan cleanup must finish before a new chat opens.
     private static var busy: Task<Void, Never>?
     private static func exclusive<T>(_ work: @escaping @MainActor () async -> T) async -> T {
         while let running = busy { await running.value; if busy == running { busy = nil } }
         var result: T?
         let t = Task { @MainActor in result = await work() }
         busy = t
-        await t.value
+        await withTaskCancellationHandler { await t.value } onCancel: { t.cancel() }
         if busy == t { busy = nil }
         return result!
     }
-    /// 有会话正在打开/显示时，预读直接跳过
-    static var chatVisible = false
+    private static weak var visibleChatWeb: WKWebView?
 
     static func waitFor(_ web: WKWebView, _ selector: String, timeoutMS: Int = 12000) async -> Bool {
         let probe = "document.querySelectorAll(" + jsString(selector) + ").length"
         var waited = 0
-        while waited < timeoutMS {
+        while waited < timeoutMS, !Task.isCancelled {
             // 页面加载中查到的 0 会被误判成「没有会话」
             // evaluateJavaScript 的数字回来是 NSNumber（可能桥成 Double），统一按 NSNumber 取
             if !web.isLoading, let n = (try? await web.evaluateJavaScript(probe)) as? NSNumber, n.intValue > 0 { return true }
-            try? await Task.sleep(for: .milliseconds(300))
-            waited += 300
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
+            waited += 50
         }
         return false
     }
 
-    /// 展开陌生人面板、采集全部陌生人会话后收起。nil = 网页还没就绪 / 找不到陌生人入口
-    static func strangerRows(_ web: WKWebView) async -> [DYConversationRow]? {
-        await exclusive { await strangerRowsUnlocked(web) }
+    private static weak var scanWeb: WKWebView?
+    private static var scanTask: Task<[DYConversationRow]?, Never>?
+    private static var scanID: UUID?
+    private static var scanScope = ""
+    private static weak var cachedWeb: WKWebView?
+    private static var cachedScope = ""
+    private static var cachedRows: [DYConversationRow] = []
+    private static var cachedAt = Date.distantPast
+
+    /// User navigation interrupts the JS scan at its next 25 ms yield. The lock
+    /// stays held until cleanup finishes, so an old scan cannot close a new chat.
+    static func cancelStrangerScan() async {
+        guard let task = scanTask else { return }
+        task.cancel()
+        if let web = scanWeb {
+            _ = try? await web.evaluateJavaScript("window.__ddStrangerScan = null; true")
+        }
+        _ = await task.value
     }
 
-    private static func strangerRowsUnlocked(_ web: WKWebView) async -> [DYConversationRow]? {
-        if chatVisible { return nil }
-        guard await waitFor(web, "[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]") else { return nil }
-        let shown = ((try? await web.callAsyncJavaScript(openStrangerPanelJS, arguments: [:], contentWorld: .page)) as? NSNumber)?.intValue ?? 0
-        guard shown > 0 else { DYLiveModel.log("DDSTRANGER panel not opened"); return [] }
-        let json = try? await web.callAsyncJavaScript(collectStrangerJS, arguments: [:], contentWorld: .page) as? String
-        DYLiveModel.log("DDSTRANGER panel shown=\(shown) collectedBytes=\(json?.count ?? -1)")
+    static func strangerRows(_ web: WKWebView) async -> [DYConversationRow]? {
+        let account = DYMessageCache.shared.accountScope
+        if cachedWeb === web, cachedScope == account, Date().timeIntervalSince(cachedAt) < 60 {
+            #if DEBUG
+            DYLiveModel.log("DDSTRANGER_TIMING cache_hit rows=\(cachedRows.count)")
+            #endif
+            return cachedRows
+        }
+        if let running = scanTask {
+            if scanWeb === web, scanScope == account {
+                let rows = await running.value
+                guard !running.isCancelled, !Task.isCancelled, DYMessageCache.shared.accountScope == account else { return nil }
+                return rows
+            }
+            await cancelStrangerScan()
+        }
+        guard visibleChatWeb !== web, !Task.isCancelled else { return nil }
+        #if DEBUG
+        let started = Date()
+        DYLiveModel.log("DDSTRANGER_TIMING scan_start")
+        #endif
+        let id = UUID()
+        scanID = id
+        scanWeb = web
+        scanScope = account
+        let task = Task { @MainActor () -> [DYConversationRow]? in
+            await exclusive {
+                guard !Task.isCancelled, visibleChatWeb !== web else { return nil }
+                return await strangerRowsUnlocked(web, token: id.uuidString)
+            }
+        }
+        scanTask = task
+        let rows = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+            Task { @MainActor in
+                guard scanID == id else { return }
+                await cancelStrangerScan()
+            }
+        }
+        #if DEBUG
+        DYLiveModel.log("DDSTRANGER_TIMING scan_end_ms=\(Int(Date().timeIntervalSince(started) * 1000)) rows=\(rows?.count ?? 0) cancelled=\(task.isCancelled)")
+        #endif
+        if scanID == id { scanID = nil; scanTask = nil; scanWeb = nil }
+        guard !task.isCancelled, !Task.isCancelled, DYMessageCache.shared.accountScope == account else { return nil }
+        if let rows {
+            cachedWeb = web; cachedScope = account; cachedRows = rows; cachedAt = Date()
+        }
+        return rows
+    }
+
+    private static func scanScript(_ script: String) -> String {
+        let sleep = "const sleep = ms => new Promise(r => setTimeout(r, ms));"
+        let cancellable = """
+        const sleep = async ms => {
+          const end = Date.now() + ms;
+          do {
+            if (window.__ddStrangerScan !== token) throw new Error('scan cancelled');
+            await new Promise(r => setTimeout(r, Math.min(25, Math.max(0, end - Date.now()))));
+          } while (Date.now() < end);
+          if (window.__ddStrangerScan !== token) throw new Error('scan cancelled');
+        };
+        """
+        return "if (window.__ddStrangerScan !== token) throw new Error('scan cancelled');\n" + script.replacingOccurrences(of: sleep, with: cancellable)
+    }
+
+    private static func strangerRowsUnlocked(_ web: WKWebView, token: String) async -> [DYConversationRow]? {
+        guard visibleChatWeb !== web, !Task.isCancelled else { return nil }
+        _ = try? await web.callAsyncJavaScript("window.__ddStrangerScan = token;", arguments: ["token": token], contentWorld: .page)
+        guard await waitFor(web, "[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]"), !Task.isCancelled else { return nil }
+        let shown: Int
+        do {
+            guard let value = try await web.callAsyncJavaScript(scanScript(openStrangerPanelJS), arguments: ["token": token], contentWorld: .page) as? NSNumber else { return nil }
+            shown = value.intValue
+        } catch {
+            #if DEBUG
+            let failure = error as NSError
+            DYLiveModel.log("DDSTRANGER_TIMING scan_error code=\(failure.code)")
+            #endif
+            await collapseStranger(web)
+            return nil
+        }
+        if shown == 0, !Task.isCancelled {
+            await collapseStranger(web)
+            return []
+        }
+        let json: String?
+        if shown > 0, !Task.isCancelled {
+            json = try? await web.callAsyncJavaScript(scanScript(collectStrangerJS), arguments: ["token": token], contentWorld: .page) as? String
+        } else { json = nil }
         await collapseStranger(web)
-        guard let json, let data = json.data(using: .utf8),
-              let rows = try? JSONDecoder().decode([DYConversationRow].self, from: data) else { return [] }
+        guard !Task.isCancelled, let json, let data = json.data(using: .utf8),
+              let rows = try? JSONDecoder().decode([DYConversationRow].self, from: data) else { return nil }
         return rows
     }
 
@@ -1496,23 +1932,61 @@ enum DYChatOpener {
     /// composer, attachment and event-handler subtrees unchanged.
     static let chatChromeCSS = #"""
     :root { --dd-chat-canvas: __DD_CHAT_CANVAS__; --dd-chat-separator: __DD_CHAT_SEPARATOR__; }
-    html, body { width:100%!important; min-width:0!important; height:100%!important; margin:0!important; overflow:hidden!important; background:var(--dd-chat-canvas)!important; }
-    .chatDark { position:fixed!important; inset:0!important; width:100%!important; height:100%!important; max-height:none!important; border:0!important; border-radius:0!important; background:var(--dd-chat-canvas)!important; }
+    html, body { width:100%!important; min-width:0!important; height:100%!important; margin:0!important; overflow:hidden!important; background:transparent!important; }
+    .dd-chat-ancestor { background:transparent!important; }
+    .dd-chat-page-sibling { visibility:hidden!important; pointer-events:none!important; }
+    #douyin-temp-sidebar { display:none!important; }
+    .chatDark { position:fixed!important; inset:0!important; width:100%!important; height:100%!important; max-height:none!important; border:0!important; border-radius:0!important; background:transparent!important; }
     [class*="componentsEntrywrapper"] > .semi-resizable-resizable { display:none!important; }
-    [class*="componentsEntrywrapper"] { box-sizing:border-box!important; min-width:0!important; width:100%!important; height:100%!important; max-height:none!important; margin:0!important; border:0!important; border-radius:0!important; background:var(--dd-chat-canvas)!important; }
-    [class*="componentsRightPanelwrapper"] { box-sizing:border-box!important; width:100%!important; max-width:none!important; flex:1!important; min-width:0!important; min-height:0!important; height:100%!important; background:var(--dd-chat-canvas)!important; }
-    [class*="RightPanelHeaderconvHeader"] { box-sizing:border-box!important; flex-shrink:0!important; background:var(--dd-chat-canvas)!important; border-bottom:1px solid var(--dd-chat-separator)!important; }
-    [class*="componentsRightPanelnotHeaderArea"] { flex:1!important; min-height:0!important; background:var(--dd-chat-canvas)!important; }
-    [class*="messageMessageListwrapper"] { flex:1!important; min-height:0!important; background:var(--dd-chat-canvas)!important; }
-    [class*="messageMessageListlist"] { background:var(--dd-chat-canvas)!important; }
-    [class*="componentsRightPanelinputArea"] { box-sizing:border-box!important; flex-shrink:0!important; background:var(--dd-chat-canvas)!important; border-top:1px solid var(--dd-chat-separator)!important; }
+    [class*="componentsEntrywrapper"] { box-sizing:border-box!important; min-width:0!important; width:100%!important; height:100%!important; max-height:none!important; margin:0!important; border:0!important; border-radius:0!important; background:transparent!important; }
+    [class*="componentsRightPanelwrapper"] { box-sizing:border-box!important; width:100%!important; max-width:none!important; flex:1!important; min-width:0!important; min-height:0!important; height:100%!important; background:transparent!important; }
+    [class*="RightPanelHeaderconvHeader"] { display:none!important; }
+    [class*="componentsRightPanelnotHeaderArea"] { position:relative!important; flex:1!important; min-height:0!important; background:transparent!important; }
+    [class*="messageMessageListwrapper"] { flex:1!important; min-height:0!important; height:100%!important; background:transparent!important; }
+    [class*="messageMessageListlist"] { box-sizing:border-box!important; padding-top:var(--dd-header-inset,72px)!important; padding-bottom:var(--dd-composer-inset,100px)!important; scroll-padding-top:var(--dd-header-inset,72px); scroll-padding-bottom:var(--dd-composer-inset,100px); background:transparent!important; }
+    [class*="componentsRightPanelinputArea"] { position:absolute!important; inset:auto 0 0!important; z-index:2; box-sizing:border-box!important; padding:8px 16px var(--dd-native-composer-bottom,24px)!important; background:transparent!important; border:0!important; }
+    [class*="messageMsgInputcontainer"], [class*="messageMsgInputinputColumn"] { background:transparent!important; border:0!important; padding:0!important; }
+    [class*="messageMsgInputinputRow"] { position:relative!important; box-sizing:border-box!important; width:100%!important; min-height:44px!important; padding:4px 12px!important; border:0!important; border-radius:999px!important; background:#242424!important; align-items:center!important; }
+    html[data-dd-native-composer] [class*="messageMsgInputinputRow"] { height:var(--dd-native-composer-height,44px)!important; opacity:0!important; pointer-events:none!important; }
+    [class*="messageEditorimChatEditorContainer"] { min-width:0!important; flex:1!important; background:transparent!important; }
+    [class*="messageEditorinputArea"] { min-height:28px!important; max-height:160px!important; overflow-y:auto!important; background:transparent!important; border:0!important; }
+    [class*="messageMsgInputinputAction"] { flex-shrink:0!important; background:transparent!important; }
+    html[data-dd-row-action] [class*="ConversationItemMenuwrapper"] { visibility:hidden!important; pointer-events:none!important; }
+    [class*="conversationConversationInfowrapper"] { position:absolute!important; right:0!important; width:300px!important; visibility:hidden!important; pointer-events:none!important; }
     """#
 
+    static func change(_ row: DYConversationRow, action: DYChatWebBridge.Action, web: WKWebView) async throws {
+        await cancelStrangerScan()
+        let success = await exclusive {
+            do { try await DYChatWebBridge.change(row, action: action, web: web); return true }
+            catch { return false }
+        }
+        if !success { throw DYChatWebBridge.BridgeError.unavailable }
+    }
+
     static func open(_ row: DYConversationRow, web: WKWebView) async -> Result {
-        await exclusive {
+        await cancelStrangerScan()
+        return await exclusive {
             let r = await openUnlocked(row, web: web)
-            if case .opened = r { chatVisible = true }
+            if case .opened = r { visibleChatWeb = web }
             return r
+        }
+    }
+
+    static func openForwarded(_ contact: DYForwardContact, web: WKWebView) async -> DYConversationRow? {
+        await cancelStrangerScan()
+        return await exclusive {
+            visibleChatWeb = web
+            guard await waitFor(web, "[class*=\"componentsEntrywrapper\"], [data-e2e=\"conversation-item\"]"),
+                  let json = try? await web.callAsyncJavaScript(DYForwardWebModel.officialRuntimeJS + DYForwardConversation.resolveJS,
+                    arguments: ["recipient": contact.id, "kind": contact.kind, "secUid": contact.secUid ?? "",
+                        "name": contact.name, "avatar": contact.avatar ?? ""], contentWorld: .page) as? String,
+                  let data = json.data(using: .utf8), let row = try? JSONDecoder().decode(DYConversationRow.self, from: data),
+                  case .opened = await openUnlocked(row, web: web) else {
+                visibleChatWeb = nil
+                return nil
+            }
+            return row
         }
     }
 
@@ -1531,7 +2005,18 @@ enum DYChatOpener {
           const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent || '').trim();
           const find = () => {
             const rows = [...document.querySelectorAll('[data-e2e="conversation-item"]')].filter(e => (stranger === '1') === inStranger(e));
-            return rows.find(e => titleOf(e) === name && (!avatar || e.querySelector('img')?.src === avatar)) || rows.find(e => titleOf(e) === name);
+            if (id.startsWith('conversation:')) {
+              const exact = rows.find(e => {
+                let f=e[Object.keys(e).find(k=>k.startsWith('__reactFiber'))];
+                for(let i=0;f && i<8;i++,f=f.return) if(f.memoizedProps?.conversation) return 'conversation:'+f.memoizedProps.conversation.id === id;
+                return false;
+              });
+              return exact || null;
+            }
+            const exact = rows.filter(e => titleOf(e) === name && (!avatar || e.querySelector('img')?.src === avatar));
+            if(exact.length === 1) return exact[0];
+            const named=rows.filter(e=>titleOf(e) === name);
+            return named.length === 1 ? named[0] : null;
           };
           let row = find();
           // 虚拟列表：不在可视区就逐屏往下找
@@ -1554,6 +2039,16 @@ enum DYChatOpener {
           let style = document.getElementById('dd-chat-only');
           if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
           style.textContent = appearanceCSS;
+          window.__ddNativeChatID = id;
+          // The website also paints backdrops outside the IM ancestor chain.
+          // Hide those existing siblings so transparent input chrome exposes
+          // the native glass rather than the site's full-width page canvas.
+          for (let e=document.querySelector('[class*="componentsEntrywrapper"]');e?.parentElement;e=e.parentElement) {
+            e.parentElement.classList.add('dd-chat-ancestor');
+            for (const sibling of e.parentElement.children) {
+              if (sibling !== e && !['HEAD','STYLE','SCRIPT','LINK','META'].includes(sibling.tagName)) sibling.classList.add('dd-chat-page-sibling');
+            }
+          }
           window.__wuweiMinWidth = 320;
           window.__wuweiFixViewport?.();
           window.dispatchEvent(new Event('resize'));
@@ -1563,15 +2058,19 @@ enum DYChatOpener {
         let appearanceCSS = chatChromeCSS
             .replacingOccurrences(of: "__DD_CHAT_CANVAS__", with: colors.canvasCSS)
             .replacingOccurrences(of: "__DD_CHAT_SEPARATOR__", with: colors.separatorCSS)
-        let r = try? await web.callAsyncJavaScript(script, arguments: ["name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": appearanceCSS], contentWorld: .page)
+        let r = try? await web.callAsyncJavaScript(script, arguments: ["id": row.id, "name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": appearanceCSS], contentWorld: .page)
         if (r as? String) == "ok" { return .opened }
-        DYLiveModel.log("DDCHAT opener miss name=\(row.name) stranger=\(row.stranger) r=\(String(describing: r))")
+        DYLiveModel.log("DDCHAT opener miss stranger=\(row.stranger)")
         return .notFound
     }
 
-    static func restoreList(_ web: WKWebView) async {
-        chatVisible = false
-        _ = try? await web.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); window.__wuweiMinWidth=760; window.__wuweiFixViewport?.(); window.dispatchEvent(new Event('resize')); true")
+    static func restoreList(_ web: WKWebView, collapseStrangerPanel: Bool = false) async {
+        await cancelStrangerScan()
+        await exclusive {
+        visibleChatWeb = nil
+        _ = try? await web.evaluateJavaScript("document.getElementById('dd-chat-only')?.remove(); document.querySelectorAll('.dd-chat-ancestor').forEach(e=>e.classList.remove('dd-chat-ancestor')); document.querySelectorAll('.dd-chat-page-sibling').forEach(e=>e.classList.remove('dd-chat-page-sibling')); window.__ddNativeChatID=null; delete document.documentElement.dataset.ddNativeComposer; document.querySelectorAll('[class*=messageMsgInputinputRow]').forEach(e=>e.removeAttribute('aria-hidden')); document.querySelectorAll('[class*=messageMsgInputinputRow] [contenteditable]').forEach(e=>e.removeAttribute('inputmode')); true")
+        if collapseStrangerPanel { await collapseStranger(web) }
+        }
     }
 
     private static func jsString(_ s: String) -> String {
@@ -1591,8 +2090,13 @@ enum DYChatOpener {
     """#
 
     static func collapseStranger(_ web: WKWebView) async {
-        _ = try? await web.evaluateJavaScript(collapseStrangerJS)
-        try? await Task.sleep(for: .milliseconds(300))
+        guard let result = try? await web.evaluateJavaScript(collapseStrangerJS) as? String,
+              result != "closed" else { return }
+        for _ in 0..<20 {
+            let open = (try? await web.evaluateJavaScript("!!document.querySelector('[class*=StrangerConversationListhead]')")) as? Bool ?? false
+            if !open { return }
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+        }
     }
 
     /// 主列表是虚拟列表，「陌生人消息」聚合项可能不在可视区：先从顶部逐屏找到它，再调 React onClick 展开。
@@ -1619,21 +2123,27 @@ enum DYChatOpener {
       const k = Object.keys(box).find(k => k.startsWith('__reactProps'));
       if (k && box[k].onClick) box[k].onClick({ stopPropagation(){}, preventDefault(){}, currentTarget: box, target: box }); else box.click();
     }
-    // 冷启动时面板先只挂第一行、几秒后才补齐：至少等 3s，且行数连续 2s 不变
-    let last = -1, stable = 0, waited = 0;
-    while (waited < 12000) {
+    // Opening a chat only needs the first mounted row; full collection owns pagination.
+    for (let waited = 0; waited < 12000; waited += 50) {
       const n = document.querySelectorAll(rowSel).length;
-      stable = (n > 0 && n === last) ? stable + 1 : 0; last = n;
-      if (stable >= 7 && waited >= 3000) break;
-      await sleep(300); waited += 300;
+      if (n > 0) return n;
+      await sleep(50);
     }
-    return last;
+    return 0;
     """#
 
     /// 逐屏滚动虚拟列表采集全部陌生人会话（callAsyncJavaScript 函数体，可 await）
     private static let collectStrangerJS = #"""
     const sel = '[class*="StrangerConversationList"] [data-e2e="conversation-item"]';
     const sleep = ms => new Promise(r => setTimeout(r, ms));
+    // A cold panel may initially mount only one row. Stabilization belongs to
+    // this cancellable background collection, never the foreground chat opener.
+    if (document.querySelectorAll(sel).length <= 1) {
+      for (let waited = 0; waited < 4000; waited += 100) {
+        await sleep(100);
+        if (document.querySelectorAll(sel).length > 1) break;
+      }
+    }
     const wrap = document.querySelector('[class*="StrangerConversationListlistWrapper"]');
     const sc = wrap && [wrap, ...wrap.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5);
     const seen = new Map();
@@ -1648,7 +2158,7 @@ enum DYChatOpener {
       const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"]');
       const badge = b && b.textContent.trim() ? b.textContent.trim() : (e.querySelector('[class*="UnReadCount"]') ? '•' : '');
       const y = e.getBoundingClientRect().top + (sc ? sc.scrollTop : 0);
-      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), badge, index: '0', stranger: true, _y: y, _o: order++ });
+      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), observedAt: Date.now()/1000, badge, index: '0', stranger: true, _y: y, _o: order++ });
     });
     grab();
     if (sc) {
@@ -1684,10 +2194,10 @@ struct DYStrangerListScreen: View {
     @State private var status = "正在读取陌生人消息…"
     @State private var opening: String?
 
-    /// 先放主列表里「我没关注」的人（较新），再放网页陌生人面板里的人
+    /// Merge both sources, then keep the same pin/time ordering as the main list.
     private var allRows: [DYConversationRow] {
         let ids = Set(cache.unfollowedRows.map(\.id))
-        return cache.unfollowedRows + cache.strangerRows.filter { !ids.contains($0.id) }
+        return (cache.unfollowedRows + cache.strangerRows.filter { !ids.contains($0.id) }).sorted(by: DYConversationRow.byTimeDesc)
     }
 
     @ViewBuilder var body: some View {
@@ -1721,7 +2231,7 @@ struct DYStrangerListScreen: View {
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .overlay { if opening != nil { ProgressView().tint(.white) } }
-        .task(id: isActive) { if isActive { await refresh() } }
+        .task(id: isActive) { if isActive { await refresh() } else { await DYChatOpener.cancelStrangerScan() } }
     }
 
     private func refresh() async {
@@ -1737,29 +2247,7 @@ struct DYStrangerListScreen: View {
     }
 
     private func line(_ row: DYConversationRow) -> some View {
-        HStack(spacing: 12) {
-            CachedAsyncImage(url: row.avatar.flatMap(URL.init(string:))) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
-            }
-            .frame(width: 50, height: 50).clipShape(Circle())
-            VStack(alignment: .leading, spacing: 5) {
-                Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
-                Text(row.preview).font(.footnote).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 7) {
-                Text(row.time).font(.caption2).foregroundStyle(.white.opacity(0.45))
-                if !row.badge.isEmpty {
-                    Text(row.badge).font(.caption2.weight(.bold))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Color.red))
-                }
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .contentShape(Rectangle())
+        DYConversationCell(row: row)
     }
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。
@@ -1813,6 +2301,9 @@ struct DYForwardScreen: View {
     @StateObject private var model = DYForwardWebModel.cachedNative
     @State private var accountPrepared = false
     @State private var selected: DYForwardContact?
+    @State private var shareNote = ""
+    @State private var panelVisible = false
+    @Environment(\.dyForwardCompletion) private var shareCompleted
     @State private var showContacts = false
     @State private var groupsOnly = false
     @State private var query = ""
@@ -1838,9 +2329,10 @@ struct DYForwardScreen: View {
     }
     private var classicPanel: some View {
         DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
-                             status: accountPrepared ? (saveMessage ?? (copiedLink ? "链接已复制" : model.message)) : "正在加载朋友…", actions: actions,
-                             onContact: { if !model.sending { selected = $0 } },
-                             onAction: perform, onClose: { if !model.sending { dismiss() } })
+                             status: accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : saveMessage ?? (copiedLink ? "链接已复制" : model.message))) : "正在加载朋友…", actions: actions,
+                             onContact: selectRecipient,
+                             onAction: perform, onClose: { dismiss() },
+                             selectedID: selected?.id, composer: shareComposer)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background {
                 // Only the system sheet draws glass. Keep the signing/sending
@@ -1858,11 +2350,12 @@ struct DYForwardScreen: View {
         GeometryReader { geo in
             ZStack {
                 theme.media.strongScrim.color(for: scheme).opacity(0.24).ignoresSafeArea()
-                    .onTapGesture { if !model.sending { dismiss() } }
+                    .onTapGesture { dismiss() }
                 DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
-                                     status: accountPrepared ? model.message : "正在恢复朋友缓存…", actions: accountPrepared ? actions : [],
-                                     onContact: { if !model.sending { selected = $0 } },
-                                     onAction: perform, onClose: { if !model.sending { dismiss() } })
+                                     status: accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : model.message)) : "正在恢复朋友缓存…", actions: accountPrepared ? actions : [],
+                                     onContact: selectRecipient,
+                                     onAction: perform, onClose: { dismiss() },
+                                     selectedID: selected?.id, composer: shareComposer)
                     .frame(width: max(0, min(560, geo.size.width - 32)))
                 // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
                 if accountPrepared && !model.layoutFixture {
@@ -1880,24 +2373,17 @@ struct DYForwardScreen: View {
         Group {
             if usesClassicLayout { classicPanel } else { upstreamPanel }
         }
-        .interactiveDismissDisabled(model.sending)
         .task(id: copiedLink) {
             guard copiedLink else { return }
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
             copiedLink = false
         }
-        .alert("确认转发", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
-            if let target = selected {
-                Button("发送") { selected = nil; Task { await model.send(to: target, itemURL: item.webURL) } }
-                Button("取消", role: .cancel) { selected = nil }
-            }
-        } message: { Text("将当前作品发送给“\(selected?.name ?? "")”？") }
         .sheet(isPresented: $showContacts) {
             NavigationStack {
                 List(visibleContacts) { contact in
                     Button {
                         showContacts = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { selected = contact }
+                        selectRecipient(contact)
                     } label: {
                         HStack {
                             CachedAsyncImage(url: contact.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
@@ -1915,8 +2401,30 @@ struct DYForwardScreen: View {
         .sheet(isPresented: $showLogin, onDismiss: { Task { await restorePeople() } }) { DYForwardOfficialScreen(item: item) }
         .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
         .task { await restorePeople() }
-        .onAppear { if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) } }
-        .onDisappear { if !usesClassicLayout { DDPlayback.shared.releaseCover() } }
+        .onAppear { panelVisible = true; if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) } }
+        .onDisappear {
+            panelVisible = false
+            model.cancelPreparation()
+            if !usesClassicLayout { DDPlayback.shared.releaseCover() }
+        }
+    }
+    private var shareComposer: AnyView? {
+        guard let selected else { return nil }
+        return AnyView(DYForwardCompose(contact: selected, item: item, note: $shareNote, sending: model.sending,
+            requiresVerification: model.requiresVerification(selected, itemURL: item.webURL)) {
+            Task {
+                if let receipt = await model.send(to: selected, itemURL: item.webURL, note: shareNote) {
+                    shareCompleted?(receipt)
+                    shareNote = ""
+                    if panelVisible { dismiss() }
+                }
+            }
+        })
+    }
+    private func selectRecipient(_ contact: DYForwardContact) {
+        guard !model.sending else { return }
+        selected = selected?.id == contact.id ? nil : contact
+        model.sendIssue = nil
     }
     private func restorePeople() async {
         if model.layoutFixture { accountPrepared = true; return }
@@ -2002,11 +2510,15 @@ struct DYForwardOfficialScreen: View {
     @Published var contacts: [DYForwardContact] = []
     @Published var loginRequired = false
     @Published var sending = false
+    @Published var sendIssue: String?
+    @Published private(set) var unconfirmedShares = Set<String>()
     let nativeOnly: Bool
     let layoutFixture: Bool
     var expectedID = ""
     weak var web: WKWebView?
     var retainedWeb: WKWebView?
+    private var preparationCancelled = false
+    private var dispatched = false
     private var readyForSend = false
     private var bridgeFailed = false
     private var navigationGeneration = UUID()
@@ -2023,6 +2535,11 @@ struct DYForwardOfficialScreen: View {
         #if DEBUG && targetEnvironment(simulator)
         if layoutFixture {
             contacts = (1...9).map { .init(id: "layout-fixture-\($0)", name: "合成测试\($0)", avatar: nil, kind: $0 == 9 ? 2 : 1) }
+            if DYMessageFixture.enabled {
+                contacts = [.init(id: "1|fixture-user-a", name: ProcessInfo.processInfo.environment["DOUDUO_FORWARD_LONG_NAMES"] == "1" ? "用于验证动态字体与两行截断的长联系人名称" : "青禾", avatar: nil, kind: 1),
+                    .init(id: "2|fixture-group", name: "一起去看海", avatar: nil, kind: 2)]
+                accountScope = DYMessageFixture.scope
+            }
             loading = false; message = "合成布局测试（不会发送消息）"
         }
         #endif
@@ -2040,7 +2557,7 @@ struct DYForwardOfficialScreen: View {
         loading = !cache.hasContactsSnapshot
         message = cache.hasContactsSnapshot ? "已恢复朋友缓存，后台同步变化" : "正在加载分享联系人…"
         DYLiveModel.log("DDPEOPLE restore contacts=\(contacts.count) warm=\(retainedWeb != nil)")
-        if let web {
+        if let web, !sending {
             // 官网没有好友变更游标：温上下文仅本地差异扫描，最多每5分钟后台校准一次来源快照。
             if lastRemoteRefresh.map({ Date().timeIntervalSince($0) >= 300 }) ?? true { web.reload() }
             else { openPanel() }
@@ -2050,52 +2567,99 @@ struct DYForwardOfficialScreen: View {
         let state: String; let items: [DYForwardContact]
         let isDelta: Bool?; let removed: [String]?; let revision: String?
     }
-    func send(to contact: DYForwardContact, itemURL: URL) async {
-        guard !layoutFixture else { message = "合成布局测试：未发送任何消息"; return }
-        guard !sending, contacts.contains(where: { $0.id == contact.id }) else { return }
+    func send(to contact: DYForwardContact, itemURL: URL, note: String = "") async -> DYForwardReceipt? {
+        #if DEBUG && targetEnvironment(simulator)
+        if layoutFixture && DYMessageFixture.enabled && ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
+            guard !sending, contacts.contains(contact) else { return nil }
+            sending = true; preparationCancelled = false; dispatched = false
+            defer { sending = false; dispatched = false }
+            let delay = ProcessInfo.processInfo.environment["DOUDUO_SHARE_DELAY"]
+            dispatched = delay == "dispatched"
+            try? await Task.sleep(for: .milliseconds(delay == nil ? 350 : 5000))
+            guard !preparationCancelled, !Task.isCancelled else { return nil }
+            dispatched = true
+            return DYForwardReceipt(state: "sent", source: "callback", contact: contact,
+                workID: itemURL.lastPathComponent, accountScope: DYMessageFixture.scope)
+        }
+        #endif
+        guard !layoutFixture else { message = "合成布局测试：未发送任何消息"; return nil }
+        guard !sending, !requiresVerification(contact, itemURL: itemURL), contacts.contains(where: { $0.id == contact.id }) else { return nil }
         let account = accountScope, target = itemURL.lastPathComponent
+        var confirmed = false
+        sendIssue = nil
+        preparationCancelled = false; dispatched = false
         sending = true; message = "正在准备转发…"
-        defer { if accountScope == account { sending = false } }
-        let deadline = Date().addingTimeInterval(40)
+        defer { if accountScope == account { sending = false; dispatched = false; if !confirmed { sendIssue = message } } }
+        await DYMessageCache.shared.prepare()
+        guard DYMessageCache.shared.accountScope == account else { message = "登录账号已变化，尚未发送，请重新打开分享"; return nil }
+        let deadline = Date().addingTimeInterval(15)
         while web == nil && Date() < deadline {
-            guard !Task.isCancelled, accountScope == account else { return }
+            guard !Task.isCancelled, !preparationCancelled, accountScope == account else { return nil }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        guard let web, accountScope == account else { return }
-        if expectedID != target || web.url?.path != itemURL.path {
+        guard let web, accountScope == account else { return nil }
+        // A navigation to this work may already be in flight. Do not restart it.
+        if expectedID != target {
             readyForSend = false; bridgeFailed = false; loginRequired = false; expectedID = target
             web.load(URLRequest(url: itemURL))
         }
         while !readyForSend && Date() < deadline && !loginRequired && !bridgeFailed {
-            guard !Task.isCancelled, accountScope == account, expectedID == target else { return }
+            guard !Task.isCancelled, !preparationCancelled, accountScope == account, expectedID == target else { return nil }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        guard accountScope == account, expectedID == target else { return }
-        guard readyForSend else { message = loginRequired ? "请先登录抖音，尚未发送" : "转发组件尚未就绪，尚未发送，请稍后重试"; return }
-        message = "正在转发…"
+        guard !Task.isCancelled, !preparationCancelled, accountScope == account, expectedID == target else { return nil }
+        guard readyForSend else { message = loginRequired ? "请先登录抖音，尚未发送" : "转发组件尚未就绪，尚未发送，请稍后重试"; return nil }
+        dispatched = true
+        message = "正在发送，请稍候…可关闭面板"
         do {
             let raw = try await web.callAsyncJavaScript(
-                "return JSON.stringify(await window.__ddNativeForward.send(expected, recipient));",
-                arguments: ["expected": expectedID, "recipient": contact.id], contentWorld: .page) as? String
-            guard accountScope == account, expectedID == target else { return }
+                "return JSON.stringify(await window.__ddNativeForward.send(expected, recipient, note));",
+                arguments: ["expected": expectedID, "recipient": contact.id, "note": note], contentWorld: .page) as? String
+            guard accountScope == account, expectedID == target else { return nil }
             let data = raw?.data(using: .utf8)
             let response = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
+            if ["unconfirmed", "note-rejected", "note-unconfirmed"].contains(response?["state"] ?? "unconfirmed") {
+                unconfirmedShares.insert(account + "|" + target + "|" + contact.id)
+            }
             switch response?["state"] {
-            case "sent": message = "已转发给“\(contact.name)”"
+            case "sent":
+                if let receipt = DYForwardReceipt(state: response?["state"], source: response?["source"], contact: contact,
+                    workID: target, accountScope: account) {
+                    confirmed = true
+                    message = "分享成功"
+                    return receipt
+                }
+                message = "发送未确认，请到抖音消息核对，勿重复发送"
+            case "note-unavailable": message = "捎句话暂不可用，尚未发送，请稍后重试或清空附言"
+            case "note-rejected": message = "视频已分享，但捎句话未发送成功，请到消息中核对，勿重复分享"
+            case "note-unconfirmed": message = "视频已分享，捎句话发送结果未确认，请到消息中核对，勿重复分享"
             case "rejected": message = "抖音未接受本次转发，请到消息中核对"
             case "not-ready", "wrong-work", "missing-recipient": message = "当前作品或朋友列表已变化，请重新打开转发"
             default: message = "发送未确认，请到抖音消息核对，勿重复发送"
             }
             DYLiveModel.log("DDFORWARD send=\(response?["state"] ?? "unconfirmed") source=\(response?["source"] ?? "unknown") elapsed_ms=\(response?["elapsed_ms"] ?? "unknown")")
         } catch {
-            guard accountScope == account, expectedID == target else { return }
+            guard accountScope == account, expectedID == target else { return nil }
             message = "发送未确认，请到抖音消息核对，勿重复发送"
+            unconfirmedShares.insert(account + "|" + target + "|" + contact.id)
             let failure = error as NSError
             DYLiveModel.log("DDFORWARD send=unconfirmed source=webkit code=\(failure.code)")
         }
+        return nil
     }
 
-    func stop() { opening?.cancel(); opening = nil; web?.stopLoading() }
+    func requiresVerification(_ contact: DYForwardContact, itemURL: URL) -> Bool {
+        unconfirmedShares.contains(accountScope + "|" + itemURL.lastPathComponent + "|" + contact.id)
+    }
+
+    /// Closing cancels only preparation. An accepted request remains tracked and is never retried.
+    func cancelPreparation() {
+        guard sending, !dispatched else { return }
+        preparationCancelled = true
+        message = "已取消，尚未发送"
+    }
+
+    func stop() { cancelPreparation(); opening?.cancel(); opening = nil; web?.stopLoading() }
     /// 温启动：网页仍在上一条作品且分享组件已就绪，只做一次差异扫描，不重新加载页面。
     func warmPanel() {
         guard let web, web.url?.lastPathComponent == expectedID else { return }
@@ -2201,8 +2765,44 @@ struct DYForwardOfficialScreen: View {
         return nil
     }
 
+    /// Discover the same loaded adapter and text builder used by the website.
+    /// Module identifiers change between deployments; ambiguous shapes fail closed.
+    static let officialRuntimeJS = #"""
+    (() => {
+      if (window.__ddOfficialIM) return;
+      let runtime;
+      window.__ddOfficialIM = () => {
+        try {
+          if (!runtime) {
+            const chunks = window.webpackChunkdouyin_web;
+            if (!Array.isArray(chunks)) return null;
+            chunks.push([['dd-forward-' + Date.now()], {}, loader => { runtime = loader; }]);
+          }
+          if (!runtime?.m) return null;
+          const modules = Object.entries(runtime.m);
+          const adapterModules = modules.filter(([, factory]) => {
+            const source = String(factory);
+            return source.includes('"getConversationByIdWithOnlineAsync"') && source.includes('"sendMessage"') && source.includes('"openConversation"');
+          });
+          if (adapterModules.length !== 1) return null;
+          const adapter = Object.values(runtime(adapterModules[0][0])).find(value =>
+            typeof value?.sendMessage === 'function' && typeof value?.openConversation === 'function' &&
+            typeof value?.getConversationByIdWithOnlineAsync === 'function');
+          if (!adapter) return null;
+          const builderModules = modules.filter(([, factory]) => {
+            const source = String(factory);
+            return source.includes('mention_users') && source.includes('textExtra') && source.includes('AWEME_TEXT') && source.includes('referenceHint');
+          });
+          const builders = builderModules.flatMap(([id]) => Object.values(runtime(id))).filter(value =>
+            typeof value === 'function' && String(value).includes('mention_users') && String(value).includes('textExtra') && String(value).includes('AWEME_TEXT'));
+          return {adapter, buildText: builders.length === 1 ? builders[0] : null};
+        } catch (_) { return null; }
+      };
+    })();
+    """#
+
     /// 原生层只读官网联系人；发送复用官网ShareeList.confirmSharee及其业务回执。
-    static let nativeBridgeJS = #"""
+    static let nativeBridgeJS = officialRuntimeJS + #"""
     (() => {
       const identifier = value => {
         if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
@@ -2250,7 +2850,7 @@ struct DYForwardOfficialScreen: View {
             if (!id || seen.has(id) || typeof name !== 'string' || !name.trim()) continue;
             seen.add(id);
             const avatar = user.avatar_thumb?.url_list?.[0];
-            items.push({id, name, avatar: typeof avatar === 'string' ? avatar : null, kind: kind(user)});
+            items.push({id, name, avatar: typeof avatar === 'string' ? avatar : null, kind: kind(user), secUid: typeof user.sec_uid === 'string' ? user.sec_uid : null});
           }
           if (!incremental || !['ready','empty'].includes(snapshot.state)) return {state: snapshot.state, items};
           const current = new Map(items.map(row => [row.id, JSON.stringify(row)]));
@@ -2265,12 +2865,22 @@ struct DYForwardOfficialScreen: View {
           peopleBaseline = peoplePending.rows; peopleHasBaseline = true; peoplePending = null;
           return true;
         },
-        async send(expected, recipient) {
+        async send(expected, recipient, note = '') {
           const snapshot = inspect(expected);
           if (snapshot.state !== 'ready') return {state: snapshot.state};
           const user = snapshot.list.find(user => key(user) === recipient);
           if (!user) return {state: 'missing-recipient'};
-          return await new Promise(resolve => {
+          if (typeof note !== 'string') return {state: 'note-unavailable'};
+          const hasNote = !!note.trim(), official = hasNote ? window.__ddOfficialIM?.() : null;
+          let textMessage;
+          if (hasNote) {
+            if (!official?.buildText) return {state: 'note-unavailable'};
+            try { textMessage = official.buildText({text: note}); } catch (_) { return {state: 'note-unavailable'}; }
+            try {
+              if (!textMessage || JSON.parse(textMessage.content).text !== note) return {state: 'note-unavailable'};
+            } catch (_) { return {state: 'note-unavailable'}; }
+          }
+          const videoResult = await new Promise(resolve => {
             let complete = false;
             const started = Date.now();
             const finish = (state, source) => {
@@ -2286,6 +2896,26 @@ struct DYForwardOfficialScreen: View {
               // Promise完成只代表函数返回，不是发送成功。
               Promise.resolve(pending).catch(() => finish('unconfirmed', 'exception'));
             } catch (e) { finish('unconfirmed', 'exception'); }
+          });
+          if (videoResult.state !== 'sent' || !hasNote) return videoResult;
+          // Optional note follows the confirmed video via the same official IM
+          // adapter. Never repeat the video if the note fails or times out.
+          return await new Promise(resolve => {
+            let complete = false;
+            const finish = (state, source) => {
+              if (complete) return;
+              complete = true; clearTimeout(timer); resolve({state, source});
+            };
+            const timer = setTimeout(() => finish('note-unconfirmed', 'timeout'), 20000);
+            try {
+              const target = kind(user) === 2 ? {conversationId: identifier(user.uid)} : {uid: identifier(user.uid)};
+              const pending = official.adapter.sendMessage({...target, conversationType: kind(user), messageInfo: textMessage,
+                options: {enter_method: 'share_board', beforeSend: () => {}, afterSend: result => {
+                  const success = result?.[0]?.[0]?.res?.success;
+                  finish(success === true ? 'sent' : success === false ? 'note-rejected' : 'note-unconfirmed', 'callback');
+                }}});
+              Promise.resolve(pending).catch(() => finish('note-unconfirmed', 'exception'));
+            } catch (_) { finish('note-unconfirmed', 'exception'); }
           });
         }
       };
@@ -2339,6 +2969,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         if let existing = model.retainedWeb {
             model.web = existing
             existing.navigationDelegate = model; existing.uiDelegate = model
+            if model.sending { return existing }
             if existing.url?.lastPathComponent != url.lastPathComponent {
                 model.expectedID = url.lastPathComponent
                 existing.load(URLRequest(url: url))
@@ -2377,7 +3008,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         return web
     }
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        if uiView.url?.lastPathComponent != url.lastPathComponent, model.expectedID != url.lastPathComponent {
+        if !model.sending, uiView.url?.lastPathComponent != url.lastPathComponent, model.expectedID != url.lastPathComponent {
             model.expectedID = url.lastPathComponent
             uiView.load(URLRequest(url: url))
         }
