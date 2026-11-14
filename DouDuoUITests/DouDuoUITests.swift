@@ -13,6 +13,41 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 只测试输入焦点/布局，绝不发送弹幕或评论。
+    func testRailStaysFixedWithKeyboard() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+        app.launchArguments += ["-douyin_chrome_mode_v1", "minimal"]
+        app.launch()
+        let more = app.buttons["douyin.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 20))
+        let module = app.descendants(matching: .any).matching(identifier: "douyin.module.menu").firstMatch
+        let like = app.buttons["douyin.like"].firstMatch
+        let moduleBefore = module.frame
+        let likeBefore = like.frame
+        more.tap()
+        let sendEntry = app.buttons["douyin.danmaku.open"].firstMatch
+        XCTAssertTrue(sendEntry.waitForExistence(timeout: 5))
+        sendEntry.tap()
+        let input = app.textFields["douyin.danmaku.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        sleep(2)
+        let moduleAfter = module.frame
+        let likeAfter = like.frame
+        print("RAIL_KEYBOARD module before=\(moduleBefore) after=\(moduleAfter) like before=\(likeBefore) after=\(likeAfter)")
+        XCTAssertEqual(moduleBefore.midX, moduleAfter.midX, accuracy: 2)
+        XCTAssertEqual(moduleBefore.midY, moduleAfter.midY, accuracy: 2)
+        XCTAssertEqual(likeBefore.midX, likeAfter.midX, accuracy: 2)
+        XCTAssertEqual(likeBefore.midY, likeAfter.midY, accuracy: 2)
+        let send = app.buttons["douyin.danmaku.send"]
+        XCTAssertFalse(send.frame.intersects(likeAfter))
+        attach(app, "rail-keyboard-fixed")
+        app.terminate()
+    }
+
     func testHashtagClassicFlow() throws { verifyHashtags(mode: "duoClassic") }
     func testHashtagDefaultFlow() throws { verifyHashtags(mode: "classic") }
 

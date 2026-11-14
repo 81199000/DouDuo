@@ -2057,6 +2057,9 @@ struct DYUpstreamFeedScreen: View {
                 // Only the rail extends into the system column; reserved-region avoidance remains active.
                 .ignoresSafeArea(edges: .horizontal)
             }
+            // 菜单栏不参与键盘避让：输入弹幕/回复评论只抬输入区，不能把整列顶上去或向左挤。
+            // 仅忽略 keyboard，保留 container 安全区和分屏窗格，避免破坏信号栏对齐。
+            .ignoresSafeArea(.keyboard)
         }
     }
 
