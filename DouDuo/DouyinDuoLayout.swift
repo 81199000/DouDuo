@@ -155,27 +155,70 @@ struct DYFeedComposerPreference: PreferenceKey {
 }
 
 /// 键盘状态独立于菜单栏视图生命周期；输入内容更新 preference 时，不能重置禁用状态。
+/// 只靠 willShow/willHide 会卡死：第三方键盘、程序化收起、切到后台再回来都可能不发 willHide，
+/// 一旦卡在 true，菜单栏就永久变灰且点不动。所以同时以「当前是否真有输入框在编辑」为准。
 @MainActor
 final class DYKeyboardInputState: ObservableObject {
     static let shared = DYKeyboardInputState()
     @Published private(set) var visible = false
     private var observers: [NSObjectProtocol] = []
+
     private init() {
         let nc = NotificationCenter.default
+        func apply(_ value: Bool) {
+            MainActor.assumeIsolated { if self.visible != value { self.visible = value } }
+        }
+        func height(_ note: Notification) -> CGFloat {
+            (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.height ?? 0
+        }
         observers = [
-            nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.visible = true }
+            nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { note in
+                apply(height(note) > 0)
             },
-            nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.visible = false }
+            // 第三方键盘 / 分屏键盘常见只发 changeFrame，不发 willHide
+            nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
+                apply(height(note) > 0)
+            },
+            nc.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { _ in
+                apply(false)
+            },
+            nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { DYKeyboardInputState.shared.reconcile() }
+            },
+            nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+                apply(false)
             }
         ]
     }
+
+    /// 以真实第一响应者为准；键盘其实已经收了就立刻恢复菜单栏。
+    func reconcile() {
+        if visible, !Self.isEditingText() { visible = false }
+    }
+
+    /// 当前有没有文本输入框是第一响应者（网页编辑器、原生输入框都算）。
+    static func isEditingText() -> Bool {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for window in scenes.flatMap(\.windows) {
+            if let responder = window.dyTextFirstResponder { _ = responder; return true }
+        }
+        return false
+    }
 }
 
-/// 键盘输入期间整列变灰且不响应点击；位置、尺寸和分屏边缘不变。
+private extension UIView {
+    var dyTextFirstResponder: UIView? {
+        if isFirstResponder, self is UITextField || self is UITextView || self is UISearchBar { return self }
+        for sub in subviews { if let found = sub.dyTextFirstResponder { return found } }
+        return nil
+    }
+}
+
+/// 输入期间整列变灰且不响应点击；位置、尺寸和分屏边缘不变。
+/// 每次出现 / 回前台都对一次真实焦点，避免状态残留把菜单栏锁灰。
 struct DYRailInputLock: ViewModifier {
     @Environment(\.appTheme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var keyboard = DYKeyboardInputState.shared
     @Environment(\.dyRailInputActive) private var composerActive
     private var inactive: Bool { keyboard.visible || composerActive }
@@ -184,6 +227,9 @@ struct DYRailInputLock: ViewModifier {
             .opacity(inactive ? theme.media.inputInactiveRailOpacity : 1)
             .disabled(inactive)
             .allowsHitTesting(!inactive)
+            .onAppear { keyboard.reconcile() }
+            .onChange(of: scenePhase) { _, phase in if phase == .active { keyboard.reconcile() } }
+            .onChange(of: keyboard.visible) { _, _ in keyboard.reconcile() }
     }
 }
 

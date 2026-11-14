@@ -22,6 +22,9 @@ final class DouDuoUITests: XCTestCase {
         app.launch()
         let more = app.buttons["douyin.more"].firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 20))
+        // 冷启动、没有任何输入时菜单栏必须是正常亮度且可点（曾因键盘状态残留整列锁灰）
+        XCTAssertTrue(more.isEnabled, "启动后菜单栏可点")
+        XCTAssertGreaterThan(more.frame.width, 0)
         let module = app.descendants(matching: .any).matching(identifier: "douyin.module.menu").firstMatch
         let like = app.buttons["douyin.like"].firstMatch
         let moduleBefore = module.frame
