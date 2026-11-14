@@ -1,6 +1,6 @@
 // 消息中心（对齐抖音消息页）：顶部朋友头像 → 互动/粉丝/系统/私信入口 → 点进分类二级页。
 // 全部内容在同一个 ScrollView 里滚动，分类入口不固定在顶部。
-// Duo：返回键走系统 toolbar（自动进右侧竖向侧栏）；根页左缘右滑关闭，二级页系统原生左缘返回上一层。
+// Duo：根页通过 Dock 切换栏目；详情返回走系统 toolbar 或左缘手势。
 import SwiftUI
 import WebKit
 import CryptoKit
@@ -197,60 +197,66 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
     var kind: Int?
     /// 单聊对方 sec_uid，用来查关注关系
     var sec: String?
+    /// 时间文案抓取时刻；兼容旧缓存，无值时使用当前时间。
+    var observedAt: Double? = nil
 }
 
 extension DYConversationRow {
-    /// 网页时间文案解析成可比较时间戳，只用于排序。实测格式：
-    /// 今天「15:46」/ 昨天「昨天 20:26」/ 今年「03/31」/ 更早「2025/01/23」，另兼容 现在 / N分钟前 / N小时前 / MM-DD
-    var sortTime: Double {
-        let t = time.trimmingCharacters(in: .whitespaces)
-        let now = Date().timeIntervalSince1970
-        if t.isEmpty { return 0 }
-        if t == "现在" { return now }
+    /// 相对时间必须锚定抓取时刻，不能在排序比较器里每次重新 Date()。
+    var sortTime: Double { Self.parseTime(time, now: Date(timeIntervalSince1970: observedAt ?? Date().timeIntervalSince1970)) }
+
+    static func parseTime(_ value: String, now: Date) -> Double {
+        let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return 0 }
         let cal = Calendar.current
-        let nowDate = Date()
-        func dayAt(_ y: Int?, _ m: Int, _ d: Int, hour: Int? = nil, minute: Int? = nil) -> Double {
-            var c = DateComponents()
-            c.year = y ?? cal.component(.year, from: nowDate)
-            c.month = m; c.day = d; c.hour = hour ?? 0; c.minute = minute ?? 0
-            return (cal.date(from: c) ?? nowDate).timeIntervalSince1970
+        let day = cal.startOfDay(for: now)
+        func groups(_ pattern: String) -> [Int]? {
+            guard let re = try? NSRegularExpression(pattern: pattern),
+                  let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+                  m.range.length == (t as NSString).length else { return nil }
+            return (1..<m.numberOfRanges).map { i in
+                m.range(at: i).location == NSNotFound ? -1 : Int((t as NSString).substring(with: m.range(at: i))) ?? -1
+            }
         }
-        // 今天：HH:MM（显示的时间若在未来，说明是昨天的此刻）
-        let hp = t.split(separator: ":").compactMap { Int($0) }
-        if hp.count == 2, (0...23).contains(hp[0]), (0...59).contains(hp[1]), !t.contains("/"), !t.contains("-") {
-            var ts = dayAt(nil, cal.component(.month, from: nowDate), cal.component(.day, from: nowDate), hour: hp[0], minute: hp[1])
-            if ts - now > 3600 { ts -= 86_400 }
+        func clock(_ base: Date, _ h: Int, _ m: Int) -> Double {
+            guard (0...23).contains(h), (0...59).contains(m) else { return 0 }
+            return cal.date(bySettingHour: h, minute: m, second: 0, of: base)?.timeIntervalSince1970 ?? 0
+        }
+        if ["现在", "刚刚"].contains(t) { return now.timeIntervalSince1970 }
+        if let p = groups(#"^(\d+)\s*分钟前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 60 }
+        if let p = groups(#"^(\d+)\s*小时前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 3600 }
+        if let p = groups(#"^(\d+)\s*天前$"#) { return cal.date(byAdding: .day, value: -p[0], to: day)?.timeIntervalSince1970 ?? 0 }
+        for (prefix, days) in [("今天", 0), ("昨天", -1), ("前天", -2)] where t.hasPrefix(prefix) {
+            guard let base = cal.date(byAdding: .day, value: days, to: day) else { return 0 }
+            let rest = String(t.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            if rest.isEmpty { return base.timeIntervalSince1970 }
+            let p = rest.split(separator: ":").compactMap { Int($0) }
+            return p.count == 2 ? clock(base, p[0], p[1]) : 0
+        }
+        if let p = groups(#"^(\d{1,2}):(\d{2})$"#) {
+            let ts = clock(day, p[0], p[1])
+            if ts > now.timeIntervalSince1970 + 3600, let yesterday = cal.date(byAdding: .day, value: -1, to: day) { return clock(yesterday, p[0], p[1]) }
             return ts
         }
-        // 昨天 [HH:MM]
-        if t.hasPrefix("昨天") {
-            let rest = t.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            let p = rest.split(separator: ":").compactMap { Int($0) }
-            let base = nowDate.addingTimeInterval(-86_400)
-            if p.count == 2, (0...23).contains(p[0]), (0...59).contains(p[1]) {
-                return dayAt(cal.component(.year, from: base), cal.component(.month, from: base), cal.component(.day, from: base), hour: p[0], minute: p[1])
+        if let p = groups(#"^(?:(\d{4})[/-])?(\d{1,2})[/-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$"#) {
+            var year = p[0] >= 0 ? p[0] : cal.component(.year, from: now)
+            func date(_ y: Int) -> Date? {
+                let c = DateComponents(year: y, month: p[1], day: p[2], hour: p[3] >= 0 ? p[3] : 0, minute: p[4] >= 0 ? p[4] : 0)
+                guard let d = cal.date(from: c), cal.component(.month, from: d) == p[1], cal.component(.day, from: d) == p[2] else { return nil }
+                return d
             }
-            return base.timeIntervalSince1970
+            guard var d = date(year) else { return 0 }
+            if p[0] < 0, d > now { year -= 1; guard let last = date(year) else { return 0 }; d = last }
+            return d.timeIntervalSince1970
         }
-        if t.hasSuffix("分钟前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 60 }
-        if t.hasSuffix("小时前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 3600 }
-        // MM/DD 或 YYYY/MM/DD（兼容 - 分隔）：今年；算出来在未来则按去年
-        if t.contains("/") || t.contains("-") {
-            let comps = t.split { $0 == "/" || $0 == "-" }.compactMap { Int($0) }
-            if comps.count == 2, (1...12).contains(comps[0]), (1...31).contains(comps[1]) {
-                var ts = dayAt(nil, comps[0], comps[1])
-                if ts - now > 86_400 { ts = dayAt(cal.component(.year, from: nowDate) - 1, comps[0], comps[1]) }
-                return ts
-            }
-            if comps.count == 3 {
-                return dayAt(comps[0], comps[1], comps[2])
-            }
-        }
+        // 未识别的时间排最后，不能回退成“现在”。
         return 0
     }
-    /// 新消息在上；同时间按 id 稳定排序
     static func byTimeDesc(_ a: DYConversationRow, _ b: DYConversationRow) -> Bool {
-        a.sortTime != b.sortTime ? a.sortTime > b.sortTime : a.id < b.id
+        let now = Date()
+        let ta = parseTime(a.time, now: a.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
+        let tb = parseTime(b.time, now: b.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
+        return ta != tb ? ta > tb : a.id < b.id
     }
 }
 
@@ -335,8 +341,10 @@ private struct DYChatPaneBoundsKey: PreferenceKey {
 }
 
 struct DYMessagesScreen: View {
+    @Environment(\.dismiss) private var dismissRoot
+    @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     let bridge: DouyinBridge
-    let onClose: () -> Void
+    var onClose: (() -> Void)? = nil
     let onWeb: (URL) -> Void
 
     @State private var navigation = DYMessageNavigation()
@@ -364,14 +372,23 @@ struct DYMessagesScreen: View {
     var body: some View {
         NavigationStack {
             messageContent
+                .accessibilityIdentifier("douyin.messages.root")
+                .modifier(DYSystemTabBar())
                 .navigationTitle(sidebarVisible ? "" : "消息")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    // Duo：返回/关闭走系统 cancellationAction，系统把它放进右侧竖向侧栏
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("返回", systemImage: "chevron.backward", action: backFromMessage)
-                            .disabled(openingChat != nil || restoringList)
-                            .accessibilityIdentifier("douyin.messages.back")
+                    // The message center is a root tab. Only its detail pages go back.
+                    if !navigation.hasDetail && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("返回", systemImage: "chevron.backward") { if let onClose { onClose() } else { dismissRoot() } }
+                        }
+                    }
+                    if navigation.hasDetail {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("返回", systemImage: "chevron.backward", action: backFromMessage)
+                                .disabled(openingChat != nil || restoringList)
+                                .accessibilityIdentifier("douyin.messages.back")
+                        }
                     }
                 }
 
@@ -608,10 +625,19 @@ struct DYMessagesScreen: View {
                 _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
                 return
             }
-            let updated = Dictionary(delta.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let oldRows = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let capturedAt = Date().timeIntervalSince1970
+            let rows = delta.items.map { row -> DYConversationRow in
+                var next = row
+                if let old = oldRows[row.id], old.time == row.time, old.preview == row.preview {
+                    next.observedAt = old.observedAt ?? capturedAt
+                } else { next.observedAt = capturedAt }
+                return next
+            }
+            let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let existing = Set(conversations.map(\.id))
             // 按最后消息时间倒序：有新信息的朋友排最上面
-            let merged = (delta.items.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
+            let merged = (rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
                 .sorted(by: DYConversationRow.byTimeDesc)
             if merged != conversations {
                 conversations = merged
@@ -655,9 +681,9 @@ struct DYMessagesScreen: View {
     }
 
     private func backFromMessage() {
-        guard openingChat == nil, !restoringList else { return }
+        guard navigation.hasDetail, openingChat == nil, !restoringList else { return }
         let wasChat = navigation.isChat
-        if navigation.back() { onClose(); return }
+        if navigation.back() { return }
         guard wasChat else { return }
         restoreConversationList()
     }
@@ -1048,9 +1074,11 @@ struct DYNoticeListScreen: View {
             if !active { replyFocused = false }
         }
         .sheet(item: $author) { a in
-            DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
-                .presentationDetents([.medium, .large])
-                .presentationBackground(.black)
+            NavigationStack {
+                DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationBackground(.black)
         }
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
@@ -1812,44 +1840,13 @@ struct DYEdgeSwipeBack: ViewModifier {
 
 // MARK: - 当前作品转发给抖音朋友
 
-private struct DYForwardActionKey: EnvironmentKey {
-    static let defaultValue: (() -> Void)? = nil
-}
-private extension EnvironmentValues {
-    var dyForwardAction: (() -> Void)? {
-        get { self[DYForwardActionKey.self] }
-        set { self[DYForwardActionKey.self] = newValue }
-    }
-}
-
-/// 状态挂在稳定的菜单外层，而不是会随原生菜单关闭而销毁的条目里。
-struct DYForwardPresentation: ViewModifier {
-    let item: DYAweme
-    @State private var showing = false
-    func body(content: Content) -> some View {
-        content.environment(\.dyForwardAction, { showing = true })
-            .fullScreenCover(isPresented: $showing) {
-                DYForwardScreen(item: item).presentationBackground(.clear)
-            }
-    }
-}
-
-struct DYForwardMenu: View {
-    let item: DYAweme
-    let bridge: DouyinBridge?
-    let foreground: Color
-    @Environment(\.dyForwardAction) private var showFriends
-    var body: some View {
-        Button { showFriends?() } label: {
-            Label("转发", systemImage: "arrowshape.turn.up.right")
-        }
-        .disabled(showFriends == nil)
-        .accessibilityIdentifier("douyin.forward.menu")
-    }
-}
-
 /// 原生转发浮层；官网仅作后台数据与发送桥，登录时才显式进入官网。
 struct DYForwardScreen: View {
+    @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
+    private var usesClassicLayout: Bool {
+        if #available(iOS 27.1, *) { return mode == DDChromeMode.duoClassic.rawValue }
+        return false
+    }
     let item: DYAweme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
@@ -1862,12 +1859,16 @@ struct DYForwardScreen: View {
     @State private var query = ""
     @State private var showLogin = false
     @State private var showOtherApps = false
+    @State private var copiedLink = false
+    @State private var saving = false
+    @State private var saveMessage: String?
 
     private var actions: [DYForwardPanelAction] {
         var result: [DYForwardPanelAction] = []
-        if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信", symbol: "paperplane.fill")) }
+        if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信好友", symbol: "paperplane.fill")) }
         if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
         result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
+        if usesClassicLayout { result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line")) }
         result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
         if model.loginRequired { result.append(.init(id: "login", title: "登录抖音", symbol: "person.crop.circle")) }
         else if !model.loading && model.contacts.isEmpty { result.append(.init(id: "retry", title: "重新加载", symbol: "arrow.clockwise")) }
@@ -1876,7 +1877,25 @@ struct DYForwardScreen: View {
     private var visibleContacts: [DYForwardContact] {
         model.contacts.filter { (!groupsOnly || $0.kind == 2) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
     }
-    var body: some View {
+    private var classicPanel: some View {
+        DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
+                             status: accountPrepared ? (saveMessage ?? (copiedLink ? "链接已复制" : model.message)) : "正在加载朋友…", actions: actions,
+                             onContact: { if !model.sending { selected = $0 } },
+                             onAction: perform, onClose: { if !model.sending { dismiss() } })
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background {
+                // Only the system sheet draws glass. Keep the signing/sending
+                // bridge hidden and preserve its real official account context.
+                if accountPrepared && !model.layoutFixture {
+                    DYForwardWebContainer(model: model, url: item.webURL)
+                        .id(model.accountScope)
+                        .frame(width: 760, height: 640)
+                        .frame(width: 1, height: 1).clipped().opacity(0.001)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+    }
+    private var upstreamPanel: some View {
         GeometryReader { geo in
             ZStack {
                 theme.media.strongScrim.color(for: scheme).opacity(0.24).ignoresSafeArea()
@@ -1897,7 +1916,17 @@ struct DYForwardScreen: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+    var body: some View {
+        Group {
+            if usesClassicLayout { classicPanel } else { upstreamPanel }
+        }
         .interactiveDismissDisabled(model.sending)
+        .task(id: copiedLink) {
+            guard copiedLink else { return }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            copiedLink = false
+        }
         .alert("确认转发", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
             if let target = selected {
                 Button("发送") { selected = nil; Task { await model.send(to: target, itemURL: item.webURL) } }
@@ -1927,11 +1956,8 @@ struct DYForwardScreen: View {
         .sheet(isPresented: $showLogin, onDismiss: { Task { await restorePeople() } }) { DYForwardOfficialScreen(item: item) }
         .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
         .task { await restorePeople() }
-        .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
-        .onDisappear {
-            // 缓存模型持有同一个只读官网上下文；下次打开无需重建SDK/重新拉整份朋友。
-            DDPlayback.shared.releaseCover()
-        }
+        .onAppear { if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) } }
+        .onDisappear { if !usesClassicLayout { DDPlayback.shared.releaseCover() } }
     }
     private func restorePeople() async {
         if model.layoutFixture { accountPrepared = true; return }
@@ -1944,7 +1970,18 @@ struct DYForwardScreen: View {
         guard !model.sending else { return }
         switch action {
         case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
-        case "copy": UIPasteboard.general.url = item.webURL; model.message = "链接已复制"
+        case "copy": UIPasteboard.general.url = item.webURL; saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
+        case "download":
+            guard !saving else { return }
+            saving = true
+            saveMessage = "正在保存…"
+            Task {
+                defer { saving = false }
+                do {
+                    try await DYSaver.save(item)
+                    saveMessage = item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册"
+                } catch { saveMessage = "保存失败：\(error.localizedDescription)" }
+            }
         case "other": showOtherApps = true
         case "login": showLogin = true
         case "retry": model.web?.reload()
@@ -2399,5 +2436,41 @@ extension DYMessagesScreen {
     static func badge(_ groups: [DYNoticeCount]) -> Int {
         if let all = groups.first(where: { $0.group == DYNoticeGroup.all.rawValue }) { return all.count }
         return groups.reduce(0) { $0 + $1.count }
+    }
+}
+
+private struct DYForwardActionKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+private extension EnvironmentValues {
+    var dyForwardAction: (() -> Void)? {
+        get { self[DYForwardActionKey.self] }
+        set { self[DYForwardActionKey.self] = newValue }
+    }
+}
+
+/// 状态挂在稳定的菜单外层，而不是会随原生菜单关闭而销毁的条目里。
+struct DYForwardPresentation: ViewModifier {
+    let item: DYAweme
+    @State private var showing = false
+    func body(content: Content) -> some View {
+        content.environment(\.dyForwardAction, { showing = true })
+            .fullScreenCover(isPresented: $showing) {
+                DYForwardScreen(item: item).presentationBackground(.clear)
+            }
+    }
+}
+
+struct DYForwardMenu: View {
+    let item: DYAweme
+    let bridge: DouyinBridge?
+    let foreground: Color
+    @Environment(\.dyForwardAction) private var showFriends
+    var body: some View {
+        Button { showFriends?() } label: {
+            Label("转发", systemImage: "arrowshape.turn.up.right")
+        }
+        .disabled(showFriends == nil)
+        .accessibilityIdentifier("douyin.forward.menu")
     }
 }

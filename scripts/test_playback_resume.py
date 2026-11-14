@@ -12,7 +12,7 @@ precondition(DYResumePolicy.shouldResumeAfterBackground(userPaused: false))
 precondition(!DYResumePolicy.shouldResumeAfterBackground(userPaused: true))
 print("PASS resume policy: background interruption resumes, manual pause stays paused")
 '''
-scratch = pathlib.Path('/Users/zhanghongsheng/.hermes/profiles/shayu/cache/scratch')
+scratch = pathlib.Path(tempfile.gettempdir())
 with tempfile.TemporaryDirectory(prefix='resume-policy-', dir=scratch) as d:
     p = pathlib.Path(d)
     (p/'main.swift').write_text(swift)

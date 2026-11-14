@@ -1,0 +1,16 @@
+{
+  "source_page": "https://sign.drnrt8.cn/sign/",
+  "note": "全能签官网安装页内置教程图，原样引用",
+  "images": [
+    {
+      "file": "01-udid-profile.png",
+      "source_url": "https://sign.drnrt8.cn/sign/themes/simpleboot3/public/index/picture/udid.png",
+      "sha256": "6d7de784c44bf0588358ed07adad4f0b11a0cf7d1a11473e1b7d096f439c6ae2"
+    },
+    {
+      "file": "02-developer-mode.png",
+      "source_url": "https://sign.drnrt8.cn/sign/themes/simpleboot3/public/index/picture/develope.png",
+      "sha256": "3faf2556847489377476aa89c30a2628a339ecd01240bdb8af1287fd6db789f6"
+    }
+  ]
+}

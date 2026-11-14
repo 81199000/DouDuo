@@ -118,6 +118,15 @@ enum DYLiveAdaptiveLayoutEngine {
             interaction: CGRect(x: bounds.minX + w, y: bounds.minY, width: bounds.width - w, height: bounds.height))
     }
 
+    /// 半折叠时只按折痕切成两块，不看画面方向。推荐流的视频/评论分屏复用这套几何，和直播 Layout A/B 同一条折痕。
+    /// 书本：first 在左、second 在右；桌面：first 在上、second 在下。中间的折痕带两边都不占。
+    static func hingePanes(bounds: CGRect, divisions: [DYLiveDivision]) -> (first: CGRect, second: CGRect, book: Bool)? {
+        let bounds = bounds.standardized
+        guard usable(bounds), let band = hingeBand(in: bounds, divisions: divisions),
+              let panes = split(bounds, band: band.frame, axis: band.axis) else { return nil }
+        return (panes.video, panes.interaction, band.axis == .book)
+    }
+
     /// 房间还没出画，或尺寸非法时返回 nil。调用方据此保持未知方向，不用上一间的尺寸。
     static func presentationSize(ready: Bool, videoSize: CGSize) -> CGSize? {
         guard ready else { return nil }

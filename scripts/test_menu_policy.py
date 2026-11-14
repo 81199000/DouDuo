@@ -5,7 +5,6 @@ No network, UIKit, simulator, account writes or send callbacks are executed.
 SwiftUI wrappers and DYAweme below are test adapters, not API responses.
 """
 from pathlib import Path
-import os
 import re
 import subprocess
 import tempfile
@@ -13,6 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FEED = (ROOT / "DouDuo/DouyinFeedView.swift").read_text()
+UPSTREAM_ROOT = FEED[FEED.index("struct DYUpstreamFeedScreen:"):FEED.index("enum DDChromeMode:")]
+UPSTREAM_PAGE = FEED[FEED.index("struct DYUpstreamVideoPage:"):FEED.index("struct DYClassicVideoPage:")]
 EXTRAS = (ROOT / "DouDuo/DouyinExtras.swift").read_text()
 
 
@@ -39,7 +40,9 @@ def menu_content(source, title):
 class MenuPolicyTests(unittest.TestCase):
     def test_legacy_direction_state_removed(self):
         for token in ("douyin_portrait_ratio_v1", "douyin_portrait_only_v2",
-                      "portraitRatio", "mixLabel", "竖屏占比", "douyin.mix"):
+                      "portraitRatio", "mixLabel", "竖屏占比", "douyin.mix",
+                      "douyin_short_ratio_portrait_v1", "douyin_short_ratio_landscape_v1",
+                      "shortRatio", "targetRatio", "mixCredit", "relaxed:"):
             self.assertNotIn(token, FEED)
 
     def test_live_module_menu_actions_follow_the_selected_module(self):
@@ -96,7 +99,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertIn("func dismissPreviewOverlays()", room)
 
     def test_top_bar_icons_and_hit_targets(self):
-        top = block(FEED, "private func topBarRow")
+        top = block(UPSTREAM_ROOT, "private func topBarRow")
         self.assertIn("ForEach(DYTab.allCases", top)
         tabs = block(FEED, "enum DYTab:")
         for title in ("关注", "推荐", "直播"):
@@ -110,60 +113,84 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertEqual(top.count(".frame(minWidth: 44, minHeight: 44)"), 2)
 
     def test_current_item_menu(self):
-        menu = block(FEED, "private func moreMenu")
+        menu = block(UPSTREAM_PAGE, "private func moreMenu")
         quick = block(menu, "ControlGroup")
         self.assertIn("DYForwardMenu(item: item, bridge: bridge, foreground: fg)", quick)
         self.assertIn('"下载"', quick)
         self.assertNotIn("ShareLink", menu)
         self.assertNotIn("danmaku", quick.lower())
-        self.assertLess(menu.index('"不感兴趣"'), menu.index("DYDanmakuOptions"))
-        self.assertLess(menu.index("DYDanmakuOptions"), menu.index("moreExtras"))
-        self.assertIn("onSend: bridge == nil ? nil", menu)
-        self.assertIn("showDanmakuInput = true", menu)
-        self.assertIn("danmakuFocused = true", menu)
+        # 2026-11-14 老板定：不感兴趣放在转发和下载中间，跟它们同色（不是红色 destructive）
+        self.assertLess(quick.index("DYForwardMenu"), quick.index('"不感兴趣"'))
+        self.assertLess(quick.index('"不感兴趣"'), quick.index('"下载"'))
+        self.assertNotIn("role: .destructive", quick)
+        self.assertEqual(menu.count('"不感兴趣"'), 1)
+        # 表层：倍速 / 静音 / 听书 / 自动连播 + 发弹幕；刷新推荐、弹幕设置、界面都只在设置页
+        for token in ('"douyin.quick.speed"', "$muted", "$bgPlay", "$autoNext", '"douyin.quick.autonext"',
+                      '"发弹幕"', "showDanmakuInput = true", "danmakuFocused = true", "moreExtras"):
+            self.assertIn(token, menu)
+        for gone in ("DYDanmakuOptions", "$chromeModeRaw", '"刷新推荐"', "界面模式"):
+            self.assertNotIn(gone, menu)
+        self.assertLess(menu.index('"发弹幕"'), menu.index("moreExtras"))
 
-    def test_danmaku_single_entry_and_defaults(self):
-        options = block(EXTRAS, "struct DYDanmakuOptions:")
-        for token in ('Label("弹幕', 'Button("发弹幕",', 'Toggle("显示弹幕",',
-                      'Picker("弹幕密度",', 'Toggle("10秒内重复去重",',
-                      'private var deduplicate = true', 'Density.standard.rawValue'):
-            self.assertIn(token, options)
-        self.assertIn("if let onSend", options)
-        self.assertNotIn("弹幕设置 ·", options)
+    def test_danmaku_settings_only_in_settings_screen(self):
+        self.assertNotIn("struct DYDanmakuOptions", EXTRAS)
+        screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
+        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"', 'Toggle("10 秒内重复去重"'):
+            self.assertIn(token, screen)
 
     def test_settings_paths_and_duration_preferences(self):
-        menu = block(FEED, "private func moreExtrasMenu")
-        settings = menu_content(menu, "设置")
-        playback = menu_content(settings, "播放设置")
-        # 2026-11-12 老板定：倍速/自动连播放「更多」第一层，铺满放右侧按钮栏，设置·播放设置里不再重复
-        self.assertIn("$muted", playback)
-        self.assertEqual(menu.count("$muted"), 1)
-        for gone in ("$autoNext", "$feed.autoFit", "播放速度"):
-            self.assertNotIn(gone, playback)
-            self.assertNotIn(gone, menu)
-        self.assertIn('Label("播放设置",', settings)
-        for title in ("内容偏好", "高级筛选", "缓存管理", "账号与登录", "关于", "开源仓库"):
-            self.assertIn('Label("' + title + '"', settings)
-        for token in ("$feed.shortRatioPortrait", "$feed.shortRatioLandscape",
-                      "$feed.landscapeWhenWide", "$cacheCount", "DYVideoCache.shared.clear()",
-                      "DouyinWeb.home", "DDUpdateChecker.repoURL"):
-            self.assertIn(token, settings)
-        content = menu_content(settings, "内容偏好")
-        advanced = menu_content(content, "高级筛选")
-        self.assertIn("$feed.landscapeWhenWide", content)
-        for token in ("$feed.shortRatioPortrait", "$feed.shortRatioLandscape"):
-            self.assertIn(token, advanced)
-            self.assertNotIn(token, playback)
-        cache = menu_content(settings, "缓存管理")
-        self.assertIn("$cacheCount", cache)
-        self.assertIn("DYVideoCache.shared.clear()", cache)
-        self.assertIn("DouyinWeb.home", menu_content(settings, "账号与登录"))
-        self.assertIn("DDUpdateChecker.repoURL", menu_content(settings, "关于"))
-        self.assertIn('"刷新推荐"', menu[:menu.index('            Menu {')])
-        self.assertNotIn("@State", menu)
+        # 2026-11-14 老板定：「更多」最后一节只有「设置」，点进完整设置页；刷新推荐 / 弹幕 / 界面都在设置页。
+        upstream = block(UPSTREAM_ROOT, "private func moreExtrasMenu")
+        classic = block(FEED, "    private var moreExtrasMenu: some View")
+        for menu in (upstream, classic):
+            self.assertIn("DYSettingsButton()", menu)
+            for gone in ("DYHashtagFilterButton", "Label(\"设置\"", "$cacheCount", "播放设置", "内容偏好",
+                         '"刷新推荐"', "DYChromeModePicker", "DYDanmakuOptions"):
+                self.assertNotIn(gone, menu)
+            self.assertNotIn("@State", menu)
+        # 经典顶栏「更多」表层：静音 / 听书 / 自动连播
+        self.assertIn("$muted", classic)
+        self.assertIn("$bgPlay", classic)
+        self.assertIn("$autoNext", classic)
+        self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
+        self.assertNotIn("struct DYChromeModePicker", FEED)
+        screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
+        for section in ('Label("刷新推荐"', 'Section("界面")', 'Text("播放")', 'Text("内容偏好")', 'Text("弹幕")',
+                        'Text("缓存")', 'Section("账号")', 'Section("关于")'):
+            self.assertIn(section, screen)
+        # 2026-11-14 老板定：表层菜单已有的（静音 / 铺满 / 听书 / 自动连播）设置页不重复；短视频占比删除
+        for gone in ('"douyin_autoplay_v1"', '"douyin_muted_v1"', '"douyin_autofit_v1"', '"douyin_bg_play_v1"',
+                     "short_ratio", "短视频占比", "ratioChoices", 'Toggle("静音"', 'Toggle("自动连播"', 'Toggle("铺满宽度',
+                     'Toggle("听书模式', "$autoNext", "$muted", "$autoFit", "$backgroundPlay"):
+            self.assertNotIn(gone, screen)
+        for token in ("DYVideoAmbient.key", '"douyin_wide_landscape_v1"', 'Toggle("横屏时只放横屏内容"',
+                      "DYHashtagFilterScreen(currentTags: [], embedded: true)",
+                      '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
+                      "DYVideoCache.countKey", "DYVideoCache.shared.clear()", "DDUpdateChecker.repoURL",
+                      "DDAppVersion.display", "DDChromeMode.key"):
+            self.assertIn(token, screen)
+        self.assertEqual(FEED.count(".environment(\\.dyOpenSettings, { showSettings = true })"), 2)
+        self.assertEqual(FEED.count("onRefresh: { Task { await refreshRecommendations() } }"), 2)
+        # 经典长按面板只留当前视频相关：铺满 / 静音 / 听书 / 自动连播 / 不感兴趣 / 倍速 / 发弹幕
+        panel = (ROOT / "DouDuo/DYVideoOptionsPanel.swift").read_text()
+        for token in ('"douyin.options.fit"', '"douyin.options.muted"', '"douyin.options.bgplay"', '"douyin.options.autonext"',
+                      '"douyin.dislike"', '"douyin.options.rate.', '"发弹幕"'):
+            self.assertIn(token, panel)
+        for gone in ("ambientLevel", "landscapeOnly", "portraitRatio", "landscapeRatio",
+                     "danmakuEnabled", "弹幕密度", "内容偏好"):
+            self.assertNotIn(gone, panel)
         load = block(FEED, "func loadMore(_ bridge:")
-        self.assertIn("if added == 0, let r = targetRatio, r > 0, r < 1", load)
-        self.assertIn("fill(want, relaxed: true)", load)
+        self.assertIn("added += fill(want - added)", load)
+        self.assertNotIn("relaxed", load)
+
+    def test_feed_uses_recommend_endpoint_only(self):
+        # 2026-11-14 老板定：只保留网页首页「推荐」(tab/feed)，精选(module/feed)删掉，也不给切换
+        fetch = block(FEED, "func fetchFeed()")
+        self.assertIn("Self.tabFeedJS", fetch)
+        self.assertNotIn("feedJS,", fetch.replace("tabFeedJS", ""))
+        self.assertIn("/aweme/v1/web/tab/feed/", FEED)
+        self.assertNotIn("private static let feedJS", FEED)
+        self.assertNotIn("DYFeedSource", FEED)
 
     def test_execute_extracted_swift_model(self):
         # Compile production properties + policy/fill/pick/remix/trim, excluding all network code.
@@ -190,6 +217,8 @@ let preferences = UserDefaults(suiteName: suiteName)!
 // Explicit in-memory policy fixtures, not captured or synthesized platform responses.
 struct DYAweme {
     let id: String
+    var desc: String = ""
+    var hashtagNames: [String]? = nil
     var images: [String] = []
     var isTallFrame: Bool = false
     var duration: Double = 60
@@ -197,56 +226,31 @@ struct DYAweme {
 '''
         checks = r'''
 defer { preferences.removePersistentDomain(forName: suiteName) }
-var scenarios = 0
-let legacy: [Int?] = [nil, -1, 0, 30, 50, 70, 100, 999]
-for old in legacy {
-    for only in [false, true] {
-        for wide in [false, true] {
-            for override in [false, true] {
-                preferences.removePersistentDomain(forName: suiteName)
-                if let old { preferences.set(old, forKey: "douyin_portrait_ratio_v1") }
-                preferences.set(only, forKey: "douyin_portrait_only_v2")
-                preferences.set(override, forKey: "douyin_wide_landscape_v1")
-                let feed = DYFeedModel()
-                feed.screenWide = wide
-                precondition(feed.targetRatio == (wide && override ? 0 : 0.7))
-                precondition(preferences.object(forKey: "douyin_portrait_ratio_v1") as? Int == old)
-                scenarios += 1
-            }
-        }
-    }
+// 1) 竖屏 / 横屏限定关闭：完全按推荐原顺序，不重排、不挑长短
+for (wide, only) in [(false, false), (false, true), (true, false)] {
+    preferences.removePersistentDomain(forName: suiteName)
+    preferences.set(only, forKey: "douyin_wide_landscape_v1")
+    let feed = DYFeedModel()
+    feed.screenWide = wide
+    feed.pool = (0..<50).map { DYAweme(id: "r\($0)", isTallFrame: $0 % 3 != 0, duration: Double($0 * 17 % 600)) }
+    let order = feed.pool.map(\.id)
+    precondition(!feed.landscapeOnlyActive)
+    precondition(feed.fill(50) == 50 && feed.items.map(\.id) == order, "order changed wide=\(wide) only=\(only)")
 }
+// 2) 横着看 + 只放横屏：只取横屏，保持横屏之间的原顺序，竖屏留在候选池
 preferences.removePersistentDomain(forName: suiteName)
-let feed = DYFeedModel()
-feed.shortRatioPortrait = -1
-feed.pool = (0..<2000).map { DYAweme(id: "mixed-\($0)", isTallFrame: $0 % 2 == 0) }
-precondition(feed.fill(1000) == 1000)
-let portraits = feed.items.filter(DYFeedModel.isPortrait).count
-precondition(abs(Double(portraits) / 1000 - 0.7) <= 0.0011)
-precondition(Set(feed.items.map(\.id)).count == 1000 && feed.pool.count == 1000)
-print("PASS balanced pool: \(portraits)/1000 portrait, candidates retained")
-let scarce = DYFeedModel()
-scarce.pool = (0..<10).map { DYAweme(id: "portrait-\($0)", isTallFrame: true) }
-precondition(scarce.fill(6) == 0)
-precondition(scarce.fill(6, relaxed: true) == 6)
-precondition(scarce.pool.count == 4)
 let wide = DYFeedModel()
 wide.screenWide = true
 wide.landscapeWhenWide = true
-wide.pool = (0..<20).map { DYAweme(id: "wide-\($0)", isTallFrame: $0 % 2 == 0) }
-precondition(wide.fill(20, relaxed: true) == 10)
-precondition(wide.items.allSatisfy { !DYFeedModel.isPortrait($0) })
-precondition(wide.pool.allSatisfy(DYFeedModel.isPortrait))
+wide.pool = (0..<20).map { DYAweme(id: "w\($0)", isTallFrame: $0 % 2 == 0) }
+precondition(wide.landscapeOnlyActive)
+precondition(wide.fill(20) == 10)
+precondition(wide.items.map(\.id) == (0..<20).filter { $0 % 2 == 1 }.map { "w\($0)" })
+precondition(wide.pool.allSatisfy(DYFeedModel.isPortrait) && wide.pool.count == 10)
+// 3) 关掉横屏限定后，后续按原顺序继续
 wide.landscapeWhenWide = false
-precondition(wide.targetRatio == 0.7)
-let duration = DYFeedModel()
-duration.screenWide = true
-duration.landscapeWhenWide = true
-duration.shortRatioLandscape = 100
-duration.shortRatioPortrait = 0
-duration.pool = [DYAweme(id: "long", duration: 300), DYAweme(id: "short", duration: 60)]
-precondition(duration.fill(1) == 1 && duration.items[0].id == "short")
-precondition(duration.shortRatioPortrait == 0 && duration.shortRatioLandscape == 100)
+precondition(!wide.landscapeOnlyActive && wide.fill(3) == 3 && wide.items.suffix(3).map(\.id) == ["w0", "w2", "w4"])
+// 4) remix：当前条不动，后面的按当前规则重排
 let remix = DYFeedModel()
 remix.items = [DYAweme(id: "current", isTallFrame: true), DYAweme(id: "upcoming-tall", isTallFrame: true), DYAweme(id: "upcoming-wide")]
 remix.screenWide = true
@@ -254,14 +258,19 @@ remix.landscapeWhenWide = true
 remix.remix(after: 0)
 precondition(remix.items.map(\.id) == ["current", "upcoming-wide"])
 precondition(remix.pool.map(\.id) == ["upcoming-tall"])
+remix.landscapeWhenWide = false
+remix.remix(after: 0)
+precondition(remix.items.map(\.id) == ["current", "upcoming-wide", "upcoming-tall"])
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
-print("PASS \(scenarios) legacy/orientation combinations; scarcity fallback; strict wide override; independent durations; remix; gallery classification")
+print("PASS recommend order kept; landscape-only filter; toggle back; remix; gallery classification")
 '''
-        scratch = Path(os.environ.get("TMPDIR", Path.home() / ".hermes/profiles/shayu/cache/scratch"))
+        scratch = Path(tempfile.gettempdir())
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="menu-policy-", dir=scratch) as folder:
             source = Path(folder) / "Policy.swift"
-            source.write_text(adapters + model + clamp + checks)
+            hashtags = (ROOT / "DouDuo/DYHashtag.swift").read_text()
+            filters = (ROOT / "DouDuo/DYHashtagFilter.swift").read_text()
+            source.write_text(adapters + hashtags + filters + model + clamp + checks)
             result = subprocess.run(["swift", str(source)], text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         print(result.stdout.strip())

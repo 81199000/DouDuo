@@ -12,6 +12,9 @@ struct DDColor {
 enum DDFontSize { case caption, body, headline, title, displayLarge, splash }
 
 struct DDTheme {
+    static let sheetCornerRadius: CGFloat = 32
+    static let shareSheetHeight: CGFloat = 300
+
     struct Media {
         let scrim = DDColor(.black.opacity(0.35))
         let strongScrim = DDColor(.black)
@@ -22,6 +25,14 @@ struct DDTheme {
         // rail x=1223, 54pt capsule spans 73px. 8 * 54 / 73 ≈ 6pt leading.
         // This is not the system column width; runtime geometry still determines that.
         let expandedRailOpticalInset: CGFloat = 6
+        // 右侧栏统一线框图标；进度环参照系统电量环的实白圆头线条。
+        let actionGlyphStroke: CGFloat = 1.8
+        let actionGlyphSize: CGFloat = 27
+        let moduleGlyphSize: CGFloat = 20
+        let moreGlyphSize: CGFloat = 23
+        let inputInactiveRailOpacity: Double = 0.25
+        let progressRingWidth: CGFloat = 3.2
+        let progressRingTrackOpacity: Double = 0.22
         let actionItemSpacing: CGFloat = 9     // 原 12，整体缩 1/4
         let actionGroupSpacing: CGFloat = 12   // 原 16，整体缩 1/4
     }
@@ -127,4 +138,6 @@ enum WuWeiDesign {
 // Only feed pages publish actions to the shared safe-area rail.
 extension EnvironmentValues {
     @Entry var dyRootRailTab: DYTab? = nil
+    /// 评论面板右侧已经让开系统竖栏（外层按遮挡区缩窄了宽度），面板内不必再给关闭键额外留 88pt。
+    @Entry var dyCommentTrailingCleared: Bool = false
 }

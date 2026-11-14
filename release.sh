@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 [ -x ./release.local.sh ] && exec ./release.local.sh "$@"
-VER=$(grep MARKETING_VERSION project.yml | awk '{print $2}')
+VER=$(grep -E '^ +MARKETING_VERSION:' project.yml | head -1 | awk '{print $2}')
 xcodegen generate >/dev/null
 DD=${TMPDIR:-/tmp}/dd-douduo-rel
 xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release -sdk iphoneos \

@@ -16,6 +16,31 @@ import UIKit
 
 // MARK: - 1. 全局唯一硬件音频输出引擎（避免多页滑动反复启停 CoreAudio 线程，杜绝双声与后台漏音）
 
+// BEGIN DDAudioInterruptionGate
+/// 非 1x 共享引擎的中断门闩。自动重开只在 clear 时允许；系统不允许恢复时保持锁，直到当前 owner 再次显式 play。
+struct DDAudioInterruptionGate: Equatable {
+    enum Phase: Equatable {
+        case clear
+        case active
+        case endedWithoutResume
+    }
+    var phase: Phase = .clear
+
+    mutating func began() { phase = .active }
+
+    mutating func ended(shouldResume: Bool) {
+        guard phase == .active else { return }
+        phase = shouldResume ? .clear : .endedWithoutResume
+    }
+
+    var allowsAutomaticStart: Bool { phase == .clear }
+
+    mutating func explicitPlay() {
+        if phase == .endedWithoutResume { phase = .clear }
+    }
+}
+// END DDAudioInterruptionGate
+
 @MainActor
 final class DDAudioEngineHub {
     static let shared = DDAudioEngineHub()
@@ -27,6 +52,8 @@ final class DDAudioEngineHub {
     private(set) var activeOwner: UUID?
     private var connectedFormat: AVAudioFormat?
     private var isMuted = false
+    private var interruption = DDAudioInterruptionGate()
+    var allowsAutomaticStart: Bool { interruption.allowsAutomaticStart }
 
     private init() {
         engine.attach(playerNode)
@@ -46,8 +73,19 @@ final class DDAudioEngineHub {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
             MainActor.assumeIsolated {
-                if type == .began { self?.playerNode.pause() }
+                guard let self else { return }
+                switch type {
+                case .began:
+                    self.interruption.began()
+                    self.playerNode.pause()
+                case .ended:
+                    self.interruption.ended(shouldResume: shouldResume)
+                default:
+                    break
+                }
             }
         }
         #endif
@@ -113,6 +151,11 @@ final class DDAudioEngineHub {
         guard activeOwner == owner else { return }
         isMuted = muted
         engine.mainMixerNode.outputVolume = muted ? 0.0 : 1.0
+    }
+
+    /// 当前 owner 显式要求播放。中断仍在进行时不解锁；系统拒绝恢复之后，这一次调用才清掉锁。
+    func noteExplicitPlaybackRequest() {
+        interruption.explicitPlay()
     }
 
     func pause(owner: UUID) {
@@ -418,7 +461,8 @@ final class DDAudioPreloadPool {
     private var byAsset: [ObjectIdentifier: String] = [:]
 
     func prewarm(id: String, asset: AVURLAsset, item: AVPlayerItem) {
-        guard byID[id] == nil else { return }
+        // 1x 不用引擎，就不预解码音频（省掉滑动时主线程上的解码）
+        guard DDSeamlessController.engineWanted, byID[id] == nil else { return }
         let stream = DDAudioStream(asset: asset)
         byID[id] = stream
         byAsset[ObjectIdentifier(asset)] = id
@@ -477,7 +521,15 @@ final class DDSeamlessController {
     private var isMuted = false
     var onBackgroundEnded: (() -> Void)?
 
-    func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool) {
+    /// 设置里的播放速度不是 1x 才启用独立音频引擎；1x 直接用 AVPlayer 原生声音。
+    /// 引擎在主线程解码 AAC，1x 下没有收益反而拖慢滑动（1.3.13 卡顿反馈）。
+    nonisolated static var engineWanted: Bool {
+        let rate = UserDefaults.standard.object(forKey: "douyin_playback_rate_v1") as? Double ?? 1
+        return abs(rate - 1) > 0.001
+    }
+
+    func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool,
+              useEngine: Bool = DDSeamlessController.engineWanted) {
         reset()
         bindGen &+= 1
         let gen = bindGen
@@ -487,6 +539,20 @@ final class DDSeamlessController {
         self.wantPlaying = isActive && isPlaying
         self.isMuted = muted
         self.mode = .preparing
+        #if DEBUG
+        ddWrite("DDSEAM bind engine=\(useEngine) rate=\(rate)")
+        #endif
+        // 1x：不建音频流，直接走原生声音（预热池里若有这条的流也一并丢掉，音轨重新打开）
+        if !useEngine {
+            mode = .fallbackAVPlayer
+            if let asset = player.currentItem?.asset as? AVURLAsset {
+                DDAudioPreloadPool.shared.take(for: asset)?.cancel()
+            }
+            if let it = player.currentItem { DDAudioStream.enableAudioTracks(on: it) }
+            player.isMuted = !wantPlaying || muted
+            if wantPlaying { player.rate = targetRate } else { player.pause() }
+            return
+        }
 
         // 准备期间先保持 AVPlayer 静音，防止未禁用音轨前漏出原生声音
         player.isMuted = true
@@ -625,7 +691,10 @@ final class DDSeamlessController {
         case .engaged:
             videoPlayer?.isMuted = true
             let hub = DDAudioEngineHub.shared
-            if hub.activeOwner == ownerID, pendingBuffers > 0 {
+            if hub.activeOwner == ownerID {
+                hub.noteExplicitPlaybackRequest()
+            }
+            if hub.activeOwner == ownerID, pendingBuffers > 0, hub.allowsAutomaticStart {
                 try? hub.ensureRunning()
                 hub.setRate(targetRate, owner: ownerID)
                 hub.setMuted(muted, owner: ownerID)
@@ -740,8 +809,9 @@ final class DDSeamlessController {
             // 先塞入开头 2 块再启动 playerNode
             await self.enqueueOneChunk(gen: gen, streamEpoch: streamEpoch)
             await self.enqueueOneChunk(gen: gen, streamEpoch: streamEpoch)
-            guard self.bindGen == gen, self.wantPlaying else { return }
-            if self.shouldPlayAudioNow() {
+            guard self.bindGen == gen, self.wantPlaying,
+                  DDAudioEngineHub.shared.activeOwner == self.ownerID else { return }
+            if self.shouldPlayAudioNow(), DDAudioEngineHub.shared.allowsAutomaticStart {
                 try? DDAudioEngineHub.shared.ensureRunning()
                 DDAudioEngineHub.shared.playerNode.play()
                 // 已缓冲就绪时等 TimePitch 前瞻窗口（~85ms）出声同刻再推进画面，消除起播 ~85ms 超前
@@ -801,6 +871,7 @@ final class DDSeamlessController {
         guard mode == .engaged, wantPlaying, let stream else { return }
         let hub = DDAudioEngineHub.shared
         guard hub.activeOwner == ownerID else { return }
+        guard hub.allowsAutomaticStart else { return }
 
         // 后台听书模式：处理后台播完单曲循环或切下一首
         if DDPlayback.bgPlay && UIApplication.shared.applicationState == .background {

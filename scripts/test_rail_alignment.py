@@ -40,7 +40,7 @@ precondition(Metrics.actionRailHorizontalOffset(isRegular: false, trailingInset:
 print("PASS calibrated optical correction: expanded only")
 '''.replace('FUNC', m.group(0)).replace('OPTICAL', str(optical))
 print(f'PASS captured build84 geometry: residual {corrected-capture["signalCenterX"]:.2f}px; this is calibration, not a new device screenshot')
-scratch = pathlib.Path('/Users/zhanghongsheng/.hermes/profiles/shayu/cache/scratch')
+scratch = pathlib.Path(tempfile.gettempdir())
 with tempfile.TemporaryDirectory(prefix='rail-alignment-', dir=scratch) as d:
     p = pathlib.Path(d)
     (p/'main.swift').write_text(swift)
