@@ -177,7 +177,7 @@ struct DYLiveZone: Hashable {
     ].map { DYLiveZone(id: $0.0, type: "1", name: $0.1) }
 }
 
-private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String? }
+private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil }
 private struct DYCommentPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let total: Int; let msg: String? }
 
 enum DYError: LocalizedError {
@@ -357,10 +357,16 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     func fetchFeed() async throws -> (items: [DYAweme], hasMore: Bool) {
         refreshIndex += 1
-        let d = try await call(Self.feedJS, args: ["refresh": String(refreshIndex),
-                                                   "install": String(Self.installTime),
-                                                   "pull": refreshIndex <= 2 ? "0" : "2"])
-        let p = try JSONDecoder().decode(DYFeedPage.self, from: d)
+        let source = DYFeedSource.current
+        let args: [String: Any] = ["refresh": String(refreshIndex), "install": String(Self.installTime),
+                                   "pull": refreshIndex <= 2 ? "0" : "2"]
+        var p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(source == .recommend ? Self.tabFeedJS : Self.feedJS, args: args))
+        DYLiveModel.log("DDFEED source=\(source.rawValue) idx=\(refreshIndex) \(p.diag ?? "-") more=\(p.hasMore) msg=\(p.msg ?? "-")")
+        // 推荐接口拿不到（被风控 / 参数变了）时这一页用精选顶上，别让列表断粮；日志里能看出来
+        if source == .recommend, p.status != 200 || p.items.isEmpty {
+            p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.feedJS, args: args))
+            DYLiveModel.log("DDFEED fallback=featured idx=\(refreshIndex) \(p.diag ?? "-")")
+        }
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
         return (p.items, p.hasMore)
@@ -878,6 +884,23 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     };
     """#
 
+    /// 「推荐」竖屏流：网页版首页推荐用的接口（不是精选）。字段同 module/feed 的 aweme_list。
+    private static let tabFeedJS = #"""
+    const P = Object.assign({}, base, { count: '10', refresh_index: refresh, video_type_select: '1',
+      aweme_pc_rec_raw_data: JSON.stringify({ is_client: false, ff_danmaku_status: 0, danmaku_switch_status: 0 }),
+      globalwid: '', pull_type: pull, min_window: '0', free_right: '0', ug_source: '', creative_id: '' });
+    const r = await req('GET', '/aweme/v1/web/tab/feed/?' + new URLSearchParams(P).toString());
+    const d = parse(r.t);
+    if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20),
+      diag: 'tab s=' + r.s + ' signed=' + /a_bogus=/.test(r.u || '') + ' len=' + (r.t || '').length });
+    const raw = d.aweme_list || [];
+    const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
+    const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
+    const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
+    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null,
+      diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
+    """#
+
     private static let feedJS = #"""
     const P = Object.assign({}, base, { module_id: '3003101', count: '20', screen_width: '430', screen_height: '932', filterGids: '', presented_ids: '', refresh_index: refresh,
       refer_id: '', refer_type: '10', pull_type: pull,
@@ -887,8 +910,12 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const r = await req('POST', '/aweme/v2/web/module/feed/?' + new URLSearchParams(P).toString(), '');
     const d = parse(r.t);
     if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20) });
-    const items = (d.aweme_list || []).filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
-    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null });
+    const raw = d.aweme_list || [];
+    const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
+    const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
+    const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
+    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null,
+      diag: 'module s=' + r.s + ' code=' + d.status_code + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
 
     private static let watchJS = #"""
@@ -1327,6 +1354,7 @@ struct DYUpstreamFeedScreen: View {
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    @AppStorage(DYFeedSource.key) private var feedSource = DYFeedSource.recommend.rawValue
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
 
@@ -1522,6 +1550,8 @@ struct DYUpstreamFeedScreen: View {
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
+        // 换推荐来源：当前这条不动，后面的换成新来源拉的
+        .onChange(of: feedSource) { _, _ in Task { await refreshRecommendations() } }
         .onDisappear { live.stop(); preloader.clear() }
     }
 
@@ -2346,6 +2376,11 @@ struct DYUpstreamFeedScreen: View {
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("douyin.ambient")
                 } label: { Label("播放设置", systemImage: "play.circle") }
+                Picker(selection: $feedSource) {
+                    ForEach(DYFeedSource.allCases) { Text($0.title).tag($0.rawValue) }
+                } label: { Label("推荐来源", systemImage: "sparkles.tv") }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("douyin.feed.source")
                 Menu {
                     Toggle(isOn: $feed.landscapeWhenWide) { Label("横屏时只放横屏内容", systemImage: "rectangle.on.rectangle") }
                         .accessibilityIdentifier("douyin.landscape.only")
@@ -2668,6 +2703,7 @@ extension EnvironmentValues {
 
 @available(iOS 27.1, *)
 struct DYClassicFeedScreen: View {
+    @AppStorage(DYFeedSource.key) private var feedSource = DYFeedSource.recommend.rawValue
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
@@ -2861,6 +2897,8 @@ struct DYClassicFeedScreen: View {
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioPortrait) { _, _ in remixUpcoming() }
         .onChange(of: feed.shortRatioLandscape) { _, _ in remixUpcoming() }
+        // 换推荐来源：当前这条不动，后面的换成新来源拉的
+        .onChange(of: feedSource) { _, _ in Task { await refreshRecommendations() } }
         .onDisappear { live.stop(); preloader.clear() }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
