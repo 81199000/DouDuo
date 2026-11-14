@@ -25,6 +25,10 @@ struct PlayerGestureView: UIViewRepresentable {
     var verticalFirst = false
     /// When provided, a horizontal gesture navigates once on release and never seeks.
     var onHorizontalSwipe: ((Bool) -> Void)? = nil // true = left
+    /// 经典频道跟手。有它时横滑按位移上报，不再在松手时发一次性的 onHorizontalSwipe。
+    var onHorizontalDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    /// 松手：(位移, 预测落点, 宽度, 是否取消)
+    var onHorizontalDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
 
     var onPinchBegan: () -> Void = {}
     var onPinchChanged: (CGFloat) -> Void = { _ in }
@@ -198,6 +202,21 @@ struct PlayerGestureView: UIViewRepresentable {
 
         @objc func handlePan(_ g: UIPanGestureRecognizer) {
             guard let v = view else { return }
+            if parent.onHorizontalDrag != nil || parent.onHorizontalDragEnd != nil {
+                let dx = g.translation(in: v).x
+                let width = max(v.bounds.width, 1)
+                switch g.state {
+                case .began, .changed:
+                    parent.onHorizontalDrag?(dx, width)
+                case .ended:
+                    let predicted = dx + g.velocity(in: v).x * 0.2
+                    parent.onHorizontalDragEnd?(dx, predicted, width, false)
+                case .cancelled, .failed:
+                    parent.onHorizontalDragEnd?(0, 0, width, true)
+                default: break
+                }
+                return
+            }
             if let navigate = parent.onHorizontalSwipe {
                 guard g.state == .ended else { return }
                 let dx = g.translation(in: v).x
@@ -232,7 +251,9 @@ struct PlayerGestureView: UIViewRepresentable {
                     ancestor = current.superview
                 }
             }
-            if g is UIScreenEdgePanGestureRecognizer { return parent.onHorizontalSwipe == nil }
+            if g is UIScreenEdgePanGestureRecognizer {
+                return parent.onHorizontalSwipe == nil && parent.onHorizontalDrag == nil
+            }
             guard let pg = g as? UIPanGestureRecognizer, let v = view else { return true }
             // 长按（2 倍速）期间不触发快进
             if let l = long, l.state == .began || l.state == .changed { return false }

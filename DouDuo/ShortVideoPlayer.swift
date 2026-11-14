@@ -160,7 +160,9 @@ extension PlayerPage {
                          videoAspect: Double = 0,
                          headEndSeconds: Double? = nil, continuationURL: URL? = nil,
                          onSwipeLeft: (() -> Void)? = nil, onSwipeRight: (() -> Void)? = nil,
-                         onContextMenu: (() -> Void)? = nil, boost: DYBoostControl? = nil) -> PlayerPage {
+                         onContextMenu: (() -> Void)? = nil, boost: DYBoostControl? = nil,
+                         onHorizontalDrag: ((CGFloat, CGFloat) -> Void)? = nil,
+                         onHorizontalDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
                    resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
@@ -168,8 +170,10 @@ extension PlayerPage {
                    topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
                    posterURL: posterURL, headEndSeconds: headEndSeconds,
                    continuationURL: continuationURL, videoAspect: videoAspect, title: title,
-                   navigationSwipes: onSwipeLeft != nil || onSwipeRight != nil || onContextMenu != nil, onSwipeLeft: onSwipeLeft, onSwipeRight: onSwipeRight,
-                   onContextMenu: onContextMenu, boost: boost)
+                   navigationSwipes: onSwipeLeft != nil || onSwipeRight != nil || onContextMenu != nil || onHorizontalDrag != nil,
+                   onSwipeLeft: onSwipeLeft, onSwipeRight: onSwipeRight,
+                   onContextMenu: onContextMenu, boost: boost,
+                   onHorizontalDrag: onHorizontalDrag, onHorizontalDragEnd: onHorizontalDragEnd)
     }
 }
 
@@ -301,6 +305,8 @@ struct PlayerPage: View {
     var onSwipeRight: (() -> Void)? = nil
     var onContextMenu: (() -> Void)? = nil
     var boost: DYBoostControl? = nil
+    var onHorizontalDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    var onHorizontalDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
     /// 简洁 / 极简模式：隐藏底部进度条，进度改画在模块入口外圈
     @AppStorage("douyin_chrome_mode_v1") private var chromeModeRaw = "classic"
     private var progressOnRail: Bool { chromeModeRaw == "minimal" || chromeModeRaw == "rail" }
@@ -692,9 +698,11 @@ struct PlayerPage: View {
                 if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
             },
             verticalFirst: true,
-            onHorizontalSwipe: navigationSwipes ? { left in
+            onHorizontalSwipe: navigationSwipes && onHorizontalDrag == nil ? { left in
                 if left { onSwipeLeft?() } else { onSwipeRight?() }
             } : nil,
+            onHorizontalDrag: onHorizontalDrag,
+            onHorizontalDragEnd: onHorizontalDragEnd,
             onPinchBegan: { pinchMagnitude = 1 },
             onPinchChanged: { scale in
                 pinchMagnitude = scale

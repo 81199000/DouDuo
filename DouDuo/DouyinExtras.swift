@@ -26,6 +26,8 @@ struct DYUser: Decodable, Equatable {
     let likes: Int
     let works: Int
     let ip: String?
+    /// 仅「我的」页使用。作者页不读取，避免把别人的封面画进当前资料卡。
+    let cover: String?
 }
 
 /// 评论表情（抖音官方表情包）
@@ -336,9 +338,15 @@ extension DouyinBridge {
     """#
 
     private static let userMap = #"""
+    const coverOf = raw => {
+      if (!raw) return null;
+      const item = Array.isArray(raw) ? raw[0] : raw;
+      return first(item);
+    };
     const umap = u => u ? ({ name: u.nickname || '', avatar: first(u.avatar_larger) || first(u.avatar_thumb), signature: u.signature || '',
       secUid: u.sec_uid || '', uid: u.uid ? String(u.uid) : '', followers: u.follower_count || u.mplatform_followers_count || 0, following: u.following_count || 0,
-      likes: u.total_favorited || 0, works: u.aweme_count || 0, ip: u.ip_location || null }) : null;
+      likes: u.total_favorited || 0, works: u.aweme_count || 0, ip: u.ip_location || null,
+      cover: coverOf(u.cover_url) || coverOf(u.white_cover_url) }) : null;
     """#
 
     static let selfJS = userMap + #"""
@@ -1272,6 +1280,9 @@ struct DYMineScreen: View {
                 .id(kind)
             }
         }
+        .background(alignment: .top) {
+            DYSelfProfileBackdrop(cover: user?.cover)
+        }
         .background(Color.black.ignoresSafeArea())
         .task {
             #if DEBUG
@@ -1331,6 +1342,40 @@ private struct DYMineList: View {
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
                onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount)
+    }
+}
+
+/// 「我的」页顶部封面。没有 URL、URL 无效或图片失败时不画这层，页面仍是原来的黑底。
+private struct DYSelfProfileBackdrop: View {
+    let cover: String?
+
+    private var url: URL? {
+        guard let cover, !cover.isEmpty, let url = URL(string: cover),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return nil }
+        return url
+    }
+
+    var body: some View {
+        if let url {
+            CachedAsyncImage(url: url, thumbnailMaxPixel: 1600) { image in
+                image.resizable().scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 240)
+                    .clipped()
+                    .overlay {
+                        LinearGradient(
+                            colors: [.black.opacity(0.45), .black.opacity(0.05), .black],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            } placeholder: {
+                Color.clear
+            }
+        }
     }
 }
 
@@ -1575,24 +1620,38 @@ struct DYFollowFeed: View {
     let onToast: (String) -> Void
     let onComments: (DYAweme) -> Void
     var onShowRecommendations: (() -> Void)? = nil
+    /// 经典模式把列表模型留在不会随频道切换销毁的屏幕上，避免每次进入都重新请求。
+    var retainedList: DYPagedModelHolder? = nil
+    /// 经典模式把当前作品 ID 留在屏幕上。视图被拆掉后再进来，按这个 ID 恢复，而不是第一条。
+    var preservedSelection: Binding<String?>? = nil
+    var onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    var onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @StateObject private var model: DYPagedModelHolder = DYPagedModelHolder()
-    @State private var currentID: String?
+    @StateObject private var ownedList = DYPagedModelHolder()
+    private var list: DYPagedModelHolder { retainedList ?? ownedList }
+    @State private var ownedID: String?
+    private var currentID: Binding<String?> { preservedSelection ?? $ownedID }
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
     @State private var liked: Set<String> = []
     @State private var collected: Set<String> = []
 
     var body: some View {
-        let m = model.model(bridge)
+        let m = list.model(bridge)
         ZStack {
             if m.items.isEmpty {
                 VStack(spacing: 12) {
                     if let e = m.error {
                         Text(e).font(.footnote).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center)
                         HStack {
-                            Button("重试") { m.reset(); Task { await m.loadMore(); currentID = m.items.first?.id } }
+                            Button("重试") {
+                                m.reset(); currentID.wrappedValue = nil
+                                Task {
+                                    await m.loadMore()
+                                    currentID.wrappedValue = DYFollowFeedSelection.restored(preserved: nil, ids: m.items.map(\.id))
+                                }
+                            }
                                 .buttonStyle(.borderedProminent)
                             Button("登录") { onLogin() }.buttonStyle(.bordered)
                         }
@@ -1608,23 +1667,24 @@ struct DYFollowFeed: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
                         ForEach(m.items) { item in
-                            DYVideoPage(item: item, isCurrent: active && item.id == currentID, insets: insets,
+                            DYVideoPage(item: item, isCurrent: active && item.id == currentID.wrappedValue, insets: insets,
                                         resume: resume[item.id], liked: liked.contains(item.id) || item.userDigged == 1,
                                         collected: collected.contains(item.id) || item.isCollect == 1,
                                         onLike: { like(item.id, force: nil) }, onCollect: { collect(item.id) },
                                         onDoubleTap: { like(item.id, force: true) }, onComments: { onComments(item) },
                                         onAuthor: { onAuthor(item) }, onSavePosition: { resume[item.id] = $0 },
                                         preloader: preloader, bridge: bridge, onToast: onToast,
-                                        onNavigateLeft: onShowRecommendations)
+                                        onNavigateLeft: onChannelDrag == nil ? onShowRecommendations : nil,
+                                        onChannelDrag: onChannelDrag, onChannelDragEnd: onChannelDragEnd)
                                 .containerRelativeFrame([.horizontal, .vertical])
                                 .id(item.id)
                         }
                     }
                     .scrollTargetLayout()
-                    .background(DYPagingSpeedBridge(ids: m.items.map(\.id), currentID: $currentID))
+                    .background(DYPagingSpeedBridge(ids: m.items.map(\.id), currentID: currentID))
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $currentID, anchor: .center)
+                .scrollPosition(id: currentID, anchor: .center)
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
             }
@@ -1632,7 +1692,20 @@ struct DYFollowFeed: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.follow.feed")
-        .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { value in
+        .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { value in
+            guard m.items.isEmpty, let onChannelDrag,
+                  abs(value.translation.width) > abs(value.translation.height) * 1.2 else { return }
+            onChannelDrag(value.translation.width, 0)
+        }.onEnded { value in
+            if let onChannelDragEnd, m.items.isEmpty {
+                let horizontal = abs(value.translation.width) > abs(value.translation.height) * 1.2
+                if horizontal {
+                    onChannelDragEnd(value.translation.width, value.predictedEndTranslation.width, 0, false)
+                } else {
+                    onChannelDragEnd(0, 0, 0, true)
+                }
+                return
+            }
             guard m.items.isEmpty, value.translation.width < -60,
                   abs(value.translation.width) > abs(value.translation.height) * 1.2 else { return }
             onShowRecommendations?()
@@ -1643,15 +1716,16 @@ struct DYFollowFeed: View {
             if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_ENTRY"] == "follow",
                let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
                let item = try? await bridge.awemeDetail(id) {
-                m.items = [item]; m.hasMore = false; currentID = item.id
+                m.items = [item]; m.hasMore = false; currentID.wrappedValue = item.id
                 return
             }
             #endif
             if m.items.isEmpty { await m.loadMore() }
-            if currentID == nil { currentID = m.items.first?.id }
+            let restored = DYFollowFeedSelection.restored(preserved: currentID.wrappedValue, ids: m.items.map(\.id))
+            if currentID.wrappedValue != restored { currentID.wrappedValue = restored }
         }
-        .onChange(of: currentID) { old, new in
-            if new == nil, let old, m.items.contains(where: { $0.id == old }) { currentID = old; return }
+        .onChange(of: currentID.wrappedValue) { old, new in
+            if new == nil, let old, m.items.contains(where: { $0.id == old }) { currentID.wrappedValue = old; return }
             guard let i = m.items.firstIndex(where: { $0.id == new }) else { return }
             preloader.update(m.items, current: i)
             if i >= m.items.count - 4 { Task { await m.loadMore() } }
@@ -1696,6 +1770,12 @@ final class DYPagedModelHolder: ObservableObject {
         sub = n.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         m = n
         return n
+    }
+
+    func resetModel() {
+        sub = nil
+        m = nil
+        objectWillChange.send()
     }
 }
 
@@ -1769,3 +1849,32 @@ struct DYDanmakuOptions: View {
         .accessibilityValue("\((DYDanmakuPolicy.Density(rawValue: density) ?? .standard).title)，去重\(deduplicate ? "开启" : "关闭")")
     }
 }
+
+#if DEBUG
+private struct DYSelfProfileBackdropPreview: View {
+    let cover: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            DYUserHeader(user: DYUser(
+                name: "预览", avatar: nil, signature: "封面预览",
+                secUid: "preview", uid: "0", followers: 12, following: 3,
+                likes: 40, works: 5, ip: nil, cover: cover))
+                .padding(16)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(alignment: .top) { DYSelfProfileBackdrop(cover: cover) }
+        .background(Color.black)
+    }
+}
+
+#Preview("无封面") {
+    DYSelfProfileBackdropPreview(cover: nil)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("无效地址") {
+    DYSelfProfileBackdropPreview(cover: "not a url")
+        .preferredColorScheme(.dark)
+}
+#endif
