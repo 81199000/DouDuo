@@ -367,6 +367,7 @@ struct PlayerPage: View {
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
     @State private var playbackID = UUID()
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
     @State private var pinchMagnitude: CGFloat = 1
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
@@ -377,13 +378,7 @@ struct PlayerPage: View {
             Color.black
             // All playback entry points share this backdrop. Mask the player's
             // opaque letterbox below so uncovered areas reveal the blurred cover.
-            if DYAmbientProbe.mode == .blur, vlc == nil, let player {
-                DYAmbientBackdrop(player: player)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            } else if DYAmbientProbe.mode == .ext, vlc == nil, player != nil {
-                // 系统延伸自己填满四周，这里不铺封面
-            } else if let posterURL {
+            if let posterURL {
                 GeometryReader { geometry in
                     CachedAsyncImage(url: posterURL) { image in
                         image.resizable().scaledToFill()
@@ -397,13 +392,20 @@ struct PlayerPage: View {
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("douyin.video.backdrop")
             }
+            // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
+            if ambientLevel > 0, vlc == nil, let player {
+                DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("douyin.video.ambient")
+            }
             videoPlane
                 .mask {
                     GeometryReader { geometry in
                         let size = geometry.size
                         let screenAspect = size.width / max(size.height, 1)
                         let aspect = videoAspect > 0 ? videoAspect : screenAspect
-                        let fills = (fillWidth && ((aspect < 1) == (screenAspect < 1))) || (DYAmbientProbe.mode == .ext && vlc == nil)
+                        let fills = (fillWidth && ((aspect < 1) == (screenAspect < 1)))
                         let fitted = aspect > screenAspect
                             ? CGSize(width: size.width, height: size.width / aspect)
                             : CGSize(width: size.height * aspect, height: size.height)
@@ -594,10 +596,6 @@ struct PlayerPage: View {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
                 ZStack {
-                    if DYAmbientProbe.mode == .ext {
-                        DYExtendedVideoSurface(player: player, onReady: { if !firstFrame { firstFrame = true } })
-                            .ignoresSafeArea()
-                    } else {
                     VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true } },
                                  pictureInPicture: pictureInPicture,
                                  pictureInPictureEnabled: cleanScreen && isActive,
@@ -609,7 +607,6 @@ struct PlayerPage: View {
                                      if !DDPlayback.bgPlay { pauseInlineForBackground() }
                                  })
                         .ignoresSafeArea()
-                    }
                     // 头部缓存接在线流：新播放器先叠在上面亮相（已缓冲、时间点对齐），再撤掉旧的，
                     // 避免换 AVPlayerLayer 的 player 时断帧
                     if let np = nextPlayer {
