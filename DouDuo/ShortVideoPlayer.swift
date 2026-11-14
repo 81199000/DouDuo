@@ -424,12 +424,9 @@ struct PlayerPage: View {
                 }
                 .scaleEffect(videoScale)
                 .allowsHitTesting(false)
-                    // 试验：Duo 合屏外屏的竖屏视频只平移，不缩放、不改变裁切。
-                    // 用整屏宽度判断外屏，避免展开后窄评论窗格被误判成合屏。
-                    .offset(x: DYDuoMetrics.closedPortraitVideoOffset(
-                        viewport: outer.size, videoAspect: videoAspect, fills: fillWidth,
-                        isDuo: DYDuoMetrics.isDuoHardware,
-                        screenWidth: outer.size.width + chromeInsets.leading + chromeInsets.trailing))
+                    // 仅系统铰链 closed 时左贴边；展开、半折、分屏均保持原来的居中。
+                    .modifier(DYClosedPortraitAlignment(viewport: outer.size,
+                                                       videoAspect: videoAspect, fills: fillWidth))
             }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)

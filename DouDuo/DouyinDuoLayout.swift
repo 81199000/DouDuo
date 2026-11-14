@@ -6,8 +6,8 @@ import SwiftUI
 enum DYDuoMetrics {
     /// 合屏竖屏视频左贴边试验；展开内屏与横屏内容不移动。
     static func closedPortraitVideoOffset(viewport: CGSize, videoAspect: Double,
-                                          fills: Bool, isDuo: Bool, screenWidth: CGFloat) -> CGFloat {
-        guard isDuo, screenWidth < legacyWideMin, viewport.height > viewport.width,
+                                          fills: Bool, isDuo: Bool, isClosed: Bool) -> CGFloat {
+        guard isDuo, isClosed, viewport.height > viewport.width,
               videoAspect > 0, videoAspect < 1, !fills else { return 0 }
         let fittedWidth = min(viewport.width, viewport.height * videoAspect)
         return -(viewport.width - fittedWidth) / 2
@@ -643,5 +643,33 @@ struct DYScrollTopObserver: ViewModifier {
             // must never dismiss a panel without reliable scroll-position data.
             content.onAppear { atTop = false }
         }
+    }
+}
+
+/// 只在系统确认铰链 closed 时启用左贴边；不能拿窄视频窗格宽度猜外屏。
+struct DYClosedPortraitAlignment: ViewModifier {
+    let viewport: CGSize
+    let videoAspect: Double
+    let fills: Bool
+    func body(content: Content) -> some View {
+        if #available(iOS 27.1, *) {
+            DYHingeClosedVideo(content: content, viewport: viewport, videoAspect: videoAspect, fills: fills)
+        } else { content }
+    }
+}
+@available(iOS 27.1, *)
+private struct DYHingeClosedVideo<Content: View>: View {
+    let content: Content
+    let viewport: CGSize
+    let videoAspect: Double
+    let fills: Bool
+    @State private var isClosed = false
+    var body: some View {
+        content
+            .offset(x: DYDuoMetrics.closedPortraitVideoOffset(viewport: viewport, videoAspect: videoAspect,
+                      fills: fills, isDuo: DYDuoMetrics.isDuoHardware, isClosed: isClosed))
+            .onHingeChange { _, context in
+                isClosed = context.hinge?.status == .closed
+            }
     }
 }
