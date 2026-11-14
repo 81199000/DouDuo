@@ -405,7 +405,8 @@ struct PlayerPage: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
-            videoPlane
+            GeometryReader { outer in
+                videoPlane
                 .mask {
                     GeometryReader { geometry in
                         let size = geometry.size
@@ -423,6 +424,13 @@ struct PlayerPage: View {
                 }
                 .scaleEffect(videoScale)
                 .allowsHitTesting(false)
+                    // 试验：Duo 合屏外屏的竖屏视频只平移，不缩放、不改变裁切。
+                    // 用整屏宽度判断外屏，避免展开后窄评论窗格被误判成合屏。
+                    .offset(x: DYDuoMetrics.closedPortraitVideoOffset(
+                        viewport: outer.size, videoAspect: videoAspect, fills: fillWidth,
+                        isDuo: DYDuoMetrics.isDuoHardware,
+                        screenWidth: outer.size.width + chromeInsets.leading + chromeInsets.trailing))
+            }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
             }
