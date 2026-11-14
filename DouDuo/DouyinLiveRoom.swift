@@ -1014,6 +1014,8 @@ struct DYLiveFeed: View {
     var moduleRequest: DYLiveModuleRequest? = nil
     /// 默认模式保留左上角「发现更多 / 正在直播」。简洁和极简只从模块菜单进入。
     var classicPreviewChrome: Bool = true
+    var onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    var onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
     @StateObject private var chat = DYLiveChat()
     @State private var draft = ""
     @State private var sending = false
@@ -1038,7 +1040,6 @@ struct DYLiveFeed: View {
     @State private var viewportMinY: CGFloat = 0
     @State private var viewportMaxY: CGFloat = 0
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
-    @State private var tick = 0
     /// 系统只通过 onHingeChange 给出开合。没收到回调前保持不支持，继续整屏。
     @State private var hingeStatus: DYLiveHingeStatus = .unsupported
     @State private var layoutMemory = DYLiveAdaptiveMemory.empty
@@ -1086,6 +1087,7 @@ struct DYLiveFeed: View {
                 else {
                     pages(video: shown.video, interaction: shown.interaction,
                           ambientAxis: DYLiveAmbientTreatment.axis(for: shown.layout),
+                          paneWidth: geo.size.width,
                           splitRole: menuSplitRole(placement.role),
                           splitAction: {
                               if canManualSplit { withAnimation(.easeInOut(duration: 0.2)) { manualSplit.toggle() } }
@@ -1252,7 +1254,6 @@ struct DYLiveFeed: View {
             Task { await model.loadFollowLive(bridge) }
         }
         .onDisappear { dismissPreviewOverlays(); scrollEndTask?.cancel(); cancelFollowPick(); model.deactivate(); chat.close() }
-        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in tick += 1 }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { applyKeyboard($0) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardOverlap = 0
@@ -1691,7 +1692,7 @@ struct DYLiveFeed: View {
     }
 
     private func pages(video: CGRect, interaction: CGRect, ambientAxis: DYLiveAmbientAxis?,
-                       splitRole: DYLiveLayoutToggleRole, splitAction: @escaping () -> Void) -> some View {
+                       paneWidth: CGFloat, splitRole: DYLiveLayoutToggleRole, splitAction: @escaping () -> Void) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(model.rooms) { room in
@@ -1719,6 +1720,11 @@ struct DYLiveFeed: View {
         .background(DYLivePagingKeyboardLock(locked: keyboardLocksPaging))
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .onChanged { value in
+                let horizontal = abs(value.translation.width) > abs(value.translation.height) * 1.2
+                if horizontal, !model.entered, !model.clean, onChannelDrag != nil {
+                    onChannelDrag?(value.translation.width, paneWidth)
+                    return
+                }
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 if !userScrolling {
                     gestureStartID = model.currentID
@@ -1729,6 +1735,11 @@ struct DYLiveFeed: View {
                 scrollEndTask?.cancel(); userScrolling = true
             }
             .onEnded { value in
+                let horizontal = abs(value.translation.width) > abs(value.translation.height) * 1.2
+                if horizontal, !model.entered, !model.clean, onChannelDragEnd != nil {
+                    onChannelDragEnd?(value.translation.width, value.predictedEndTranslation.width, paneWidth, false)
+                    return
+                }
                 // 左缘右滑返回：与「我的 / 信息」页 DYEdgeSwipeBack 同一套判定（左缘 30pt 起、右滑 >70pt）。
                 // 刻意复用分页这一个手势，不再叠第二层 simultaneousGesture，避免影响上滑换台。
                 if (model.entered || model.clean),

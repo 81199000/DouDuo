@@ -2557,6 +2557,55 @@ enum DYTab: CaseIterable { case follow, recommend, live
     }
 }
 
+// MARK: - classic-channel-navigation
+
+/// 关注流回来时按作品 ID 恢复，ID 不在当前列表里才落到第一条。
+enum DYFollowFeedSelection {
+    static func restored(preserved: String?, ids: [String]) -> String? {
+        if let preserved, ids.contains(preserved) { return preserved }
+        return ids.first
+    }
+}
+
+/// 经典频道横向拖动。fraction 相对当前页宽度：负值是顺序中的下一频道，正值是上一频道。
+struct DYClassicChannelDrag: Equatable {
+    var fraction: CGFloat
+    var neighbor: DYTab?
+    var authorEdge: Bool
+
+    /// 只给经典模式用。枚举本身仍是关注、推荐、直播，避免改到简洁和极简。
+    static let order: [DYTab] = [.live, .follow, .recommend]
+
+    static func update(tab: DYTab, translation: CGFloat, width: CGFloat, order: [DYTab] = DYClassicChannelDrag.order) -> DYClassicChannelDrag {
+        let width = max(width, 1)
+        let raw = translation / width
+        let neighbor = Self.neighbor(of: tab, toward: raw, order: order)
+        let authorEdge = neighbor == nil && tab == order.last && raw < 0
+        let fraction = neighbor == nil ? raw * 0.2 : min(1, max(-1, raw))
+        return DYClassicChannelDrag(fraction: fraction, neighbor: neighbor, authorEdge: authorEdge)
+    }
+
+    static func neighbor(of tab: DYTab, toward fraction: CGFloat, order: [DYTab] = DYClassicChannelDrag.order) -> DYTab? {
+        guard let index = order.firstIndex(of: tab) else { return nil }
+        if fraction < 0, index + 1 < order.count { return order[index + 1] }
+        if fraction > 0, index > 0 { return order[index - 1] }
+        return nil
+    }
+
+    /// 位移或预测落点过半才切页。预测落点用来接快速轻扫。
+    static func commits(translation: CGFloat, predicted: CGFloat, width: CGFloat) -> Bool {
+        let width = max(width, 1)
+        return abs(translation) / width >= 0.5 || abs(predicted) / width >= 0.5
+    }
+
+    /// 推荐页右缘的左滑过半才打开作者。没过半或被取消时保持原页。
+    static func opensAuthor(authorEdge: Bool, translation: CGFloat, predicted: CGFloat, width: CGFloat, cancelled: Bool) -> Bool {
+        !cancelled && authorEdge && translation < 0 && commits(translation: translation, predicted: predicted, width: width)
+    }
+}
+
+// MARK: - classic-channel-navigation-end
+
 // MARK: - 单页
 
 struct DYVideoPage: View {
@@ -2588,13 +2637,17 @@ struct DYVideoPage: View {
     var onEnded: (() -> Void)? = nil
     var onShowFollowing: (() -> Void)? = nil
     var onNavigateLeft: (() -> Void)? = nil
+    var onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    var onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
          onComments: @escaping () -> Void, onSearch: @escaping () -> Void = {}, onAuthor: @escaping () -> Void, onSavePosition: @escaping (Double) -> Void,
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
          onDislike: (() -> Void)? = nil, moreExtras: AnyView = AnyView(EmptyView()),
          onEnded: (() -> Void)? = nil,
-         onShowFollowing: (() -> Void)? = nil, onNavigateLeft: (() -> Void)? = nil, onBack: (() -> Void)? = nil) {
+         onShowFollowing: (() -> Void)? = nil, onNavigateLeft: (() -> Void)? = nil, onBack: (() -> Void)? = nil,
+         onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil,
+         onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
@@ -2605,6 +2658,8 @@ struct DYVideoPage: View {
         self.onShowFollowing = onShowFollowing
         self.onNavigateLeft = onNavigateLeft
         self.onSearch = onSearch; self.moreExtras = moreExtras; self.onBack = onBack
+        self.onChannelDrag = onChannelDrag
+        self.onChannelDragEnd = onChannelDragEnd
     }
 
     var body: some View {
@@ -2614,7 +2669,8 @@ struct DYVideoPage: View {
                     liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
                     onDoubleTap: onDoubleTap, onComments: onComments, onAuthor: onAuthor,
                     onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
-                    onDislike: onDislike, onEnded: onEnded, onShowFollowing: onShowFollowing, onNavigateLeft: onNavigateLeft)
+                    onDislike: onDislike, onEnded: onEnded, onShowFollowing: onShowFollowing, onNavigateLeft: onNavigateLeft,
+                    onChannelDrag: onChannelDrag, onChannelDragEnd: onChannelDragEnd)
             } else {
                 DYUpstreamVideoPage(item: item, isCurrent: isCurrent && !searchCoversVideo && !filterPresented, insets: insets, resume: resume,
                     liked: liked, collected: collected, onLike: onLike, onCollect: onCollect,
@@ -2703,6 +2759,15 @@ struct DYClassicFeedScreen: View {
     }
     @State private var authorTarget: DYAweme.Author?
     @State private var authorWorkOpen = false
+    /// 跟手切换的进度，相对当前内容宽度。负值推向下一频道。
+    @State private var channelFraction: CGFloat = 0
+    @State private var channelNeighbor: DYTab?
+    @State private var channelAuthorEdge = false
+    @State private var channelWidth: CGFloat = 0
+    @State private var channelSettling = false
+    @State private var playbackSuspended = false
+    @StateObject private var followList = DYPagedModelHolder()
+    @State private var followCurrentID: String?
     @State private var pendingUpdate: DDUpdate?
     private var showMessages: Bool {
         get { mainTab == .messages }
@@ -2858,7 +2923,9 @@ struct DYClassicFeedScreen: View {
         .onDisappear { live.stop(); preloader.clear() }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
-            live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
+            live.reset(); preloader.clear(); feed.reset(); currentID = nil
+            followList.resetModel(); followCurrentID = nil
+            bridge.reload()
             Task {
                 await feed.loadMore(bridge)
                 currentID = feed.items.first?.id
@@ -2867,6 +2934,10 @@ struct DYClassicFeedScreen: View {
             if tab == .live { Task { await live.load(bridge, reset: true) } }
         }) { t in
             DouyinWebScreen(start: t.url)
+        }
+        .onChange(of: bridge.followSession) { _, _ in
+            followList.resetModel()
+            followCurrentID = nil
         }
         .task { await refreshNoticeUnread() }
         .task {
@@ -3102,10 +3173,105 @@ struct DYClassicFeedScreen: View {
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
     /// 要换一批推荐走「更多 → 刷新推荐」。
     private func selectTab(_ target: DYTab) {
-        guard tab != target else { return }
+        guard tab != target, !channelSettling else { return }
         showComments = false
         authorTarget = nil
-        tab = target
+        guard channelWidth > 1 else {
+            tab = target
+            return
+        }
+        channelNeighbor = target
+        commitChannelDrag(to: target, duration: 0.28)
+    }
+
+    private var shownChannels: [DYTab] {
+        if let channelNeighbor, channelNeighbor != tab { return [tab, channelNeighbor] }
+        return [tab]
+    }
+
+    private func channelOffset(_ channel: DYTab, width: CGFloat) -> CGFloat {
+        let tabs = DYClassicChannelDrag.order
+        guard let settled = tabs.firstIndex(of: tab), let index = tabs.firstIndex(of: channel) else { return 0 }
+        return channelFraction * width + CGFloat(index - settled) * width
+    }
+
+    private func applyChannelDrag(translation: CGFloat, width: CGFloat) {
+        guard !channelSettling else { return }
+        let width = width > 1 ? width : channelWidth
+        guard width > 1 else { return }
+        let drag = DYClassicChannelDrag.update(tab: tab, translation: translation, width: width)
+        channelFraction = drag.fraction
+        channelNeighbor = drag.neighbor
+        channelAuthorEdge = drag.authorEdge
+    }
+
+    private func endChannelDrag(translation: CGFloat, predicted: CGFloat, width: CGFloat, cancelled: Bool) {
+        guard !channelSettling else { return }
+        let width = width > 1 ? width : channelWidth
+        if DYClassicChannelDrag.opensAuthor(authorEdge: channelAuthorEdge, translation: translation,
+                                            predicted: predicted, width: width, cancelled: cancelled) {
+            cancelChannelDrag()
+            openCurrentAuthor()
+            return
+        }
+        if !cancelled, let dest = channelNeighbor, width > 1,
+           DYClassicChannelDrag.commits(translation: translation, predicted: predicted, width: width) {
+            commitChannelDrag(to: dest)
+        } else {
+            cancelChannelDrag()
+        }
+    }
+
+    private func openCurrentAuthor() {
+        guard tab == .recommend, let author = current?.author else { return }
+        showComments = false
+        authorTarget = author
+    }
+
+    private func commitChannelDrag(to dest: DYTab, duration: TimeInterval = 0.22) {
+        guard !channelSettling, dest != tab else { cancelChannelDrag(); return }
+        let tabs = DYClassicChannelDrag.order
+        let forward = (tabs.firstIndex(of: dest) ?? 0) > (tabs.firstIndex(of: tab) ?? 0)
+        channelSettling = true
+        withAnimation(.easeOut(duration: duration)) { channelFraction = forward ? -1 : 1 }
+        let wait = UInt64(duration * 1000) + 30
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(wait))
+            finishChannel(at: dest)
+        }
+    }
+
+    private func cancelChannelDrag() {
+        guard channelFraction != 0 || channelNeighbor != nil else { return }
+        channelSettling = true
+        withAnimation(.easeOut(duration: 0.22)) { channelFraction = 0 }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(230))
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                channelFraction = 0
+                channelNeighbor = nil
+                channelAuthorEdge = false
+                channelSettling = false
+            }
+        }
+    }
+
+    private func finishChannel(at target: DYTab) {
+        playbackSuspended = true
+        Task { @MainActor in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                tab = target
+                channelFraction = 0
+                channelNeighbor = nil
+                channelAuthorEdge = false
+                channelSettling = false
+            }
+            playbackSuspended = false
+        }
     }
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
@@ -3201,22 +3367,23 @@ struct DYClassicFeedScreen: View {
     @ViewBuilder
     private var feedArea: some View {
         ZStack(alignment: .top) {
-            if tab == .live {
-                DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
-                           topChrome: topChrome, screenInsets: insets)
-            } else if tab == .follow {
-                DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
-                             onAuthor: { a in authorTarget = a.author },
-                             onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onToast: { showToast($0) },
-                             onComments: { item in
-                                 visibleVideo = item
-                                 authorTarget = nil
-                                 showComments = true
-                             },
-                             onShowRecommendations: { selectTab(.recommend) })
-            } else {
-                recommendArea
+            GeometryReader { geo in
+                let width = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    ForEach(shownChannels, id: \.self) { channel in
+                        channelPage(channel)
+                            .frame(width: width, height: geo.size.height)
+                            .offset(x: channelOffset(channel, width: width))
+                            .allowsHitTesting(channel == tab && !channelSettling)
+                    }
+                }
+                .frame(width: width, height: geo.size.height, alignment: .topLeading)
+                .clipped()
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                if width > 1 { channelWidth = width }
             }
             if let t = feed.toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
@@ -3288,7 +3455,7 @@ struct DYClassicFeedScreen: View {
     /// 保留原版频道切换；两侧操作及安全区由系统导航栏管理。
     private var topBar: some View {
         HStack(spacing: 14) {
-            ForEach(DYTab.allCases, id: \.self) { channel in
+            ForEach(DYClassicChannelDrag.order, id: \.self) { channel in
                 Button { selectTab(channel) } label: {
                     VStack(spacing: 3) {
                         Text(channel.title).font(.headline.weight(tab == channel ? .bold : .medium))
@@ -3309,7 +3476,42 @@ struct DYClassicFeedScreen: View {
     }
 
     @ViewBuilder
-    private var recommendArea: some View {
+    private func channelPage(_ channel: DYTab) -> some View {
+        let audible = channel == tab && !playbackSuspended
+        let interactive = channel == tab
+        switch channel {
+        case .live:
+            DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) },
+                       active: audible && web == nil && !overlayOpen,
+                       topChrome: topChrome, screenInsets: insets,
+                       onChannelDrag: interactive ? { dx, width in applyChannelDrag(translation: dx, width: width) } : nil,
+                       onChannelDragEnd: interactive ? { dx, predicted, width, cancelled in
+                           endChannelDrag(translation: dx, predicted: predicted, width: width, cancelled: cancelled)
+                       } : nil)
+        case .follow:
+            DYFollowFeed(bridge: bridge, insets: insets, active: audible && web == nil && !overlayOpen,
+                         onAuthor: { a in authorTarget = a.author },
+                         onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
+                         onToast: { showToast($0) },
+                         onComments: { item in
+                             visibleVideo = item
+                             authorTarget = nil
+                             showComments = true
+                         },
+                         onShowRecommendations: { selectTab(.recommend) },
+                         retainedList: followList,
+                         preservedSelection: $followCurrentID,
+                         onChannelDrag: interactive ? { dx, width in applyChannelDrag(translation: dx, width: width) } : nil,
+                         onChannelDragEnd: interactive ? { dx, predicted, width, cancelled in
+                             endChannelDrag(translation: dx, predicted: predicted, width: width, cancelled: cancelled)
+                         } : nil)
+        case .recommend:
+            recommendArea(audible: audible, interactive: interactive)
+        }
+    }
+
+    @ViewBuilder
+    private func recommendArea(audible: Bool, interactive: Bool) -> some View {
         ZStack(alignment: .topLeading) {
             if feed.items.isEmpty {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
@@ -3336,15 +3538,15 @@ struct DYClassicFeedScreen: View {
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
                             pageAxes: [.horizontal, .vertical]) { item in
-                    page(for: item)
+                    page(for: item, audible: audible, interactive: interactive)
                 }
             }
         }
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
-    private func page(for item: DYAweme) -> some View {
-        let active = item.id == currentID && web == nil && tab == .recommend && !overlayOpen
+    private func page(for item: DYAweme, audible: Bool, interactive: Bool) -> some View {
+        let active = audible && item.id == currentID && web == nil && !overlayOpen
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
@@ -3362,7 +3564,11 @@ struct DYClassicFeedScreen: View {
                            onToast: { showToast($0) },
                            onDislike: { dislike(item.id) },
                            onEnded: { playNext(after: item.id) },
-                           onShowFollowing: { selectTab(.follow) })
+                           onShowFollowing: interactive ? nil : { selectTab(.follow) },
+                           onChannelDrag: interactive ? { dx, width in applyChannelDrag(translation: dx, width: width) } : nil,
+                           onChannelDragEnd: interactive ? { dx, predicted, width, cancelled in
+                               endChannelDrag(translation: dx, predicted: predicted, width: width, cancelled: cancelled)
+                           } : nil)
     }
 
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
@@ -3968,6 +4174,8 @@ struct DYClassicVideoPage: View {
     var onEnded: (() -> Void)? = nil
     var onShowFollowing: (() -> Void)? = nil
     var onNavigateLeft: (() -> Void)? = nil
+    var onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil
+    var onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil
     /// 已裁成圆形的头像（只在头像加载完时画一次；以前每次 body 重算都重画两遍，滑动时主线程掉帧）
     @State private var authorImage: UIImage?
     @State private var followedOverride: Bool?
@@ -3996,7 +4204,9 @@ struct DYClassicVideoPage: View {
          preloader: DYPreloader, bridge: DouyinBridge? = nil, onToast: ((String) -> Void)? = nil,
          onDislike: (() -> Void)? = nil,
          onEnded: (() -> Void)? = nil,
-         onShowFollowing: (() -> Void)? = nil, onNavigateLeft: (() -> Void)? = nil) {
+         onShowFollowing: (() -> Void)? = nil, onNavigateLeft: (() -> Void)? = nil,
+         onChannelDrag: ((CGFloat, CGFloat) -> Void)? = nil,
+         onChannelDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil) {
         self.item = item; self.isCurrent = isCurrent; self.insets = insets; self.resume = resume
         self.liked = liked; self.collected = collected
         self.onLike = onLike; self.onCollect = onCollect; self.onDoubleTap = onDoubleTap
@@ -4006,6 +4216,8 @@ struct DYClassicVideoPage: View {
         self.onEnded = onEnded
         self.onShowFollowing = onShowFollowing
         self.onNavigateLeft = onNavigateLeft
+        self.onChannelDrag = onChannelDrag
+        self.onChannelDragEnd = onChannelDragEnd
     }
 
     var body: some View {
@@ -4035,9 +4247,11 @@ struct DYClassicVideoPage: View {
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
                                     headEndSeconds: nil,
                                     continuationURL: nil,
-                                    onSwipeLeft: { if !cleanScreen { (onNavigateLeft ?? onAuthor)() } },
-                                    onSwipeRight: { if !cleanScreen { onShowFollowing?() } },
-                                    onContextMenu: { if !cleanScreen { showOptions = true } })
+                                    onSwipeLeft: onChannelDrag == nil && !cleanScreen ? { (onNavigateLeft ?? onAuthor)() } : nil,
+                                    onSwipeRight: onChannelDrag == nil && !cleanScreen ? { onShowFollowing?() } : nil,
+                                    onContextMenu: { if !cleanScreen { showOptions = true } },
+                                    onHorizontalDrag: cleanScreen ? nil : onChannelDrag,
+                                    onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
             } else {
                 TabView {
