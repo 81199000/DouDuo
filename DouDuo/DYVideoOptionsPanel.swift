@@ -12,6 +12,7 @@ struct DYVideoOptionsPanel: View {
     @AppStorage("douyin_autofit_v1") private var autoFit = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage("douyin_short_ratio_portrait_v1") private var portraitRatio = 70
     @AppStorage("douyin_short_ratio_landscape_v1") private var landscapeRatio = 70
@@ -83,6 +84,10 @@ struct DYVideoOptionsPanel: View {
                             Label("后台播放（听书）", systemImage: "headphones")
                         }
                         .padding(.horizontal, 16).frame(minHeight: 52)
+                        Divider().padding(.leading, 16)
+                        choiceRow("环境光", values: DYVideoAmbient.levels, selection: $ambientLevel,
+                                  id: "douyin.options.ambient") { DYVideoAmbient.title($0) }
+                            .padding(.horizontal, 16)
                     }
                     .optionGroup()
 
