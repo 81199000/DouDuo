@@ -67,7 +67,9 @@ struct DYSearchPresentation: ViewModifier {
             }
         }
         // Both halves include their own chrome; system sidebars never shift the midpoint.
-        .ignoresSafeArea(.container, edges: .horizontal)
+        // 只在左右分栏时忽略水平安全区。不分栏时必须把系统侧栏宽度传下去，
+        // 否则推荐流按钮栏/模块按钮读到 0，不再对齐右侧信号栏（冷启动必现）。
+        .ignoresSafeArea(.container, edges: split ? .horizontal : [])
         .background {
             GeometryReader { proxy in
                 Color.clear
