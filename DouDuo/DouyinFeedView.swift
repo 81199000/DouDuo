@@ -714,6 +714,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     """#
 
     private static let diggJS = #"""
+    if (typeof sdkReady === 'function') await sdkReady(6000);
     const P = Object.assign({}, base, { aweme_id: id, type: type, item_type: '0' });
     const u = '/aweme/v1/web/commit/item/digg/?' + new URLSearchParams(P).toString();
     const r = await req('POST', u, '');
@@ -790,7 +791,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       x.open(method, path); x.withCredentials = true;
       x.setRequestHeader('Accept', 'application/json, text/plain, */*');
       if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-      x.onload = () => fin({ s: x.status, t: x.responseText }); x.onerror = () => fin({ s: -1, t: '' });
+      x.onload = () => fin({ s: x.status, t: x.responseText, u: String(x.responseURL || '') }); x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
     const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', pc_client_type: '1', pc_libra_divert: 'Mac',
@@ -800,6 +801,18 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       os_name: 'Mac OS', os_version: '10.15.7', cpu_core_num: '8', device_memory: '8', platform: 'PC', downlink: '10',
       effective_type: '4g', round_trip_time: '50' };
     const parse = t => { try { return JSON.parse(t) } catch (e) { return null } };
+    // 抖音安全 SDK 在 load 之后还要一会儿才接管 XHR；没接管就发写请求会不带 a_bogus 签名，
+    // 服务端直接丢弃（200 空 body 或 403），而读接口不受影响。写接口一律先等它就绪。
+    const sdkReady = async (ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < (ms || 6000)) {
+        let hooked = false;
+        try { hooked = !/native code/.test(XMLHttpRequest.prototype.send.toString()) } catch (e) {}
+        if (typeof window.byted_acrawler !== 'undefined' && hooked) return true;
+        await new Promise(r => setTimeout(r, 150));
+      }
+      return false;
+    };
     const first = o => (o && o.url_list && o.url_list[0]) || null;
     const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
     // 直连 CDN（douyinvod）优先：实测首字节 0.27–0.30s；www.douyin.com/aweme/v1/play/ 多跳一次 0.95–1.85s
