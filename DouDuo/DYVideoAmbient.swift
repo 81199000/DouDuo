@@ -12,7 +12,7 @@ enum DYVideoAmbient {
     static let key = "douyin_ambient_dim_v1"
     /// 0 = 关（退回模糊封面）；其余数值 = 压暗百分比
     static let levels = [0, 45, 60, 70, 80]
-    static let defaultLevel = 45
+    static let defaultLevel = 60
     static func title(_ v: Int) -> String {
         switch v { case 0: "关"; case 45: "亮"; case 60: "中"; case 70: "暗"; default: "很暗" }
     }
