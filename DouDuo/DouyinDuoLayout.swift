@@ -3,6 +3,36 @@
 // 更低版本回退容器宽度 wide>=700，不读方向、不读 UIScreen。
 import SwiftUI
 
+/// 窗口安全区缓存（100ms 节流）。
+/// 原来 `windowBottomInset` / `windowSafeTop` 以及经典视频页每次 body 求值都去遍历
+/// `UIApplication.shared.connectedScenes`：经典页每秒重算 60–90 次 body，等于每秒几十上百次
+/// 主线程窗口遍历，这是经典布局比极简/默认更吃主线程的一大块（老板报的「经典模式卡」）。
+/// 安全区只会随转屏/折叠/分屏变化，100ms 内的旧值肉眼不可见。
+@MainActor
+enum DYWindowInsetsCache {
+    private static var cached = UIEdgeInsets.zero
+    private static var stamp: CFTimeInterval = -1
+    private static let interval: CFTimeInterval = 0.1
+
+    static var current: UIEdgeInsets {
+        let now = CACurrentMediaTime()
+        if now - stamp > interval || stamp < 0 { refresh(now) }
+        return cached
+    }
+
+    static func refresh(_ now: CFTimeInterval = CACurrentMediaTime()) {
+        stamp = now
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        guard let window = scene?.windows.first(where: \.isKeyWindow) ?? scene?.windows.first else {
+            cached = .zero
+            return
+        }
+        let next = window.safeAreaInsets
+        if next != cached { cached = next }
+    }
+}
+
 enum DYDuoMetrics {
     static func hingeSplit(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
         guard DYDuoMetrics.foldIsActive(geo) else { return nil }
@@ -38,12 +68,9 @@ enum DYDuoMetrics {
 
     /// Full-bleed media and sheets deliberately extend past SwiftUI's safe
     /// area. Their controls still clear the physical home-indicator region.
-    static var windowBottomInset: CGFloat {
-        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
-    }
+    @MainActor static var windowBottomInset: CGFloat { DYWindowInsetsCache.current.bottom }
 
-    static func mediaBottomPadding(_ containerInset: CGFloat) -> CGFloat {
+    @MainActor static func mediaBottomPadding(_ containerInset: CGFloat) -> CGFloat {
         // The progress line sits 8 pt above its view's bottom. Lift the info
         // and progress together, retaining their existing music/line spacing.
         max(max(containerInset - 16, 8), windowBottomInset - 8)
@@ -76,10 +103,7 @@ enum DYDuoMetrics {
     }()
 
     /// 窗口顶部安全区（状态栏 / 灵动岛高度）。播放页整层忽略了安全区，GeometryProxy 量到的 top 为 0，只能读窗口。
-    @MainActor static var windowSafeTop: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 0
-    }
+    @MainActor static var windowSafeTop: CGFloat { DYWindowInsetsCache.current.top }
 
     /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
     static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
@@ -387,6 +411,7 @@ struct DYCommentSheet: View {
 
 /// Shared geometry for recommendation, following, profile/search works and
 /// comment links from messages. Changing pane size never replaces the pager.
+@MainActor
 struct DYCommentPaneMetrics {
     let resident: Bool
     let sideBySide: Bool

@@ -27,6 +27,9 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
         }
         // 自动测试用：DOUDUO_CHROME_MODE=classic|rail|minimal 启动时写入界面模式（不用 -key 启动参数，那会盖住运行时修改）
         if let m = ProcessInfo.processInfo.environment["DOUDUO_CHROME_MODE"] { UserDefaults.standard.set(m, forKey: "douyin_chrome_mode_v1") }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_PERF"] == "1" { DDPerf.shared.start() }
+        #endif
         #endif
         #if DEBUG
         // 自动测试用：DOUDUO_ACTTEST=<aweme_id> → 起播后直接打点赞/收藏接口，结果写 ddlog
