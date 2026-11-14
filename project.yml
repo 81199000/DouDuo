@@ -9,8 +9,8 @@ packages:
     path: Vendor/VLCKit
 settings:
   base:
-    MARKETING_VERSION: 1.5.0
-    CURRENT_PROJECT_VERSION: "101"
+    MARKETING_VERSION: 1.5.1
+    CURRENT_PROJECT_VERSION: "102"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
