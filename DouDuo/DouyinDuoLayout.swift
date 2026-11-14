@@ -4,6 +4,15 @@
 import SwiftUI
 
 enum DYDuoMetrics {
+    /// 合屏竖屏视频左贴边试验；展开内屏与横屏内容不移动。
+    static func closedPortraitVideoOffset(viewport: CGSize, videoAspect: Double,
+                                          fills: Bool, isDuo: Bool, screenWidth: CGFloat) -> CGFloat {
+        guard isDuo, screenWidth < legacyWideMin, viewport.height > viewport.width,
+              videoAspect > 0, videoAspect < 1, !fills else { return 0 }
+        let fittedWidth = min(viewport.width, viewport.height * videoAspect)
+        return -(viewport.width - fittedWidth) / 2
+    }
+
     static func hingeSplit(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
         guard DYDuoMetrics.foldIsActive(geo) else { return nil }
         guard #available(iOS 27.1, *) else { return nil }
