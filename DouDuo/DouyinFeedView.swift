@@ -1652,6 +1652,7 @@ struct DYUpstreamFeedScreen: View {
                                onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
                     .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
                            height: tableFold ? panelH : h)
+                    .dyDeskLight(tableFold)
                     .environment(\.dyCommentTrailingCleared, panelInset > 0)
                     .offset(x: panelX, y: panelY)
                     .id(cur.id)
@@ -2986,6 +2987,7 @@ struct DYClassicFeedScreen: View {
                 }
                 .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                 .clipped()
+                .dyDeskLight(layout.resident && !layout.sideBySide && authorTarget == nil)
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                 }
