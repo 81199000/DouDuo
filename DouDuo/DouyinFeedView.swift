@@ -3440,42 +3440,21 @@ struct DYUpstreamVideoPage: View {
     }
 
     private var danmakuBar: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $danmakuDraft, prompt: Text("发个弹幕见证当下").foregroundStyle(.white.opacity(0.5)))
-                .foregroundStyle(.white)
-                .focused($danmakuFocused)
-                .submitLabel(.send)
-                .onSubmit { sendDanmaku() }
-                .padding(.horizontal, 14).frame(height: 40)
-                .background(Capsule().fill(.black.opacity(0.6)))
-                .accessibilityIdentifier("douyin.danmaku.input")
-            Button(action: sendDanmaku) {
-                if danmakuSending { ProgressView().tint(.white) }
-                else { Text("发送").font(.subheadline.weight(.semibold)) }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).frame(height: 40)
-            .background(Capsule().fill(theme.accent.color(for: scheme)))
-            .disabled(danmakuDraft.trimmingCharacters(in: .whitespaces).isEmpty || danmakuSending)
-            .accessibilityIdentifier("douyin.danmaku.send")
-            Button { showDanmakuInput = false; danmakuFocused = false } label: {
-                Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 40)
-            }
-        }
-        .padding(.horizontal, 12)
+        DYDanmakuBar(draft: $danmakuDraft, sending: danmakuSending, focused: $danmakuFocused,
+                     onSend: sendDanmaku,
+                     onClose: { showDanmakuInput = false; danmakuFocused = false })
     }
+
 
     private func sendDanmaku() {
         let text = danmakuDraft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !danmakuSending, let b = bridge else { return }
+        guard !text.isEmpty, !danmakuSending, let bridge else { return }
         danmakuSending = true
-        let at = DDNowPlaying.id == item.id ? DDNowPlaying.time : 0
         Task {
             do {
-                let id = try await b.postDanmaku(item.id, text: text, offset: at)
+                let posted = try await DYDanmakuComposer.post(text, item: item, bridge: bridge)
                 // 自己发的立刻上屏（从当前时间点开始飘）
-                danmaku.append(DYDanmaku(id: id, text: text, offset: at + 0.3))
+                danmaku.append(posted)
                 danmaku.sort { $0.offset < $1.offset }
                 danmakuDraft = ""
                 showDanmakuInput = false
@@ -3487,6 +3466,7 @@ struct DYUpstreamVideoPage: View {
             danmakuSending = false
         }
     }
+
 
     private func save() {
         guard !saving else { return }
@@ -3924,42 +3904,21 @@ struct DYClassicVideoPage: View {
     }
 
     private var danmakuBar: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $danmakuDraft, prompt: Text("发个弹幕见证当下").foregroundStyle(.white.opacity(0.5)))
-                .foregroundStyle(.white)
-                .focused($danmakuFocused)
-                .submitLabel(.send)
-                .onSubmit { sendDanmaku() }
-                .padding(.horizontal, 14).frame(height: 40)
-                .background(Capsule().fill(.black.opacity(0.6)))
-                .accessibilityIdentifier("douyin.danmaku.input")
-            Button(action: sendDanmaku) {
-                if danmakuSending { ProgressView().tint(.white) }
-                else { Text("发送").font(.subheadline.weight(.semibold)) }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).frame(height: 40)
-            .background(Capsule().fill(theme.accent.color(for: scheme)))
-            .disabled(danmakuDraft.trimmingCharacters(in: .whitespaces).isEmpty || danmakuSending)
-            .accessibilityIdentifier("douyin.danmaku.send")
-            Button { showDanmakuInput = false; danmakuFocused = false } label: {
-                Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 40)
-            }
-        }
-        .padding(.horizontal, 12)
+        DYDanmakuBar(draft: $danmakuDraft, sending: danmakuSending, focused: $danmakuFocused,
+                     onSend: sendDanmaku,
+                     onClose: { showDanmakuInput = false; danmakuFocused = false })
     }
+
 
     private func sendDanmaku() {
         let text = danmakuDraft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !danmakuSending, let b = bridge else { return }
+        guard !text.isEmpty, !danmakuSending, let bridge else { return }
         danmakuSending = true
-        let at = DDNowPlaying.id == item.id ? DDNowPlaying.time : 0
         Task {
             do {
-                let id = try await b.postDanmaku(item.id, text: text, offset: at)
+                let posted = try await DYDanmakuComposer.post(text, item: item, bridge: bridge)
                 // 自己发的立刻上屏（从当前时间点开始飘）
-                danmaku.append(DYDanmaku(id: id, text: text, offset: at + 0.3))
+                danmaku.append(posted)
                 danmaku.sort { $0.offset < $1.offset }
                 danmakuDraft = ""
                 showDanmakuInput = false
@@ -3971,6 +3930,7 @@ struct DYClassicVideoPage: View {
             danmakuSending = false
         }
     }
+
 
     /// 作者、文案、元数据、音乐；音乐贴近进度条，作者头像归入互动栏。
     private func info(_ fg: Color) -> some View {
@@ -5170,7 +5130,6 @@ extension DYFeedModel {
             if self.toast == s { self.toast = nil }
         }
     }
-
     /// 消息未读数（视图只负责显示，取值逻辑两边一致）
     func noticeBadge(bridge: DouyinBridge) async -> Int? {
         guard let groups = try? await bridge.noticeCounts() else { return nil }
