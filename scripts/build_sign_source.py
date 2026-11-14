@@ -40,14 +40,25 @@ def gh_releases(limit):
     return rels[:limit]
 
 
-def gitee_assets():
-    """{tag: {附件名}}：Gitee 已经挂好的版本。"""
+def gitee_token():
+    """Gitee API 匿名访问会 403；用发版凭据（不入库），没有就返回 None。"""
+    f = pathlib.Path.home() / ".hermes/shared-credentials/gitee-remon8.json"
     try:
-        with urllib.request.urlopen(f"https://gitee.com/api/v5/repos/{GITEE_REPO}/releases?per_page=100", timeout=20) as r:
+        return json.loads(f.read_text())["access_token"]
+    except Exception:
+        return None
+
+
+def gitee_assets():
+    """{tag: {附件名}}：Gitee 已经挂好的版本。读不到直接退出，不静默回落 GitHub。"""
+    tok = gitee_token()
+    req = urllib.request.Request(f"https://gitee.com/api/v5/repos/{GITEE_REPO}/releases?per_page=100",
+                                 headers={"Authorization": "token " + tok} if tok else {})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
             return {x["tag_name"]: {a.get("name") for a in x.get("assets", [])} for x in json.load(r)}
     except Exception as e:
-        print(f"⚠️ 读取 Gitee 发行版失败：{e}", file=sys.stderr)
-        return {}
+        sys.exit(f"❌ 读取 Gitee 发行版失败：{e}（国内源会全部回落 GitHub，已中止；检查 Gitee token）")
 
 
 def plain_notes(md, limit=800):
