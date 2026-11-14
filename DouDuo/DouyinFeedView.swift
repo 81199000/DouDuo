@@ -3910,7 +3910,7 @@ struct DYUpstreamVideoPage: View {
             VStack(spacing: 2) {
                 Group {
                     if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: autoFit)
+                        DYFitCornerGlyph(inward: !autoFit)
                             .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
                             .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
                     } else {

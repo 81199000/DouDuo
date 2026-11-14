@@ -197,60 +197,66 @@ struct DYConversationRow: Identifiable, Codable, Equatable {
     var kind: Int?
     /// 单聊对方 sec_uid，用来查关注关系
     var sec: String?
+    /// 时间文案抓取时刻；兼容旧缓存，无值时使用当前时间。
+    var observedAt: Double? = nil
 }
 
 extension DYConversationRow {
-    /// 网页时间文案解析成可比较时间戳，只用于排序。实测格式：
-    /// 今天「15:46」/ 昨天「昨天 20:26」/ 今年「03/31」/ 更早「2025/01/23」，另兼容 现在 / N分钟前 / N小时前 / MM-DD
-    var sortTime: Double {
-        let t = time.trimmingCharacters(in: .whitespaces)
-        let now = Date().timeIntervalSince1970
-        if t.isEmpty { return 0 }
-        if t == "现在" { return now }
+    /// 相对时间必须锚定抓取时刻，不能在排序比较器里每次重新 Date()。
+    var sortTime: Double { Self.parseTime(time, now: Date(timeIntervalSince1970: observedAt ?? Date().timeIntervalSince1970)) }
+
+    static func parseTime(_ value: String, now: Date) -> Double {
+        let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return 0 }
         let cal = Calendar.current
-        let nowDate = Date()
-        func dayAt(_ y: Int?, _ m: Int, _ d: Int, hour: Int? = nil, minute: Int? = nil) -> Double {
-            var c = DateComponents()
-            c.year = y ?? cal.component(.year, from: nowDate)
-            c.month = m; c.day = d; c.hour = hour ?? 0; c.minute = minute ?? 0
-            return (cal.date(from: c) ?? nowDate).timeIntervalSince1970
+        let day = cal.startOfDay(for: now)
+        func groups(_ pattern: String) -> [Int]? {
+            guard let re = try? NSRegularExpression(pattern: pattern),
+                  let m = re.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+                  m.range.length == (t as NSString).length else { return nil }
+            return (1..<m.numberOfRanges).map { i in
+                m.range(at: i).location == NSNotFound ? -1 : Int((t as NSString).substring(with: m.range(at: i))) ?? -1
+            }
         }
-        // 今天：HH:MM（显示的时间若在未来，说明是昨天的此刻）
-        let hp = t.split(separator: ":").compactMap { Int($0) }
-        if hp.count == 2, (0...23).contains(hp[0]), (0...59).contains(hp[1]), !t.contains("/"), !t.contains("-") {
-            var ts = dayAt(nil, cal.component(.month, from: nowDate), cal.component(.day, from: nowDate), hour: hp[0], minute: hp[1])
-            if ts - now > 3600 { ts -= 86_400 }
+        func clock(_ base: Date, _ h: Int, _ m: Int) -> Double {
+            guard (0...23).contains(h), (0...59).contains(m) else { return 0 }
+            return cal.date(bySettingHour: h, minute: m, second: 0, of: base)?.timeIntervalSince1970 ?? 0
+        }
+        if ["现在", "刚刚"].contains(t) { return now.timeIntervalSince1970 }
+        if let p = groups(#"^(\d+)\s*分钟前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 60 }
+        if let p = groups(#"^(\d+)\s*小时前$"#) { return now.timeIntervalSince1970 - Double(p[0]) * 3600 }
+        if let p = groups(#"^(\d+)\s*天前$"#) { return cal.date(byAdding: .day, value: -p[0], to: day)?.timeIntervalSince1970 ?? 0 }
+        for (prefix, days) in [("今天", 0), ("昨天", -1), ("前天", -2)] where t.hasPrefix(prefix) {
+            guard let base = cal.date(byAdding: .day, value: days, to: day) else { return 0 }
+            let rest = String(t.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            if rest.isEmpty { return base.timeIntervalSince1970 }
+            let p = rest.split(separator: ":").compactMap { Int($0) }
+            return p.count == 2 ? clock(base, p[0], p[1]) : 0
+        }
+        if let p = groups(#"^(\d{1,2}):(\d{2})$"#) {
+            let ts = clock(day, p[0], p[1])
+            if ts > now.timeIntervalSince1970 + 3600, let yesterday = cal.date(byAdding: .day, value: -1, to: day) { return clock(yesterday, p[0], p[1]) }
             return ts
         }
-        // 昨天 [HH:MM]
-        if t.hasPrefix("昨天") {
-            let rest = t.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            let p = rest.split(separator: ":").compactMap { Int($0) }
-            let base = nowDate.addingTimeInterval(-86_400)
-            if p.count == 2, (0...23).contains(p[0]), (0...59).contains(p[1]) {
-                return dayAt(cal.component(.year, from: base), cal.component(.month, from: base), cal.component(.day, from: base), hour: p[0], minute: p[1])
+        if let p = groups(#"^(?:(\d{4})[/-])?(\d{1,2})[/-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$"#) {
+            var year = p[0] >= 0 ? p[0] : cal.component(.year, from: now)
+            func date(_ y: Int) -> Date? {
+                let c = DateComponents(year: y, month: p[1], day: p[2], hour: p[3] >= 0 ? p[3] : 0, minute: p[4] >= 0 ? p[4] : 0)
+                guard let d = cal.date(from: c), cal.component(.month, from: d) == p[1], cal.component(.day, from: d) == p[2] else { return nil }
+                return d
             }
-            return base.timeIntervalSince1970
+            guard var d = date(year) else { return 0 }
+            if p[0] < 0, d > now { year -= 1; guard let last = date(year) else { return 0 }; d = last }
+            return d.timeIntervalSince1970
         }
-        if t.hasSuffix("分钟前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 60 }
-        if t.hasSuffix("小时前"), let n = Double(t.dropLast(3).prefix(while: \.isNumber)) { return now - n * 3600 }
-        // MM/DD 或 YYYY/MM/DD（兼容 - 分隔）：今年；算出来在未来则按去年
-        if t.contains("/") || t.contains("-") {
-            let comps = t.split { $0 == "/" || $0 == "-" }.compactMap { Int($0) }
-            if comps.count == 2, (1...12).contains(comps[0]), (1...31).contains(comps[1]) {
-                var ts = dayAt(nil, comps[0], comps[1])
-                if ts - now > 86_400 { ts = dayAt(cal.component(.year, from: nowDate) - 1, comps[0], comps[1]) }
-                return ts
-            }
-            if comps.count == 3 {
-                return dayAt(comps[0], comps[1], comps[2])
-            }
-        }
+        // 未识别的时间排最后，不能回退成“现在”。
         return 0
     }
-    /// 新消息在上；同时间按 id 稳定排序
     static func byTimeDesc(_ a: DYConversationRow, _ b: DYConversationRow) -> Bool {
-        a.sortTime != b.sortTime ? a.sortTime > b.sortTime : a.id < b.id
+        let now = Date()
+        let ta = parseTime(a.time, now: a.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
+        let tb = parseTime(b.time, now: b.observedAt.map { Date(timeIntervalSince1970: $0) } ?? now)
+        return ta != tb ? ta > tb : a.id < b.id
     }
 }
 
@@ -619,10 +625,19 @@ struct DYMessagesScreen: View {
                 _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
                 return
             }
-            let updated = Dictionary(delta.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let oldRows = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let capturedAt = Date().timeIntervalSince1970
+            let rows = delta.items.map { row -> DYConversationRow in
+                var next = row
+                if let old = oldRows[row.id], old.time == row.time, old.preview == row.preview {
+                    next.observedAt = old.observedAt ?? capturedAt
+                } else { next.observedAt = capturedAt }
+                return next
+            }
+            let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let existing = Set(conversations.map(\.id))
             // 按最后消息时间倒序：有新信息的朋友排最上面
-            let merged = (delta.items.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
+            let merged = (rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
                 .sorted(by: DYConversationRow.byTimeDesc)
             if merged != conversations {
                 conversations = merged
