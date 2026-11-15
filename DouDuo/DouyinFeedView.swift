@@ -1058,7 +1058,8 @@ private struct DYPlayerLayerView: UIViewRepresentable {
 /// 封面同时预取。窗口外的立即释放（硬解码会话有限，不能无限开）。
 @MainActor
 final class DYPreloader {
-    static let ahead = 3   // 提前暖 3 条；微热降到 2、烫了 1
+    /// 提前暖 3 条（老板定：Duo 性能够，常驻 3 个播放器等切换）；只有过热/极热才降档省电
+    static let ahead = 3
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -1071,7 +1072,7 @@ final class DYPreloader {
     func update(_ items: [DYAweme], current index: Int) {
         guard !disabled, items.indices.contains(index) else { return }
         let th = ProcessInfo.processInfo.thermalState
-        let ahead = th == .nominal ? Self.ahead : (th == .fair ? 2 : 1)
+        let ahead = th == .critical ? 1 : (th == .serious ? 2 : Self.ahead)
         let lo = index + 1, hi = min(items.count - 1, index + ahead)
         let window = lo <= hi ? Array(items[lo...hi]) : []
         let ids = Set(window.map(\.id))
