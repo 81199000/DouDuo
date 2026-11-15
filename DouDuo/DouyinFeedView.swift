@@ -1812,6 +1812,7 @@ struct DYUpstreamFeedScreen: View {
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
         let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
         let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
+        let panelBottomExtension = fold ? DYDuoMetrics.bottomSafeAreaExtension(in: geo) : 0
         // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
         // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
         // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
@@ -1830,6 +1831,10 @@ struct DYUpstreamFeedScreen: View {
                                fillsPane: fold, trailingInset: fold ? panelInset : 0)
                     .frame(width: sideBySide && !tableFold ? (fold ? panelW : max(0, panelW - panelInset)) : w,
                            height: tableFold ? panelH : h)
+                    .padding(.bottom, panelBottomExtension)
+                    .background {
+                        if fold { Color.ddBackground }
+                    }
                     .dyDeskLight(tableFold)
                     .environment(\.dyCommentTrailingCleared, panelInset > 0)
                     .padding(.leading, panelX)

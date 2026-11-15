@@ -59,6 +59,12 @@ enum DYDuoMetrics {
             .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
     }
 
+    static func bottomSafeAreaExtension(in geo: GeometryProxy) -> CGFloat {
+        let bottom = windowBottomInset
+        let inset = geo.safeAreaInsets.bottom
+        return inset > bottom + 1 ? 0 : min(inset, bottom)
+    }
+
     static func mediaBottomPadding(_ containerInset: CGFloat) -> CGFloat {
         // The progress line sits 8 pt above its view's bottom. Lift the info
         // and progress together, retaining their existing music/line spacing.
@@ -536,9 +542,7 @@ struct DYCommentPaneMetrics {
             // The hinge panes are measured inside the navigation safe area.
             // Extend the comment surface to the physical edges, just like the
             // video, instead of leaving a black border around a smaller card.
-            let bottom = DYDuoMetrics.windowBottomInset
-            let keyboardVisible = geo.safeAreaInsets.bottom > bottom + 1
-            let bottomExtension = keyboardVisible ? 0 : min(geo.safeAreaInsets.bottom, bottom)
+            let bottomExtension = DYDuoMetrics.bottomSafeAreaExtension(in: geo)
             if hinge.book {
                 let split = hinge.panel.minX
                 paneOrigin = CGPoint(x: split, y: -geo.safeAreaInsets.top)
@@ -574,11 +578,7 @@ struct DYCommentPaneMetrics {
         trailingInset = geo.safeAreaInsets.trailing
         // Keyboard insets must not be added back to the panel height. Keep the
         // input above the keyboard while the background reaches the screen edge.
-        let containerBottom = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
-        let keyboardIsPresented = geo.safeAreaInsets.bottom > containerBottom + 1
-        let bottom = keyboardIsPresented ? 0 : min(geo.safeAreaInsets.bottom, containerBottom)
+        let bottom = DYDuoMetrics.bottomSafeAreaExtension(in: geo)
         paneSize = CGSize(width: sideBySide ? paneW + trailingInset : w,
                           height: tableFold ? paneH : h + geo.safeAreaInsets.top + bottom)
         paneOrigin = CGPoint(x: sideBySide ? videoSize.width : 0,
