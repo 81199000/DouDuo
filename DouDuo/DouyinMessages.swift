@@ -1562,6 +1562,13 @@ struct DYNoticeListScreen: View {
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Capsule().fill(Color.white.opacity(0.1)))
                     .accessibilityIdentifier("douyin.notice.reply.input")
+                if replyFocused {
+                    Button { replyFocused = false } label: {
+                        Image(systemName: "keyboard.chevron.compact.down").font(.body)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.white.opacity(0.7))
+                    .accessibilityLabel("收起键盘")
+                }
                 let empty = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 Button { Task { await sendReply() } } label: {
                     if replySending { ProgressView().controlSize(.small).tint(.white) }
