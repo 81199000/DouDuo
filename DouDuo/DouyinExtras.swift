@@ -912,9 +912,10 @@ struct DYListPlayer: View {
         } }
         .onDisappear { preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { showSettings = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } })
+                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
     }

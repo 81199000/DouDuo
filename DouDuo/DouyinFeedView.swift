@@ -1658,10 +1658,12 @@ struct DYUpstreamFeedScreen: View {
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
                              onRefresh: { Task { await refreshRecommendations() } },
                              onCacheCleared: { focusCurrent() })
+                // 老板要求：进设置页视频也停（以前只有信息页停）
+                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
@@ -2993,10 +2995,12 @@ struct DYClassicFeedScreen: View {
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
                              onRefresh: { Task { await refreshRecommendations() } },
                              onCacheCleared: { focusCurrent() })
+                // 老板要求：进设置页视频也停（以前只有信息页停）
+                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐

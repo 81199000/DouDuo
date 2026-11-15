@@ -471,6 +471,12 @@ struct DouyinWebContainer: UIViewRepresentable {
         // 聊天页点分享视频 → 抽 aweme_id 发给 App（只在 /chat 页生效）
         cfg.userContentController.addUserScript(
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // 信息里的图片本地缓存：ddimg:// 由 App 供图，键只认路径（签名变化也能命中）
+        if start.path == "/chat" || start.path.hasPrefix("/chat") {
+            cfg.setURLSchemeHandler(DYChatImageSchemeHandler(), forURLScheme: DYChatImageCache.scheme)
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: DYChatImageRewrite.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
         DYLiveModel.log("DDMSG ddmsg-handler registered")
