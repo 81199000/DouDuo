@@ -388,20 +388,7 @@ struct PlayerPage: View {
             Color.black
             // All playback entry points share this backdrop. Mask the player's
             // opaque letterbox below so uncovered areas reveal the blurred cover.
-            if let posterURL {
-                GeometryReader { geometry in
-                    CachedAsyncImage(url: posterURL) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: { Color.black }
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .blur(radius: 28)
-                    .overlay(Color.black.opacity(0.25))
-                    .clipped()
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("douyin.video.backdrop")
-            }
+            // 老板要求「不要封面、不要预览图」：没出画面就保持纯黑（原来这里铺模糊封面，起播时会闪一下）
             // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
             if ambientLevel > 0, vlc == nil, let player {
                 DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
@@ -660,39 +647,7 @@ struct PlayerPage: View {
                 VideoSurface(player: hd, fillWidth: fillWidth).ignoresSafeArea()
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
-            // 画面层还没出第一帧时一律先铺封面（本地缓存的也一样），滑动途中不会看到纯黑页；出帧即撤
-            if !firstFrame, let frameImage = DYFirstFrame.cached(id) {
-                // 自己解出来的首帧：比例和真画面一致、清晰，出画面时不跳
-                GeometryReader { g in
-                    Image(uiImage: frameImage).resizable().scaledToFill()
-                        .frame(width: g.size.width, height: g.size.height)
-                        .clipped()
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            } else if !firstFrame, let posterURL {
-                // 按视频真实宽高比摆封面（和画面层同一铺满规则），出帧时位置尺寸完全一致，不跳
-                GeometryReader { g in
-                    let screen = g.size.width / max(g.size.height, 1)
-                    let video = videoAspect > 0 ? videoAspect : screen
-                    let fills = fillWidth && (video < 1) == (screen < 1)
-                    let box: CGSize = fills
-                        ? (video > screen ? CGSize(width: g.size.height * video, height: g.size.height)
-                                          : CGSize(width: g.size.width, height: g.size.width / video))
-                        : (video > screen ? CGSize(width: g.size.width, height: g.size.width / video)
-                                          : CGSize(width: g.size.height * video, height: g.size.height))
-                    CachedAsyncImage(url: posterURL) { img in
-                        img.resizable().scaledToFill()
-                    } placeholder: { Color.clear }
-                    .frame(width: box.width, height: box.height)
-                    .clipped()
-                    .blur(radius: 18)
-                    .opacity(0.85)
-                    .position(x: g.size.width / 2, y: g.size.height / 2)
-                }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            }
+            // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面（老板嫌「开头跳一下预览图」）
         }
     }
 

@@ -32,6 +32,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     let author: Author
     let stats: Stats
     let music: String
+    /// 图文作品的背景音乐地址（视频作品不用它）
+    var musicURL: String? = nil
     /// 该视频在你账号里是否已点赞 / 已收藏（未登录时一般没有这些字段）
     let userDigged: Int?
     let isCollect: Int?
@@ -947,6 +949,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         aiDeclaration: a.risk_infos && typeof a.risk_infos.content === 'string' && /(?:\bAI\b|人工智能)/i.test(a.risk_infos.content) ? (a.risk_infos.content.trim() || null) : null,
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0, play: st.play_count == null ? null : Number(st.play_count) },
         music: (a.music && a.music.title) || '',
+        musicURL: (a.music && a.music.play_url && (((a.music.play_url.url_list || [])[0]) || a.music.play_url.uri)) || null,
         userDigged: a.user_digged ? 1 : 0,
         isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0
       };
@@ -1918,7 +1921,7 @@ struct DYUpstreamFeedScreen: View {
         #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
-        DYFirstFrame.prefetch(feed.items, from: i, ahead: 3)
+        // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
         let currentItem = feed.items[i]
@@ -3357,7 +3360,7 @@ struct DYClassicFeedScreen: View {
         #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
-        DYFirstFrame.prefetch(feed.items, from: i, ahead: 3)
+        // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
         let currentItem = feed.items[i]
@@ -3753,12 +3756,11 @@ struct DYUpstreamVideoPage: View {
                                     continuationURL: nil,
                                     boost: boost)
             } else {
-                TabView {
-                    ForEach(item.images, id: \.self) { s in
-                        CachedAsyncImage(url: URL(string: s)) { img in img.resizable().scaledToFit() } placeholder: { ProgressView() }
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
+                // 图集也要有背景音乐（原来只翻图、没声音）
+                DYImageGallery(images: item.images,
+                               musicURL: item.musicURL.flatMap(URL.init(string:)),
+                               isActive: isCurrent,
+                               muted: muted)
             }
 
             if heart {
@@ -4264,12 +4266,12 @@ struct DYClassicVideoPage: View {
                                     onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
             } else {
-                TabView {
-                    ForEach(item.images, id: \.self) { s in
-                        CachedAsyncImage(url: URL(string: s)) { img in img.resizable().scaledToFit() } placeholder: { ProgressView() }
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: cleanScreen ? .never : .always))
+                // 图集也要有背景音乐（原来只翻图、没声音）
+                DYImageGallery(images: item.images,
+                               musicURL: item.musicURL.flatMap(URL.init(string:)),
+                               isActive: isCurrent,
+                               muted: DYGalleryAudio.globalMuted,
+                               hidesIndex: cleanScreen)
             }
 
             if heart && !cleanScreen {
