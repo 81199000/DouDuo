@@ -92,6 +92,8 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private let didSettle: (String) -> Void
     private let willSettle: (String) -> Void
     private var targetID: String?
+    /// 每条被拦次数（同一条拦太多就放行，避免永久卡住）
+    private var blockedCount: [String: Int] = [:]
     private var target: CGPoint?
     private var start = CGPoint.zero
     private var startTime: CFTimeInterval = 0
@@ -138,11 +140,17 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 只拦「往前翻」；往回翻是看过的，直接放行
         let curIndex = items.firstIndex(where: { $0 == currentID() }) ?? index
         if index > curIndex, !DYReadiness.isReady(items[index]) {
-            let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
-            targetContentOffset.pointee = CGPoint(x: scrollView.contentOffset.x, y: curY)
-            targetID = nil; target = nil
-            DYLiveModel.log("DDBLOCK next=\(items[index].suffix(4)) 未就绪，弹回当前页")
-            return
+            let id = items[index]
+            blockedCount[id, default: 0] += 1
+            // 同一条拦了 3 次还没就绪，就放行（可能是地址失效/长视频加载慢；宁可黑一下也不能把人卡死）
+            if blockedCount[id, default: 0] <= 3 {
+                let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
+                targetContentOffset.pointee = CGPoint(x: scrollView.contentOffset.x, y: curY)
+                targetID = nil; target = nil
+                DYLiveModel.log("DDBLOCK next=\(id.suffix(4)) 未就绪，弹回当前页 #\(blockedCount[id, default: 0])")
+                return
+            }
+            DYLiveModel.log("DDFORCE next=\(id.suffix(4)) 拦了 3 次仍未就绪，放行")
         }
         targetID = items[index]
         target = targetContentOffset.pointee
