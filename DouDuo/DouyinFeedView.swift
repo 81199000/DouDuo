@@ -3917,12 +3917,15 @@ struct DYUpstreamVideoPage: View {
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
             danmakuLoaded = true
-            do {
-                danmaku = try await b.danmaku(item.id, durationMs: Int(item.duration * 1000))
-                DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) first=\(danmaku.first.map { "\($0.offset)s \($0.text)" } ?? "-")")
-            } catch {
-                DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
+            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
+            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
+                danmaku = DYDanmaku.merged(danmaku, chunk)
             }
+            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
+            if Task.isCancelled { danmakuLoaded = false }
+            let sorted = danmaku.map(\.offset).sorted()
+            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
+            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
         }
     }
 
@@ -4426,12 +4429,15 @@ struct DYClassicVideoPage: View {
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
             danmakuLoaded = true
-            do {
-                danmaku = try await b.danmaku(item.id, durationMs: Int(item.duration * 1000))
-                DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) first=\(danmaku.first.map { "\($0.offset)s \($0.text)" } ?? "-")")
-            } catch {
-                DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
+            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
+            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
+                danmaku = DYDanmaku.merged(danmaku, chunk)
             }
+            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
+            if Task.isCancelled { danmakuLoaded = false }
+            let sorted = danmaku.map(\.offset).sorted()
+            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
+            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
         }
     }
 
