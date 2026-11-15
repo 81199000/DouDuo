@@ -427,6 +427,7 @@ struct DYMessagesScreen: View {
     @State private var openingChat: String?
     /// 网页 DOM 真的切到这条会话了没有：没切之前用原生遮罩盖住，避免闪一下会话列表
     @State private var chatDOMReady = true
+    @State private var chatSurfaceActive = false
     @State private var sidebarVisible = false
     @AppStorage("douyin_message_sidebar_fraction_v1") private var sidebarFraction = 0.36
     @State private var sidebarWidth: CGFloat = 320
@@ -512,13 +513,13 @@ struct DYMessagesScreen: View {
                         if !navigation.hasDetail && (chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil) {
                             ToolbarItem(placement: .cancellationAction) {
                                 Button("返回", systemImage: "chevron.backward") { if let onClose { onClose() } else { dismissRoot() } }
-                                    .tint(.white)
+                                    .tint(.primary)
                             }
                         }
                         if navigation.hasDetail {
                             ToolbarItem(placement: .cancellationAction) {
                                 Button("返回", systemImage: "chevron.backward", action: backFromMessage)
-                                    .tint(.white)
+                                    .tint(.primary)
                                     .disabled(openingChat != nil)
                                     .accessibilityIdentifier("douyin.messages.back")
                             }
@@ -536,7 +537,6 @@ struct DYMessagesScreen: View {
             }
 
         }
-        .preferredColorScheme(.dark)
         .overlay {
             if openingChat == "forwarded-share", let forwardedShare {
                 VStack(spacing: 12) {
@@ -647,7 +647,6 @@ struct DYMessagesScreen: View {
             NavigationStack {
                 DYAuthorScreen(bridge: bridge, author: author, onWeb: onWeb)
             }
-            .preferredColorScheme(.dark)
         }
         .task {
             while !Task.isCancelled {
@@ -665,7 +664,11 @@ struct DYMessagesScreen: View {
                 recent = DYMessageCache.shared.page(700)?.items ?? recent
             }
         }
-        .onDisappear { DYMessageCache.shared.retainChat() }
+        .onAppear { chatSurfaceActive = true }
+        .onDisappear {
+            chatSurfaceActive = false
+            DYMessageCache.shared.retainChat()
+        }
     }
 
     /// Both panes keep their identity while resizing. Explicit widths make the
@@ -876,7 +879,7 @@ struct DYMessagesScreen: View {
 
     private var chatOptionsButton: some View {
         Button("更多", systemImage: "ellipsis") { showChatOptions = true }
-            .tint(.white)
+            .tint(.primary)
             .accessibilityIdentifier("douyin.messages.more")
             .popover(isPresented: $showChatOptions) {
                 if let web = chatModel.web, let id = navigation.chatID {
@@ -884,7 +887,6 @@ struct DYMessagesScreen: View {
                         Task { await readConversations() }
                     }
                     .presentationCompactAdaptation(.popover)
-                    .preferredColorScheme(.dark)
                 }
             }
             .onChange(of: showChatOptions) { _, showing in
@@ -1085,27 +1087,17 @@ struct DYMessagesScreen: View {
         }
     }
 
-    @ViewBuilder
-    private var chatWeb: some View {
-        if DYDMProbe.enabled {
-            DYChatProbeSurface(model: chatModel)
-        } else {
-            DouyinWebContainer(model: chatModel, zoom: 1,
-                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
-        }
-    }
-
     private var chatPane: some View {
         ZStack(alignment: .topLeading) {
-            Color.black
-            chatWeb
+            Color.ddMessageChatBackground
+            DYChatWebSurface(model: chatModel, active: chatSurfaceActive)
                 .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
             if !chatDOMReady, navigation.isChat {
-                // 打开会话期间：原生黑底 + 转圈，不露网页的会话列表
+                // 打开会话期间：使用聊天室底色 + 转圈，不露网页的会话列表
                 ZStack {
-                    Color.black
-                    ProgressView().tint(.white)
+                    Color.ddMessageChatBackground
+                    ProgressView().tint(.primary)
                 }
                 .transition(.opacity)
                 .allowsHitTesting(true)
@@ -1230,7 +1222,7 @@ struct DYMessagesScreen: View {
                     conversationRows
                     if let error, recent.isEmpty {
                         VStack(spacing: 10) {
-                            Text(error).font(.footnote).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                            Text(error).font(.footnote).foregroundStyle(Color.primary.opacity(0.7)).multilineTextAlignment(.center)
                             Button("重试") { Task { await loadRoot() } }.buttonStyle(.bordered)
                         }
                         .padding(24)
@@ -1251,7 +1243,7 @@ struct DYMessagesScreen: View {
             .refreshable { await loadRoot() }
         }
         .background(theme.messages.sidebarTint)
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.primary)
     }
 
     @ViewBuilder
@@ -1265,14 +1257,14 @@ struct DYMessagesScreen: View {
                                 CachedAsyncImage(url: p.avatar.flatMap(URL.init(string:))) { img in
                                     img.resizable().scaledToFill()
                                 } placeholder: {
-                                    Circle().fill(Color.white.opacity(0.1))
+                                    Circle().fill(Color.primary.opacity(0.1))
                                 }
                                 .frame(width: 58, height: 58)
                                 .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+                                .overlay(Circle().stroke(Color.primary.opacity(0.18), lineWidth: 1))
                                 Text(p.name)
                                     .font(.caption)
-                                    .foregroundStyle(.white.opacity(0.85))
+                                    .foregroundStyle(Color.primary.opacity(0.85))
                                     .lineLimit(1)
                                     .frame(width: 64)
                             }
@@ -1327,7 +1319,7 @@ struct DYMessagesScreen: View {
                     .background(tint, in: .circle)
                     .overlay(alignment: .topTrailing) {
                         if badge > 0 {
-                            Text(badge > 99 ? "99+" : String(badge)).font(.system(size: 9, weight: .bold))
+                            Text(badge > 99 ? "99+" : String(badge)).font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
                                 .padding(.horizontal, 4).padding(.vertical, 2)
                                 .background(theme.accent.color(for: scheme), in: .capsule)
                                 .offset(x: 8, y: -4)
@@ -1450,10 +1442,10 @@ struct DYNoticeListScreen: View {
 
     var body: some View {
         presentedList.frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay { if opening { ProgressView().tint(.white) } }
-        .background(Color.black.ignoresSafeArea())
+        .overlay { if opening { ProgressView().tint(.primary) } }
+        .background(Color.ddBackground.ignoresSafeArea())
 
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.primary)
         .task(id: "\(group.rawValue):\(isActive)") {
             guard isActive else { return }
             // 进哪个分类就记下它对应的服务端分组，退出时一起标已读（评论+赞同属互动）
@@ -1479,7 +1471,7 @@ struct DYNoticeListScreen: View {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: onWeb)
             }
             .presentationDetents([.medium, .large])
-            .presentationBackground(.black)
+            .presentationBackground(Color.ddBackground)
         }
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
@@ -1521,7 +1513,7 @@ struct DYNoticeListScreen: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .background(theme.media.strongScrim.color(for: scheme))
+                .background(Color.ddBackground)
                 Divider()
                 list
             }
@@ -1547,10 +1539,10 @@ struct DYNoticeListScreen: View {
         VStack(alignment: .leading, spacing: 6) {
             if let n = replying {
                 HStack(spacing: 6) {
-                    Text("回复 @\(n.name.isEmpty ? "抖音用户" : n.name)").font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    Text("回复 @\(n.name.isEmpty ? "抖音用户" : n.name)").font(.caption).foregroundStyle(Color.primary.opacity(0.6)).lineLimit(1)
                     Spacer()
                     Button { closeReply() } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
-                        .buttonStyle(.plain).foregroundStyle(.white.opacity(0.6))
+                        .buttonStyle(.plain).foregroundStyle(Color.primary.opacity(0.6))
                         .accessibilityIdentifier("douyin.notice.reply.cancel")
                 }
             }
@@ -1560,7 +1552,7 @@ struct DYNoticeListScreen: View {
                     .lineLimit(1...4)
                     .focused($replyFocused)
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                    .background(Capsule().fill(Color.primary.opacity(0.1)))
                     .accessibilityIdentifier("douyin.notice.reply.input")
                 if replyFocused {
                     Button { replyFocused = false } label: {
@@ -1571,18 +1563,18 @@ struct DYNoticeListScreen: View {
                 }
                 let empty = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 Button { Task { await sendReply() } } label: {
-                    if replySending { ProgressView().controlSize(.small).tint(.white) }
+                    if replySending { ProgressView().controlSize(.small).tint(.primary) }
                     else { Image(systemName: "paperplane.fill").font(.body.weight(.semibold)) }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(empty ? Color.white.opacity(0.35) : Color.white)
+                .foregroundStyle(empty ? Color.primary.opacity(0.35) : Color.primary)
                 .disabled(empty || replySending)
                 .accessibilityIdentifier("douyin.notice.reply.send")
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(.ultraThinMaterial)
-        .environment(\.colorScheme, .dark)
+
     }
 
     private func startReply(_ n: DYNotice) {
@@ -1628,15 +1620,15 @@ struct DYNoticeListScreen: View {
     private var list: some View {
         if let error, items.isEmpty {
             VStack(spacing: 12) {
-                Text(error).font(.footnote).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center)
+                Text(error).font(.footnote).foregroundStyle(Color.primary.opacity(0.75)).multilineTextAlignment(.center)
                 Button("重试") { Task { await reload(reset: true) } }.buttonStyle(.bordered)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
         } else if items.isEmpty && loading {
-            ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+            ProgressView().tint(.primary).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if visibleItems.isEmpty && !hasMore {
-            Text("暂无消息").font(.footnote).foregroundStyle(.white.opacity(0.5))
+            Text("暂无消息").font(.footnote).foregroundStyle(Color.primary.opacity(0.5))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
@@ -1649,10 +1641,10 @@ struct DYNoticeListScreen: View {
                                 .accessibilityValue(n.hasRead ? "已读" : "未读")
                             if n.isComment { commentActions(n) }
                         }
-                        Divider().background(Color.white.opacity(0.08))
+                        Divider().background(Color.primary.opacity(0.08))
                     }
                     if hasMore {
-                        ProgressView().tint(.white).padding()
+                        ProgressView().tint(.primary).padding()
                             .onAppear { Task { await reload(reset: false) } }
                     }
                 }
@@ -1667,7 +1659,7 @@ struct DYNoticeListScreen: View {
                 CachedAsyncImage(url: n.avatar.flatMap(URL.init(string:))) { img in
                     img.resizable().scaledToFill()
                 } placeholder: {
-                    Color.white.opacity(0.08)
+                    Color.primary.opacity(0.08)
                 }
                 .frame(width: 44, height: 44)
                 .clipShape(Circle())
@@ -1679,24 +1671,24 @@ struct DYNoticeListScreen: View {
                 Text(n.name.isEmpty ? "抖音用户" : n.name)
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
                 if n.isComment {
-                    Text(n.action).font(.caption).foregroundStyle(.white.opacity(0.5))
+                    Text(n.action).font(.caption).foregroundStyle(Color.primary.opacity(0.5))
                     commentText(n)
                     if let q = n.quote, !q.isEmpty {
                         HStack(spacing: 6) {
-                            Rectangle().fill(Color.white.opacity(0.25)).frame(width: 2)
-                            emojiStore.rich(q).font(.caption).foregroundStyle(.white.opacity(0.5)).lineLimit(2)
+                            Rectangle().fill(Color.primary.opacity(0.25)).frame(width: 2)
+                            emojiStore.rich(q).font(.caption).foregroundStyle(Color.primary.opacity(0.5)).lineLimit(2)
                         }
                         .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
                     emojiStore.rich(n.detail.isEmpty ? n.action : "\(n.action) · \(n.detail)")
-                        .font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+                        .font(.footnote).foregroundStyle(Color.primary.opacity(0.75)).lineLimit(2)
                 }
                 // 评论配图：最多显示 3 张缩略图
                 if let imgs = n.images, !imgs.isEmpty {
                     HStack(spacing: 4) {
                         ForEach(Array(imgs.prefix(3)), id: \.self) { s in
-                            CachedAsyncImage(url: URL(string: s)) { img in img.resizable().scaledToFill() } placeholder: { Color.white.opacity(0.06) }
+                            CachedAsyncImage(url: URL(string: s)) { img in img.resizable().scaledToFill() } placeholder: { Color.primary.opacity(0.06) }
                                 .frame(width: 52, height: 52)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
@@ -1704,11 +1696,11 @@ struct DYNoticeListScreen: View {
                     .padding(.top, 2)
                     .accessibilityIdentifier("douyin.notice.commentImages")
                 }
-                Text(DYFormat.time(n.time)).font(.caption2).foregroundStyle(.white.opacity(0.45))
+                Text(DYFormat.time(n.time)).font(.caption2).foregroundStyle(Color.primary.opacity(0.45))
             }
             Spacer(minLength: 8)
             if let c = n.cover, let u = URL(string: c) {
-                CachedAsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { Color.white.opacity(0.06) }
+                CachedAsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { Color.primary.opacity(0.06) }
                     .frame(width: 44, height: 58)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
@@ -1728,7 +1720,7 @@ struct DYNoticeListScreen: View {
         #endif
         let text = emojiStore.rich(detail).font(.subheadline)
         return text
-            .foregroundStyle(.white.opacity(0.92))
+            .foregroundStyle(Color.primary.opacity(0.92))
             .lineLimit(open ? nil : 3)
             .fixedSize(horizontal: false, vertical: true)
             .background {
@@ -1773,7 +1765,7 @@ struct DYNoticeListScreen: View {
         }
         .buttonStyle(.plain)
         .font(.caption.weight(.medium))
-        .foregroundStyle(.white.opacity(0.7))
+        .foregroundStyle(Color.primary.opacity(0.7))
         .padding(.leading, 70)
         .padding(.trailing, 16)
         .padding(.top, -4)
@@ -2051,12 +2043,11 @@ enum DYChatOpener {
     /// Shell classes verified from a live read-only IM layout capture. Keep all message,
     /// composer, attachment and event-handler subtrees unchanged.
     static let chatChromeCSS = #"""
-    :root { --dd-chat-canvas: __DD_CHAT_CANVAS__; --dd-chat-separator: __DD_CHAT_SEPARATOR__; }
     html, body { width:100%!important; min-width:0!important; height:100%!important; margin:0!important; overflow:hidden!important; background:transparent!important; }
     .dd-chat-ancestor { background:transparent!important; }
     .dd-chat-page-sibling { visibility:hidden!important; pointer-events:none!important; }
     #douyin-temp-sidebar { display:none!important; }
-    .chatDark { position:fixed!important; inset:0!important; width:100%!important; height:100%!important; max-height:none!important; border:0!important; border-radius:0!important; background:transparent!important; }
+    :is(.chatDark,.chatLight) { position:fixed!important; inset:0!important; width:100%!important; height:100%!important; max-height:none!important; border:0!important; border-radius:0!important; background:transparent!important; }
     [class*="componentsEntrywrapper"] > .semi-resizable-resizable { display:none!important; }
     [class*="componentsEntrywrapper"] { box-sizing:border-box!important; min-width:0!important; width:100%!important; height:100%!important; max-height:none!important; margin:0!important; border:0!important; border-radius:0!important; background:transparent!important; }
     [class*="componentsRightPanelwrapper"] { box-sizing:border-box!important; width:100%!important; max-width:none!important; flex:1!important; min-width:0!important; min-height:0!important; height:100%!important; background:transparent!important; }
@@ -2066,7 +2057,7 @@ enum DYChatOpener {
     [class*="messageMessageListlist"] { box-sizing:border-box!important; padding-top:var(--dd-header-inset,72px)!important; padding-bottom:var(--dd-composer-inset,100px)!important; scroll-padding-top:var(--dd-header-inset,72px); scroll-padding-bottom:var(--dd-composer-inset,100px); background:transparent!important; }
     [class*="componentsRightPanelinputArea"] { position:absolute!important; inset:auto 0 0!important; z-index:2; box-sizing:border-box!important; padding:8px 16px var(--dd-native-composer-bottom,24px)!important; background:transparent!important; border:0!important; }
     [class*="messageMsgInputcontainer"], [class*="messageMsgInputinputColumn"] { background:transparent!important; border:0!important; padding:0!important; }
-    [class*="messageMsgInputinputRow"] { position:relative!important; box-sizing:border-box!important; width:100%!important; min-height:44px!important; padding:4px 12px!important; border:0!important; border-radius:999px!important; background:#242424!important; align-items:center!important; }
+    [class*="messageMsgInputinputRow"] { position:relative!important; box-sizing:border-box!important; width:100%!important; min-height:44px!important; padding:4px 12px!important; border:0!important; border-radius:999px!important; align-items:center!important; }
     html[data-dd-native-composer] [class*="messageMsgInputinputRow"] { height:var(--dd-native-composer-height,44px)!important; opacity:0!important; pointer-events:none!important; }
     [class*="messageEditorimChatEditorContainer"] { min-width:0!important; flex:1!important; background:transparent!important; }
     [class*="messageEditorinputArea"] { min-height:28px!important; max-height:160px!important; overflow-y:auto!important; background:transparent!important; border:0!important; }
@@ -2174,11 +2165,7 @@ enum DYChatOpener {
           window.dispatchEvent(new Event('resize'));
           return 'ok';
         """#
-        let colors = DDTheme().messages
-        let appearanceCSS = chatChromeCSS
-            .replacingOccurrences(of: "__DD_CHAT_CANVAS__", with: colors.canvasCSS)
-            .replacingOccurrences(of: "__DD_CHAT_SEPARATOR__", with: colors.separatorCSS)
-        let r = try? await web.callAsyncJavaScript(script, arguments: ["id": row.id, "name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": appearanceCSS], contentWorld: .page)
+        let r = try? await web.callAsyncJavaScript(script, arguments: ["id": row.id, "name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": chatChromeCSS], contentWorld: .page)
         if (r as? String) == "ok" { return .opened }
         DYLiveModel.log("DDCHAT opener miss stranger=\(row.stranger)")
         return .notFound
@@ -2338,7 +2325,7 @@ struct DYStrangerListScreen: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 if allRows.isEmpty {
-                    Text(status).font(.footnote).foregroundStyle(.white.opacity(0.6)).padding(28)
+                    Text(status).font(.footnote).foregroundStyle(Color.primary.opacity(0.6)).padding(28)
                 }
                 ForEach(allRows) { row in
                     Button { Task { await open(row) } } label: { line(row) }
@@ -2348,9 +2335,9 @@ struct DYStrangerListScreen: View {
                 }
             }
         }
-        .background(Color.black.ignoresSafeArea())
-        .foregroundStyle(.white)
-        .overlay { if opening != nil { ProgressView().tint(.white) } }
+        .background(Color.ddBackground.ignoresSafeArea())
+        .foregroundStyle(Color.primary)
+        .overlay { if opening != nil { ProgressView().tint(.primary) } }
         .task(id: isActive) { if isActive { await refresh() } else { await DYChatOpener.cancelStrangerScan() } }
     }
 

@@ -94,6 +94,7 @@ struct DYNativeVideoActions: View {
                         }
                         .padding(.vertical, 5)
                         .glassEffect(.regular, in: .capsule)
+                        .environment(\.colorScheme, .dark)
                         .frame(height: slotHeight, alignment: .bottom)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("douyin.video.actions")
@@ -141,6 +142,7 @@ struct DYStandaloneVideoActions: View {
                         }
                         .padding(.vertical, 5)
                         .glassEffect(.regular, in: .capsule)
+                        .environment(\.colorScheme, .dark)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("douyin.video.actions")
                     }

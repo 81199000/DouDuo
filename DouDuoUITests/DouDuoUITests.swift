@@ -2,6 +2,217 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 左滑作者/右滑关注 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testMessageAppearanceLight() throws { try verifyMessageAppearance("light") }
+    func testMessageAppearanceDark() throws { try verifyMessageAppearance("dark") }
+
+    private func verifyMessageAppearance(_ appearance: String) throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        addTeardownBlock { app.terminate() }
+        for mode in ["duoClassic", "classic"] {
+            app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT":"1", "DOUDUO_MESSAGE_FIXTURE":"1",
+                "DOUDUO_CHROME_MODE":mode, "DOUDUO_APPEARANCE":appearance, "DOUDUO_APPEARANCE_TEST":"1"]
+            app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+            app.launch()
+            let resolved = app.staticTexts["appearance.resolved"]
+            XCTAssertTrue(resolved.waitForExistence(timeout: 5))
+            XCTAssertEqual(resolved.label, appearance)
+            let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+            let person = rows.matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
+            XCTAssertTrue(person.waitForExistence(timeout: 20))
+            attach(app, "appearance-messages-" + mode + "-" + appearance)
+            person.tap()
+            let editor = app.textViews["douyin.messages.composer.editor"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 10))
+            attach(app, "appearance-chat-" + mode + "-" + appearance)
+            editor.tap()
+            editor.typeText("Theme draft")
+            XCTAssertTrue(waitUntil(timeout: 5) { (editor.value as? String)?.contains("Theme draft") == true })
+            attach(app, "appearance-composer-" + mode + "-" + appearance)
+            app.terminate()
+        }
+    }
+
+    func testSearchLightGridBounds() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE":"duoClassic", "DOUDUO_APPEARANCE":"light",
+            "DOUDUO_HASHTAG_FIXTURE":"1", "DOUDUO_SEARCH_FIXTURE":"1", "DOUDUO_GRID_FIXTURE":"1"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let search = app.buttons["douyin.search"].firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 15))
+        search.tap()
+        let hot = app.buttons["douyin.search.hot.1"]
+        XCTAssertTrue(hot.waitForExistence(timeout: 10))
+        hot.tap()
+        XCTAssertTrue(app.buttons["douyin.grid.item.hashtag-travel"].firstMatch.waitForExistence(timeout: 10))
+        attach(app, "search-light-grid-bounds")
+    }
+
+    func testMineLightGridBounds() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE":"duoClassic", "DOUDUO_APPEARANCE":"light",
+            "DOUDUO_GRID_FIXTURE":"1", "DOUDUO_OPEN":"mine"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.buttons["douyin.grid.item.hashtag-travel"].firstMatch.waitForExistence(timeout: 20))
+        attach(app, "mine-light-grid-bounds")
+    }
+
+    func testAppearanceClassic() throws { try verifyAppearance(mode: "duoClassic") }
+    func testAppearanceOrdinary() throws { try verifyAppearance(mode: "classic") }
+
+    func testAppearanceLiveClassic() throws { try verifyAppearance(mode: "duoClassic", live: true) }
+    func testAppearanceLiveOrdinary() throws { try verifyAppearance(mode: "classic", live: true) }
+
+    func testAppearanceNativePagesLight() throws { try verifyNativePages(appearance: "light") }
+    func testAppearanceNativePagesDark() throws { try verifyNativePages(appearance: "dark") }
+
+    private func verifyNativePages(appearance: String) throws {
+        let app = XCUIApplication()
+        addTeardownBlock { app.terminate() }
+        for page in ["search", "mine", "messages"] {
+            app.launchEnvironment = ["DOUDUO_CHROME_MODE":"classic", "DOUDUO_APPEARANCE":appearance, "DOUDUO_OPEN":page]
+            app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+            app.launch()
+            let anchor: XCUIElement
+            switch page {
+            case "search": anchor = app.textFields["douyin.search.field"]
+            case "mine": anchor = app.buttons["douyin.mine.post"]
+            default: anchor = app.buttons["douyin.messages.interactive"]
+            }
+            XCTAssertTrue(anchor.waitForExistence(timeout: 30), app.debugDescription)
+            Thread.sleep(forTimeInterval: 3)
+            attach(app, "appearance-" + page + "-" + appearance)
+            app.terminate()
+        }
+    }
+
+    func testAppearanceFollowsSystem() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_HASHTAG_FIXTURE":"1", "DOUDUO_APPEARANCE_TEST":"1", "DOUDUO_APPEARANCE":"system"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let resolved = app.staticTexts["appearance.resolved"]
+        XCTAssertTrue(resolved.waitForExistence(timeout: 10))
+        for mode in ["light", "dark", "light"] {
+            print("APPEARANCE_SYSTEM " + mode)
+            XCTAssertTrue(waitUntil(timeout: 15) { resolved.label == mode })
+            Thread.sleep(forTimeInterval: 1)
+        }
+    }
+
+    private func verifyAppearance(mode: String, live: Bool = false) throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE":mode, "DOUDUO_HASHTAG_FIXTURE":"1",
+            "DOUDUO_SEARCH_FIXTURE":"1", "DOUDUO_APPEARANCE_TEST":"1", "DOUDUO_APPEARANCE":"reset"]
+        if live {
+            app.launchEnvironment.removeValue(forKey: "DOUDUO_HASHTAG_FIXTURE")
+            app.launchEnvironment.removeValue(forKey: "DOUDUO_SEARCH_FIXTURE")
+        }
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+            "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "1.5.0"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        func settings() throws {
+            let query = app.buttons.matching(identifier: "douyin.more")
+            XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+            let more = try XCTUnwrap(query.allElementsBoundByIndex.first {
+                !$0.frame.isEmpty && app.windows.firstMatch.frame.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY))
+            })
+            // Native vertical toolbars can make the ancestor Menu report non-hittable.
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let entry = app.buttons["设置"]
+            XCTAssertTrue(entry.waitForExistence(timeout: 5), app.debugDescription)
+            entry.tap()
+            XCTAssertTrue(app.segmentedControls["settings.appearance"].waitForExistence(timeout: 5))
+        }
+        func pauseLiveVideo() {
+            guard live else { return }
+            let current = app.staticTexts["douyin.currentID"].firstMatch
+            XCTAssertTrue(waitUntil(timeout: 90) { current.exists && current.label.range(of: "^[0-9]{10,}$", options: .regularExpression) != nil }, app.debugDescription)
+            let playback = app.staticTexts["douyin.video.playback"].firstMatch
+            if playback.waitForExistence(timeout: 15), wait(label: "playing", on: playback, timeout: 20) {
+                app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.4)).tap()
+                XCTAssertTrue(wait(label: "paused", on: playback, timeout: 5), app.debugDescription)
+            }
+            print("APPEARANCE_LIVE_VIDEO " + current.label)
+        }
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 15))
+        pauseLiveVideo()
+        attach(app, "appearance-" + mode + "-initial")
+        try settings()
+        let picker = app.segmentedControls["settings.appearance"]
+        XCTAssertTrue(picker.buttons["暗色"].isSelected)
+        let frames = ["跟随系统", "亮色", "暗色"].map { picker.buttons[$0].frame }
+        XCTAssertLessThan(abs(frames[0].midY - frames[2].midY), 2, "Three modes must stay in one row")
+        picker.buttons["亮色"].tap()
+        XCTAssertTrue(picker.buttons["亮色"].isSelected)
+        attach(app, "appearance-" + mode + "-settings-light")
+        app.buttons["settings.done"].tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { app.staticTexts["appearance.resolved"].label == "light" })
+        attach(app, "appearance-" + mode + "-home-light")
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "DOUDUO_APPEARANCE")
+        app.launch()
+        XCTAssertTrue(app.staticTexts["appearance.resolved"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["appearance.resolved"].label, "light", "Explicit selection survives relaunch")
+        pauseLiveVideo()
+        try settings()
+        XCTAssertTrue(picker.buttons["亮色"].isSelected)
+        picker.buttons["暗色"].tap()
+        app.buttons["settings.done"].tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { app.staticTexts["appearance.resolved"].label == "dark" })
+        attach(app, "appearance-" + mode + "-home-dark")
+        try settings()
+        picker.buttons["跟随系统"].tap()
+        app.buttons["settings.done"].tap()
+    }
+
+    func testAppearanceLiveWeb() throws { try verifyWebAppearance(live: true) }
+    func testAppearanceWebPreservesDocument() throws { try verifyWebAppearance(live: false) }
+
+    private func verifyWebAppearance(live: Bool) throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = [live ? "DOUDUO_APPEARANCE_WEB_LIVE" : "DOUDUO_APPEARANCE_WEB_FIXTURE":"1", "DOUDUO_APPEARANCE":"light"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        func snapshot() -> [String: Any] {
+            let value = app.staticTexts["appearance.web.report"].label
+            return (try? JSONSerialization.jsonObject(with: Data(value.utf8))) as? [String: Any] ?? [:]
+        }
+        XCTAssertTrue(app.staticTexts["appearance.web.report"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitUntil(timeout: 10) { snapshot()["background"] as? String == "rgb(252, 252, 252)" })
+        if live { Thread.sleep(forTimeInterval: 12) }
+        print("WEB_APPEARANCE_LIGHT " + app.staticTexts["appearance.web.report"].label)
+        XCTAssertTrue(waitUntil(timeout: 10) { snapshot()["shellBackground"] as? String == "rgb(252, 252, 252)" })
+        let token = snapshot()["token"] as? String
+        XCTAssertNotNil(token)
+        XCTAssertEqual(snapshot()["foreground"] as? String, "rgb(22, 22, 22)")
+        attach(app, live ? "appearance-web-live-light" : "appearance-web-fixture-light")
+        app.segmentedControls.buttons["暗色"].tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { snapshot()["mode"] as? String == "dark" && snapshot()["appPalette"] as? Bool == false })
+        if !live {
+            XCTAssertEqual(snapshot()["background"] as? String, "rgb(32, 36, 38)")
+            XCTAssertEqual(snapshot()["foreground"] as? String, "rgb(228, 230, 232)")
+            XCTAssertEqual(snapshot()["shellBackground"] as? String, "rgb(40, 43, 48)")
+        }
+        XCTAssertEqual(snapshot()["token"] as? String, token)
+        if !live { XCTAssertEqual(snapshot()["draft"] as? String, "保留这段未发送的文字") }
+        print("WEB_APPEARANCE_DARK " + app.staticTexts["appearance.web.report"].label)
+        XCTAssertEqual(snapshot()["mediaFilter"] as? String, "none")
+        attach(app, live ? "appearance-web-live-dark" : "appearance-web-fixture-dark")
+        app.segmentedControls.buttons["亮色"].tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { snapshot()["background"] as? String == "rgb(252, 252, 252)" })
+        XCTAssertEqual(snapshot()["token"] as? String, token)
+    }
+
     func testClassicShareNoteAndSuccess() throws { try verifyShareNoteAndSuccess(mode: "duoClassic", group: false) }
     func testOrdinaryShareNoteAndSuccess() throws { try verifyShareNoteAndSuccess(mode: "classic", group: true) }
 
@@ -556,7 +767,7 @@ final class DouDuoUITests: XCTestCase {
         }
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let window = app.windows.firstMatch
@@ -639,7 +850,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         XCTAssertTrue(wait(label: "hashtag-cat", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 15))
@@ -696,7 +907,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let current = app.staticTexts["douyin.currentID"].firstMatch
@@ -817,7 +1028,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.windows.firstMatch.frame.width))
@@ -913,7 +1124,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.frame.width), "This regression must run on an iPhone Duo display: \(app.frame)")

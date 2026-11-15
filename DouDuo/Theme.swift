@@ -1,4 +1,4 @@
-// 主题垫片：DouDuo 只有沉浸式黑底播放界面，用固定配色实现 無為 主题令牌的同名接口，业务代码零改动复用。
+// 页面使用自适应语义颜色；媒体画布和直接叠在视频上的文字保留独立对比色。
 import SwiftUI
 
 struct DDColor {
@@ -17,7 +17,7 @@ struct DDTheme {
 
     struct Media {
         let scrim = DDColor(.black.opacity(0.35))
-        let strongScrim = DDColor(.black)
+        let strongScrim = DDColor(.ddBackground)
         let onMedia = DDColor(.white)
         let onMediaSecondary = DDColor(.white.opacity(0.72))
         let chromeFill = DDColor(.black.opacity(0.35))
@@ -58,12 +58,10 @@ struct DDTheme {
     let typography = Typography()
     /// Shared native/web IM canvas; CSS values stay in the theme, not business scripts.
     struct Messages {
-        let sidebarTint = Color(.sRGB, red: 22 / 255, green: 22 / 255, blue: 22 / 255, opacity: 1)
-        let pinnedRow = Color(.sRGB, red: 36 / 255, green: 36 / 255, blue: 36 / 255, opacity: 1)
-        let selectedRow = Color(.sRGB, red: 36 / 255, green: 36 / 255, blue: 36 / 255, opacity: 1)
+        let sidebarTint = Color.ddMessageListBackground
+        let pinnedRow = Color.ddMessagePinnedRow
+        let selectedRow = Color.ddMessagePinnedRow
         let headerHeight: CGFloat = 60
-        let canvasCSS = "#000000"
-        let separatorCSS = "rgba(255,255,255,0.10)"
     }
     let messages = Messages()
     let accent = DDColor(Color(red: 1.0, green: 0.17, blue: 0.33))
@@ -101,12 +99,13 @@ extension View {
     func ddGlassCircle(_ tint: Color? = nil) -> some View {
         if #available(iOS 26.0, *) {
             if let tint {
-                self.glassEffect(.regular.tint(tint.opacity(0.22)).interactive(), in: .circle)
+                self.foregroundStyle(.primary).glassEffect(.regular.tint(tint.opacity(0.22)).interactive(), in: .circle)
             } else {
-                self.glassEffect(.regular.interactive(), in: .circle)
+                self.foregroundStyle(.primary).glassEffect(.regular.interactive(), in: .circle)
             }
         } else {
             self
+                .foregroundStyle(.primary)
                 .background(tint.map { $0.opacity(0.22) } ?? .clear, in: Circle())
                 .background(.ultraThinMaterial, in: Circle())
         }
@@ -118,10 +117,22 @@ extension View {
     @ViewBuilder
     func ddGlassCapsule() -> some View {
         if #available(iOS 26.0, *) {
-            self.glassEffect(.regular.interactive(), in: .capsule)
+            self.foregroundStyle(.primary).glassEffect(.regular.interactive(), in: .capsule)
         } else {
-            self.background(.ultraThinMaterial, in: Capsule())
+            self.foregroundStyle(.primary).background(.ultraThinMaterial, in: Capsule())
         }
+    }
+}
+
+// Scope the dark appearance to media controls, so sheets and page canvases
+// continue to follow the user's global selection.
+extension View {
+    func ddMediaGlassCircle(_ tint: Color? = nil) -> some View {
+        ddGlassCircle(tint).environment(\.colorScheme, .dark)
+    }
+
+    func ddMediaGlassCapsule() -> some View {
+        ddGlassCapsule().environment(\.colorScheme, .dark)
     }
 }
 

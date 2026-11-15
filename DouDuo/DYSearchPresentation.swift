@@ -59,7 +59,7 @@ struct DYSearchPresentation: ViewModifier {
             }
             .overlay(alignment: .leading) {
                 if split {
-                    Rectangle().fill(.white.opacity(0.16)).frame(width: 1)
+                    Rectangle().fill(Color.ddSeparator).frame(width: 1)
                         .offset(x: geometry.size.width / 2 - 0.5)
                         .allowsHitTesting(false)
                         .accessibilityLabel("视频与搜索分界线")
@@ -134,7 +134,7 @@ struct DYSearchBackToolbar: ViewModifier {
     private var back: some View {
         Button("返回", systemImage: "chevron.backward", action: onBack)
             .labelStyle(.iconOnly)
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityIdentifier("douyin.search.back")
     }
@@ -143,6 +143,7 @@ struct DYSearchBackToolbar: ViewModifier {
 struct DYHotSearchRow: View {
     let item: DYHot
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.colorScheme) private var scheme
     @ScaledMetric(relativeTo: .footnote) private var badgeSize: CGFloat = 24
 
     private var rank: Int { item.pos ?? 0 }
@@ -152,7 +153,7 @@ struct DYHotSearchRow: View {
         case 1: Color(red: 1, green: 0.64, blue: 0.08)
         case 2: Color(red: 0.77, green: 0.78, blue: 0.84)
         case 3: Color(red: 0.87, green: 0.49, blue: 0.39)
-        default: .white.opacity(0.45)
+        default: .secondary
         }
     }
 
@@ -173,11 +174,11 @@ struct DYHotSearchRow: View {
             }
             .frame(width: badgeSize, height: badgeSize)
             .accessibilityHidden(true)
-            Text(item.word).font(.footnote).foregroundStyle(.white)
+            Text(item.word).font(.footnote).foregroundStyle(.primary)
                 .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if item.hot > 0 {
-                Text(heat).font(.caption2).monospacedDigit().foregroundStyle(.white.opacity(0.55))
+                Text(heat).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                     .fixedSize()
             }
         }
@@ -185,7 +186,7 @@ struct DYHotSearchRow: View {
         .frame(minHeight: 44)
         .background {
             RoundedRectangle(cornerRadius: 10)
-                .fill(LinearGradient(colors: [rowTint, Color(white: 0.075)],
+                .fill(LinearGradient(colors: [rowTint, .ddSecondaryBackground],
                                      startPoint: .leading, endPoint: .trailing))
         }
         .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -195,7 +196,8 @@ struct DYHotSearchRow: View {
     }
 
     private var rowTint: Color {
-        rank <= 0 ? Color(red: 0.19, green: 0.25, blue: 0.36)
+        if scheme == .light { return accent.opacity(0.08) }
+        return rank <= 0 ? Color(red: 0.19, green: 0.25, blue: 0.36)
             : (rank <= 3 ? Color(red: 0.23, green: 0.21, blue: 0.21) : Color(white: 0.14))
     }
 

@@ -25,6 +25,10 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
         if ProcessInfo.processInfo.environment["DOUDUO_RESET_HASHTAG_FILTER"] == "1" {
             UserDefaults.standard.removeObject(forKey: DYHashtagFilter.storageKey)
         }
+        if let appearance = ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE"] {
+            if appearance == "reset" { UserDefaults.standard.removeObject(forKey: DDAppearance.key) }
+            else { UserDefaults.standard.set(appearance, forKey: DDAppearance.key) }
+        }
         // 自动测试用：DOUDUO_CHROME_MODE=classic|rail|minimal 启动时写入界面模式（不用 -key 启动参数，那会盖住运行时修改）
         if let m = ProcessInfo.processInfo.environment["DOUDUO_CHROME_MODE"] { UserDefaults.standard.set(m, forKey: "douyin_chrome_mode_v1") }
         if DYMessageFixture.enabled { UserDefaults.standard.set(0.36, forKey: "douyin_message_sidebar_fraction_v1") }
@@ -87,6 +91,7 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
 struct DouDuoApp: App {
     @UIApplicationDelegateAdaptor(DouDuoAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
 
     init() {
         // 信息里的图片/封面都走网页：默认的 URLCache 又小又是内存为主，进聊天每次都要重新下载。
@@ -99,24 +104,28 @@ struct DouDuoApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-            #if DEBUG
-            if ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
-                DYForwardLayoutProbe()
-            } else if ProcessInfo.processInfo.environment["DOUDUO_MESSAGE_LAYOUT"] == "1" {
-                DYMessageLayoutProbe()
-            } else if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
-                DYTitleLayoutProbe()
-            } else if let target = LocalVideoLaunch.target {
-                LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)
-            } else {
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
+                    DYForwardLayoutProbe()
+                } else if ProcessInfo.processInfo.environment["DOUDUO_MESSAGE_LAYOUT"] == "1" {
+                    DYMessageLayoutProbe()
+                } else if ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_FIXTURE"] == "1" || ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_LIVE"] == "1" {
+                    DDAppearanceWebProbe()
+                } else if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
+                    DYTitleLayoutProbe()
+                } else if let target = LocalVideoLaunch.target {
+                    LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)
+                } else {
+                    DouyinFeedScreen()
+                }
+                #else
                 DouyinFeedScreen()
-                    .preferredColorScheme(.dark)
+                #endif
             }
-            #else
-            DouyinFeedScreen()
-                .preferredColorScheme(.dark)
+            .preferredColorScheme(DDAppearance(rawValue: appearance)?.colorScheme)
+            #if DEBUG
+            .overlay(alignment: .topLeading) { DDAppearanceStateProbe() }
             #endif
-            }
             .modifier(DYHingeStateRoot())
         }
         // 退到后台 / 锁屏：短视频按「后台播放」停声。直播走同一条恢复，是否出声看「后台直播声音」。
@@ -175,7 +184,7 @@ struct LocalVideoPlaybackView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.ddBackground.ignoresSafeArea()
             PlayerPage.external(id: "local", title: url.lastPathComponent, url: url, durationSec: 20,
                                 isActive: true, topInset: 0, bottomInset: 0, resumePosition: nil,
                                 compactChrome: true, onEnded: nil, onDoubleTap: nil,
@@ -183,7 +192,6 @@ struct LocalVideoPlaybackView: View {
                                 onFillWidthChange: { fillWidth = $0 },
                                 videoAspect: Double(ProcessInfo.processInfo.environment["DOUDUO_LOCALASPECT"] ?? "") ?? 0)
         }
-        .preferredColorScheme(.dark)
     }
 }
 #endif

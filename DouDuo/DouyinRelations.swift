@@ -129,11 +129,11 @@ struct DYRelationsScreen: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                    Image(systemName: "chevron.left").font(.headline.weight(.semibold)).foregroundStyle(Color.primary)
                         .frame(width: 40, height: 40)
                 }
                 .accessibilityIdentifier("douyin.relations.back")
-                Text("\(kind.title)（\(model.items.count)）").font(.headline).foregroundStyle(.white).shadow(radius: 3)
+                Text("\(kind.title)（\(model.items.count)）").font(.headline).foregroundStyle(Color.primary).shadow(radius: 3)
                 Spacer()
             }
             .padding(.leading, 22).padding(.top, 10)
@@ -149,19 +149,19 @@ struct DYRelationsScreen: View {
                             }
                     }
                     if model.loading {
-                        ProgressView().tint(.white).padding(.vertical, 20)
+                        ProgressView().tint(.primary).padding(.vertical, 20)
                     } else if let e = model.error {
-                        Text(e).font(.footnote).foregroundStyle(.white.opacity(0.7)).padding(.vertical, 20)
+                        Text(e).font(.footnote).foregroundStyle(Color.primary.opacity(0.7)).padding(.vertical, 20)
                     } else if !model.hasMore, !model.items.isEmpty {
-                        Text("到底了").font(.caption).foregroundStyle(.white.opacity(0.5)).padding(.vertical, 20)
+                        Text("到底了").font(.caption).foregroundStyle(Color.primary.opacity(0.5)).padding(.vertical, 20)
                     } else if model.items.isEmpty {
                         Text(kind == .following ? "还没有关注任何人" : "还没有粉丝").font(.footnote)
-                            .foregroundStyle(.white.opacity(0.7)).frame(maxWidth: .infinity).padding(.top, 40)
+                            .foregroundStyle(Color.primary.opacity(0.7)).frame(maxWidth: .infinity).padding(.top, 40)
                     }
                 }
             }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Color.ddBackground.ignoresSafeArea())
         .dyEdgeBack { dismiss() }
         .task { await model.loadMore() }
         .fullScreenCover(item: $open) { u in
@@ -178,12 +178,12 @@ struct DYRelationsScreen: View {
     private func row(_ u: DYRelationUser) -> some View {
         HStack(spacing: 12) {
             CachedAsyncImage(url: u.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                placeholder: { Color.white.opacity(0.1) }
+                placeholder: { Color.primary.opacity(0.1) }
                 .frame(width: 48, height: 48).clipShape(Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text(u.name).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                Text(u.name).font(.subheadline.weight(.semibold)).foregroundStyle(Color.primary)
                 if !u.signature.isEmpty {
-                    Text(u.signature).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    Text(u.signature).font(.caption).foregroundStyle(Color.primary.opacity(0.6)).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
