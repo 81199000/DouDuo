@@ -430,6 +430,8 @@ struct DYMessagesScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     let bridge: DouyinBridge
     var onClose: (() -> Void)? = nil
+    /// 右侧栏底部「我的」：由外层关掉信息页再打开我的
+    var onMine: (() -> Void)? = nil
     let onWeb: (URL) -> Void
     var forwardedShare: DYForwardReceipt? = nil
 
@@ -475,6 +477,7 @@ struct DYMessagesScreen: View {
     @State private var error: String?
 
     var body: some View {
+        let _ = DYMessageOpenProbe.built()
         NavigationStack {
             GeometryReader { safeGeometry in
                 messageContent
@@ -520,24 +523,8 @@ struct DYMessagesScreen: View {
                     .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
                     .scrollEdgeEffectHidden(true, for: .all)
                     .toolbar {
-                        // 返回键与四个分类放在右侧竖栏（老板定：内外屏、横竖屏都一样）
-                        if #available(iOS 27.1, *) {
-                            if !navigation.hasDetail && (chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil) {
-                                ToolbarItem(placement: .primaryAction) { rootBackButton }
-                                    .axisBehavior(.verticalPreferred)
-                                    .visibilityPriority(.high)
-                            }
-                            if navigation.hasDetail {
-                                ToolbarItem(placement: .primaryAction) { detailBackButton }
-                                    .axisBehavior(.verticalPreferred)
-                                    .visibilityPriority(.high)
-                            }
-                            if !navigation.isChat {
-                                ToolbarItem(placement: .primaryAction) { categoryRail }
-                                    .axisBehavior(.verticalPreferred)
-                                    .visibilityPriority(.high)
-                            }
-                        } else {
+                        // iOS 27.1+：返回 / 分类 / 更多 / 我的 全在自绘右侧栏（messageRail），样式和位置跟视频页右侧栏一致
+                        if #unavailable(iOS 27.1) {
                             if !navigation.hasDetail && (chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil) {
                                 ToolbarItem(placement: .cancellationAction) { rootBackButton }
                             }
@@ -546,11 +533,7 @@ struct DYMessagesScreen: View {
                             }
                         }
                         if navigation.isChat {
-                            if #available(iOS 27.1, *) {
-                                ToolbarItem(placement: .primaryAction) { chatOptionsButton }
-                                    .axisBehavior(.verticalPreferred)
-                                    .visibilityPriority(.high)
-                            } else {
+                            if #unavailable(iOS 27.1) {
                                 ToolbarItem(placement: .primaryAction) { chatOptionsButton }
                             }
                         }
@@ -698,6 +681,19 @@ struct DYMessagesScreen: View {
     @ContentBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
+            // 老板定：整个信息界面靠左，右边留一条跟视频页同款的右侧栏（内外屏、横竖屏同一套）
+            HStack(spacing: 0) {
+                messagePanes
+                messageRail
+            }
+        } else {
+            legacyMessageContent
+        }
+    }
+
+    @available(iOS 27.1, *)
+    private var messagePanes: some View {
+        Group {
             GeometryReader { geo in
                 let split = horizontalSizeClass == .regular && DYMessageSidebarLayout.showsSplit(in: geo.size, window: chatModel.windowSize)
                 let folded = isHalfFolded || DYDuoMetrics.foldIsActive(geo)
@@ -756,9 +752,118 @@ struct DYMessagesScreen: View {
                 .onHingeChange { _, context in isHalfFolded = context.hinge?.status == .partiallyOpen }
             }
             .modifier(DYEdgeSwipeBack(action: backFromMessage))
-        } else {
-            legacyMessageContent
         }
+    }
+
+    // MARK: 右侧栏（样式、宽度、底部位置照搬视频页右侧栏：54pt 玻璃胶囊、27pt 线框图标、下方小字）
+
+    private static let railWidth: CGFloat = 54
+    /// 栏外留白：跟视频页 compact 时的 12pt 一致
+    private static let railOuterPadding: CGFloat = 8
+
+    private var messageRail: some View {
+        VStack(spacing: theme.media.actionGroupSpacing) {
+            Spacer(minLength: 0)
+            // 返回：单独一颗圆（跟视频页从搜索进入时的返回圆钮一致）
+            if navigation.hasDetail || chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil {
+                Button {
+                    if navigation.hasDetail { backFromMessage() }
+                    else if let onClose { onClose() } else { dismissRoot() }
+                } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 50, height: 50)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .disabled(openingChat != nil)
+                .accessibilityLabel("返回")
+                .accessibilityIdentifier(navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
+            }
+            // 四个分类 + 聊天时的「更多」：一条玻璃胶囊
+            VStack(spacing: theme.media.actionItemSpacing) {
+                railItem(.interactive, icon: "heart", title: "互动",
+                         badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
+                railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
+                railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
+                railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
+                if navigation.isChat {
+                    railButton(icon: "ellipsis", title: "更多", selected: showChatOptions, badge: 0,
+                               id: "douyin.messages.more") { showChatOptions = true }
+                        .popover(isPresented: $showChatOptions) {
+                            if let web = chatModel.web, let id = navigation.chatID {
+                                DYChatOptionsPopover(web: web, conversationID: id) {
+                                    Task { await readConversations() }
+                                }
+                                .presentationCompactAdaptation(.popover)
+                            }
+                        }
+                        .onChange(of: showChatOptions) { _, showing in
+                            if !showing, let web = chatModel.web, let id = navigation.chatID {
+                                Task { await DYChatWebBridge.closeOptions(web, id: id) }
+                            }
+                        }
+                }
+            }
+            .padding(.vertical, 8)
+            .frame(width: Self.railWidth)
+            .glassEffect(.regular, in: .capsule)
+            // 我的：直接进「我的」
+            if let onMine {
+                railButton(icon: "person.crop.circle", title: "我的", selected: false, badge: 0,
+                           id: "douyin.messages.mine", action: onMine)
+                    .padding(.vertical, 6)
+                    .frame(width: Self.railWidth)
+                    .glassEffect(.regular, in: .capsule)
+            }
+        }
+        // 底部位置跟视频页一致：离底 92pt
+        .padding(.bottom, 92)
+        .padding(.horizontal, Self.railOuterPadding)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .themeShadow(.floatingPanel)
+        .ignoresSafeArea(.keyboard)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("douyin.messages.rail")
+    }
+
+    private func railItem(_ route: DYMsgRoute, icon: String, title: String, badge: Int) -> some View {
+        railButton(icon: icon, title: title, selected: navigation.category == route, badge: badge,
+                   id: "douyin.messages.rail.\(route)") { selectCategory(route) }
+    }
+
+    private func railButton(icon: String, title: String, selected: Bool, badge: Int, id: String,
+                            action: @escaping () -> Void) -> some View {
+        let tint = selected ? theme.accent.color(for: scheme) : Color.primary
+        return Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: selected ? icon + ".fill" : icon)
+                    .font(.system(size: 23, weight: .regular, design: .rounded))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 30)
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            Text(badge > 99 ? "99+" : String(badge))
+                                .font(.system(size: 9, weight: .bold)).monospacedDigit()
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4).padding(.vertical, 1.5)
+                                .background(theme.status.danger.color(for: scheme), in: .capsule)
+                                .offset(x: 8, y: -3)
+                        }
+                    }
+                Text(title).font(.caption2.weight(.medium))
+                    .foregroundStyle(selected ? tint : Color.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(width: Self.railWidth, height: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : "")
+        .accessibilityIdentifier(id)
     }
 
     /// iOS 27.1 以下回退：全屏覆盖（原行为）
@@ -3266,10 +3371,14 @@ struct DYForwardMenu: View {
 /// 诊断：从首页点「消息」到信息页出现在屏幕上用了多久（DDMSGOPEN tap→appear）
 @MainActor enum DYMessageOpenProbe {
     private static var tapAt: CFTimeInterval = 0
-    static func tapped() { tapAt = CACurrentMediaTime() }
+    private static var builtAt: CFTimeInterval = 0
+    static func tapped() { tapAt = CACurrentMediaTime(); builtAt = 0 }
+    /// body 第一次被算的时刻（在动画开始前）：tap→built 就是我们自己的准备成本
+    static func built() { if tapAt > 0, builtAt == 0 { builtAt = CACurrentMediaTime() } }
     static func appeared() {
         guard tapAt > 0 else { return }
-        DYLiveModel.log("DDMSGOPEN tap→appear=\(Int((CACurrentMediaTime() - tapAt) * 1000))ms")
+        let b = builtAt > 0 ? Int((builtAt - tapAt) * 1000) : -1
+        DYLiveModel.log("DDMSGOPEN tap→built=\(b)ms tap→appear=\(Int((CACurrentMediaTime() - tapAt) * 1000))ms")
         tapAt = 0
     }
 }
