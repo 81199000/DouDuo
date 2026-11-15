@@ -604,7 +604,7 @@ struct DYMessagesScreen: View {
                         do {
                             let item = try await self.bridge.awemeDetail(id)
                             self.videoPlay = DYMessagePlay(item: item)
-                            DYLiveModel.log("DDMSGVIDEO jump \(id)")
+                            DYLiveModel.log("DDMSGVIDEO jump \(id) kind=\(item.images.isEmpty ? "video" : "gallery\(item.images.count)")")
                         } catch {
                             DYLiveModel.log("DDMSGVIDEO detail fail \(id): \(error.localizedDescription)")
                         }
