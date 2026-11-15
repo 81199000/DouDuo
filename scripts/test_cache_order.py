@@ -25,16 +25,20 @@ class CacheOrderTests(unittest.TestCase):
         harness = r'''
 import Foundation
 struct DYAweme { let id: String; var duration: Double; var images: [String] = []; var play: String? = "u" }
-let maxDuration: Double = 600
+let maxDuration: Double = 1800
+let longThreshold: Double = 600
 let blockingDuration: Double = 90
 ''' + plan + r'''
 func v(_ id: String, _ d: Double) -> DYAweme { DYAweme(id: id, duration: d) }
 let assumeBitsPerSecond: Double = 2_500_000
 let sizeCap: Double = 250 * 1024 * 1024
 func localURL(_ id: String) -> URL? { nil }
-// 当前正在联网播的长视频不下载（会和播放抢带宽）；下一条照常缓存
-var p = plan(current: v("cur", 480), ahead: [v("next", 30), v("after", 45)])
+// 当前正在联网播的长视频(>10分钟)不下载（会和播放抢带宽）；下一条照常缓存
+var p = plan(current: v("cur", 900), ahead: [v("next", 30), v("after", 45)])
 precondition(p == ["next", "after"], "\(p)")
+// 8 分钟不算长视频：照常整条缓存，排在短的后面
+p = plan(current: v("cur", 480), ahead: [v("next", 30), v("after", 45)])
+precondition(p == ["next", "after", "cur"], "\(p)")
 // 短的在播：当前照常下；下一条是长视频，排在短的后面
 p = plan(current: v("cur", 20), ahead: [v("next", 300), v("after", 40)])
 precondition(p == ["cur", "after", "next"], "\(p)")
