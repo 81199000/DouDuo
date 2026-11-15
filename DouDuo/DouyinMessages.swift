@@ -2416,12 +2416,21 @@ enum DYChatOpener {
     })()
     """#
 
+    /// 主列表里已经有普通会话行（不在陌生人面板里）就不用收起面板，直接点
+    static let mainListReadyJS = #"""
+    (() => [...document.querySelectorAll('[data-e2e="conversation-item"]')]
+      .some(e => !e.closest('[class*="StrangerConversationList"]')))()
+    """#
+
     static func collapseStranger(_ web: WKWebView) async {
+        // 实测（2026-11-16 03:21 起）：陌生人面板的表头一直在，收起后也不消失，
+        // 原来每次进聊天都要等满 20×25ms 才放弃 → 每次多卡 ~600ms。
+        // 主列表行在就直接跳过；需要收起时最多等 150ms。
+        if (try? await web.evaluateJavaScript(mainListReadyJS)) as? Bool == true { return }
         guard let result = try? await web.evaluateJavaScript(collapseStrangerJS) as? String,
               result != "closed" else { return }
-        for _ in 0..<20 {
-            let open = (try? await web.evaluateJavaScript("!!document.querySelector('[class*=StrangerConversationListhead]')")) as? Bool ?? false
-            if !open { return }
+        for _ in 0..<6 {
+            if (try? await web.evaluateJavaScript(mainListReadyJS)) as? Bool == true { return }
             do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
         }
     }

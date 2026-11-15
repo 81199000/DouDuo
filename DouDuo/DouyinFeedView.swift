@@ -2378,8 +2378,13 @@ struct DYUpstreamFeedScreen: View {
 
     private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, badge: Bool = false, id: String, action: @escaping () -> Void) -> some View {
         Button {
-            minimalMenuOpen = false
-            action()
+            // 实测点「消息」到信息页开始弹出要 ~600ms，且主线程不卡（无 DDLONGFRAME）：
+            // 是系统要等这个弹出菜单的收起动画放完，才肯弹下一个全屏页。
+            // 菜单直接无动画收起，下一轮再打开目标页（目标页自己的弹出动画照常）。
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) { minimalMenuOpen = false }
+            DispatchQueue.main.async { action() }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 22)
