@@ -938,8 +938,23 @@ struct DYMessagesScreen: View {
         switch result {
         case .opened:
             openedFromShare = false
+            // 揭开前把所有「之后才会定」的布局一次定好（仍在黑底转圈后面做）：
+            //   ① 原生输入框接管：隐藏网页输入框、定高度和底部留白（以前要等 1s 轮询才做 → 输入框跳）
+            //   ② 顶部留白（原生表头高度）（以前默认 72，轮询后改成真实值 → 消息整体下移）
+            //   ③ 等列表和输入框位置不再变
+            let t1 = Date()
+            composer.setAccountScope(cache.accountScope)
+            await composer.refresh(web: web, id: row.id)
+            _ = await DYChatWebBridge.snapshot(web, headerInset: messageTopInset + 72)
+            let settled = await DYChatOpener.settle(web)
+            guard navigation.chatID == row.id else { return }
             chatDOMReady = true
-            DYLiveModel.log("DDCHAT open stranger=\(row.stranger) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+            DYLiveModel.log("DDCHAT open stranger=\(row.stranger) ms=\(Int(Date().timeIntervalSince(started) * 1000)) prep_ms=\(Int(Date().timeIntervalSince(t1) * 1000)) settle=\(settled.frames)f/\(settled.ms)ms composer=\(composer.isConnected(to: row.id))")
+            Task { [weak web] in
+                guard let web else { return }
+                let shifts = await DYChatOpener.measureShifts(web)
+                DYLiveModel.log("DDCHAT_SHIFT id=\(row.id.suffix(6)) after_reveal=\(shifts)")
+            }
         case .notReady:
             chatStatus = "私信页面还没加载好，请稍后重试"
             DYLiveModel.log("DDCHAT open miss dom-not-ready")
@@ -1834,6 +1849,52 @@ struct DYNoticeListScreen: View {
 @MainActor
 enum DYChatOpener {
     enum Result { case opened, notReady, notFound }
+
+    /// 等聊天网页「不再动」：消息列表高度、输入框位置连续 3 帧不变才算稳（最多 ~700ms）。
+    /// 揭开前调用——以前一切换就揭开，老板看到的是网页边渲染边挪输入框、挪消息。
+    /// 返回 (采样次数, 毫秒)。
+    static func settle(_ web: WKWebView) async -> (frames: Int, ms: Int) {
+        let js = #"""
+        const t0 = performance.now();
+        const sig = () => {
+          const list = document.querySelector('[class*="messageMessageListlist"]');
+          const input = document.querySelector('[class*="componentsRightPanelinputArea"]');
+          const r = input?.getBoundingClientRect();
+          return [list?.scrollHeight || 0, r ? Math.round(r.top) : -1, r ? Math.round(r.height) : -1].join('|');
+        };
+        let last = '', same = 0, n = 0;
+        while (n < 18 && same < 3) {
+          await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));
+          const s = sig(); same = (s === last) ? same + 1 : 0; last = s; n++;
+        }
+        // 输入框最终位置定了，再定一次消息列表底部留白，免得揭开后再跳
+        const ir = document.querySelector('[class*="messageMsgInputinputRow"]')?.getBoundingClientRect();
+        if (ir && ir.height > 0) document.documentElement.style.setProperty('--dd-composer-inset', (innerHeight - ir.top + 16) + 'px');
+        return n + ',' + Math.round(performance.now() - t0);
+        """#
+        guard let r = (try? await web.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)) as? String else { return (0, 0) }
+        let parts = r.split(separator: ",").compactMap { Int($0) }
+        return (parts.first ?? 0, parts.count > 1 ? parts[1] : 0)
+    }
+
+    /// 揭开后 1.5s 内输入框/列表还挪了几次（验证用，正常应为 0）
+    static func measureShifts(_ web: WKWebView) async -> Int {
+        let js = #"""
+        const sig = () => {
+          const list = document.querySelector('[class*="messageMessageListlist"]');
+          const input = document.querySelector('[class*="componentsRightPanelinputArea"]');
+          const r = input?.getBoundingClientRect();
+          return [list ? Math.round(list.getBoundingClientRect().top) : -1, r ? Math.round(r.top) : -1].join('|');
+        };
+        let last = sig(), shifts = 0;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 50));
+          const s = sig(); if (s !== last) { shifts++; last = s; }
+        }
+        return shifts;
+        """#
+        return ((try? await web.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)) as? NSNumber)?.intValue ?? -1
+    }
 
     /// Serialize DOM mutations. Foreground navigation cancels the scan before
     /// acquiring this lock; scan cleanup must finish before a new chat opens.
