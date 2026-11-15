@@ -98,7 +98,8 @@ actor DYVideoCache {
     nonisolated static func headPlayableSeconds(_ id: String) -> Double? {
         guard let f = headFile(id),
               let size = (try? FileManager.default.attributesOfItem(atPath: f.path)[.size]) as? Int else { return nil }
-        let s = Double(size) * 8 / assumeBitsPerSecond - 2.0
+        // 估算能播到第几秒：按平均码率算，再留 20% 余量（宁可早一点交接，也别播到没数据卡住）
+        let s = Double(size) * 8 / assumeBitsPerSecond * 0.8 - 1.5
         return s > 1 ? s : nil
     }
 
@@ -152,6 +153,51 @@ actor DYVideoCache {
         return out
     }
 
+    /// 长视频「第一段」预存队列：**不跟随 focus 取消**——老板实测滑动一快就被取消，
+    /// 长视频永远拿不到预存段，只能联网慢等（日志里一排 DDHEAD fail cancelled）。
+    /// 播放卡在等待数据时，下载自动让路（busy 门闸），把带宽留给播放器。
+    private var headQueue: [String] = []
+    private var headTask: Task<Void, Never>?
+    /// 播放器正在等数据（起播/卡顿）时为 true，缓存下载暂停让路
+    private var playbackWaiting = false
+
+    func setPlaybackWaiting(_ v: Bool) { playbackWaiting = v }
+
+    /// 播放器直接调用（不 await）：起播/卡顿时让缓存下载让路
+    nonisolated func reportPlaybackWaiting(_ v: Bool) {
+        Task { await setPlaybackWaiting(v) }
+    }
+
+    private func waitWhilePlaybackWaiting() async {
+        var n = 0
+        while playbackWaiting && n < 40 {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            n += 1
+        }
+    }
+
+    private func enqueueHeads(_ ids: [String]) {
+        for id in ids where !headQueue.contains(id) && Self.headFile(id) == nil {
+            headQueue.append(id)
+        }
+        guard headTask == nil, !headQueue.isEmpty else { return }
+        headTask = Task { [weak self] in
+            guard let self else { return }
+            await self.drainHeads()
+        }
+    }
+
+    /// 逐个把长视频第一段存好；不会因为切视频被取消
+    private func drainHeads() async {
+        while !headQueue.isEmpty {
+            let id = headQueue.removeFirst()
+            if Self.headFile(id) != nil || Self.localURL(id) != nil { continue }
+            await waitWhilePlaybackWaiting()
+            await storeLongHead(id: id)
+        }
+        headTask = nil
+    }
+
     func focus(current: DYAweme?, ahead: [DYAweme]) {
         guard Self.limit > 0 else { job?.cancel(); job = nil; jobID = nil; return }
         let target = current ?? ahead.first
@@ -166,13 +212,9 @@ actor DYVideoCache {
         let plan = Self.plan(current: target, ahead: follow)
         let longIDs = Self.longHeadPlan(current: target, ahead: follow)
         for a in [target] + follow { pending[a.id] = a }
+        enqueueHeads(longIDs)
         job = Task { [weak self] in
             guard let self else { return }
-            // 长视频先存第一段（几 MB，秒下完，够起播）；整条的那些排在后面
-            for id in longIDs {
-                if Task.isCancelled { return }
-                await self.storeLongHead(id: id)
-            }
             for id in plan {
                 if Task.isCancelled { return }
                 await self.store(id: id)
@@ -212,6 +254,7 @@ actor DYVideoCache {
         guard let a = pending[id], a.images.isEmpty, a.play != nil else { return }
         if Self.localURL(a.id) != nil { return }
         if failed.contains(a.id) { return }
+        await waitWhilePlaybackWaiting()
         // 超长的视频整条太大，干脆不缓存，直接走在线流（不会闪，只是首帧慢一点）
         guard a.duration <= Self.maxDuration else { return }
         if Task.isCancelled { return }
@@ -264,6 +307,7 @@ actor DYVideoCache {
     private func storeLongHead(id: String) async {
         guard let a = pending[id], Self.headFile(a.id) == nil else { return }
         let t0 = Date()
+        await waitWhilePlaybackWaiting()
         for u in downloadURLs(a) {
             if Task.isCancelled { return }
             var probe = URLRequest(url: u)
@@ -303,6 +347,7 @@ actor DYVideoCache {
     /// 长视频播起来 10 秒后，把剩下的部分并发补齐，拼成完整文件（下次直接本地起播）
     func completeLong(id: String) async {
         guard Self.localURL(id) == nil, let head = Self.headFile(id) else { return }
+        await waitWhilePlaybackWaiting()
         guard let a = pending[id] ?? entries.first(where: { $0.aweme.id == id })?.aweme else { return }
         guard let u = downloadURLs(a).first else { return }
         let have = ((try? FileManager.default.attributesOfItem(atPath: head.path)[.size]) as? Int) ?? 0

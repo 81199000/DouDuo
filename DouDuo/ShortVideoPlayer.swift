@@ -1310,6 +1310,9 @@ struct PlayerPage: View {
                 let pos = seamAudio.currentMediaTime ?? t.seconds
                 if !seeking { current = pos }
                 if !firstFrame, t.seconds > 0.02 { firstFrame = true }
+                // 起播/卡顿等待数据时让缓存下载让路（否则长视频被下载抢死，实测等 12 秒）
+                let waiting = player?.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                DYVideoCache.shared.reportPlaybackWaiting(waiting && isActive)
                 // 长视频：播起来 10 秒后把剩下的几段并发补齐（老板设计，避免一开始就抢带宽）
                 if isActive, !headCompleted, t.seconds > 10, hadStagedHead {
                     headCompleted = true
