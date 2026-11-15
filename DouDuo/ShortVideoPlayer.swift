@@ -1186,10 +1186,15 @@ struct PlayerPage: View {
 
     /// 起播看门狗：当前屏 6 秒还没走（网络抖 / 预加载的 item 失效），重建播放项再来一次
     private func watchdog(_ p: AVPlayer) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+        // 起播看门狗：2 秒还没出画面就换「重定向地址」重试（直连 CDN 偶尔 403/超时，
+        // 实测会一直等到 12–30 秒），再不行 2 秒后交给 VLC。日志留证：DDSTARTDIAG。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             guard isActive, isPlaying, player === p, !seeking, vlc == nil else { return }
             let stuck = p.currentItem == nil || p.currentItem?.status == .failed || p.currentTime().seconds < 0.1
             guard stuck else { return }
+            let st = p.currentItem?.status.rawValue ?? -1
+            let err = p.currentItem?.error.map { "\(($0 as NSError).domain)/\(($0 as NSError).code)" } ?? "-"
+            DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried)")
             if avRetried { startVLC() } else { avRetried = true; rebuild() }
         }
     }
