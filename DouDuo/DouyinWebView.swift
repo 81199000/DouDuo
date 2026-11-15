@@ -337,8 +337,14 @@ private let ddVideoTapHookJS = #"""
     const fromMessage = message => {
       try {
         const payload = message.parsedContent || JSON.parse(message.content || 'null');
-        const id = payload?.itemId;
+        // 三种分享卡的 ID 字段不一样（真机抓包）：
+        //   aweType 800（视频）/ 0（图文）：itemId
+        //   aweType 11054（群里的视频卡 BulletBulletVideo）：item_id 或 aweme_info.aweme_id
+        const pick = v => (typeof v === 'number' && Number.isSafeInteger(v)) ? null : (typeof v === 'string' ? v : null);
+        const id = pick(payload?.itemId) || pick(payload?.item_id)
+          || pick(payload?.aweme_info?.aweme_id) || pick(payload?.aweme_info?.item_id);
         if (typeof id !== 'string' || !/^\d{15,25}$/.test(id)) return null;
+        if (Number(payload?.aweType) === 11054 && (payload?.item_id || payload?.aweme_info)) return id;
         // 800 = 分享视频；图文（笔记）分享的 aweType 是 0，payload 里带 image_count / is_slides /
         // awemeType=68。只认「确实是作品卡」的 payload，避免把普通消息里的 id 当作品 id。
         const awe = Number(payload?.aweType);

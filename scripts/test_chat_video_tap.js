@@ -65,6 +65,16 @@ test('gallery share (aweType 0 + image_count) opens the post',()=>{
   assert.strictEqual(r.sent[0].id,noteId);
   assert(r.ev.prevented&&r.ev.stopped);
 });
+test('group video card (aweType 11054, item_id) opens the post',()=>{
+  const vid='7708057869924972646';
+  const r=clickThroughHook({aweType:11054,item_id:vid,aweme_info:{aweme_id:vid}},'/chat');
+  assert.strictEqual(r.sent[0].type,'video');assert.strictEqual(r.sent[0].id,vid);
+});
+test('group video card with only aweme_info.aweme_id opens the post',()=>{
+  const vid='7708057869924972646';
+  const r=clickThroughHook({aweType:11054,aweme_info:{aweme_id:vid}},'/chat');
+  assert.strictEqual(r.sent[0].type,'video');assert.strictEqual(r.sent[0].id,vid);
+});
 test('gallery share without any post link still leaves the web alone',()=>{
   const noteId='7501234567890123456';
   const r=clickThroughHook({aweType:68,itemId:noteId},'/chat',{querySelectorAll:()=>[]});

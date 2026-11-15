@@ -49,6 +49,12 @@ final class DYChatImageCache {
 
     private func file(_ key: String) -> URL { dir.appendingPathComponent(key) }
 
+    /// ddimg://img/?u=<原地址> → 原地址；不是 ddimg 的原样返回
+    nonisolated static func originalURL(_ raw: String?) -> String? {
+        guard let raw, raw.hasPrefix(scheme + ":") else { return raw }
+        return URLComponents(string: raw)?.queryItems?.first(where: { $0.name == "u" })?.value ?? raw
+    }
+
     func cachedData(for raw: String) -> Data? {
         guard let k = Self.key(for: raw) else { return nil }
         let f = file(k)
@@ -169,6 +175,20 @@ enum DYChatImageRewrite {
     (() => {
       if (window.__ddImgRewrite) return; window.__ddImgRewrite = 1;
       const OK = /^https:\/\/([a-z0-9-]+\.)*(douyinpic\.com|byteimg\.com|douyin\.com)\//i;
+      // 读 img.src 的地方（会话列表扫描、转发联系人、打开会话时比对头像）必须拿到原始 https 地址：
+      // 以前改写后它们读到的是 ddimg://img/?u=…，原生列表拿去显示 → 好友头像空白。
+      // 只改「读」：浏览器实际加载用的是 src 属性（ddimg），读 .src 时还原 data-dd-orig。
+      try {
+        const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (desc && desc.get && !HTMLImageElement.prototype.__ddSrcPatched) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true, enumerable: desc.enumerable,
+            get() { const o = this.dataset && this.dataset.ddOrig; const v = desc.get.call(this); return (o && String(v).startsWith('ddimg:')) ? o : v; },
+            set(v) { desc.set.call(this, v); }
+          });
+          HTMLImageElement.prototype.__ddSrcPatched = true;
+        }
+      } catch (e) {}
       const fix = img => {
         try {
           if (img.dataset.ddFailed) return;

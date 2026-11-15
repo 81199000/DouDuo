@@ -49,6 +49,7 @@ enum DYConversationSync {
         let capturedAt = Date().timeIntervalSince1970
         let rows = delta.items.map { row -> DYConversationRow in
             var next = row
+            next.avatar = DYChatImageCache.originalURL(next.avatar)
             if let old = oldRows[row.id], old.time == row.time, old.preview == row.preview {
                 next.observedAt = old.observedAt ?? capturedAt
             } else { next.observedAt = capturedAt }

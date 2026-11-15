@@ -824,12 +824,17 @@ struct DYListPlayer: View {
     @State private var web: DYWebTarget?
     /// 从消息点评论进来：自动开评论区并定位那条评论
     let commentFocus: DYCommentFocus?
+    /// 信息里点开的分享视频：关掉时彻底收掉声音（播放器、音频引擎、音频会话）
+    let hardStopOnDismiss: Bool
+    /// 打开期间把外层（首页/信息页底下的）播放压住；关掉时成对释放
+    @State private var coverHeld = false
 
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
          loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
-         commentFocus: DYCommentFocus? = nil) {
+         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false) {
         self.bridge = bridge; self.title = title
         self.commentFocus = commentFocus
+        self.hardStopOnDismiss = hardStopOnDismiss
         _showComments = State(initialValue: commentFocus != nil)
         _items = State(initialValue: items)
         _currentID = State(initialValue: items.indices.contains(start) ? items[start].id : items.first?.id)
@@ -910,7 +915,15 @@ struct DYListPlayer: View {
             preloader.update(items, current: i)
             // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         } }
-        .onDisappear { preloader.clear() }
+        .onDisappear {
+            preloader.clear()
+            if hardStopOnDismiss {
+                // 关掉分享视频：播放器拆掉的同时，把音频引擎和会话一并停掉，
+                // 否则无缝音频引擎还在出声（以前返回后声音继续响）
+                DDAudioEngineHub.shared.pauseAll()
+                DYLiveModel.log("DDSHAREPLAY close hard-stop")
+            }
+        }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { showSettings = false
