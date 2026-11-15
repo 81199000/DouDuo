@@ -16,23 +16,25 @@ enum DYMessageFixture {
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
     <style>
-    *{box-sizing:border-box}html,body{height:100%;margin:0;color:#fff;background:#000;font:16px -apple-system}
-    .chatDark,.componentsEntrywrapper{height:100%;width:100%;display:flex}
+    *{box-sizing:border-box}html,body{height:100%;margin:0;font:16px -apple-system}
+    .chatDark{--fixture-text:#e8e9ed;--fixture-bubble:#242428;--fixture-outgoing:#33474c;--fixture-input:#303135}
+    .chatLight{--fixture-text:#161823;--fixture-bubble:#f0f1f4;--fixture-outgoing:#deeff2;--fixture-input:#eeeef2}
+    .chatDark,.chatLight,.componentsEntrywrapper{height:100%;width:100%;display:flex;color:var(--fixture-text)}
     .semi-resizable-resizable{width:300px;overflow:auto}
     [data-e2e=conversation-item]{padding:12px;min-height:72px}
     .componentsRightPanelwrapper,.componentsRightPanelnotHeaderArea{display:flex;flex-direction:column;flex:1;min-height:0}
     .RightPanelHeaderconvHeader{height:60px;display:flex;align-items:center}
     .messageMessageListwrapper{flex:1;min-height:0;overflow:hidden}
     .messageMessageListlist{height:100%;overflow:auto;padding:16px}
-    .bubble{max-width:78%;padding:12px 16px;border-radius:20px;background:#242428;margin:12px 0;line-height:1.5}
-    .bubble.mine{margin-left:auto;background:#33474c}
-    .messageMsgInputinputRow{display:flex;align-items:center;gap:8px}
+    .bubble{max-width:78%;padding:12px 16px;border-radius:20px;background:var(--fixture-bubble,#242428);margin:12px 0;line-height:1.5}
+    .bubble.mine{margin-left:auto;background:var(--fixture-outgoing)}
+    .messageMsgInputinputRow{display:flex;align-items:center;gap:8px;background:var(--fixture-input)}
     .messageEditorimChatEditorContainer{flex:1;min-width:0}
     [contenteditable]{outline:0;white-space:pre-wrap;overflow-wrap:anywhere}
     [contenteditable]:empty:before{content:attr(data-placeholder);color:#999}
     .messageMsgInputinputAction{display:flex;gap:10px}
     button{color:inherit;background:transparent;border:0;font:inherit;min-width:32px;min-height:36px}
-    .conversationConversationInfowrapper{position:absolute;right:0;top:0;width:300px;background:#242428;display:none}
+    .conversationConversationInfowrapper{position:absolute;right:0;top:0;width:300px;background:var(--fixture-bubble,#242428);display:none}
     .conversationConversationInfoopen{display:block}
     .ConversationInfoConversationInfoItemitemContainer{padding:16px;display:flex;justify-content:space-between}
     .ConversationItemMenuwrapper{position:fixed;top:100px;left:24px;background:#222;z-index:99}
