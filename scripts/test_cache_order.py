@@ -29,22 +29,25 @@ let maxDuration: Double = 600
 let blockingDuration: Double = 90
 ''' + plan + r'''
 func v(_ id: String, _ d: Double) -> DYAweme { DYAweme(id: id, duration: d) }
-// 当前是 8 分钟长视频、下一条 30 秒：下一条必须排第一，长视频排后面
+let assumeBitsPerSecond: Double = 2_500_000
+let sizeCap: Double = 250 * 1024 * 1024
+func localURL(_ id: String) -> URL? { nil }
+// 当前正在联网播的长视频不下载（会和播放抢带宽）；下一条照常缓存
 var p = plan(current: v("cur", 480), ahead: [v("next", 30), v("after", 45)])
-precondition(p == ["next", "after", "cur"], "\(p)")
-// 下一条也是长视频：短的先下，长的按 当前 → 下一条
+precondition(p == ["next", "after"], "\(p)")
+// 短的在播：当前照常下；下一条是长视频，排在短的后面
 p = plan(current: v("cur", 20), ahead: [v("next", 300), v("after", 40)])
 precondition(p == ["cur", "after", "next"], "\(p)")
-// 都短：下一条 → 当前 → 后面
+// 都短：当前（在播但很短）→ 下一条 → 后面
 p = plan(current: v("cur", 20), ahead: [v("next", 30), v("after", 40)])
-precondition(p == ["next", "cur", "after"], "\(p)")
-// 超过 10 分钟不排；图集不排
-p = plan(current: v("cur", 1800), ahead: [DYAweme(id: "img", duration: 0, images: ["x"], play: nil), v("after", 700)])
+precondition(p == ["cur", "next", "after"], "\(p)")
+// 超过 30 分钟不排；图集不排
+p = plan(current: v("cur", 2000), ahead: [DYAweme(id: "img", duration: 0, images: ["x"], play: nil), v("after", 1900)])
 precondition(p.isEmpty, "\(p)")
 // 旧版漏掉紧挨着的下一条：现在下一条一定在计划里
 p = plan(current: v("cur", 60), ahead: [v("next", 60)])
-precondition(p.first == "next", "\(p)")
-print("PASS cache order: next first, long videos after short ones, >10min skipped")
+precondition(p.contains("next"), "\(p)")
+print("PASS cache order: long current never downloaded (no bandwidth fight); next cached; >30min and oversize skipped")
 '''
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "Plan.swift"; f.write_text(harness)
