@@ -133,8 +133,19 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                                             targetContentOffset: targetContentOffset)
         guard scrollView.isPagingEnabled, scrollView.bounds.height > 0,
               targetContentOffset.pointee.y.isFinite else { return }
-        let index = Int(((targetContentOffset.pointee.y + scrollView.adjustedContentInset.top) / scrollView.bounds.height).rounded())
         let items = ids()
+        let h = scrollView.bounds.height
+        let top = scrollView.adjustedContentInset.top
+        let curIndex0 = items.firstIndex(where: { $0 == currentID() })
+            ?? Int(((scrollView.contentOffset.y + top) / h).rounded())
+        // 翻页规则自己定（系统分页轻轻一碰就翻）：拖过 1/4 屏，或明确快甩，才翻到下一条/上一条；否则弹回原位
+        let dragged = (scrollView.contentOffset.y + top) - CGFloat(curIndex0) * h
+        let flick = abs(velocity.y) > 0.6
+        var index = curIndex0
+        if dragged > h * 0.25 || (flick && velocity.y > 0 && dragged > 0) { index = curIndex0 + 1 }
+        else if dragged < -h * 0.25 || (flick && velocity.y < 0 && dragged < 0) { index = curIndex0 - 1 }
+        index = min(max(index, 0), max(items.count - 1, 0))
+        targetContentOffset.pointee.y = CGFloat(index) * h - top
         guard items.indices.contains(index) else { return }
         // 老板要求：下一个视频还没加载好就别让它翻过去（跟抖音原版一样）
         // 只拦「往前翻」；往回翻是看过的，直接放行
@@ -145,8 +156,9 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             // 同一条拦了 3 次还没就绪，就放行（可能是地址失效/长视频加载慢；宁可黑一下也不能把人卡死）
             if blockedCount[id, default: 0] <= 3 {
                 let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
-                targetContentOffset.pointee = CGPoint(x: scrollView.contentOffset.x, y: curY)
-                targetID = nil; target = nil
+                targetID = items[curIndex]
+                target = CGPoint(x: scrollView.contentOffset.x, y: curY)
+                targetContentOffset.pointee = scrollView.contentOffset
                 DYLiveModel.log("DDBLOCK next=\(id.suffix(4)) 未就绪，弹回当前页 #\(blockedCount[id, default: 0])")
                 return
             }
@@ -166,7 +178,12 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         } else {
             DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
         }
-        start = scrollView.contentOffset; startTime = CACurrentMediaTime(); animationDuration = duration
+        start = scrollView.contentOffset; startTime = CACurrentMediaTime()
+        // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
+        if let t = target {
+            let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
+            animationDuration = 0.22 + 0.10 * Double(min(remain, 1))
+        } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)
     }
