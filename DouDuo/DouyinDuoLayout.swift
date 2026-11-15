@@ -715,6 +715,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     @Binding var showComments: Bool
     @State private var captionItem: DYAweme?
     @State private var openedCommentsManually = false
+    @State private var bookFoldComments = false
     @State private var cleanScreen = false
     var focus: DYCommentFocus? = nil
     var onBack: () -> Void
@@ -739,7 +740,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     }
 
     private var horizontalCommentStatus: Bool {
-        duoLandscapeWindow && showComments && !searchPresented && commentItem != nil
+        (bookFoldComments || (duoLandscapeWindow && showComments)) && !searchPresented && commentItem != nil
     }
 
     private var hidesCommentStatus: Bool {
@@ -827,8 +828,9 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
-                                   focus: focus, fillsPane: true, trailingInset: layout.trailingInset,
-                                   horizontalStatus: horizontalCommentStatus && !layout.resident)
+                                   focus: focus, fillsPane: true,
+                                   trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
+                                   horizontalStatus: horizontalCommentStatus)
                         .id(aweme.id)
                         .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                         .clipped()
@@ -850,6 +852,9 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 }
             }
             .modifier(DYStandaloneBarPolicy(classic: true))
+            .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
+                bookFoldComments = bookFold
+            }
             .animation(searchPresented ? nil : .snappy, value: showComments)
             .animation(searchPresented ? nil : .snappy, value: layout.resident)
             .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,

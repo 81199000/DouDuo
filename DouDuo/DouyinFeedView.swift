@@ -2794,6 +2794,7 @@ struct DYClassicFeedScreen: View {
     @State private var topChrome = CGRect.zero
     @State private var supportsSidePanel = false
     @State private var residentComments = false
+    @State private var bookFoldComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
     private var sidePanelOpen: Bool {
         !showSearch && (residentComments || (supportsSidePanel && (authorTarget != nil || (showComments && !presentsLandscapeComments))))
@@ -2811,7 +2812,8 @@ struct DYClassicFeedScreen: View {
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
     private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : current) ?? captionItem }
     private var horizontalCommentStatus: Bool {
-        duoLandscapeWindow && showComments && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
+        (bookFoldComments || (duoLandscapeWindow && showComments))
+            && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
     }
 
     private var hidesCommentStatus: Bool {
@@ -3183,8 +3185,9 @@ struct DYClassicFeedScreen: View {
                     } else if let cur = commentAweme {
                         DYCommentPanel(bridge: bridge, aweme: cur,
                                        onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
-                                       fillsPane: true, trailingInset: layout.trailingInset,
-                                       horizontalStatus: horizontalCommentStatus && !layout.resident)
+                                       fillsPane: true,
+                                       trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
+                                       horizontalStatus: horizontalCommentStatus)
                             .id(cur.id)
                     }
                 }
@@ -3201,6 +3204,9 @@ struct DYClassicFeedScreen: View {
         }
         .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in residentComments = resident }
+        .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
+            bookFoldComments = bookFold
+        }
         .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
         .animation(showSearch ? nil : .snappy, value: showComments)

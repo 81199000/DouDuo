@@ -1321,14 +1321,10 @@ final class DouDuoUITests: XCTestCase {
 
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
-        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
-        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
-        addTeardownBlock { app.terminate() }
-        app.launch()
-        XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"], timeout: 60))
+        let app = launchOnlineRegression()
         XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForExistence(timeout: 15), "实际半折自动显示评论")
+        pauseRegressionVideo(app)
+        attach(app, "physical-half-fold-comments")
         for id in ["douyin.like", "douyin.share", "douyin.cleanScreen", "首页"] {
             XCTAssertFalse(app.buttons[id].firstMatch.isHittable, id + " 半折评论时隐藏")
         }
@@ -1338,8 +1334,14 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertLessThanOrEqual(panel.frame.minY, screen.minY + 2, "半折评论背景贴顶")
             XCTAssertGreaterThanOrEqual(panel.frame.maxY, screen.maxY - 2, "半折评论背景贴底")
             XCTAssertGreaterThanOrEqual(panel.frame.maxX, screen.maxX - 2, "半折评论背景贴右边")
+            let title = app.staticTexts["douyin.comments.title"].firstMatch
+            let composer = app.descendants(matching: .any).matching(identifier: "douyin.comment.send").firstMatch
+            XCTAssertTrue(title.exists)
+            XCTAssertTrue(composer.exists)
+            XCTAssertLessThan(title.frame.minX - panel.frame.minX, 40, "横向状态栏应与左侧评论标题同排")
+            XCTAssertGreaterThan(composer.frame.midX, screen.maxX - 64, "评论操作应使用原系统竖栏占用的空间")
         }
-        attach(app, "physical-half-fold-comments")
+        XCTAssertFalse(app.buttons["douyin.comments.close"].exists, "半折时评论继续常驻")
     }
 
     func testCleanScreenRestoresStableSidebar() throws {
