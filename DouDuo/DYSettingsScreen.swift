@@ -13,6 +13,7 @@ struct DYSettingsScreen: View {
 
     @Environment(\.dismiss) private var dismiss
     // 界面
+    @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     // 播放
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
@@ -48,6 +49,13 @@ struct DYSettingsScreen: View {
                 }
 
                 Section("界面") {
+                    Picker("外观", selection: $appearance) {
+                        ForEach(DDAppearance.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("settings.appearance")
                     Picker("界面模式", selection: $chromeMode) {
                         ForEach(DDChromeMode.availableCases) { m in
                             Label(m.title, systemImage: m.symbol).tag(m.rawValue)
@@ -64,7 +72,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("播放")
                 } footer: {
-                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色保持黑色。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。")
+                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色跟随外观。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。")
                 }
 
                 Section {
@@ -161,6 +169,8 @@ struct DYSettingsScreen: View {
                     .accessibilityIdentifier("douyin.about")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.ddBackground)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -169,6 +179,7 @@ struct DYSettingsScreen: View {
                 }
             }
         }
+        .preferredColorScheme(DDAppearance(rawValue: appearance)?.colorScheme)
     }
 }
 

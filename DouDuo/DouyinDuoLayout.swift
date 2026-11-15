@@ -24,6 +24,13 @@ enum DYDuoMetrics {
         return (p.first, p.second, p.book)
     }
 
+    static func videoCommentPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
+        guard let hinge = hingeSplit(geo) else { return nil }
+        let panes = DYLiveAdaptiveLayoutEngine.videoCommentPanes(
+            video: hinge.video, panel: hinge.panel, book: hinge.book)
+        return (panes.video, panes.panel, hinge.book)
+    }
+
     /// 窗格右侧被系统遮挡区（状态栏时间/信号）占掉的宽度，最多让 120pt。
     static func trailingOcclusionInset(_ geo: GeometryProxy, pane: CGRect) -> CGFloat {
         guard #available(iOS 27.1, *) else { return 0 }
@@ -52,7 +59,7 @@ enum DYDuoMetrics {
             .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
     }
 
-    static func bottomSafeAreaExtension(_ geo: GeometryProxy) -> CGFloat {
+    static func bottomSafeAreaExtension(in geo: GeometryProxy) -> CGFloat {
         let inset = geo.safeAreaInsets.bottom
         let physicalBottom = windowBottomInset
         return inset <= physicalBottom + 1 ? min(inset, physicalBottom) : 0
@@ -96,6 +103,18 @@ enum DYDuoMetrics {
             .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 0
     }
 
+    /// A system split or floating window can still receive the display's
+    /// active hinge region. Only use it to lay out an app occupying the display.
+    static var canUseFoldLayout: Bool {
+        guard #available(iOS 27.1, *),
+              let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first(where: { $0.keyWindow != nil }) else { return false }
+        let space = scene.effectiveGeometry.coordinateSpace
+        let display = scene.screen.coordinateSpace
+        return DYLiveAdaptiveLayoutEngine.occupiesDisplay(
+            scene: display.convert(space.bounds, from: space), display: display.bounds)
+    }
+
     /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
     static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
         #if DEBUG
@@ -103,7 +122,7 @@ enum DYDuoMetrics {
         if ProcessInfo.processInfo.environment["DOUDUO_FOLD"] == "1" { return true }
         #endif
         if #available(iOS 27.1, *) {
-            return proxy.reservedRegions(kind: .division).contains { $0.isActive }
+            return canUseFoldLayout && proxy.reservedRegions(kind: .division).contains { $0.isActive }
         }
         return false
     }
@@ -274,8 +293,9 @@ private struct DYSystemActionRail<Content: View>: View {
 struct DYRailReservedNudge: ViewModifier {
     var railEdge: HorizontalEdge? = nil
     var verticalSpace: ClosedRange<CGFloat>? = nil
+    var disabled = false
     func body(content: Content) -> some View {
-        if #available(iOS 27.1, *) {
+        if #available(iOS 27.1, *), !disabled {
             DYRailReservedNudgeBox(railEdge: railEdge, verticalSpace: verticalSpace) { content }
         } else {
             content
@@ -433,7 +453,7 @@ struct DYInlineCommentPlacement {
         guard liftsVideo || compactCaption else { return nil }
 
         let bounds = geo.frame(in: .global)
-        let bottom = bounds.maxY + DYDuoMetrics.bottomSafeAreaExtension(geo)
+        let bottom = bounds.maxY + DYDuoMetrics.bottomSafeAreaExtension(in: geo)
         let split: CGFloat
         if liftsVideo {
             let available = CGSize(width: bounds.width, height: max(0, bottom) * 0.38)
@@ -637,25 +657,23 @@ struct DYCommentPaneMetrics {
          paneFraction: CGFloat? = nil) {
         let w = geo.size.width, h = geo.size.height
         resident = allowsResident && DYDuoMetrics.foldIsActive(geo)
-        if resident, let hinge = DYDuoMetrics.hingeSplit(geo) {
+        if resident, let hinge = DYDuoMetrics.videoCommentPanes(geo) {
             sideBySide = hinge.book
             showsPane = true
             videoSize = hinge.video.size
             // The hinge panes are measured inside the navigation safe area.
             // Extend the comment surface to the physical edges, just like the
             // video, instead of leaving a black border around a smaller card.
-            let bottom = DYDuoMetrics.windowBottomInset
-            let keyboardVisible = geo.safeAreaInsets.bottom > bottom + 1
-            let bottomExtension = keyboardVisible ? 0 : min(geo.safeAreaInsets.bottom, bottom)
+            let bottomExtension = DYDuoMetrics.bottomSafeAreaExtension(in: geo)
             if hinge.book {
-                let split = (hinge.video.maxX + hinge.panel.minX) / 2
+                let split = hinge.panel.minX
                 paneOrigin = CGPoint(x: split, y: -geo.safeAreaInsets.top)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.trailing - split,
                                   height: h + geo.safeAreaInsets.top + bottomExtension)
                 trailingInset = max(geo.safeAreaInsets.trailing,
                     DYDuoMetrics.trailingOcclusionInset(geo, pane: hinge.panel))
             } else {
-                let split = (hinge.video.maxY + hinge.panel.minY) / 2
+                let split = hinge.panel.minY
                 paneOrigin = CGPoint(x: -geo.safeAreaInsets.leading, y: split)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
                                   height: h + bottomExtension - split)
@@ -682,11 +700,7 @@ struct DYCommentPaneMetrics {
         trailingInset = geo.safeAreaInsets.trailing
         // Keyboard insets must not be added back to the panel height. Keep the
         // input above the keyboard while the background reaches the screen edge.
-        let containerBottom = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
-        let keyboardIsPresented = geo.safeAreaInsets.bottom > containerBottom + 1
-        let bottom = keyboardIsPresented ? 0 : min(geo.safeAreaInsets.bottom, containerBottom)
+        let bottom = DYDuoMetrics.bottomSafeAreaExtension(in: geo)
         paneSize = CGSize(width: sideBySide ? paneW + trailingInset : w,
                           height: tableFold ? paneH : h + geo.safeAreaInsets.top + bottom)
         paneOrigin = CGPoint(x: sideBySide ? videoSize.width : 0,
@@ -819,12 +833,15 @@ struct DYCommentPlayerLayout<Video: View>: View {
                         .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                         .clipped()
                         .dyDeskLight(layout.resident && !layout.sideBySide)
+                        .overlay(alignment: .leading) {
+                            if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
+                        }
                         .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
                         .accessibilityIdentifier("douyin.list.commentPane")
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .background(Color.black.ignoresSafeArea())
+            .background(Color.ddBackground.ignoresSafeArea())
             .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
                 if #available(iOS 27.1, *), usesClassicLayout {
                     DYNativeVideoActions(actions: showComments || layout.showsPane ? nil : actions,
@@ -873,6 +890,7 @@ private struct DYStandaloneBarPolicy: ViewModifier {
                 .toolbarVisibility(.visible, for: .navigationBar)
                 .toolbarVerticalCompressionBehavior(.prefersToolbarItems)
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
         } else {
             content.toolbar(.hidden, for: .navigationBar)
         }

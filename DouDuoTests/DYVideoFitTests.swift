@@ -4,10 +4,15 @@ import Testing
 
 @Suite("视频铺满宽度")
 struct DYVideoFitTests {
-    @Test(arguments: [16.0 / 9, 4.0 / 3, 2.39])
-    func commentPlacementFitsAndAlignsVideoAbovePanel(_ aspect: Double) {
-        let viewport = CGRect(x: 6, y: 12, width: 440, height: 720)
-        let target = CGRect(x: 16, y: 60, width: 420, height: 220)
+    @Test(arguments: [16.0 / 9, 4.0 / 3, 2.39, 1.0, 9.0 / 16, 3.0 / 4], [
+        CGSize(width: 466, height: 678),
+        CGSize(width: 669, height: 951),
+        CGSize(width: 951, height: 669),
+        CGSize(width: 475, height: 669)
+    ])
+    func commentPlacementFitsAndAlignsVideoAbovePanel(_ aspect: Double, window: CGSize) {
+        let viewport = CGRect(x: 6, y: 12, width: window.width - 12, height: window.height - 24)
+        let target = CGRect(x: 16, y: 0, width: window.width - 32, height: window.height / 3)
         let fitted = DYVideoFit.contentSize(container: viewport.size, videoAspect: aspect, fillWidth: false)
         let placement = DYVideoFit.commentPlacement(viewport: viewport, fitted: fitted, target: target)
         let width = fitted.width * placement.scale

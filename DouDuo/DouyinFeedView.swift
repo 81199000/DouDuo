@@ -1038,33 +1038,6 @@ private struct DouyinBridgeHost: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
-private struct DYPlayerLayerView: UIViewRepresentable {
-    let player: AVPlayer?
-    let gravity: AVLayerVideoGravity
-    /// 首帧出来前透明（露出封面），出来后填底色盖住封面——封面是 4:3 裁图，和视频比例不一致
-    let readyFill: UIColor
-    final class V: UIView {
-        override class var layerClass: AnyClass { AVPlayerLayer.self }
-        var pl: AVPlayerLayer { layer as! AVPlayerLayer }
-        var fill: UIColor = .clear
-        private var obs: NSKeyValueObservation?
-        func watch() {
-            obs = pl.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] l, _ in
-                let ready = l.isReadyForDisplay
-                DispatchQueue.main.async { self?.backgroundColor = ready ? self?.fill : .clear }
-            }
-        }
-    }
-    func makeUIView(context: Context) -> V {
-        let v = V(); v.isUserInteractionEnabled = false; v.fill = readyFill; v.watch(); return v
-    }
-    func updateUIView(_ v: V, context: Context) {
-        v.fill = readyFill
-        if v.pl.player !== player { v.pl.player = player }
-        if v.pl.videoGravity != gravity { v.pl.videoGravity = gravity }
-    }
-}
-
 // MARK: - 预加载（抖音同款：提前缓冲后面几条）
 
 /// 当前条后面 N 条提前建好 AVPlayer 并缓冲开头几秒（不出声、不播放），滑到时页面直接接管 → 秒开。
@@ -1708,7 +1681,6 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -1768,10 +1740,10 @@ struct DYUpstreamFeedScreen: View {
         return w > h ? (w * 0.55 > h) : false
     }
 
-    /// 半折叠按真实折痕切分（同直播 Layout A/B）：视频占折痕前一块，评论占折痕后一块，折痕本身留空。
+    /// 半折叠按真实折痕切分（同直播 Layout A/B）。
     /// 拿不到折痕几何（旧系统 / DOUDUO_FOLD 模拟）时返回 nil，调用方回退到比例切分。
     private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
-        tab == .recommend ? DYDuoMetrics.hingeSplit(geo) : nil
+        tab == .recommend ? DYDuoMetrics.videoCommentPanes(geo) : nil
     }
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
@@ -1794,7 +1766,7 @@ struct DYUpstreamFeedScreen: View {
         guard !showSearch else { return 0 }
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let w = geo.size.width, h = geo.size.height
-        if let p = foldPanes(geo) { return p.book ? max(0, w - p.video.width) : 0 }
+        if let p = foldPanes(geo) { return p.book ? p.panel.width : 0 }
         let bookFold = fold && w > h
         let sideBySide = w >= DYDuoMetrics.legacyWideMin || bookFold
         let showPanel = fold || (showComments && sideBySide && tab != .live)
@@ -1812,11 +1784,12 @@ struct DYUpstreamFeedScreen: View {
         let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
 
         let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
-        let panelH = hinge.map { $0.panel.height } ?? (tableFold ? h * 0.45 : 0)
+        let panelH = hinge?.panel.height ?? (tableFold ? h * 0.45 : 0)
         let videoW = hinge?.video.width ?? (sideBySide && panelW > 0 ? w - panelW : w)
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
         let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
         let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
+        let panelBottomExtension = fold ? DYDuoMetrics.bottomSafeAreaExtension(in: geo) : 0
         // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
         // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
         // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
@@ -1831,16 +1804,23 @@ struct DYUpstreamFeedScreen: View {
                 .frame(width: videoW, height: videoH, alignment: .topLeading)
             if showPanel, let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur,
-                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
-                    .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
+                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } },
+                               fillsPane: fold, trailingInset: fold ? panelInset : 0)
+                    .frame(width: sideBySide && !tableFold ? (fold ? panelW : max(0, panelW - panelInset)) : w,
                            height: tableFold ? panelH : h)
+                    .padding(.bottom, panelBottomExtension)
+                    .background {
+                        if fold { Color.ddBackground }
+                    }
                     .dyDeskLight(tableFold)
                     .environment(\.dyCommentTrailingCleared, panelInset > 0)
-                    .offset(x: panelX, y: panelY)
+                    .padding(.leading, panelX)
+                    .padding(.top, panelY)
                     .id(cur.id)
             }
         }
-        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .frame(width: w, height: h, alignment: .topLeading)
+        .background((fold ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(.snappy, value: fold)
         .animation(showSearch ? nil : .snappy, value: showComments)
         .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
@@ -1915,18 +1895,8 @@ struct DYUpstreamFeedScreen: View {
         refreshing = true
         defer { refreshing = false; focusCurrent() }
         showToast("正在刷新推荐…")
-        while feed.loading {
-            do { try await Task.sleep(nanoseconds: 100_000_000) }
-            catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        let previous = Set(feed.items.map(\.id))
-        let replacement = DYFeedModel()
-        replacement.screenWide = feed.screenWide
-        await replacement.loadMore(bridge)
-        guard !Task.isCancelled else { return }
-        let fresh = replacement.items.filter { !previous.contains($0.id) }
-        guard !fresh.isEmpty else {
+        guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
+        guard !replacement.items.isEmpty else {
             showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
             DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
             return
@@ -1934,18 +1904,14 @@ struct DYUpstreamFeedScreen: View {
         showComments = false
         scrollEndTask?.cancel(); userScrolling = false
         preloader.clear()
-        feed.reset()
-        feed.items = fresh
-        feed.pool = replacement.pool
-        feed.liked.formUnion(replacement.liked)
-        feed.collected.formUnion(replacement.collected)
+        feed.replaceRecommendations(with: replacement)
         resume = [:]
-        currentID = fresh.first?.id
+        currentID = feed.items.first?.id
         scrollID = currentID
         lastFeedPull = Date()
         saveSession()
         showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+        DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
     }
 
     private func applyHashtagFilter() async {
@@ -2062,7 +2028,7 @@ struct DYUpstreamFeedScreen: View {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) })
             }
                 .presentationDetents([.medium, .large])
-                .presentationBackground(.black)
+                .presentationBackground(Color.ddBackground)
         }
 
     }
@@ -2207,40 +2173,6 @@ struct DYUpstreamFeedScreen: View {
                            fg: theme.media.onMedia.color(for: scheme))
     }
 
-    /// 模块菜单的内容（单击圆形入口时弹出）。
-    @ViewBuilder
-    private var moduleMenuContent: some View {
-        Section("切换模块") {
-            Picker("当前模块", selection: Binding(get: { tab }, set: { selectTab($0) })) {
-                ForEach(DYTab.allCases, id: \.self) { target in
-                    Label(target.title, systemImage: target.symbol)
-                        .tag(target)
-                }
-            }
-            .pickerStyle(.inline)
-        }
-        if tab == .live {
-            Section {
-                Button("我的关注", systemImage: "person.2") {
-                    queuedLiveAction = .followedLive
-                    publishQueuedLiveModule()
-                }
-                .accessibilityIdentifier("douyin.module.live.follow")
-                Button("发现更多", systemImage: "square.grid.2x2") {
-                    queuedLiveAction = .discover
-                    publishQueuedLiveModule()
-                }
-                .accessibilityIdentifier("douyin.module.live.discover")
-            }
-        }
-        Section {
-            Button("搜索", systemImage: "magnifyingglass") { openSearch() }
-                .accessibilityIdentifier("douyin.module.search")
-            Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
-            Button("我的", systemImage: "person.crop.circle") { showMine = true }
-        }
-    }
-
     /// 圆形模块入口（简洁 / 极简共用）。
     /// 系统 Menu 在长按时也会弹出菜单，没法做到「长按只看作者标题、不弹菜单」，所以统一自己处理：
     /// 单击（按下不满 0.35 秒）弹菜单，长按（满 0.35 秒）显示作者标题，松手消失，不弹菜单。
@@ -2275,7 +2207,7 @@ struct DYUpstreamFeedScreen: View {
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: glass, height: glass)
                 .contentShape(Circle())
-                .ddGlassCircle()
+                .ddMediaGlassCircle()
             railProgressRing
         }
         // 占位固定：入口总高 50 + 下方间距，让入口到胶囊的距离和「胶囊到更多」一致（见 DDRailMetrics）
@@ -2386,7 +2318,7 @@ struct DYUpstreamFeedScreen: View {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
                     if let e = feed.error {
                         Text(e).font(.footnote).multilineTextAlignment(.center)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                         HStack {
                             Button("重试") { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id } }
                                 .buttonStyle(.borderedProminent)
@@ -2394,9 +2326,9 @@ struct DYUpstreamFeedScreen: View {
                                 .buttonStyle(.bordered)
                         }
                     } else {
-                        ProgressView().tint(theme.media.onMedia.color(for: scheme))
+                        ProgressView().tint(.primary)
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                     }
                     DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
@@ -2823,7 +2755,10 @@ struct DYClassicFeedScreen: View {
         nonmutating set { mainTabRaw = newValue.rawValue }
     }
     private var mainTabSelection: Binding<DYMainTab> {
-        Binding(get: { mainTab }, set: { mainTabRaw = $0.rawValue })
+        Binding(get: { mainTab }, set: { selected in
+            guard selected != mainTab else { return }
+            mainTab = selected
+        })
     }
     @State private var forwardedChat: DYForwardReceipt?
     @State private var visibleVideo: DYAweme?
@@ -2867,11 +2802,9 @@ struct DYClassicFeedScreen: View {
     private var innerPortrait: Bool { stacksLandscapeComments && !hingeClosed }
     private var anchorsHeaderToWindow: Bool { horizontalCommentStatus || innerPortrait }
 
+    @State private var contentTopInset: CGFloat = 0
     private var headerTopInset: CGFloat {
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows).first(where: \.isKeyWindow)
-        return max(window?.safeAreaInsets.top ?? 0, 8)
+        max(DYDuoMetrics.windowSafeTop, DYDuoMetrics.isDuoHardware ? 0 : contentTopInset, 8)
     }
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
@@ -3069,7 +3002,6 @@ struct DYClassicFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -3124,11 +3056,15 @@ struct DYClassicFeedScreen: View {
                         .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
                             DYNativeVideoActions(actions: hidesVideoChrome ? nil : actions,
                                                  isClean: cleanScreen,
-                                                 onToggleClean: { cleanScreen.toggle() })
+                                                 onToggleClean: { cleanScreen.toggle() },
+                                                 inlineTopInset: headerTopInset)
                                 .id(horizontalCommentStatus || hidesCommentStatus)
                         }
-                        .toolbarVisibility(liveRoomOpen ? .hidden : .visible, for: .navigationBar)
+                        // Non-folding devices use the custom header. An empty native
+                        // navigation bar would intercept its taps and cover Search.
+                        .toolbarVisibility(liveRoomOpen || !DYDuoMetrics.isDuoHardware ? .hidden : .visible, for: .navigationBar)
                         .toolbarBackgroundVisibility(.hidden, for: .navigationBar, .bottomBar)
+                        .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
                         .toolbarMinimizationBehavior(.never, for: .navigationBar)
                         .scrollEdgeEffectHidden(true, for: .all)
                         // Hide the underlying native selector for compact
@@ -3148,6 +3084,7 @@ struct DYClassicFeedScreen: View {
         // Only the tab selector inherits this accent. Every tab restores the
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))
+        .toolbarColorScheme(mainTab == .home ? .dark : nil, for: .tabBar)
         // The tab container owns the system status bar when the toolbar axis changes.
         .dyCommentStatusVisibility(hidden: mainTab == .home && hidesCommentStatus)
         .onChange(of: mainTab) { old, selected in
@@ -3161,8 +3098,6 @@ struct DYClassicFeedScreen: View {
                 restoredTabPauseApplied = true
                 DDPlayback.shared.pauseAll(reason: .cover)
             }
-            // 网页归属也要同步（onChange 在「启动就是消息页」时不会触发）
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(showMessages) }
         }
     }
 
@@ -3173,6 +3108,9 @@ struct DYClassicFeedScreen: View {
             flatArrangement(geo)
                 .onAppear { feed.screenWide = wide; insets = geo.safeAreaInsets }
                 .onChange(of: geo.safeAreaInsets) { _, value in insets = value }
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    max(proxy.frame(in: .global).minY, proxy.safeAreaInsets.top)
+                } action: { contentTopInset = $0 }
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width >= DYDuoMetrics.legacyWideMin || (DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height)
                 } action: { supportsSidePanel = $0 }
@@ -3250,18 +3188,20 @@ struct DYClassicFeedScreen: View {
                             .id(cur.id)
                     }
                 }
+                .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
                 .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                 .clipped()
                 .dyDeskLight(layout.resident && !layout.sideBySide && authorTarget == nil)
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                 }
-                .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
+                .padding(.leading, layout.paneOrigin.x)
+                .padding(.top, layout.paneOrigin.y)
             }
         }
         .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in residentComments = resident }
-        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
         .animation(showSearch ? nil : .snappy, value: showComments)
         .animation(showSearch ? nil : .snappy, value: authorTarget?.id)
@@ -3322,8 +3262,17 @@ struct DYClassicFeedScreen: View {
         }
     }
 
-    /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
-    /// 要换一批推荐走「更多 → 刷新推荐」。
+    /// Only an explicit tap on the selected recommendation channel refreshes.
+    /// Swipes and programmatic channel selection preserve the current video.
+    private func tapChannel(_ target: DYTab) {
+        guard !channelSettling else { return }
+        if target == .recommend, tab == .recommend {
+            Task { await refreshRecommendations() }
+        } else {
+            selectTab(target)
+        }
+    }
+
     private func selectTab(_ target: DYTab) {
         guard tab != target, !channelSettling else { return }
         showComments = false
@@ -3432,18 +3381,8 @@ struct DYClassicFeedScreen: View {
         refreshing = true
         defer { refreshing = false; focusCurrent() }
         showToast("正在刷新推荐…")
-        while feed.loading {
-            do { try await Task.sleep(nanoseconds: 100_000_000) }
-            catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        let previous = Set(feed.items.map(\.id))
-        let replacement = DYFeedModel()
-        replacement.screenWide = feed.screenWide
-        await replacement.loadMore(bridge)
-        guard !Task.isCancelled else { return }
-        let fresh = replacement.items.filter { !previous.contains($0.id) }
-        guard !fresh.isEmpty else {
+        guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
+        guard !replacement.items.isEmpty else {
             showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
             DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
             return
@@ -3451,18 +3390,14 @@ struct DYClassicFeedScreen: View {
         showComments = false
         scrollEndTask?.cancel(); userScrolling = false
         preloader.clear()
-        feed.reset()
-        feed.items = fresh
-        feed.pool = replacement.pool
-        feed.liked.formUnion(replacement.liked)
-        feed.collected.formUnion(replacement.collected)
+        feed.replaceRecommendations(with: replacement)
         resume = [:]
-        currentID = fresh.first?.id
+        currentID = feed.items.first?.id
         scrollID = currentID
         lastFeedPull = Date()
         saveSession()
         showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(fresh.count) first=\(currentID ?? "-")")
+        DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
     }
 
     private func applyHashtagFilter() async {
@@ -3583,6 +3518,10 @@ struct DYClassicFeedScreen: View {
                 .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
                 // The adjacent pane owns the horizontal status bar in landscape.
                 .padding(.top, anchorsHeaderToWindow ? 8 : headerTopInset)
+                .background {
+                    LinearGradient(colors: [.black.opacity(0.42), .clear], startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea(edges: .top).allowsHitTesting(false)
+                }
                 .offset(y: anchorsHeaderToWindow ? -header.frame(in: .global).minY : 0)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("douyin.feed.header")
@@ -3627,7 +3566,7 @@ struct DYClassicFeedScreen: View {
     private var topBar: some View {
         HStack(spacing: 14) {
             ForEach(DYClassicChannelDrag.order, id: \.self) { channel in
-                Button { selectTab(channel) } label: {
+                Button { tapChannel(channel) } label: {
                     VStack(spacing: 3) {
                         Text(channel.title).font(.headline.weight(tab == channel ? .bold : .medium))
                             .foregroundStyle(.white.opacity(tab == channel ? 1 : 0.62))
@@ -3638,7 +3577,8 @@ struct DYClassicFeedScreen: View {
                     .accessibilityIdentifier("douyin.channel.\(channel == .follow ? "follow" : channel == .recommend ? "recommend" : "live")")
                 }
                 .buttonStyle(.plain)
-                .accessibilityValue(tab == channel ? "已选择" : "")
+                .accessibilityValue(channel == .recommend && refreshing ? "正在刷新" : tab == channel ? "已选择" : "")
+                .accessibilityHint(channel == .recommend && tab == .recommend ? "再次点击刷新推荐" : "切换频道")
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -3688,7 +3628,7 @@ struct DYClassicFeedScreen: View {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
                     if let e = feed.error {
                         Text(e).font(.footnote).multilineTextAlignment(.center)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                         HStack {
                             Button("重试") { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id } }
                                 .buttonStyle(.borderedProminent)
@@ -3696,9 +3636,9 @@ struct DYClassicFeedScreen: View {
                                 .buttonStyle(.bordered)
                         }
                     } else {
-                        ProgressView().tint(theme.media.onMedia.color(for: scheme))
+                        ProgressView().tint(.primary)
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                     }
                     DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
@@ -3986,12 +3926,15 @@ struct DYUpstreamVideoPage: View {
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
             danmakuLoaded = true
-            do {
-                danmaku = try await b.danmaku(item.id, durationMs: Int(item.duration * 1000))
-                DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) first=\(danmaku.first.map { "\($0.offset)s \($0.text)" } ?? "-")")
-            } catch {
-                DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
+            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
+            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
+                danmaku = DYDanmaku.merged(danmaku, chunk)
             }
+            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
+            if Task.isCancelled { danmakuLoaded = false }
+            let sorted = danmaku.map(\.offset).sorted()
+            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
+            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
         }
     }
 
@@ -4139,14 +4082,24 @@ struct DYUpstreamVideoPage: View {
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.backward")
-                        .font(.title2.weight(.medium))
-                        .foregroundStyle(fg)
-                        .frame(width: 50, height: 50)
+                // 简洁 / 极简：点开的视频（搜索、博主主页、我的、消息）没有底部进度条，
+                // 进度画在返回键外圈——跟首页模块入口同一颗进度环（同尺寸、同线宽、同颜色）。
+                ZStack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.backward")
+                            .font(.title2.weight(.medium))
+                            .foregroundStyle(fg)
+                            .frame(width: 50, height: 50)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .ddMediaGlassCircle()   // 亮色模式下视频上的玻璃控件仍保持暗色（PR #36）
+                    if chromeMode.usesRail {
+                        DDRailProgressRing(show: isCurrent, fg: fg)
+                    }
                 }
-                .buttonStyle(.plain)
-                .ddGlassCapsule()
+                .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
@@ -4171,7 +4124,7 @@ struct DYUpstreamVideoPage: View {
             }
             .padding(.vertical, 8)
             .frame(width: railWidth)
-            .ddGlassCapsule()
+            .ddMediaGlassCapsule()
             .frame(width: actionColumnWidth)
             moreMenu(fg)
         }
@@ -4268,7 +4221,7 @@ struct DYUpstreamVideoPage: View {
                 .foregroundStyle(fg)
                 .frame(width: 50, height: 50)
                 .contentShape(Circle())
-                .ddGlassCircle()
+                .ddMediaGlassCircle()
                 .frame(width: 54)
         }
         .menuStyle(.button)
@@ -4290,6 +4243,11 @@ struct DYClassicVideoPage: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.duoVisibleVideo) private var visibleVideo
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+    private var lowersActionRail: Bool {
+        systemBars && ((stacksLandscapeComments && !hingeClosed)
+            || (!DYDuoMetrics.isDuoHardware && vSize == .regular))
+    }
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var chromeSidePadding: CGFloat { 12 }
     private var videoWindow: UIWindow? {
@@ -4468,7 +4426,7 @@ struct DYClassicVideoPage: View {
                 let rail = actionCapsule(fg)
                     .modifier(DYRailReservedNudge())
                     .padding(.trailing, actionRailTrailingPadding)
-                if systemBars && stacksLandscapeComments && !hingeClosed {
+                if lowersActionRail {
                     GeometryReader { viewport in
                         let viewportBottom = viewport.frame(in: .global).maxY
                         let windowBottom = videoWindow?.bounds.maxY ?? viewportBottom
@@ -4514,12 +4472,15 @@ struct DYClassicVideoPage: View {
         .task(id: isCurrent) {
             guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
             danmakuLoaded = true
-            do {
-                danmaku = try await b.danmaku(item.id, durationMs: Int(item.duration * 1000))
-                DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) first=\(danmaku.first.map { "\($0.offset)s \($0.text)" } ?? "-")")
-            } catch {
-                DYLiveModel.log("DDDM id=\(item.id) error=\(error)")
+            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
+            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
+                danmaku = DYDanmaku.merged(danmaku, chunk)
             }
+            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
+            if Task.isCancelled { danmakuLoaded = false }
+            let sorted = danmaku.map(\.offset).sorted()
+            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
+            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
         }
     }
 
@@ -4645,6 +4606,7 @@ struct DYClassicVideoPage: View {
             .frame(width: railWidth)
             .padding(.vertical, 7)
             .glassEffect(.regular, in: .capsule)
+            .environment(\.colorScheme, .dark)
     }
 
     private func toolbarActions(_ fg: Color) -> DYVideoToolbarActions {
@@ -4991,8 +4953,11 @@ struct DYCommentPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.panel")
-        .background(GlassBackground())
-        .modifier(DYRailReservedNudge())
+        .padding(.trailing, fillsPane ? trailingInset : 0)
+        .background {
+            if fillsPane { Color.ddBackground } else { GlassBackground() }
+        }
+        .modifier(DYRailReservedNudge(disabled: fillsPane))
         .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
@@ -5091,7 +5056,7 @@ struct DYCommentPanel: View {
                 inputBar
             }
             .fixedSize(horizontal: false, vertical: true)
-            .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+            .background(fillsPane ? Color.ddBackground : .clear)
         }
     }
 
@@ -5631,7 +5596,7 @@ struct DYCommentImageViewer: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
+            Color.ddBackground.ignoresSafeArea()
             TabView(selection: $page) {
                 ForEach(Array(target.images.enumerated()), id: \.offset) { i, img in
                     CachedAsyncImage(url: URL(string: img.full)) { v in v.resizable().scaledToFit() }
@@ -5665,6 +5630,7 @@ private struct DYTopChromeFrameKey: PreferenceKey {
 #if DEBUG
 extension DYFeedModel {
     static var hashtagFixtures: [DYAweme] {
+        let grid = ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1"
         let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
         let video = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("search-playback-fixture.mp4")
@@ -5672,7 +5638,7 @@ extension DYFeedModel {
          ("hashtag-travel", "周末记录 #旅行"),
          ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
             DYAweme(id: id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
-                    cover: nil, images: [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
+                    cover: nil, images: grid ? ["data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%271%27 height=%271%27/%3E"] : [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
                     stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
                     userDigged: nil, isCollect: nil, publishedAt: 1,
                     hashtagNames: id == "hashtag-cat" ? ["猫咪", "旅行", "摄影", "美食", "科技", "自然", "城市漫步", "运动"] : nil)
@@ -5685,6 +5651,29 @@ extension DYFeedModel {
 
 @MainActor
 extension DYFeedModel {
+    /// Prepare separately so an empty, failed or cancelled request cannot erase playback.
+    /// Callers hold their refresh guard while waiting for existing prefetch work.
+    func prepareRefresh(_ bridge: DouyinBridge) async throws -> DYFeedModel {
+        while loading { try await Task.sleep(for: .milliseconds(100)) }
+        try Task.checkCancellation()
+        let previous = Set(items.map(\.id))
+        let replacement = DYFeedModel(defaults: defaults)
+        replacement.screenWide = screenWide
+        await replacement.loadMore(bridge)
+        try Task.checkCancellation()
+        replacement.items.removeAll { previous.contains($0.id) }
+        return replacement
+    }
+
+    func replaceRecommendations(with replacement: DYFeedModel) {
+        guard !replacement.items.isEmpty else { return }
+        reset()
+        items = replacement.items
+        pool = replacement.pool
+        liked.formUnion(replacement.liked)
+        collected.formUnion(replacement.collected)
+    }
+
     func toggleLike(_ id: String, force: Bool?, bridge: DouyinBridge) {
         let has = self.liked.contains(id)
         let want = force ?? !has

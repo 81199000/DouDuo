@@ -167,8 +167,9 @@ class LivePaneBoundsTests(unittest.TestCase):
     def test_room_page_keeps_ambient_out_of_the_control_stack(self):
         room = (ROOT / "DouDuo/DouyinLiveRoom.swift").read_text()
         page = room.split("private struct DYLiveRoomPage", 1)[1].split("// MARK: - live-close-placement", 1)[0]
-        background = page.split(".background {", 1)[1].split(".placed(in: interaction)", 1)[0]
+        background = page.split("if isCurrent, let axis = ambientAxis", 1)[1].split("if !isCurrent", 1)[0]
         self.assertIn("DouyinLiveAmbientBackground(", background)
+        self.assertIn("interactionSurface(", background)
         self.assertNotIn("VLCPlayerSurface(", page)
         self.assertNotIn("vlc.", page)
         field = (ROOT / "DouDuo/DouyinLiveAmbientBackground.swift").read_text()
