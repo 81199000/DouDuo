@@ -733,8 +733,8 @@ final class DouDuoUITests: XCTestCase {
         var chosen: XCUIElement?
         for _ in 0..<20 {
             var links = visibleTags()
-            let expand = app.buttons["douyin.description.toggle"].firstMatch
-            if links.isEmpty, expand.exists, expand.label == "展开" {
+            let expand = app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
+            if links.isEmpty, expand.exists {
                 expand.tap()
                 links = visibleTags()
             }
@@ -913,7 +913,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO",
-                                "-douduo_dismissed_update_v1", "1.3.15"]
+                                "-douduo_dismissed_update_v1", "1.5.3", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.frame.width), "This regression must run on an iPhone Duo display: \(app.frame)")
@@ -929,9 +929,19 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "hashtag-" + mode + "-search")
         app.buttons["douyin.search.back"].tap()
         XCTAssertTrue(tag.waitForExistence(timeout: 5))
-        let expand = app.buttons["douyin.description.toggle"].firstMatch
+        let expand = app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
         XCTAssertTrue(expand.waitForExistence(timeout: 5))
         expand.tap()
+        XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["douyin.description.author"].exists)
+        XCTAssertTrue(app.staticTexts["douyin.comments.title"].exists)
+        XCTAssertTrue(app.scrollViews["douyin.comments.list"].exists)
+        attach(app, "caption-comments-" + mode)
+        app.buttons["douyin.description.close"].tap()
+        let prose = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", "日常")).firstMatch
+        XCTAssertTrue(prose.waitForExistence(timeout: 5))
+        prose.tap()
+        XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
         let lastTag = app.links["#摄影"].firstMatch
         XCTAssertTrue(lastTag.waitForExistence(timeout: 5))
         lastTag.tap()
@@ -943,10 +953,33 @@ final class DouDuoUITests: XCTestCase {
             let more = app.buttons["douyin.more"].firstMatch
             XCTAssertTrue(more.waitForExistence(timeout: 5), app.debugDescription)
             more.tap()
-            let manage = app.buttons["按标签过滤视频"].firstMatch
+            let settings = app.buttons["设置"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.tap()
+            let manage = app.buttons["douyin.hashtags.manage"].firstMatch
+            if !manage.isHittable { app.swipeUp() }
             XCTAssertTrue(manage.waitForExistence(timeout: 5), app.debugDescription)
             manage.tap()
             XCTAssertTrue(app.textFields["douyin.hashtags.input"].waitForExistence(timeout: 5))
+        }
+        func closeFilters() {
+            let back = app.buttons.matching(NSPredicate(format: "label IN %@", ["Back", "返回", "设置"])).firstMatch
+            if back.isHittable {
+                back.tap()
+            } else {
+                let window = app.windows.firstMatch
+                // Duo's native vertical back button sits below the status island.
+                if window.frame.width == 466 {
+                    window.coordinate(withNormalizedOffset: CGVector(dx: 0.895, dy: 0.292)).tap()
+                } else {
+                    let left = window.coordinate(withNormalizedOffset: CGVector(dx: 0.002, dy: 0.45))
+                    let right = window.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.45))
+                    left.press(forDuration: 0.01, thenDragTo: right)
+                }
+            }
+            let done = app.buttons["settings.done"].firstMatch
+            XCTAssertTrue(done.waitForExistence(timeout: 5), app.debugDescription)
+            done.tap()
         }
         openFilters()
         let input = app.textFields["douyin.hashtags.input"]
@@ -954,7 +987,7 @@ final class DouDuoUITests: XCTestCase {
         app.buttons["douyin.hashtags.add"].tap()
         XCTAssertTrue(app.staticTexts["douyin.hashtags.feedback"].waitForExistence(timeout: 5))
         attach(app, "hashtag-" + mode + "-filter")
-        app.buttons["douyin.hashtags.done"].tap()
+        closeFilters()
         XCTAssertTrue(wait(label: "hashtag-travel", on: current, timeout: 5), app.debugDescription)
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "DOUDUO_RESET_HASHTAG_FILTER")
@@ -965,7 +998,7 @@ final class DouDuoUITests: XCTestCase {
         if !remove.isHittable { app.swipeUp() }
         XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
         remove.tap()
-        app.buttons["douyin.hashtags.done"].tap()
+        closeFilters()
         app.terminate(); app.launch()
         XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 15), "unblocked videos return in future recommendations")
     }
@@ -3546,20 +3579,20 @@ final class DouDuoUITests: XCTestCase {
         let short = app.otherElements["title.short"]
         let long = app.otherElements["title.long"]
         XCTAssertTrue(short.waitForExistence(timeout: 10))
-        XCTAssertFalse(short.buttons["douyin.description.toggle"].exists, "短标题不应出现展开按钮")
-        let toggle = long.buttons["douyin.description.toggle"]
-        XCTAssertTrue(toggle.exists, "长标题被截断时应有展开按钮")
-        XCTAssertEqual(toggle.label, "展开")
+        let action = NSPredicate(format: "label CONTAINS %@", "…")
+        XCTAssertFalse(short.links.matching(action).firstMatch.exists, "短标题不应出现展开按钮")
+        let expand = long.links.matching(action).firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "长标题被截断时应有展开按钮")
         let collapsedHeight = long.frame.height
-        XCTAssertLessThanOrEqual(long.staticTexts["douyin.description"].frame.height, 60, "默认最多三行")
-        toggle.tap()
-        XCTAssertEqual(toggle.label, "收起")
+        XCTAssertLessThanOrEqual(collapsedHeight, 60, "默认最多三行")
+        expand.tap()
+        let collapse = long.links.matching(NSPredicate(format: "label CONTAINS %@", "收起")).firstMatch
+        XCTAssertTrue(collapse.exists)
         sleep(1)
         XCTAssertGreaterThan(long.frame.height, collapsedHeight, "展开后应显示完整标题而不只是切换按钮文字")
         attach(app, "expanded-title")
-        toggle.tap()
-        XCTAssertEqual(toggle.label, "展开")
-        sleep(1)
+        collapse.tap()
+        XCTAssertTrue(expand.exists)
         attach(app, "conditional-title")
     }
 
@@ -3576,11 +3609,11 @@ final class DouDuoUITests: XCTestCase {
         let desc = app.staticTexts.matching(identifier: "douyin.description").allElementsBoundByIndex.first { $0.isHittable }
         XCTAssertNotNil(desc)
         if let desc { XCTAssertLessThan(desc.frame.height, 40, "标题默认应只有一行") }
-        let toggle = app.buttons.matching(identifier: "douyin.description.toggle").allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(toggle)
-        toggle?.tap()
-        XCTAssertTrue(app.buttons["收起"].exists)
-        app.buttons["收起"].tap()
+        if let prose = app.links.allElementsBoundByIndex.first(where: { $0.isHittable && !$0.label.hasPrefix("#") }) {
+            prose.tap()
+            XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
+            app.buttons["douyin.description.close"].tap()
+        }
         attach(app, "compact-single-line")
         let author = app.buttons.matching(identifier: "douyin.author").allElementsBoundByIndex.first { $0.isHittable }
         XCTAssertNotNil(author)

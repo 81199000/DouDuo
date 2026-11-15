@@ -88,6 +88,14 @@ enum DYVideoFit {
         return CGSize(width: container.height * aspect, height: container.height)
     }
 
+    /// Keep the pager and player at their original size while moving the rendered image.
+    static func commentPlacement(viewport: CGRect, fitted: CGSize, target: CGRect?) -> (scale: CGFloat, offset: CGSize) {
+        guard let target, fitted.width > 0, fitted.height > 0 else { return (1, .zero) }
+        let scale = min(1, target.width / fitted.width, target.height / fitted.height)
+        let centerY = target.minY + fitted.height * scale / 2
+        return (scale, CGSize(width: target.midX - viewport.midX, height: centerY - viewport.midY))
+    }
+
     /// VLC 先按等比 fit 画，再只在需要铺满时放大。Fit 的倍数是 1。
     static func vlcScale(fillWidth: Bool, videoAspect: Double, screenAspect: Double) -> CGFloat {
         guard videoAspect > 0, screenAspect > 0 else { return 1 }
