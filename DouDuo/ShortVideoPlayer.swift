@@ -485,7 +485,11 @@ struct PlayerPage: View {
             if player == nil {
                 // 动画帧里不建播放器：非当前页延迟到滑动结束后再建（抖音也是提前预渲染，不在滑动那一帧做）
                 if isActive { DYSwipeProbe.mark("setup-active(\(id.suffix(4)))"); setup() }
-                else {
+                else if let pre = preparedPlayer?() {
+                    // 预热池里已经有这条（数据已缓冲、首帧已解码）：立刻挂画面层，手指往上拖时下一条就是真画面。
+                    // 以前这里一律延后 0.35s，结果拖动中看到的下一条永远是黑的、「刚加载上」。
+                    setup(prepared: pre)
+                } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + DYPlaybackTelemetry.setupDelay) { [self] in
                         if player == nil { DYSwipeProbe.mark("setup-deferred(\(id.suffix(4)))"); setup() }
                     }
@@ -898,14 +902,15 @@ struct PlayerPage: View {
         seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted, useEngine: !cleanScreen && DDSeamlessController.engineWanted)
     }
 
-    private func setup() {
+    private func setup(prepared: AVPlayer? = nil) {
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_FORCE_VLC"] == "1" {
             if knownDuration > 0 { duration = knownDuration }
             startVLC(); return
         }
         #endif
-        let pre = preparedPlayer?()
+        let pre = prepared ?? preparedPlayer?()
+        DYLiveModel.log("DDSETUP \(id.suffix(6)) active=\(isActive) pre=\(pre != nil) status=\(pre?.currentItem?.status.rawValue ?? -1) buf=\(String(format: "%.1f", pre.map { DYPlaybackTelemetry.bufferedAhead($0) } ?? 0))s")
         #if DEBUG
         let preReady = pre?.currentItem?.status == .readyToPlay
         let preBuf = pre?.currentItem?.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
