@@ -2856,6 +2856,9 @@ struct DYClassicFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
+    @Environment(\.dyHingeClosed) private var hingeClosed
+    private var headerLeadingInset: CGFloat { sidePanelOpen ? 0 : insets.leading }
+    private var headerTrailingInset: CGFloat { sidePanelOpen ? 0 : insets.trailing }
     @State private var supportsSidePanel = false
     @State private var residentComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
@@ -3534,11 +3537,13 @@ struct DYClassicFeedScreen: View {
                     .allowsHitTesting(!(showSearch && searchIsSplit))
                     .accessibilityHidden(showSearch && searchIsSplit)
                 }
-                // 只有两侧按钮避让左右安全区（挖孔/圆角）；视频是全屏画幅，频道标题按整幅画面居中，
-                // 不能跟着单侧安全区一起偏。
-                .padding(.leading, sidePanelOpen ? 0 : insets.leading)
-                .padding(.trailing, sidePanelOpen ? 0 : insets.trailing)
+                .padding(.leading, headerLeadingInset)
+                .padding(.trailing, headerTrailingInset)
+                // 合屏外屏：状态栏竖排在一侧，左右安全区不对称，但视频是全屏画幅，标题按整屏居中，
+                // 否则看起来偏向另一侧。展开 / 半折 / 普通 iPhone 仍按避开安全区后的区域居中。
                 topBar
+                    .padding(.leading, hingeClosed ? 0 : headerLeadingInset)
+                    .padding(.trailing, hingeClosed ? 0 : headerTrailingInset)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
