@@ -39,6 +39,8 @@ final class DYPlaybackTelemetry {
         guard let p = player else { return }
         switch s {
         case .playing:
+            DYSwipeProbe.playing()
+            if startAt != nil { watchMove(base: base) }
             if let start = startAt {
                 startAt = nil
                 DYLiveModel.log("DDSTARTUP \(id) 起播=\(String(format: "%.2f", Date().timeIntervalSince(start)))s dur=\(Int(duration))")
@@ -58,6 +60,20 @@ final class DYPlaybackTelemetry {
             }
         default: break
         }
+    }
+
+    /// 画面真正往前走（currentTime 越过起点）才算「动起来」
+    private func watchMove(base: Double) {
+        guard let p = player else { return }
+        var n = 0
+        func poll() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+                guard let self, self.player === p else { return }
+                if p.currentTime().seconds > base + 0.01 { DYSwipeProbe.moved(); return }
+                n += 1; if n < 150 { poll() }
+            }
+        }
+        poll()
     }
 
     func end(reason: String = "leave") {

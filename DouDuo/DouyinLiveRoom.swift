@@ -33,6 +33,21 @@ extension DYLiveRoom {
     }
 }
 
+enum DDLogWriter {
+    static let queue = DispatchQueue(label: "douduo.log", qos: .utility)
+    nonisolated(unsafe) static let formatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
+    nonisolated(unsafe) private static var handle: FileHandle?
+    static func append(_ line: String) {
+        if handle == nil, let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let url = dir.appendingPathComponent("ddlog.txt")
+            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+            handle = try? FileHandle(forWritingTo: url)
+            handle?.seekToEndOfFile()
+        }
+        handle?.write(Data(line.utf8))
+    }
+}
+
 @MainActor
 final class DYLiveModel: ObservableObject {
     @Published var rooms: [DYLiveRoom] = []
@@ -158,14 +173,13 @@ final class DYLiveModel: ObservableObject {
         stop()
     }
 
+    /// 写日志不占主线程：时间戳在调用处取，落盘在后台串行队列（滑动起播那一帧不能做磁盘 IO）
     nonisolated static func log(_ s: String) {
-        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let url = dir.appendingPathComponent("ddlog.txt")
-        let df = DateFormatter(); df.dateFormat = "HH:mm:ss"
-        let line = df.string(from: Date()) + " " + s + "\n"
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-        } else { try? line.write(to: url, atomically: true, encoding: .utf8) }
+        let now = Date()
+        DDLogWriter.queue.async {
+            let line = DDLogWriter.formatter.string(from: now) + " " + s + "\n"
+            DDLogWriter.append(line)
+        }
     }
 
     init() {
