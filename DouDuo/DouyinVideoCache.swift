@@ -141,6 +141,7 @@ actor DYVideoCache {
         let target = current ?? ahead.first
         guard let target else { return }
         if jobID == target.id, job != nil { return }
+        if job != nil { DYLiveModel.log("DDCACHE refocus \(jobID ?? "-") -> \(target.id)") }
         job?.cancel()
         job = nil
         jobID = target.id
