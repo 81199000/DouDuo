@@ -1073,8 +1073,9 @@ final class DYPreloader {
         let n = DYVideoCache.limit
         return min(max(n, 3), 10)
     }
-    /// 只有最近的几条才做「预解码首帧 + preroll」，更远的只备播放器，省内存和 CPU
-    static let prerollAhead = 3
+    /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
+    /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次
+    static let prerollAhead = 5
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -1110,10 +1111,14 @@ final class DYPreloader {
             p.automaticallyWaitsToMinimizeStalling = true
             players[a.id] = p
             DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
-            // ready 后 preroll：把开头的数据和首帧解码好（只给最近的几条做）
-            if (window.firstIndex(where: { $0.id == a.id }) ?? 0) < Self.prerollAhead {
-                obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
-                    guard it.status == .readyToPlay else { return }
+            // 数据一到位就登记「可播」——分页器据此放行（这里是预热池，跟页面挂没挂载无关，
+            // 所以窗口内的条目在滑到之前就已经是 ready 了）
+            let nearIndex = window.firstIndex(where: { $0.id == a.id }) ?? 0
+            obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
+                guard it.status == .readyToPlay else { return }
+                DYReadiness.mark(a.id)
+                // 最近的几条再补一次 preroll，把首帧解码出来，滑过去就是真画面
+                if nearIndex < Self.prerollAhead {
                     DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
                 }
             }
@@ -1136,6 +1141,8 @@ final class DYPreloader {
     }
 
     private func release(_ id: String, _ p: AVPlayer) {
+        // 播放器都被释放了，就别再说它「可播」（否则分页器会放行到一条其实没准备好的）
+        if !handedOut.contains(id) { DYReadiness.clear(id) }
         obs.removeValue(forKey: id)?.invalidate()
         DDAudioPreloadPool.shared.discard(id: id)
         p.pause()
