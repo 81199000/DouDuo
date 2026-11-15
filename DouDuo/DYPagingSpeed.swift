@@ -92,6 +92,11 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private let didSettle: (String) -> Void
     private let willSettle: (String) -> Void
     private var targetID: String?
+    /// 收尾动画期间「应该在的位置」；SwiftUI 的 scrollPosition 在抬手切当前页时会把列表直接跳到终点，
+    /// 下一帧动画又拉回中途 → 肉眼看到「往回跳一帧」。动画期间外部写入一律在同一帧内改回来。
+    private var expected: CGPoint?
+    private var writing = false
+    private var jumpFixes = 0
     /// 每条被拦次数（同一条拦太多就放行，避免永久卡住）
     private var blockedCount: [String: Int] = [:]
     private var target: CGPoint?
@@ -122,6 +127,15 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         super.responds(to: selector) || original?.responds(to: selector) == true
     }
     override func forwardingTarget(for selector: Selector!) -> Any? { original }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        original?.scrollViewDidScroll?(scrollView)
+        guard link != nil, !writing, let e = expected, abs(scrollView.contentOffset.y - e.y) > 0.5 else { return }
+        writing = true
+        scrollView.setContentOffset(e, animated: false)
+        writing = false
+        jumpFixes += 1
+    }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         stop()
@@ -172,13 +186,8 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         guard target != nil else { return }
-        // 播放提前：抬手即切到目标页（暂停在第一帧的播放器立刻开播），收尾动画与起播并行
-        if let id = targetID, id != currentID() {
-            DYSwipeProbe.lift(); DYSwipeProbe.mark("settle(\(id.suffix(4)))"); willSettle(id)
-        } else {
-            DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
-        }
         start = scrollView.contentOffset; startTime = CACurrentMediaTime()
+        expected = start; jumpFixes = 0
         // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
         if let t = target {
             let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
@@ -186,6 +195,13 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)
+        // 播放提前：抬手即切到目标页（暂停在第一帧的播放器立刻开播），收尾动画与起播并行。
+        // 放在动画启动之后：切当前页会让 SwiftUI 把列表直接跳到终点，此时动画已在跑，didScroll 能当帧改回
+        if let id = targetID, id != currentID() {
+            DYSwipeProbe.lift(); DYSwipeProbe.mark("settle(\(id.suffix(4)))"); willSettle(id)
+        } else {
+            DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
+        }
     }
     @objc private func panChanged(_ gesture: UIPanGestureRecognizer) {
         if gesture.state == .cancelled || gesture.state == .failed {
@@ -202,9 +218,14 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                              y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top)
         let fraction = min(1, max(0, (CACurrentMediaTime() - startTime) / animationDuration))
         let progress = 1 - pow(1 - fraction, 3)
-        scroll.setContentOffset(CGPoint(x: start.x + (target.x - start.x) * progress,
-                                      y: start.y + (target.y - start.y) * progress), animated: false)
+        let p = CGPoint(x: start.x + (target.x - start.x) * progress,
+                        y: start.y + (target.y - start.y) * progress)
+        expected = p
+        writing = true
+        scroll.setContentOffset(p, animated: false)
+        writing = false
         if fraction >= 1 {
+            if jumpFixes > 0 { DYLiveModel.log("DDJUMPFIX 收尾期间拦下外部跳位 \(jumpFixes) 次") }
             stop()
             // SwiftUI may suppress its final scrollPosition write when there is no native deceleration.
             #if DEBUG
@@ -223,7 +244,7 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                 y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top), animated: false)
         }
     }
-    private func stop() { link?.invalidate(); link = nil; target = nil; targetID = nil }
+    private func stop() { link?.invalidate(); link = nil; target = nil; targetID = nil; expected = nil }
     func detach() {
         stop()
         boundsObservation?.invalidate(); boundsObservation = nil
