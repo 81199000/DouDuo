@@ -6,6 +6,7 @@
 // - 推荐流：GET /aweme/v1/web/tab/feed/（网页首页「推荐」竖屏流，不用精选 module/feed）；
 //   播放用 /aweme/v1/play/ 链接（302 到 CDN mp4，不需要 cookie，系统播放器直接播）。
 // - 评论：GET /aweme/v1/web/comment/list/。
+import QuartzCore
 import SwiftUI
 import Combine
 import WebKit
@@ -1557,9 +1558,18 @@ struct DYUpstreamFeedScreen: View {
             // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
             scrollID = new
+            // 滑动起播那一帧的主线程耗时：超 16ms 就是肉眼可见的顿挫，分段记下来定位
+            let t0 = CACurrentMediaTime()
+            DYSwipeProbe.mark("curID(\(new?.suffix(4) ?? "-"))")
             focusCurrent()
+            let t1 = CACurrentMediaTime()
             saveSession()
+            let t2 = CACurrentMediaTime()
             reportWatch(old: old, new: new)
+            let t3 = CACurrentMediaTime()
+            if t3 - t0 > 0.016 {
+                DYLiveModel.log("DDSWIPECOST focus=\(Int((t1-t0)*1000))ms save=\(Int((t2-t1)*1000))ms watch=\(Int((t3-t2)*1000))ms n=\(feed.items.count)")
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
@@ -1888,6 +1898,7 @@ struct DYUpstreamFeedScreen: View {
         #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
+        DYFirstFrame.prefetch(feed.items, from: i, ahead: 3)
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
         let currentItem = feed.items[i]
@@ -2871,9 +2882,18 @@ struct DYClassicFeedScreen: View {
             // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
             scrollID = new
+            // 滑动起播那一帧的主线程耗时：超 16ms 就是肉眼可见的顿挫，分段记下来定位
+            let t0 = CACurrentMediaTime()
+            DYSwipeProbe.mark("curID(\(new?.suffix(4) ?? "-"))")
             focusCurrent()
+            let t1 = CACurrentMediaTime()
             saveSession()
+            let t2 = CACurrentMediaTime()
             reportWatch(old: old, new: new)
+            let t3 = CACurrentMediaTime()
+            if t3 - t0 > 0.016 {
+                DYLiveModel.log("DDSWIPECOST focus=\(Int((t1-t0)*1000))ms save=\(Int((t2-t1)*1000))ms watch=\(Int((t3-t2)*1000))ms n=\(feed.items.count)")
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
@@ -3317,6 +3337,7 @@ struct DYClassicFeedScreen: View {
         #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i)
+        DYFirstFrame.prefetch(feed.items, from: i, ahead: 3)
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
         let currentItem = feed.items[i]

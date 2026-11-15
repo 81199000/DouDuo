@@ -31,11 +31,24 @@ enum DYSwipeProbe {
     static func playing() { if playingAt == 0 { playingAt = CACurrentMediaTime() } }
     static func moved() { finish(moved: CACurrentMediaTime()) }
 
+    /// 阶段打点：长帧发生时，把这帧前后 150ms 内做过什么事打出来，定位主线程被谁占住
+    private static var marks: [(t: CFTimeInterval, s: String)] = []
+    static func mark(_ text: String) {
+        let now = CACurrentMediaTime()
+        marks.append((now, text))
+        if marks.count > 200 { marks.removeFirst(100) }
+    }
+
     fileprivate static func frame(_ ts: CFTimeInterval) {
         if lastFrame > 0 {
             let gap = ts - lastFrame
             maxGap = max(maxGap, gap)
-            if gap > 0.034 { drops += 1 }
+            if gap > 0.034 {
+                drops += 1
+                let from = ts - gap - 0.02
+                let near = marks.filter { $0.t >= from && $0.t <= ts }.map { "\(Int(($0.t - from) * 1000)):\($0.s)" }
+                DYLiveModel.log("DDLONGFRAME gap=\(Int(gap * 1000))ms marks=\(near.joined(separator: " | "))")
+            }
         }
         lastFrame = ts
     }

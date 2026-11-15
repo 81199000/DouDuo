@@ -492,7 +492,15 @@ struct PlayerPage: View {
         .clipped()
         .sensoryFeedback(.impact(weight: .light), trigger: rateBoost) { old, new in !old && new }
         .onAppear {
-            if player == nil { setup() }
+            if player == nil {
+                // 动画帧里不建播放器：非当前页延迟到滑动结束后再建（抖音也是提前预渲染，不在滑动那一帧做）
+                if isActive { DYSwipeProbe.mark("setup-active(\(id.suffix(4)))"); setup() }
+                else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + DYPlaybackTelemetry.setupDelay) { [self] in
+                        if player == nil { DYSwipeProbe.mark("setup-deferred(\(id.suffix(4)))"); setup() }
+                    }
+                }
+            }
             #if DEBUG
             DYSearchPlaybackProbe.register(playbackID, id: id) {
                 ["id": id, "instance": playbackID.uuidString,
@@ -650,7 +658,16 @@ struct PlayerPage: View {
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
             // 画面层还没出第一帧时一律先铺封面（本地缓存的也一样），滑动途中不会看到纯黑页；出帧即撤
-            if !firstFrame, let posterURL {
+            if !firstFrame, let frameImage = DYFirstFrame.cached(id) {
+                // 自己解出来的首帧：比例和真画面一致、清晰，出画面时不跳
+                GeometryReader { g in
+                    Image(uiImage: frameImage).resizable().scaledToFill()
+                        .frame(width: g.size.width, height: g.size.height)
+                        .clipped()
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            } else if !firstFrame, let posterURL {
                 // 按视频真实宽高比摆封面（和画面层同一铺满规则），出帧时位置尺寸完全一致，不跳
                 GeometryReader { g in
                     let screen = g.size.width / max(g.size.height, 1)
@@ -666,6 +683,8 @@ struct PlayerPage: View {
                     } placeholder: { Color.clear }
                     .frame(width: box.width, height: box.height)
                     .clipped()
+                    .blur(radius: 18)
+                    .opacity(0.85)
                     .position(x: g.size.width / 2, y: g.size.height / 2)
                 }
                     .ignoresSafeArea()
@@ -963,7 +982,10 @@ struct PlayerPage: View {
             try? AVAudioSession.sharedInstance().setActive(true)
             p.rate = playRate
         }
-        if shouldPlay { watchdog(p); telemetry.begin(p, id: id, duration: knownDuration) }
+        if shouldPlay {
+            DYSwipeProbe.active(id)
+            watchdog(p); telemetry.begin(p, id: id, duration: knownDuration)
+        }
         else { primeFirstFrame(p) }
         #if DEBUG
         if isActive {
