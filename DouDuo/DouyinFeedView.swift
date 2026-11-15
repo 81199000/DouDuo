@@ -5396,16 +5396,9 @@ extension DYFeedModel {
         // 启动先清掉上次看过的缓存，避免重启后又被当成「待看」塞回推荐里
         Task { await DYVideoCache.shared.purgeWatched() }
         var result: (currentID: String?, positions: [String: Double])?
-        if items.isEmpty, let saved = DYFeedSession.load() {
-            // 只恢复「上次正在看的那一条」及其进度，其余整列丢弃：
-            // 以前整列恢复，重启后会先刷一堆上次已经看过的视频（老板反馈的问题）。划走之后就是新推荐。
-            if let cur = saved.items.first(where: { $0.id == saved.currentID }) {
-                items = allowedRecommendations([cur])
-                result = (cur.id, saved.positions)
-            }
-            markAccountState(saved.items)
-            DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0) 只恢复当前条")
-        }
+        // 启动不再恢复上次会话的条目：抖音播放地址带签名，过一段时间就 403，
+        // 拿旧条目起播会一直等到超时（实测有条等了 56.93 秒）。
+        // 启动先用「已缓存、还没看过」的本地视频秒开，随后由 loadMore 拉新推荐。
         if items.isEmpty {
             let cached = DYVideoCache.pendingSnapshot()
             if !cached.isEmpty {
