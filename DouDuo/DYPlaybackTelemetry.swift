@@ -27,7 +27,8 @@ final class DYPlaybackTelemetry {
         let t0 = Date(); startAt = t0
         let base = p.currentTime().seconds
         DYLiveModel.log("DDSWIPEIN \(id) dur=\(Int(duration)) ready=\(ready) buf=\(String(format: "%.1f", buf))s local=\(local)")
-        obs = p.observe(\.timeControlStatus, options: [.new]) { [weak self] pl, _ in
+        // .initial：begin 时播放器可能已经在 playing（上一帧就 rate=1 了），只听 .new 会漏掉这次起播
+        obs = p.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] pl, _ in
             let status = pl.timeControlStatus
             let pos = pl.currentTime().seconds
             Task { @MainActor in self?.onStatus(status, pos: pos, base: base, t0: t0) }
