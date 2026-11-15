@@ -480,7 +480,7 @@ struct DYInlineCommentOverlay: ViewModifier {
                             .accessibilityHidden(true)
                         DYEdgePanelSurface(width: placement.panelWidth, height: placement.panelHeight,
                                            onClose: onClose) {
-                            DYCommentSheet(bridge: bridge, aweme: aweme, onClose: onClose, focus: focus)
+                            DYCommentPanel(bridge: bridge, aweme: aweme, onClose: onClose, focus: focus)
                                 .id(aweme.id)
                         }
                         .offset(y: placement.panelTop)
@@ -526,7 +526,7 @@ struct DYCommentBarPolicy: ViewModifier {
         if #available(iOS 27.1, *) {
             content
                 .toolbarVerticalBehavior(usesHorizontalStatus || hidesStatus ? .disabled : .automatic)
-                .toolbarVisibility(hidesStatus ? .hidden : .visible, for: .statusBar)
+                .toolbarVisibility(hidesStatus ? .hidden : .automatic, for: .statusBar)
         } else {
             content
         }
