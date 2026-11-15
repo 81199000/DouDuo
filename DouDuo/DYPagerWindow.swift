@@ -53,31 +53,12 @@ struct DYPagerStack<Page: View>: View {
     static var shiftDelay: TimeInterval { 0.45 }
 
     var body: some View {
-        let current = DYPagerWindow.currentIndex(items, currentID)
-        let center = centerID.flatMap { id in items.firstIndex { $0.id == id } } ?? current
-        VStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                Group {
-                    // 立即按当前页扩窗（下一条要提前挂载、提前解帧）；center 滞后，只用于「晚一点再拆旧页」，
-                    // 拆页面 = 销毁播放器，和起播动画挤在同一帧也会顿一下
-                    if i == current || DYPagerWindow.mounts(i, current: current) || DYPagerWindow.mounts(i, current: center) {
-                        let _ = DYSwipeProbe.mark("mount(\(i))")
-                        page(item)
-                    } else {
-                        DYPagerPlaceholder(item: item, showsCover: DYPagerWindow.showsCover(i, current: current))
-                    }
-                }
-                .containerRelativeFrame(pageAxes)
-                .id(item.id)
-            }
-        }
-        .onAppear { if centerID == nil { centerID = currentID } }
-        .onChange(of: currentID) { _, id in
-            shiftToken += 1
-            let token = shiftToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.shiftDelay) {
-                guard token == shiftToken else { return }   // 连划时只在最后停下的那条平移一次
-                centerID = id
+        // 惰性分页：每帧只重建可见的 1–2 页（之前非惰性版本每帧把已挂载页全部重建，实测主线程一帧掉到 35–45ms）
+        LazyVStack(spacing: 0) {
+            ForEach(items) { item in
+                page(item)
+                    .containerRelativeFrame(pageAxes)
+                    .id(item.id)
             }
         }
     }
