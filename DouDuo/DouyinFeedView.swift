@@ -2662,13 +2662,18 @@ struct DYClassicChannelDrag: Equatable {
         return nil
     }
 
-    /// 位移或预测落点过半才切页。预测落点用来接快速轻扫。
+    /// 松手切页要拖动的最远距离（pt）。手指要滑多远是手的尺度，不该跟着屏幕变宽：
+    /// 以前按半屏算，折叠屏外屏（约 466pt 宽）要 233pt，展开内屏（约 950pt 宽）就要 475pt，翻了一倍。
+    /// 220pt ≈ 外屏 / Pro Max 竖屏的半屏，窄屏仍按半屏。
+    static let maxCommitDistance: CGFloat = 220
+
+    /// 位移或预测落点过半屏（宽屏上限 maxCommitDistance）才切页。预测落点用来接快速轻扫。
     static func commits(translation: CGFloat, predicted: CGFloat, width: CGFloat) -> Bool {
-        let width = max(width, 1)
-        return abs(translation) / width >= 0.5 || abs(predicted) / width >= 0.5
+        let threshold = min(max(width, 1) * 0.5, maxCommitDistance)
+        return abs(translation) >= threshold || abs(predicted) >= threshold
     }
 
-    /// 推荐页右缘的左滑过半才打开作者。没过半或被取消时保持原页。
+    /// 推荐页右缘的左滑达到切页距离（同 commits）才打开作者。没达到或被取消时保持原页。
     static func opensAuthor(authorEdge: Bool, translation: CGFloat, predicted: CGFloat, width: CGFloat, cancelled: Bool) -> Bool {
         !cancelled && authorEdge && translation < 0 && commits(translation: translation, predicted: predicted, width: width)
     }
