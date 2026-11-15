@@ -285,7 +285,8 @@ print("PASS 70% portrait interleave; per-orientation order kept; relaxed fallbac
             source = Path(folder) / "Policy.swift"
             hashtags = (ROOT / "DouDuo/DYHashtag.swift").read_text()
             filters = (ROOT / "DouDuo/DYHashtagFilter.swift").read_text()
-            source.write_text(adapters + hashtags + filters + model + clamp + checks)
+            fit = (ROOT / "DouDuo/DYVideoFit.swift").read_text()
+            source.write_text(fit + adapters + hashtags + filters + model + clamp + checks)
             result = subprocess.run(["swift", str(source)], text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         print(result.stdout.strip())

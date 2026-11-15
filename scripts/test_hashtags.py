@@ -117,6 +117,7 @@ private extension Double {
             test = d / 'Verify.swift'
             test.write_text('import Foundation\nimport SwiftUI\nimport Combine\n' + model + stubs + feed + harness)
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(d/'modules'),
+                str(ROOT/'DouDuo/DYVideoFit.swift'),
                 str(ROOT/'DouDuo/DYHashtag.swift'), str(ROOT/'DouDuo/DYHashtagFilter.swift'),
                 str(test), '-o', str(d/'verify')], check=True)
             subprocess.run([str(d/'verify')], check=True)

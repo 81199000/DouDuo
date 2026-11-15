@@ -62,8 +62,7 @@ final class VLCPlayerUIView: UIView {
         // 超出屏幕部分看不见（居中缩放，裁切对称）。
         let video = vs.width / vs.height, screen = bounds.width / bounds.height
         // 只在视频和屏幕同向时放大：竖屏看竖屏铺满宽度、横屏看横屏铺满高度；竖屏看横屏保持原样
-        let sameOrientation = (video < 1) == (screen < 1)
-        let s = (fillWidth && sameOrientation) ? max(screen / video, video / screen) : 1
+        let s = DYVideoFit.vlcScale(fillWidth: fillWidth, videoAspect: video, screenAspect: screen)
         let t = CATransform3DMakeScale(s, s, 1)
         if !CATransform3DEqualToTransform(layer.transform, t) { layer.transform = t }
     }
