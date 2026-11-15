@@ -4733,6 +4733,9 @@ struct DYCommentPanel: View {
     @Environment(\.dyOpenSearch) private var openSearch
     @State private var listAtTop = true
     @State private var bottomSafeArea = DYDuoMetrics.windowBottomInset
+    /// 评论区位置记忆：当前屏幕最上面那条一级评论（关掉再开时滚回这里）
+    @State private var topVisibleID: String?
+    @State private var restoredFromMemory = false
     @FocusState private var inputFocused: Bool
     /// 设置里的开关：点评论/名字回复时是否自动弹出键盘（关掉后只进入「回复 @某人」状态，点输入框才弹）
     @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
@@ -4794,9 +4797,12 @@ struct DYCommentPanel: View {
                         Text("还没有评论").font(.footnote).foregroundStyle(.themeTextSecondary).frame(maxWidth: .infinity)
                     }
                 }
+                .scrollTargetLayout()   // 评论位置记忆要知道哪条在屏幕最上面
                 .padding(16)
             }
             .accessibilityIdentifier("douyin.comments.list")
+            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID))
+            .onAppear { restoreCommentPosition(proxy) }
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
@@ -4834,6 +4840,7 @@ struct DYCommentPanel: View {
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
+        .onDisappear { saveCommentPosition() }
     }
 
     private var classicBody: some View {
@@ -4910,12 +4917,15 @@ struct DYCommentPanel: View {
                         Text("还没有评论").font(.footnote).foregroundStyle(.themeTextSecondary).frame(maxWidth: .infinity)
                     }
                 }
+                .scrollTargetLayout()   // 评论位置记忆要知道哪条在屏幕最上面
                 .padding(16)
             }
             .clipped()
             .modifier(DYScrollTopObserver(atTop: $listAtTop))
             .modifier(DYPanelDismissGesture(isAtTop: listAtTop, allowsSwipeRight: true, onClose: onClose))
             .accessibilityIdentifier("douyin.comments.list")
+            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID))
+            .onAppear { restoreCommentPosition(proxy) }
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
@@ -4942,6 +4952,23 @@ struct DYCommentPanel: View {
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
+        .onDisappear { saveCommentPosition() }
+    }
+
+    /// 关掉评论区：把已加载的评论、楼中楼和当前位置存下，同一条视频再打开时原样恢复
+    private func saveCommentPosition() {
+        guard focus == nil, !items.isEmpty else { return }
+        DYCommentMemory.shared.put(aweme.id, .init(
+            items: items, cursor: cursor, hasMore: hasMore, total: total,
+            replies: replies, replyCursor: replyCursor, replyMore: replyMore,
+            digged: digged, diggShown: diggShown, topID: topVisibleID))
+        DYLiveModel.log("DDCOMMENTMEM save aweme=\(aweme.id.suffix(6)) n=\(items.count) top=\(topVisibleID?.suffix(6) ?? "-")")
+    }
+
+    /// 打开评论区：有记忆就滚回上次看到的那条（不带动画，打开即在原位）
+    private func restoreCommentPosition(_ proxy: ScrollViewProxy) {
+        guard restoredFromMemory, let id = topVisibleID, items.contains(where: { $0.id == id }) else { return }
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
 
     private func searchRelated(_ word: String) {
@@ -5305,6 +5332,16 @@ struct DYCommentPanel: View {
     }
 
     private func load() async {
+        if items.isEmpty, focus == nil, !restoredFromMemory, let m = DYCommentMemory.shared.take(aweme.id) {
+            // 关掉再开：直接用上次加载好的评论和楼中楼，不重新拉
+            restoredFromMemory = true
+            items = m.items; cursor = m.cursor; hasMore = m.hasMore; total = m.total
+            replies = m.replies; replyCursor = m.replyCursor; replyMore = m.replyMore
+            digged = m.digged; diggShown = m.diggShown
+            topVisibleID = m.topID
+            DYLiveModel.log("DDCOMMENTMEM restore aweme=\(aweme.id.suffix(6)) n=\(m.items.count) top=\(m.topID?.suffix(6) ?? "-")")
+            return
+        }
         guard !loading, hasMore else { return }
         loading = true
         defer { loading = false }
@@ -5589,5 +5626,47 @@ private struct DYFitCornerGlyph: Shape {
             p.move(to: CGPoint(x: b - leg, y: b)); p.addLine(to: CGPoint(x: b, y: b)); p.addLine(to: CGPoint(x: b, y: b - leg))
         }
         return p
+    }
+}
+
+
+/// 评论区位置记忆（内存里，按视频 id，最多记 20 条视频）。
+/// 关掉评论区再打开：不重新加载，评论、展开的楼中楼、点赞状态原样恢复，并滚回上次看到的那条。
+@MainActor
+final class DYCommentMemory {
+    static let shared = DYCommentMemory()
+    struct Entry {
+        var items: [DYComment]; var cursor: Int; var hasMore: Bool; var total: Int
+        var replies: [String: [DYComment]]; var replyCursor: [String: Int]; var replyMore: [String: Bool]
+        var digged: Set<String>; var diggShown: [String: Int]
+        var topID: String?
+    }
+    private var store: [String: Entry] = [:]
+    private var order: [String] = []
+    private let limit = 20
+
+    func put(_ id: String, _ e: Entry) {
+        store[id] = e
+        order.removeAll { $0 == id }; order.append(id)
+        while order.count > limit { store[order.removeFirst()] = nil }
+    }
+    /// 取出不删：同一条视频反复开关都能恢复
+    func take(_ id: String) -> Entry? { store[id] }
+}
+
+/// 跟踪评论列表里「当前最上面那条」一级评论
+struct DYCommentTopTracker: ViewModifier {
+    let ids: [String]
+    @Binding var top: String?
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { visible in
+                // 可见集合按列表顺序取第一个，就是屏幕最上面那条
+                let set = Set(visible)
+                if let first = ids.first(where: { set.contains($0) }) { top = first }
+            }
+        } else {
+            content
+        }
     }
 }
