@@ -18,7 +18,31 @@ console.log(JSON.stringify(out));
     p = subprocess.run(['node', '-e', script, str(SOURCE), str(FIXTURE)], capture_output=True, text=True, check=True)
     return json.loads(p.stdout)
 
+def map_one(a):
+    script = r'''
+const fs=require('fs'),vm=require('vm');
+const s=fs.readFileSync(process.argv[1],'utf8');
+const js=s.match(/static let requestJS = #"""\n([\s\S]*?)\n\s*"""#/)[1];
+const a=JSON.parse(process.argv[2]);
+console.log(JSON.stringify(vm.runInNewContext(js+'\nmapA(a)',{a,URLSearchParams})));
+'''
+    p = subprocess.run(['node', '-e', script, str(SOURCE), json.dumps(a)], capture_output=True, text=True, check=True)
+    return json.loads(p.stdout)
+
+
 class MetadataTests(unittest.TestCase):
+    def test_image_post_carries_background_music_url(self):
+        """图集作品必须带出 music.play_url，否则图集没背景音乐（老板反馈过）。"""
+        a = {"aweme_id": "1", "desc": "图集", "images": [{"url_list": ["https://p3.douyinpic.com/a.jpg"]}],
+             "music": {"title": "BGM", "play_url": {"url_list": ["https://sf.douyinstatic.com/m.mp3"]}},
+             "statistics": {}, "author": {"nickname": "n"}, "video": {}}
+        m = map_one(a)
+        self.assertEqual(m.get('musicURL'), 'https://sf.douyinstatic.com/m.mp3')
+        self.assertEqual(m.get('music'), 'BGM')
+        # 没有音乐地址的作品不能凭空造一个
+        a2 = dict(a); a2['music'] = {"title": "无地址"}
+        self.assertIsNone(map_one(a2).get('musicURL'))
+
     def test_mapper_preserves_real_metadata_and_does_not_infer_from_false(self):
         raw = json.loads(FIXTURE.read_text())['samples']
         mapped = mapped_samples()
