@@ -3727,11 +3727,10 @@ struct DYUpstreamVideoPage: View {
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
-                // 长视频只预存了第一段：直接从这半截起播（moov 在文件头，可直接播），
-                // 播到段尾由播放器无缝接到在线流；播起来 10 秒后后台把剩下的补齐
-                let stagedHead = DYVideoCache.headFile(item.id)
-                let headSeam = stagedHead != nil ? DYVideoCache.headPlayableSeconds(item.id) : nil
-                let url = stagedHead ?? DYVideoCache.localURL(item.id) ?? remote
+                // 注意：不要拿「预存的第一段」起播——半截 MP4 的样本表指向文件尾，
+                // AVFoundation 会直接报 -11828（实测长横屏视频因此黑屏 14–28 秒）。
+                // 长视频：整条缓存好了本地播，没缓存好就走重定向地址流播（1–2 秒起播）。
+                let url = DYVideoCache.localURL(item.id) ?? remote
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
@@ -3745,13 +3744,13 @@ struct DYUpstreamVideoPage: View {
                                     },
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     danmaku: danmakuOn ? danmaku : [],
-                                    altURL: item.playAlt.flatMap(URL.init(string:)),
+                                    altURL: nil,
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
-                                    headEndSeconds: headSeam,
-                                    continuationURL: stagedHead != nil ? remote : nil,
+                                    headEndSeconds: nil,
+                                    continuationURL: nil,
                                     boost: boost)
             } else {
                 TabView {
@@ -4233,11 +4232,10 @@ struct DYClassicVideoPage: View {
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
-                // 长视频只预存了第一段：直接从这半截起播（moov 在文件头，可直接播），
-                // 播到段尾由播放器无缝接到在线流；播起来 10 秒后后台把剩下的补齐
-                let stagedHead = DYVideoCache.headFile(item.id)
-                let headSeam = stagedHead != nil ? DYVideoCache.headPlayableSeconds(item.id) : nil
-                let url = stagedHead ?? DYVideoCache.localURL(item.id) ?? remote
+                // 注意：不要拿「预存的第一段」起播——半截 MP4 的样本表指向文件尾，
+                // AVFoundation 会直接报 -11828（实测长横屏视频因此黑屏 14–28 秒）。
+                // 长视频：整条缓存好了本地播，没缓存好就走重定向地址流播（1–2 秒起播）。
+                let url = DYVideoCache.localURL(item.id) ?? remote
                 // 复用播放器：左右切换作者/关注、双击点赞、分区长按、竖滑切视频、底部拖动进度及 VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: mediaBottomInset,
@@ -4252,13 +4250,13 @@ struct DYClassicVideoPage: View {
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? danmaku : [],
-                                    altURL: item.playAlt.flatMap(URL.init(string:)),
+                                    altURL: nil,
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
-                                    headEndSeconds: headSeam,
-                                    continuationURL: stagedHead != nil ? remote : nil,
+                                    headEndSeconds: nil,
+                                    continuationURL: nil,
                                     onSwipeLeft: onChannelDrag == nil && !cleanScreen ? { (onNavigateLeft ?? onAuthor)() } : nil,
                                     onSwipeRight: onChannelDrag == nil && !cleanScreen ? { onShowFollowing?() } : nil,
                                     onContextMenu: { if !cleanScreen { showOptions = true } },
