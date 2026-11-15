@@ -370,6 +370,7 @@ struct PlayerPage: View {
     @State private var nextPrimedAt: Double = 0
     @State private var nextOpacity: Double = 0
     @State private var stalledTicks = 0
+    @State private var telemetry = DYPlaybackTelemetry()
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
     @State private var playbackID = UUID()
@@ -510,6 +511,7 @@ struct PlayerPage: View {
             DYSearchPlaybackProbe.unregister(playbackID, id: id)
             #endif
             DDPlayback.shared.unregister(playbackID)
+            telemetry.end()
             teardown()
         }
         // 切后台 / 来电 / 下拉控制中心立刻停声（否则退出 App 声音还在响）
@@ -586,10 +588,12 @@ struct PlayerPage: View {
                 #if DEBUG
                 logSwipeStart(p)
                 #endif
+                telemetry.begin(p, id: id, duration: knownDuration)
                 isPlaying = true
                 seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
                 watchdog(p)
             } else {
+                telemetry.end()
                 let savedPos = seamAudio.currentMediaTime ?? p.currentTime().seconds
                 isPlaying = false
                 seamAudio.setActive(false, isPlaying: false, rate: 1, muted: true)
@@ -941,7 +945,7 @@ struct PlayerPage: View {
             try? AVAudioSession.sharedInstance().setActive(true)
             p.rate = playRate
         }
-        if shouldPlay { watchdog(p) }
+        if shouldPlay { watchdog(p); telemetry.begin(p, id: id, duration: knownDuration) }
         #if DEBUG
         if isActive {
             let t0 = Date()

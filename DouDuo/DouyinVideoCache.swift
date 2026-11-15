@@ -34,8 +34,10 @@ actor DYVideoCache {
     static let shared = DYVideoCache()
     static let countKey = "douyin_cache_count_v2"
     static let defaultCount = 5
-    /// 超过这个时长不整条下载，只缓存头部
+    /// 超过这个时长不缓存（整条太大），直接在线播
     static let maxDuration: Double = 600
+    /// 不超过这个时长的算短视频：整条几秒内下完，优先下；更长的排在后面，不堵下一条
+    static let blockingDuration: Double = 90
     /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
     static let headBytes = 4_000_000
     /// 后面几条做头部预取（刷过来不卡的关键）
@@ -130,7 +132,10 @@ actor DYVideoCache {
         }
     }
 
-    /// 播放焦点变了：缓存在播的这条（划走上一条就停），并预取后面几条的头部
+    /// 播放焦点变了：下一条最优先（刷过去就要播），然后当前这条。
+    /// 1.5.1 以前是「当前 → 下下条 → 第 4 条」：紧挨着的下一条被漏掉；当前是长视频时要整条下完才轮到后面，
+    /// 下载还和下一条的预加载抢带宽，一划走整条作废。现在 ≤90 秒的先下（几秒完成），
+    /// 长一些的（≤10 分钟）排在后面补；超过 10 分钟不缓存，起播靠预加载器提前读好的开头。
     func focus(current: DYAweme?, ahead: [DYAweme]) {
         guard Self.limit > 0 else { job?.cancel(); job = nil; jobID = nil; return }
         let target = current ?? ahead.first
@@ -139,17 +144,31 @@ actor DYVideoCache {
         job?.cancel()
         job = nil
         jobID = target.id
-        let follow = Array(ahead.dropFirst().prefix(Self.headPrefetch))
-        pending[target.id] = target
-        for a in follow { pending[a.id] = a }
+        let rest = current == nil ? Array(ahead.dropFirst()) : ahead
+        let follow = Array(rest.prefix(Self.headPrefetch))
+        let plan = Self.plan(current: target, ahead: follow)
+        for a in [target] + follow { pending[a.id] = a }
         job = Task { [weak self] in
             guard let self else { return }
-            await self.store(id: target.id)
-            for a in follow {
+            for id in plan {
                 if Task.isCancelled { return }
-                await self.store(id: a.id)
+                await self.store(id: id)
             }
         }
+    }
+
+    /// 整条缓存的顺序（纯函数，脚本测试直接跑）：
+    /// 先下一条、当前、再后面一条里的短视频（≤90 秒），再补长视频（当前 → 下一条 → 后面），超 10 分钟的不排。
+    nonisolated static func plan(current: DYAweme, ahead: [DYAweme]) -> [String] {
+        func ok(_ a: DYAweme) -> Bool { a.images.isEmpty && a.play != nil && a.duration <= maxDuration }
+        func quick(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= blockingDuration }
+        let next = Array(ahead.prefix(1)), later = Array(ahead.dropFirst())
+        let quickOrder = next + [current] + later
+        let longOrder = [current] + next + later
+        var out: [String] = []
+        for a in quickOrder where ok(a) && quick(a) && !out.contains(a.id) { out.append(a.id) }
+        for a in longOrder where ok(a) && !quick(a) && !out.contains(a.id) { out.append(a.id) }
+        return out
     }
 
     /// 划走 / 离开：立刻停止缓存
