@@ -3327,6 +3327,20 @@ final class DouDuoUITests: XCTestCase {
         print("DDCHAT_SHOT_END"); sleep(3)
     }
 
+    /// 经典模式合屏：视频靠左、互动胶囊跟视频右边、竖栏三个页签展开（连滑截外屏）
+    func testClosedClassicProbe() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autofit_v1", "NO"]
+        app.launch()
+        sleep(22)
+        for i in 0..<6 {
+            print("DDCHAT_SHOT_CLASSIC\(i)"); sleep(3)
+            app.swipeUp(velocity: .fast)
+            sleep(5)
+        }
+    }
+
     /// 幕5 半折叠桌面式：滑评论
     func testTourFold() throws {
         let app = XCUIApplication()
