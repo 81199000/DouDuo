@@ -1132,10 +1132,13 @@ struct PlayerPage: View {
                 p.seek(to: start, toleranceBefore: tol, toleranceAfter: tol) { _ in preroll() }
             }
         }
-        if it.status == .readyToPlay { prime(); return }
+        // 数据一到就登记可播：实测起播 0.10s，比等 preroll 回调快得多。
+        // 之前只在 preroll 完成/画面层出帧时登记，登记慢一步，就变成「每次都要滑第二次」。
+        func markReady() { DYReadiness.mark(id) }
+        if it.status == .readyToPlay { markReady(); prime(); return }
         primeObs = it.observe(\.status, options: [.new]) { item, _ in
             guard item.status == .readyToPlay else { return }
-            DispatchQueue.main.async { primeObs?.invalidate(); primeObs = nil; prime() }
+            DispatchQueue.main.async { primeObs?.invalidate(); primeObs = nil; markReady(); prime() }
         }
     }
 
