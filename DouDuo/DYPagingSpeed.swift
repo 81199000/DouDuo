@@ -236,7 +236,7 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let step = DYFeedPagingDecision.step(dragged: dragged, velocity: v, pageHeight: h)
         var index = curIndex0 + step
         index = min(max(index, 0), max(items.count - 1, 0))
-        DYLiveModel.log(String(format: "DDSWIPE step=%d dragged=%.0f/%.0f v=%.2f release=%.2f recent=%@",
+        DYLiveModel.log(String(format: "DDSWIPEDECIDE step=%d dragged=%.0f/%.0f v=%.2f release=%.2f recent=%@",
                                step, dragged, h, v, velocity.y, recent.map { String(format: "%.2f", $0) } ?? "-"))
         targetContentOffset.pointee.y = CGFloat(index) * h - top
         guard items.indices.contains(index) else { return }
