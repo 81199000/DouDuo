@@ -1099,6 +1099,8 @@ final class DYPreloader {
         for a in window where players[a.id] == nil && !handedOut.contains(a.id) {
             guard a.images.isEmpty, let s = a.play, let url = URL(string: s) else {
                 if let c = a.images.first.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
+                // 图文没有视频要解码，直接算「可播」，否则分页器会一直把它拦下（图文页根本划不过去）
+                DYReadiness.mark(a.id)
                 continue
             }
             let asset = DYMedia.asset(DYVideoCache.localURL(a.id) ?? url)
