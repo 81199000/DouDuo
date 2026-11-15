@@ -146,6 +146,7 @@ struct DYVideoCaptionHeader: View {
     let aweme: DYAweme
     let onClose: (() -> Void)?
     var authorTrailingInset: CGFloat = 0
+    var closeAtLeading = false
 
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -161,9 +162,25 @@ struct DYVideoCaptionHeader: View {
             ?? ((author.follow ?? 0) > 0)
     }
 
+    @ViewBuilder
+    private var closeButton: some View {
+        if let onClose {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭简介")
+            .accessibilityIdentifier("douyin.description.close")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
+                if closeAtLeading { closeButton }
                 CachedAsyncImage(url: aweme.author.avatar.flatMap(URL.init(string:))) { image in
                     image.resizable().scaledToFill()
                 } placeholder: {
@@ -187,17 +204,7 @@ struct DYVideoCaptionHeader: View {
                         .accessibilityIdentifier("douyin.description.follow")
                 }
                 Spacer(minLength: 0)
-                if let onClose {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("关闭简介")
-                    .accessibilityIdentifier("douyin.description.close")
-                }
+                if !closeAtLeading { closeButton }
             }
             .padding(.trailing, authorTrailingInset)
             if let followError {

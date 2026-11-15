@@ -733,7 +733,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     }
 
     private var horizontalCommentStatus: Bool {
-        duoLandscapeWindow && showComments && !searchPresented && commentItem != nil
+        usesClassicLayout && duoLandscapeWindow && showComments && !searchPresented && commentItem != nil
     }
 
     private var presentsLandscapeComments: Bool {
@@ -757,6 +757,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 : nil
             let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented && placement == nil,
                                               allowsResident: !searchPresented)
+            let upstreamClearsTrailing = !usesClassicLayout && layout.sideBySide && layout.trailingInset > 0
+            let paneWidth = layout.paneSize.width - (upstreamClearsTrailing ? layout.trailingInset : 0)
             ZStack(alignment: .topLeading) {
                 video(geo.safeAreaInsets)
                     .environment(\.dyStandaloneBack, onBack)
@@ -765,12 +767,13 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
-                                   focus: focus, fillsPane: true, trailingInset: layout.trailingInset,
+                                   focus: focus, fillsPane: usesClassicLayout,
+                                   trailingInset: usesClassicLayout ? layout.trailingInset : 0,
                                    horizontalStatus: horizontalCommentStatus && !layout.resident)
                         .id(aweme.id)
-                        .frame(width: layout.paneSize.width, height: layout.paneSize.height)
-                        .clipped()
+                        .frame(width: max(0, paneWidth), height: layout.paneSize.height)
                         .dyDeskLight(layout.resident && !layout.sideBySide)
+                        .environment(\.dyCommentTrailingCleared, upstreamClearsTrailing)
                         .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
                         .accessibilityIdentifier("douyin.list.commentPane")
                 }
@@ -792,7 +795,11 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 set: { if placement == nil && !layout.sideBySide && !layout.resident { showComments = $0 } }
             ), usesEdgeSheet: usesClassicLayout) {
                 if let aweme = commentItem {
-                    DYCommentSheet(bridge: bridge, aweme: aweme, onClose: { showComments = false }, focus: focus)
+                    if usesClassicLayout {
+                        DYCommentSheet(bridge: bridge, aweme: aweme, onClose: { showComments = false }, focus: focus)
+                    } else {
+                        DYCommentPanel(bridge: bridge, aweme: aweme, onClose: { showComments = false }, focus: focus)
+                    }
                 }
             })
         }
@@ -822,9 +829,7 @@ private struct DYStandaloneBarPolicy: ViewModifier {
                 .toolbarVisibility(.visible, for: .navigationBar)
                 .toolbarVerticalCompressionBehavior(.prefersToolbarItems)
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-        } else {
-            content.toolbar(.hidden, for: .navigationBar)
-        }
+        } else { content }
     }
 }
 
