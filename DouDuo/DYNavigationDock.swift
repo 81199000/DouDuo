@@ -10,10 +10,12 @@ enum DYMainTab: String, CaseIterable, Hashable {
 struct DYSystemTabBar: ViewModifier {
     var hidden = false
     @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
+    @Environment(\.dyHingeClosed) private var hingeClosed
     @ViewBuilder func body(content: Content) -> some View {
         if #available(iOS 27.1, *), mode == DDChromeMode.duoClassic.rawValue {
+            // 合屏：互动胶囊放回视频右边，竖栏让给三个页签完整显示（老板要求不收成一个按钮）
             content.toolbarVisibility(hidden ? .hidden : .visible, for: .tabBar)
-                .toolbarVerticalCompressionBehavior(.prefersToolbarItems)
+                .toolbarVerticalCompressionBehavior(hingeClosed ? .prefersTabBar : .prefersToolbarItems)
                 .toolbarBackgroundVisibility(.hidden, for: .bottomBar)
                 .tabBarMinimizeBehavior(.never)
         } else { content }
@@ -44,6 +46,8 @@ struct DYVideoToolbarActions {
 @available(iOS 27.1, *)
 struct DYNativeVideoActions: View {
     @Environment(\.toolbarVerticalEdge) private var verticalEdge
+    /// 合屏时互动胶囊由视频页自己画在视频右边，这里不再往系统竖栏里塞
+    @Environment(\.dyHingeClosed) private var hingeClosed
     let actions: DYVideoToolbarActions?
     let isClean: Bool
     let onToggleClean: () -> Void
@@ -81,7 +85,7 @@ struct DYNativeVideoActions: View {
                 // The stable clear-screen anchor is independent of this group's size.
                 // A new item identity invalidates the native cached fitting size.
                 ToolbarItem(id: "video-actions-\(Int(slotHeight))", placement: .bottomBar) {
-                    if verticalEdge != nil, let actions {
+                    if verticalEdge != nil, !hingeClosed, let actions {
                         VStack(spacing: 4) {
                             DYAuthorAvatarControl(image: actions.avatarImage, name: actions.authorName,
                                                   onAuthor: actions.onAuthor, follow: actions.follow)
@@ -100,7 +104,7 @@ struct DYNativeVideoActions: View {
                 .sharedBackgroundVisibility(.hidden)
                 .axisBehavior(.verticalPreferred)
                 .visibilityPriority(.high)
-                .hidden(actions == nil || verticalEdge == nil || isClean)
+                .hidden(actions == nil || verticalEdge == nil || isClean || hingeClosed)
             }
             // Retain the last measured slot across navigation and sheets.
             // Resetting it would briefly expand the tabs on every return,
