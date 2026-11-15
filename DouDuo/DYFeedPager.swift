@@ -14,10 +14,12 @@ struct DYFeedPager<Page: View>: View {
     @ViewBuilder let page: (DYAweme) -> Page
 
     var body: some View {
+        let cur = DYPagerWindow.currentIndex(items, currentID)
         ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                ForEach(items) { item in
-                    page(item)
+            // 非 Lazy：当前前 1 后 2 条提前挂真页面（第一帧已就绪），其余是轻量占位，见 DYPagerWindow
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                    DYPagerSlot(item: item, index: i, current: cur) { page(item) }
                         .containerRelativeFrame(pageAxes)
                         .id(item.id)
                 }
