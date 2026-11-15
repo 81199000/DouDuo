@@ -212,7 +212,14 @@ extension PlayerPage {
     private var lastEnd = Date.distantPast
     /// 按住或刚松手的一小段时间内，按钮自己的点击要忽略（否则长按加速后松手会变成点赞/评论）。
     var blocksTap: Bool { held || Date().timeIntervalSince(lastEnd) < 0.8 }
-    func begin() { guard !held else { return }; held = true; press(true) }
+    func begin() {
+        guard !held else { return }
+        held = true
+        #if DEBUG
+        DYGestureDiagnostics.shared.boostStarts += 1
+        #endif
+        press(true)
+    }
     func end() { guard held else { return }; held = false; lastEnd = Date(); press(false) }
 }
 
@@ -259,6 +266,22 @@ struct DYHoldBoost: ViewModifier {
                         if case .second(true, _) = value { state = true }
                     })
             .onChange(of: holding) { _, now in now ? control.begin() : control.end() }
+    }
+}
+
+/// 经典模式右侧控制区（对齐抖音）：整块区域按住都加速——留白、按钮间隙，按钮本身也算。
+/// 手势挂在容器上与按钮同时识别；按钮的点击要用 `DYBoostControl.blocksTap` 拦一下，
+/// 否则长按加速后松手会变成点赞/评论/进作者页。
+struct DYHoldBoostArea: ViewModifier {
+    let control: DYBoostControl?
+    func body(content: Content) -> some View {
+        if let control {
+            content
+                .contentShape(Rectangle())
+                .modifier(DYHoldBoost(control: control))
+        } else {
+            content
+        }
     }
 }
 

@@ -41,6 +41,8 @@ struct DYVideoToolbarActions {
     let comments: AnyView
     let collect: AnyView
     let share: AnyView
+    /// 当前视频的长按加速；图集没有播放器，为 nil。
+    var boost: DYBoostControl? = nil
 }
 
 @available(iOS 27.1, *)
@@ -60,7 +62,7 @@ struct DYNativeVideoActions: View {
         Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleClean) {
+                    Button(action: { if actions?.boost?.blocksTap != true { onToggleClean() } }) {
                         Image(systemName: isClean ? "eye" : "eye.slash")
                             .font(.title3)
                             .foregroundStyle(.white)
@@ -69,6 +71,7 @@ struct DYNativeVideoActions: View {
                     }
                         .accessibilityLabel(isClean ? "退出清屏" : "清屏")
                         .accessibilityIdentifier("douyin.cleanScreen")
+                        .modifier(DYHoldBoostArea(control: actions?.boost))
                         .background(DYToolbarFrameReader { frame, height in
                             withTransaction(Transaction(animation: nil)) {
                                 anchorFrame = frame
@@ -96,6 +99,8 @@ struct DYNativeVideoActions: View {
                         .glassEffect(.regular, in: .capsule)
                         .environment(\.colorScheme, .dark)
                         .frame(height: slotHeight, alignment: .bottom)
+                        // 胶囊上方到清屏键之间的整段留白和胶囊里的按钮，按住都加速。
+                        .modifier(DYHoldBoostArea(control: actions.boost))
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("douyin.video.actions")
                     }
@@ -123,10 +128,12 @@ struct DYStandaloneVideoActions: View {
         Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("返回", systemImage: "chevron.backward", action: onBack)
+                    Button("返回", systemImage: "chevron.backward",
+                           action: { if actions?.boost?.blocksTap != true { onBack() } })
                         .labelStyle(.iconOnly).foregroundStyle(.white)
                         .frame(width: 44, height: 44)
                         .accessibilityIdentifier("douyin.list.back")
+                        .modifier(DYHoldBoostArea(control: actions?.boost))
                 }
                 .axisBehavior(.verticalPreferred)
                 .visibilityPriority(.high)
@@ -143,6 +150,7 @@ struct DYStandaloneVideoActions: View {
                         .padding(.vertical, 5)
                         .glassEffect(.regular, in: .capsule)
                         .environment(\.colorScheme, .dark)
+                        .modifier(DYHoldBoostArea(control: actions.boost))
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("douyin.video.actions")
                     }

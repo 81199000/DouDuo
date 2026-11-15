@@ -1434,6 +1434,67 @@ final class DouDuoUITests: XCTestCase {
         app.buttons["settings.done"].tap()
     }
 
+    /// 经典模式右侧控制区（对齐抖音）：长按任何位置都加速，按在按钮上也一样；
+    /// 加速后松手不触发按钮本身（不开评论、不进作者页、不切清屏），普通点按照常。只读，不点赞不关注。
+    func testClassicActionColumnHoldBoost() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        // Duo 的旋转由模拟器/Device Hub 控制；互动胶囊只在竖向（系统栏在右侧）时进系统栏。
+        guard waitUntil(timeout: 30, condition: { app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width }) else {
+            throw XCTSkip("请先把 Duo 旋转为竖向，右侧系统栏才会出现互动胶囊")
+        }
+        let avatar = app.buttons["douyin.author.avatar"].firstMatch
+        let like = app.buttons["douyin.like"].firstMatch
+        let comments = app.buttons["douyin.comments"].firstMatch
+        let share = app.buttons["douyin.share"].firstMatch
+        let clean = app.buttons["douyin.cleanScreen"].firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10))
+        XCTAssertTrue(clean.waitForExistence(timeout: 10))
+        let cleanLabel = clean.label
+        attach(app, "classic-column-hold-before")
+        let count = app.staticTexts["douyin.video.boostStarts"].firstMatch
+        let origin = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+        let column = like.frame
+        let window = app.windows.firstMatch.frame
+        let probes: [(String, CGPoint)] = [
+            // 清屏键与互动胶囊之间的整段留白
+            ("gapAboveCapsule", CGPoint(x: column.midX, y: (clean.frame.maxY + avatar.frame.minY) / 2)),
+            // 胶囊右侧到屏幕边缘
+            ("besideCapsule", CGPoint(x: (column.maxX + window.maxX) / 2, y: like.frame.midY)),
+            // 胶囊内边距、按钮间缝
+            ("capsulePaddingBottom", CGPoint(x: column.midX, y: share.frame.maxY + 3)),
+            ("gapBetweenButtons", CGPoint(x: column.midX, y: (like.frame.maxY + comments.frame.minY) / 2)),
+            // 按钮本身
+            ("commentsButton", CGPoint(x: comments.frame.midX, y: comments.frame.midY)),
+            ("avatarButton", CGPoint(x: avatar.frame.midX, y: avatar.frame.midY)),
+            ("cleanScreenButton", CGPoint(x: clean.frame.midX, y: clean.frame.midY)),
+            // 首页选择器由系统 Tab 栏接管，属于系统控件，不在这里测。
+        ]
+        var missed: [String] = []
+        for (name, point) in probes {
+            let before = Int(count.label) ?? -1
+            origin.withOffset(CGVector(dx: point.x, dy: point.y)).press(forDuration: 0.9)
+            let boosted = Int(count.label) == before + 1
+            print("CLASSIC_PROBE \(name) \(point) boosted=\(boosted)")
+            if !boosted { missed.append(name) }
+        }
+        XCTAssertEqual(missed, [], "右侧控制区任何位置长按都应加速")
+        // 长按加速后松手：评论没开、没进作者页、清屏没切换
+        XCTAssertFalse(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 2), "长按评论键加速后不应打开评论")
+        XCTAssertTrue(avatar.exists, "长按头像加速后不应进入作者页")
+        XCTAssertEqual(clean.label, cleanLabel, "长按清屏键加速后不应切换清屏")
+        attach(app, "classic-column-hold-after")
+        // 普通点按不受影响
+        Thread.sleep(forTimeInterval: 1)
+        comments.tap()
+        XCTAssertTrue(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 10), "普通点按评论键应打开评论")
+    }
+
     func testCommentsPullDownAndHeaderSpacing() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
