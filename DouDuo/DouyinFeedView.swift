@@ -1087,7 +1087,9 @@ final class DYPreloader {
             }
             let asset = DYMedia.asset(DYVideoCache.localURL(a.id) ?? url)
             let item = AVPlayerItem(asset: asset)
-            item.preferredForwardBufferDuration = 6
+            // 紧挨着的下一条要「已经加载好」：不限制前向缓冲（0 = 交给系统，能把拿到的都先拿到）；
+            // 再后面的留 15 秒够起播，省流量
+            item.preferredForwardBufferDuration = index + 1 < items.count && a.id == items[index + 1].id ? 0 : 15
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
             p.automaticallyWaitsToMinimizeStalling = true
@@ -5372,13 +5374,18 @@ extension DYFeedModel {
     /// 启动秒开：先恢复上次会话；没有会话就从本地已缓存未看的视频按竖横比例挑 6 条。
     /// 返回要定位的当前条和各条进度；都没有返回 nil。
     func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
+        // 启动先清掉上次看过的缓存，避免重启后又被当成「待看」塞回推荐里
+        Task { await DYVideoCache.shared.purgeWatched() }
         var result: (currentID: String?, positions: [String: Double])?
         if items.isEmpty, let saved = DYFeedSession.load() {
-            items = allowedRecommendations(saved.items)
-            let cur = items.contains(where: { $0.id == saved.currentID }) ? saved.currentID : items.first?.id
-            result = (cur, saved.positions)
+            // 只恢复「上次正在看的那一条」及其进度，其余整列丢弃：
+            // 以前整列恢复，重启后会先刷一堆上次已经看过的视频（老板反馈的问题）。划走之后就是新推荐。
+            if let cur = saved.items.first(where: { $0.id == saved.currentID }) {
+                items = allowedRecommendations([cur])
+                result = (cur.id, saved.positions)
+            }
             markAccountState(saved.items)
-            DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0)")
+            DYLiveModel.log("DDSESSION 恢复 id=\(saved.currentID) t=\(saved.positions[saved.currentID] ?? 0) 只恢复当前条")
         }
         if items.isEmpty {
             let cached = DYVideoCache.pendingSnapshot()
