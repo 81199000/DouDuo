@@ -17,6 +17,8 @@ final class DYMessageCache: ObservableObject {
     static let shared = DYMessageCache()
     /// 当前打开的会话；root 与「陌生人消息」二级页共用同一份状态
     @Published var selectedChat: DYConversationRow?
+    /// Memory-only route for a banner tap. Not part of the saved snapshot.
+    @Published var directRouteID: String?
     /// 陌生人二级列表（网页展开陌生人面板后读出的每个人）与总未读
     @Published var strangerRows: [DYConversationRow] = []
     @Published var strangerUnread: Int?
@@ -100,6 +102,10 @@ final class DYMessageCache: ObservableObject {
     let chatModel = DouyinWebModel()
     private var retainedChatWeb: WKWebView?
     @Published private(set) var scope = ""
+    /// Increments on every real scope change, including a return to a previous account.
+    @Published private(set) var scopeGeneration = 0
+    /// True only when a Douyin session cookie is present. The cookie value is not stored.
+    @Published private(set) var hasSession = false
     var accountScope: String { scope }
     private var refreshing = Set<String>()
     private var friendsRefreshing = Set<String>()
@@ -130,9 +136,11 @@ final class DYMessageCache: ObservableObject {
         let identity = cookies.filter { $0.domain.hasSuffix("douyin.com") && ["sessionid", "sessionid_ss", "uid_tt"].contains($0.name) }
             .sorted { $0.name < $1.name }.map { $0.name + "=" + $0.value }.joined(separator: "|")
         let next = SHA256.hash(data: Data((identity.isEmpty ? "guest" : identity).utf8)).map { String(format: "%02x", $0) }.joined()
+        hasSession = !identity.isEmpty
         guard next != scope else { DYPeopleCache.shared.activate(scope: scope); return }
         let changingAccount = !scope.isEmpty
         scope = next
+        scopeGeneration &+= 1
         var fresh = Snapshot(); fresh.v = Snapshot.currentV
         snapshot = fresh; lastSavedData = nil
         if let file, let data = try? Data(contentsOf: file), var cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
@@ -153,7 +161,12 @@ final class DYMessageCache: ObservableObject {
         }
         if changingAccount {
             // 丢弃旧账号的DOM，避免新scope误读取旧页面；视图用scope作为实例ID重建。
-            chatModel.web?.stopLoading(); chatModel.web = nil; retainedChatWeb = nil
+            let old = chatModel.web
+            old?.stopLoading()
+            old?.removeFromSuperview()
+            chatModel.web = nil
+            retainedChatWeb = nil
+            if DYDMProbe.enabled { DYChatWebSession.shared.noteAccountReset() }
         }
     }
     func retainChat() { retainedChatWeb = chatModel.web }
@@ -567,6 +580,13 @@ struct DYMessagesScreen: View {
         .onAppear {
             if let row = selectedChat { navigation.openChat(row.id, from: navigation.category) }
             else if navigation.isChat { _ = navigation.back() }
+        }
+        .onChange(of: cache.directRouteID) { _, id in
+            if let id {
+                navigation.openChat(id, from: nil)
+            } else if navigation.isChat, cache.selectedChat == nil {
+                _ = navigation.back()
+            }
         }
         .task { await loadRoot() }
         .task {
@@ -1043,11 +1063,20 @@ struct DYMessagesScreen: View {
         }
     }
 
+    @ViewBuilder
+    private var chatWeb: some View {
+        if DYDMProbe.enabled {
+            DYChatProbeSurface(model: chatModel)
+        } else {
+            DouyinWebContainer(model: chatModel, zoom: 1,
+                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+        }
+    }
+
     private var chatPane: some View {
         ZStack(alignment: .topLeading) {
             Color.black
-            DouyinWebContainer(model: chatModel, zoom: 1,
-                start: URL(string: "https://www.douyin.com/chat")!, reuseExisting: true)
+            chatWeb
                 .accessibilityIdentifier("douyin.messages.chat.detail")
             if navigation.isChat, let row = selectedChat {
                 let author: DYAweme.Author? = row.kind == 1 && !(row.sec ?? "").isEmpty

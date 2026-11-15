@@ -380,7 +380,6 @@ struct PlayerPage: View {
     @State private var playbackID = UUID()
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
-    @State private var pinchMagnitude: CGFloat = 1
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
     private var playRate: Float { rateBoost ? 2 : Float(effectiveRate) }
 
@@ -400,19 +399,12 @@ struct PlayerPage: View {
             GeometryReader { outer in
                 videoPlane
                 .mask {
-                    GeometryReader { geometry in
-                        let size = geometry.size
-                        let screenAspect = size.width / max(size.height, 1)
-                        let aspect = videoAspect > 0 ? videoAspect : screenAspect
-                        let fills = (fillWidth && ((aspect < 1) == (screenAspect < 1)))
-                        let fitted = aspect > screenAspect
-                            ? CGSize(width: size.width, height: size.width / aspect)
-                            : CGSize(width: size.height * aspect, height: size.height)
-                        Rectangle()
-                            .frame(width: !fills ? fitted.width : size.width,
-                                   height: !fills ? fitted.height : size.height)
-                            .position(x: size.width / 2, y: size.height / 2)
-                    }
+                GeometryReader { geometry in
+                    let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillWidth)
+                    Rectangle()
+                        .frame(width: fitted.width, height: fitted.height)
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
                 }
                 .scaleEffect(videoScale)
                 .allowsHitTesting(false)
@@ -567,7 +559,7 @@ struct PlayerPage: View {
             if vlc == nil, isPlaying, !rateBoost { seamAudio.setRate(Float(effectiveRate)) }
         }
         .onChange(of: isActive) { _, active in
-            if !active { lockedBoost = false; videoScale = 1; pinchMagnitude = 1 }   // 滑走就解锁：只锁「当前这条」
+            if !active { lockedBoost = false; videoScale = DYVideoFit.releasedScale }   // 滑走就解锁：只锁「当前这条」
             if active { bindRemote() }
             // Returning from a search result is not a request to play a video
             // the user paused before opening search.
@@ -720,18 +712,16 @@ struct PlayerPage: View {
             } : nil,
             onHorizontalDrag: onHorizontalDrag,
             onHorizontalDragEnd: onHorizontalDragEnd,
-            onPinchBegan: { pinchMagnitude = 1 },
             onPinchChanged: { scale in
-                pinchMagnitude = scale
                 videoScale = min(1.2, max(0.8, scale))
             },
-            onPinchEnded: {
-                // Commit the existing global fit setting; never leave a video
-                // at an arbitrary size or an off-centre position after release.
-                if pinchMagnitude < 0.94 { onFillWidthChange?(false) }
-                else if pinchMagnitude > 1.06 { onFillWidthChange?(true) }
-                withAnimation(.snappy(duration: 0.22)) { videoScale = 1 }
-                pinchMagnitude = 1
+            onPinchEnded: { scale in
+                // 用识别器的最终 scale 提交全局铺满偏好，松手后缩放回到 1。
+                DYVideoFit.applyPinchEnd(magnitude: scale, endedNormally: true, notify: onFillWidthChange)
+                withAnimation(.snappy(duration: 0.22)) { videoScale = DYVideoFit.releasedScale }
+            },
+            onPinchCancelled: {
+                withAnimation(.snappy(duration: 0.22)) { videoScale = DYVideoFit.releasedScale }
             }
         )
     }
@@ -1579,9 +1569,9 @@ final class PlayerUIView: UIView {
         let video = size.width / size.height, screen = bounds.width / bounds.height
         // 「自动铺满宽度」只在视频和屏幕同向时铺满（竖屏看竖屏 / 横屏看横屏）；
         // 竖屏看横屏保持完整画面，不裁掉两侧。
-        let sameOrientation = (video < 1) == (screen < 1)
+        let sameOrientation = DYVideoFit.sameOrientation(videoAspect: video, screenAspect: screen)
         let crop = 1 - min(video, screen) / max(video, screen)
-        let g: AVLayerVideoGravity = (fillWidth && sameOrientation) ? .resizeAspectFill : .resizeAspect
+        let g: AVLayerVideoGravity = DYVideoFit.presentation(fillWidth: fillWidth, videoAspect: video, screenAspect: screen) == .aspectFill ? .resizeAspectFill : .resizeAspect
         #if DEBUG
         if playerLayer.videoGravity != g {
             ddWrite("DDGRAVITY video=\(String(format: "%.2f", video)) screen=\(String(format: "%.2f", screen)) bounds=\(bounds.size) fill=\(fillWidth) same=\(sameOrientation) crop=\(String(format: "%.2f", crop)) -> \(g == .resizeAspectFill ? "FILL" : "FIT")")

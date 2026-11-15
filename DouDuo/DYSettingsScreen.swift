@@ -24,6 +24,8 @@ struct DYSettingsScreen: View {
     @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
     // 缓存
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
+    @AppStorage(DYDMNotificationSettings.notifyKey) private var dmNotifications = false
+    @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
     @State private var clearing = false
     @State private var cacheNote: String?
 
@@ -116,6 +118,18 @@ struct DYSettingsScreen: View {
                     .accessibilityIdentifier("settings.cache.clear")
                 } header: {
                     Text("缓存")
+                }
+
+                Section {
+                    Toggle("应用内私信通知", isOn: $dmNotifications)
+                        .accessibilityIdentifier("settings.dm.notify")
+                    Toggle("显示会话名称与头像", isOn: $dmDetail)
+                        .disabled(!dmNotifications)
+                        .accessibilityIdentifier("settings.dm.detail")
+                } header: {
+                    Text("私信")
+                } footer: {
+                    Text("使用 DouDou 期间收到新私信活动时显示提醒。显示会话名称与头像关闭后仅显示匿名私信提醒。")
                 }
 
                 Section("账号") {

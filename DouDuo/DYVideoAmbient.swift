@@ -104,9 +104,10 @@ final class DYAmbientFrameView: UIView {
 
     /// 铺满模式下画面盖住整页，没有地方露背景，不取帧
     private var covered: Bool {
-        guard fillWidth, let s = player.currentItem?.presentationSize, s.width > 1, s.height > 1,
+        guard let s = player.currentItem?.presentationSize, s.width > 1, s.height > 1,
               bounds.width > 1, bounds.height > 1 else { return false }
-        return (s.width < s.height) == (bounds.width < bounds.height)
+        return DYVideoFit.presentation(fillWidth: fillWidth, videoAspect: s.width / s.height,
+                                       screenAspect: bounds.width / bounds.height) == .aspectFill
     }
 
     fileprivate func tick() {

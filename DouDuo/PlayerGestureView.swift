@@ -32,7 +32,10 @@ struct PlayerGestureView: UIViewRepresentable {
 
     var onPinchBegan: () -> Void = {}
     var onPinchChanged: (CGFloat) -> Void = { _ in }
-    var onPinchEnded: () -> Void = {}
+    /// 正常松手：参数是识别器的最终 scale，不读可能还没刷新的 SwiftUI state。
+    var onPinchEnded: (CGFloat) -> Void = { _ in }
+    /// 取消或失败只收回临时缩放，不改铺满偏好。
+    var onPinchCancelled: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -176,14 +179,21 @@ struct PlayerGestureView: UIViewRepresentable {
                 parent.onPinchChanged(gesture.scale)
             case .changed:
                 parent.onPinchChanged(gesture.scale)
-            case .ended, .cancelled, .failed:
-                parent.onPinchEnded()
-                long?.isEnabled = true
-                pan?.isEnabled = true
-                frozenScroll?.panGestureRecognizer.isEnabled = true
-                frozenScroll = nil
+            case .ended:
+                parent.onPinchEnded(gesture.scale)
+                restoreAfterPinch()
+            case .cancelled, .failed:
+                parent.onPinchCancelled()
+                restoreAfterPinch()
             default: break
             }
+        }
+
+        private func restoreAfterPinch() {
+            long?.isEnabled = true
+            pan?.isEnabled = true
+            frozenScroll?.panGestureRecognizer.isEnabled = true
+            frozenScroll = nil
         }
 
         @objc func handleEdge(_ g: UIScreenEdgePanGestureRecognizer) {
