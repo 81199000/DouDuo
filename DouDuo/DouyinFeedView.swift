@@ -3117,7 +3117,7 @@ struct DYClassicFeedScreen: View {
                                          : hidesCommentStatus ? .horizontal : [])
                         .coordinateSpace(.named("douduo.feed"))
                         .environment(\.duoSystemBars, true)
-                        .environment(\.duoInlineVideoNavigation, sidePanelOpen)
+                        .environment(\.duoInlineVideoNavigation, sidePanelOpen || hidesCommentStatus)
                         .environment(\.duoVisibleVideo, $visibleVideo)
                         .environment(\.duoCleanScreen, cleanScreen)
                         .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
@@ -4786,7 +4786,8 @@ struct DYCommentPanel: View {
         VStack(spacing: 0) {
             DYVideoCaptionHeader(bridge: bridge, aweme: aweme, onClose: onClose,
                                  authorTrailingInset: max(0, headerTrailingInset - trailingInset),
-                                 closeAtLeading: horizontalStatus)
+                                 closeAtLeading: horizontalStatus,
+                                 stacksAuthorInfo: horizontalStatus)
                 .padding(.trailing, trailingInset)
             Divider()
         }

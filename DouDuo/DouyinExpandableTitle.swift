@@ -147,6 +147,7 @@ struct DYVideoCaptionHeader: View {
     let onClose: (() -> Void)?
     var authorTrailingInset: CGFloat = 0
     var closeAtLeading = false
+    var stacksAuthorInfo = false
 
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -177,6 +178,32 @@ struct DYVideoCaptionHeader: View {
         }
     }
 
+    private var authorName: some View {
+        Text(aweme.author.name)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .accessibilityIdentifier("douyin.description.author")
+    }
+
+    @ViewBuilder
+    private var followButton: some View {
+        if aweme.author.uid?.isEmpty == false || aweme.author.secUid?.isEmpty == false {
+            Button { Task { await follow() } } label: {
+                Text(isFollowed ? "已关注" : "关注")
+                    .font(stacksAuthorInfo ? .caption.weight(.semibold) : .subheadline.bold())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: stacksAuthorInfo ? 44 : nil, minHeight: stacksAuthorInfo ? 28 : 44,
+                           alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .foregroundStyle(isFollowed ? Color.themeTextSecondary : theme.accent.color(for: scheme))
+            .buttonStyle(.plain)
+            .disabled(isFollowed || following)
+            .accessibilityIdentifier("douyin.description.follow")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -190,18 +217,15 @@ struct DYVideoCaptionHeader: View {
                 .frame(width: 32, height: 32)
                 .clipShape(Circle())
                 .accessibilityHidden(true)
-                Text(aweme.author.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .accessibilityIdentifier("douyin.description.author")
-                if aweme.author.uid?.isEmpty == false || aweme.author.secUid?.isEmpty == false {
-                    Button(isFollowed ? "已关注" : "关注") { Task { await follow() } }
-                        .font(.subheadline.bold())
-                        .foregroundStyle(isFollowed ? Color.themeTextSecondary : theme.accent.color(for: scheme))
-                        .buttonStyle(.plain)
-                        .frame(minHeight: 44)
-                        .disabled(isFollowed || following)
-                        .accessibilityIdentifier("douyin.description.follow")
+                if stacksAuthorInfo {
+                    VStack(alignment: .leading, spacing: 0) {
+                        authorName
+                        followButton
+                    }
+                    .layoutPriority(1)
+                } else {
+                    authorName
+                    followButton
                 }
                 Spacer(minLength: 0)
                 if !closeAtLeading { closeButton }
