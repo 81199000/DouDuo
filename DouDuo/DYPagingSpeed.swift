@@ -143,7 +143,11 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         guard target != nil else { return }
         // 播放提前：抬手即切到目标页（暂停在第一帧的播放器立刻开播），收尾动画与起播并行
-        if let id = targetID, id != currentID() { DYSwipeProbe.lift(); willSettle(id) }
+        if let id = targetID, id != currentID() {
+            DYSwipeProbe.lift(); DYSwipeProbe.mark("settle(\(id.suffix(4)))"); willSettle(id)
+        } else {
+            DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
+        }
         start = scrollView.contentOffset; startTime = CACurrentMediaTime(); animationDuration = duration
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)

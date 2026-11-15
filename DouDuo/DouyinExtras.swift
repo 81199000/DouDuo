@@ -890,6 +890,7 @@ struct DYListPlayer: View {
             if new == nil, let old { currentID = old; return }
             guard let i = items.firstIndex(where: { $0.id == new }) else { return }
             preloader.update(items, current: i)
+            DYFirstFrame.prefetch(items, from: i, ahead: 3)
             if i >= items.count - 4, let loadMore, !loadingMore {
                 loadingMore = true
                 Task {
@@ -900,7 +901,10 @@ struct DYListPlayer: View {
                 }
             }
         }
-        .onAppear { if let i = items.firstIndex(where: { $0.id == currentID }) { preloader.update(items, current: i) } }
+        .onAppear { if let i = items.firstIndex(where: { $0.id == currentID }) {
+            preloader.update(items, current: i)
+            DYFirstFrame.prefetch(items, from: i, ahead: 3)
+        } }
         .onDisappear { preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings) {

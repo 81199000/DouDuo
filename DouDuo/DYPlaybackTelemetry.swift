@@ -6,6 +6,8 @@ import AVFoundation
 /// 每页一个实例，页面变为当前时 begin，离开时 end（end 会把未结束的卡顿也记下）。
 @MainActor
 final class DYPlaybackTelemetry {
+    /// 非当前页建播放器/解首帧的延迟：错开滑动收尾动画那一帧
+    static let setupDelay: TimeInterval = 0.35
     private weak var player: AVPlayer?
     private var id = ""
     private var duration: Double = 0

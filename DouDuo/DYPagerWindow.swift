@@ -7,7 +7,7 @@ import SwiftUI
 /// 窗口外只放轻量占位（黑底 + 近处的封面），页数再多也不建播放器。
 enum DYPagerWindow {
     static let behind = 1
-    static let ahead = 2
+    static let ahead = 1
     /// 占位里显示封面的范围（快速连滑越过挂载窗口时也不是纯黑）
     static let coverRange = 4
 
@@ -49,7 +49,7 @@ struct DYPagerStack<Page: View>: View {
     var pageAxes: Axis.Set = [.horizontal, .vertical]
     @State private var centerID: String?
     @State private var shiftToken = 0
-    /// 起播后再平移窗口：这段时间里滑动已经停稳、画面已在播
+    /// 拆旧页延后到动画结束之后（扩窗是即时的）
     static var shiftDelay: TimeInterval { 0.45 }
 
     var body: some View {
@@ -58,7 +58,10 @@ struct DYPagerStack<Page: View>: View {
         VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                 Group {
-                    if i == current || DYPagerWindow.mounts(i, current: center) {
+                    // 立即按当前页扩窗（下一条要提前挂载、提前解帧）；center 滞后，只用于「晚一点再拆旧页」，
+                    // 拆页面 = 销毁播放器，和起播动画挤在同一帧也会顿一下
+                    if i == current || DYPagerWindow.mounts(i, current: current) || DYPagerWindow.mounts(i, current: center) {
+                        let _ = DYSwipeProbe.mark("mount(\(i))")
                         page(item)
                     } else {
                         DYPagerPlaceholder(item: item, showsCover: DYPagerWindow.showsCover(i, current: current))
