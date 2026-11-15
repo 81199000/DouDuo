@@ -1677,11 +1677,13 @@ struct DYUpstreamFeedScreen: View {
         }) { t in
             DouyinWebScreen(start: t.url)
         }
-        .fullScreenCover(isPresented: $showMessages) {
+        .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onWeb: { u in
                 showMessages = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
             })
+            // 信息页盖着时外层视频必须停，切后台再回来也不许自己恢复
+            .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
         .task { await refreshNoticeUnread() }
         .task {
@@ -2045,10 +2047,11 @@ struct DYUpstreamFeedScreen: View {
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
         }
-        .fullScreenCover(isPresented: $showMine) {
+        .fullScreenCover(isPresented: $showMine, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYMineScreen(bridge: bridge,
                          onLogin: { showMine = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
                          onAuthor: { a in authorTarget = a.author })
+                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
         .sheet(item: $authorTarget) { a in
             NavigationStack {

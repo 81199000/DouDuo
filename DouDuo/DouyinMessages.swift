@@ -151,6 +151,13 @@ final class DYMessageCache: ObservableObject {
                 DYLiveModel.log("DDMSGCACHE schema v<2 → pages cleared")
             }
             snapshot = cached; lastSavedData = data
+            // 旧版写进缓存的 ddimg:// 头像还原成原地址：原生列表加载不了 ddimg，那 20 个好友头像就是这么空的
+            var repaired = 0
+            for i in snapshot.conversations.indices {
+                let fixed = DYChatImageCache.originalURL(snapshot.conversations[i].avatar)
+                if fixed != snapshot.conversations[i].avatar { snapshot.conversations[i].avatar = fixed; repaired += 1 }
+            }
+            if repaired > 0 { lastSavedData = nil; save(); DYLiveModel.log("DDMSGCACHE repaired ddimg avatars=\(repaired)") }
         }
         selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
         follow = snapshot.follow ?? [:]; followChecked = []
@@ -238,7 +245,8 @@ final class DYMessageCache: ObservableObject {
 struct DYConversationRow: Identifiable, Codable, Equatable {
     let id: String
     let name: String
-    let avatar: String?
+    /// var：网页图片缓存改写过的 ddimg:// 地址要还原成原地址（见 DYChatImageCache.originalURL）
+    var avatar: String?
     let preview: String
     let time: String
     let badge: String
@@ -631,8 +639,9 @@ struct DYMessagesScreen: View {
             }
         }
         .fullScreenCover(item: $videoPlay) { p in
+            // 信息里点开的分享视频：一关掉就把它的声音彻底收掉（见 DYListPlayer.hardStopOnDismiss）
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc,
-                         items: [p.item], start: 0, onAuthor: { _ in })
+                         items: [p.item], start: 0, onAuthor: { _ in }, hardStopOnDismiss: true)
         }
         .sheet(item: $chatAuthor) { author in
             NavigationStack {
