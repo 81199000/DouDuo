@@ -12,6 +12,8 @@ struct DYFeedPager<Page: View>: View {
     /// 默认界面打开左右分栏搜索时要跟随窗格宽度，只锁高度；经典布局整页铺满。
     var pageAxes: Axis.Set = .vertical
     @ViewBuilder let page: (DYAweme) -> Page
+    /// 系统「减少动态效果」时分页桥不接管，只能靠 scrollPosition 切当前条
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView(.vertical) {
@@ -35,12 +37,20 @@ struct DYFeedPager<Page: View>: View {
                 // 下拉不再触发刷新（顶部点击/轻扫会误判成刷新）；刷新走「更多 → 刷新推荐」。
                 scrollEndTask = Task {
                     try? await Task.sleep(nanoseconds: 800_000_000)
-                    if !Task.isCancelled { userScrolling = false }
+                    guard !Task.isCancelled else { return }
+                    // 兜底：万一分页桥没接上（没触发 didSettle），停稳后按实际位置切当前条，别卡在上一条
+                    if let s = scrollID, s != currentID, items.contains(where: { $0.id == s }) {
+                        DYLiveModel.log("DDSETTLE-FALLBACK \(s.suffix(6))")
+                        currentID = s
+                    }
+                    userScrolling = false
                 }
             })
         .onChange(of: scrollID) { _, id in
             guard let id, items.contains(where: { $0.id == id }) else { return }
-            if userScrolling { currentID = id }
+            // 老板定：滑到位停住才播。滚动位置过中线时不切当前条——由分页桥在收尾动画停住时（didSettle）切。
+            // 只有减少动态效果（分页桥不接管）时才沿用系统的过中线即切。
+            if userScrolling { if reduceMotion { currentID = id } }
             else if id != currentID { scrollID = currentID }
         }
         .scrollIndicators(.hidden)
