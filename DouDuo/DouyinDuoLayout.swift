@@ -722,29 +722,33 @@ struct DYScrollTopObserver: ViewModifier {
 }
 
 /// 只在系统确认铰链 closed 时启用左贴边；不能拿窄视频窗格宽度猜外屏。
+/// 铰链状态由根视图 `DYHingeStateRoot` 统一读取后经环境下发：
+/// `onHingeChange` 只在状态「变化」时回调，而且只回给当时已经在屏上的那一个视图——
+/// 以前每个视频页各挂一份，只有启动时第一页收到 closed，往后滑出来的新页永远停在默认 false（居中）。
 struct DYClosedPortraitAlignment: ViewModifier {
+    @Environment(\.dyHingeClosed) private var hingeClosed
     let viewport: CGSize
     let videoAspect: Double
     let fills: Bool
     func body(content: Content) -> some View {
-        if #available(iOS 27.1, *) {
-            DYHingeClosedVideo(content: content, viewport: viewport, videoAspect: videoAspect, fills: fills)
-        } else { content }
+        content.offset(x: DYDuoMetrics.closedPortraitVideoOffset(viewport: viewport, videoAspect: videoAspect,
+                       fills: fills, isDuo: DYDuoMetrics.isDuoHardware, isClosed: hingeClosed))
     }
 }
-@available(iOS 27.1, *)
-private struct DYHingeClosedVideo<Content: View>: View {
-    let content: Content
-    let viewport: CGSize
-    let videoAspect: Double
-    let fills: Bool
-    @State private var isClosed = false
-    var body: some View {
-        content
-            .offset(x: DYDuoMetrics.closedPortraitVideoOffset(viewport: viewport, videoAspect: videoAspect,
-                      fills: fills, isDuo: DYDuoMetrics.isDuoHardware, isClosed: isClosed))
-            .onHingeChange { _, context in
-                isClosed = context.hinge?.status == .closed
-            }
+
+/// 挂在 App 根视图：整个 App 只读一次铰链状态，放进环境给所有页面用。
+struct DYHingeStateRoot: ViewModifier {
+    @State private var closed = false
+    func body(content: Content) -> some View {
+        if #available(iOS 27.1, *) {
+            content
+                .environment(\.dyHingeClosed, closed)
+                .onHingeChange { _, context in
+                    closed = context.hinge?.status == .closed
+                    DYLiveModel.log("DDHINGE root status=\(String(describing: context.hinge?.status))")
+                }
+        } else {
+            content
+        }
     }
 }
