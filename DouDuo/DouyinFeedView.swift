@@ -4712,6 +4712,11 @@ struct DYCommentPanel: View {
     /// 评论区位置记忆：当前屏幕最上面那条一级评论（关掉再开时滚回这里）
     @State private var topVisibleID: String?
     @State private var restoredFromMemory = false
+    /// 恢复完数据后要滚到的那条：数据是在列表出现之后才填进来的，
+    /// 所以不能在列表 onAppear 里滚（那时还是空的），要等数据到了再滚
+    @State private var pendingRestoreID: String?
+    /// 滚回去之前别让可见性回调把「最上面那条」改成第一条
+    @State private var restoringScroll = false
     @FocusState private var inputFocused: Bool
     /// 设置里的开关：点评论/名字回复时是否自动弹出键盘（关掉后只进入「回复 @某人」状态，点输入框才弹）
     @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
@@ -4777,8 +4782,8 @@ struct DYCommentPanel: View {
                 .padding(16)
             }
             .accessibilityIdentifier("douyin.comments.list")
-            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID))
-            .onAppear { restoreCommentPosition(proxy) }
+            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID, paused: restoringScroll))
+            .onChange(of: pendingRestoreID) { _, id in restoreCommentPosition(proxy, to: id) }
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
@@ -4900,8 +4905,8 @@ struct DYCommentPanel: View {
             .modifier(DYScrollTopObserver(atTop: $listAtTop))
             .modifier(DYPanelDismissGesture(isAtTop: listAtTop, allowsSwipeRight: true, onClose: onClose))
             .accessibilityIdentifier("douyin.comments.list")
-            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID))
-            .onAppear { restoreCommentPosition(proxy) }
+            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID, paused: restoringScroll))
+            .onChange(of: pendingRestoreID) { _, id in restoreCommentPosition(proxy, to: id) }
             .scrollDismissesKeyboard(.interactively)
             .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
@@ -4941,10 +4946,24 @@ struct DYCommentPanel: View {
         DYLiveModel.log("DDCOMMENTMEM save aweme=\(aweme.id.suffix(6)) n=\(items.count) top=\(topVisibleID?.suffix(6) ?? "-")")
     }
 
-    /// 打开评论区：有记忆就滚回上次看到的那条（不带动画，打开即在原位）
-    private func restoreCommentPosition(_ proxy: ScrollViewProxy) {
-        guard restoredFromMemory, let id = topVisibleID, items.contains(where: { $0.id == id }) else { return }
-        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+    /// 打开评论区：数据恢复后滚回上次看到的那条（不带动画）。
+    /// LazyVStack 第一次布局还没量出远处行的高度，单次 scrollTo 可能停在半路，
+    /// 所以下一帧和稍后各补一次，最后再放开「最上面那条」的跟踪。
+    private func restoreCommentPosition(_ proxy: ScrollViewProxy, to id: String?) {
+        guard let id, items.contains(where: { $0.id == id }) else { restoringScroll = false; return }
+        var tx = Transaction(); tx.disablesAnimations = true
+        DispatchQueue.main.async {
+            withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+                    restoringScroll = false
+                    pendingRestoreID = nil
+                    DYLiveModel.log("DDCOMMENTMEM scrolled aweme=\(aweme.id.suffix(6)) to=\(id.suffix(6)) top_now=\(topVisibleID?.suffix(6) ?? "-")")
+                }
+            }
+        }
     }
 
     private func searchRelated(_ word: String) {
@@ -5315,6 +5334,7 @@ struct DYCommentPanel: View {
             replies = m.replies; replyCursor = m.replyCursor; replyMore = m.replyMore
             digged = m.digged; diggShown = m.diggShown
             topVisibleID = m.topID
+            if let t = m.topID, t != m.items.first?.id { restoringScroll = true; pendingRestoreID = t }
             DYLiveModel.log("DDCOMMENTMEM restore aweme=\(aweme.id.suffix(6)) n=\(m.items.count) top=\(m.topID?.suffix(6) ?? "-")")
             return
         }
@@ -5634,9 +5654,12 @@ final class DYCommentMemory {
 struct DYCommentTopTracker: ViewModifier {
     let ids: [String]
     @Binding var top: String?
+    /// 正在滚回记忆位置时暂停记录（否则刚打开那一帧会把「第一条」写进去，覆盖掉记忆）
+    var paused = false
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { visible in
+                guard !paused else { return }
                 // 可见集合按列表顺序取第一个，就是屏幕最上面那条
                 let set = Set(visible)
                 if let first = ids.first(where: { set.contains($0) }) { top = first }
