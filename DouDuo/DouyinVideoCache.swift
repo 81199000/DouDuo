@@ -43,7 +43,7 @@ actor DYVideoCache {
     /// 「已看过」的缓存最多留几条：看过的没必要占盘，重启也不该再刷到
     static let watchedKeep = 3
     /// 单条缓存体积上限（估算）：超过就不整条下，避免 20 分钟以上的大片把盘和带宽吃满
-    static let sizeCap: Double = 250 * 1024 * 1024
+    static let sizeCap: Double = 400 * 1024 * 1024
     /// 不超过这个时长的算短视频：整条几秒内下完，优先下；更长的排在后面，不堵下一条
     static let blockingDuration: Double = 90
     /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
@@ -229,7 +229,7 @@ actor DYVideoCache {
         func quick(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= blockingDuration }
         /// 能整条下：时长在范围内、估算体积不至于太大
         func cacheable(_ a: DYAweme) -> Bool {
-            a.duration > 0 && a.duration <= longThreshold
+            a.duration > 0 && a.duration <= maxDuration
                 && a.duration * assumeBitsPerSecond / 8 <= sizeCap
         }
         let next = Array(ahead.prefix(1)), later = Array(ahead.dropFirst())
