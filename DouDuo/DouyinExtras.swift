@@ -14,6 +14,16 @@ struct DYDanmaku: Identifiable, Decodable, Equatable {
     let text: String
     let offset: Double      // 秒
 }
+extension DYDanmaku {
+    /// 合并分窗拉到的弹幕：按 id 去重，按时间排序
+    static func merged(_ a: [DYDanmaku], _ b: [DYDanmaku]) -> [DYDanmaku] {
+        var seen = Set<String>()
+        var out: [DYDanmaku] = []
+        for d in a + b where seen.insert(d.id).inserted { out.append(d) }
+        return out.sorted { $0.offset < $1.offset }
+    }
+}
+
 
 struct DYUser: Decodable, Equatable {
     let name: String
@@ -76,6 +86,7 @@ enum DYListKind: String, CaseIterable, Identifiable {
 
 private struct DYListPage: Decodable { let status: Int; let items: [DYAweme]; let cursor: String; let hasMore: Bool; let code: Int?; let msg: String? }
 private struct DYDanmakuPage: Decodable { let status: Int; let items: [DYDanmaku] }
+
 private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let msg: String? }
 private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String? }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
@@ -200,6 +211,55 @@ extension DouyinBridge {
         let r = try JSONDecoder().decode(DYDanmakuPage.self, from: d)
         return r.items.sorted { $0.offset < $1.offset }
     }
+
+    /// 指定时间窗拉弹幕（毫秒）。
+    func danmakuWindow(_ id: String, startMs: Int, endMs: Int, durationMs: Int) async throws -> [DYDanmaku] {
+        let d = try await call(Self.danmakuWindowJS,
+                               args: ["id": id, "from": String(startMs), "to": String(endMs), "dur": String(durationMs)],
+                               attempts: 1)
+        let r = try JSONDecoder().decode(DYDanmakuPage.self, from: d)
+        return r.items.sorted { $0.offset < $1.offset }
+    }
+
+    /// 弹幕分窗拉取：接口单次请求只返回约 30 秒（实测传更长会被截断）。
+    /// 所以按 30 秒一窗、并根据「上一次实际返回的最后一条时间」继续，保证时间轴连续覆盖，
+    /// 不会出现「每 60 秒只补前 30 秒」那种一段一段的空档。
+    func danmakuStream(_ id: String, durationMs: Int) -> AsyncStream<[DYDanmaku]> {
+        AsyncStream { continuation in
+            let task = Task {
+                let total = max(durationMs, 15_000)
+                let windowMs = 30_000
+                var seen = Set<String>()
+                var startMs = 0
+                var rounds = 0
+                while startMs < total, rounds < 40 {
+                    if Task.isCancelled { break }
+                    let endMs = min(startMs + windowMs, total)
+                    do {
+                        let chunk = try await self.danmakuWindow(id, startMs: startMs, endMs: endMs, durationMs: total)
+                        let fresh = chunk.filter { seen.insert($0.id).inserted }
+                        if !fresh.isEmpty { continuation.yield(fresh) }
+                        if chunk.isEmpty {
+                            startMs = endMs                                  // 整段没弹幕，直接跳到下一段
+                        } else {
+                            let maxMs = Int((chunk.map(\.offset).max() ?? 0) * 1000)
+                            // 从实际覆盖到的地方继续；至少前进 5 秒，避免原地打转
+                            startMs = max(startMs + 5_000, min(endMs, maxMs + 500))
+                        }
+                    } catch {
+                        break
+                    }
+                    rounds += 1
+                    // 控制请求节奏：既不给服务端压力，也让后面的段落在观看过程中陆续补齐
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+
 
     func fetchReplies(_ id: String, commentID: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool) {
         let d = try await call(Self.replyJS, args: ["id": id, "cid": commentID, "cursor": String(cursor)], attempts: 1)
@@ -454,6 +514,13 @@ extension DouyinBridge {
     return JSON.stringify({ status: r.s, items: (d.danmaku_list || []).filter(x => x && x.text).map(x => ({ id: String(x.danmaku_id), text: x.text, offset: (x.offset_time || 0) / 1000 })) });
     """#
 
+    /// 诊断用：同一接口，显式指定 start_time/end_time 窗口
+    static let danmakuWindowJS = #"""
+    const r = await req('GET', '/aweme/v1/web/danmaku/get_v2/?' + q({ app_name: 'aweme', format: 'json', group_id: id, item_id: id, start_time: from, end_time: to, duration: dur }));
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, items: (d.danmaku_list || []).filter(x => x && x.text).map(x => ({ id: String(x.danmaku_id), text: x.text, offset: (x.offset_time || 0) / 1000 })) });
+    """#
+
     static let replyJS = #"""
     let r = await req('GET', '/aweme/v2/web/comment/list/reply/?' + q({ item_id: id, comment_id: cid, cut_version: '1', cursor: cursor, count: '10', item_type: '0' }));
     let d = parse(r.t);
@@ -515,7 +582,7 @@ enum DYDanmakuPolicy {
         }
     }
     struct Region { let top: CGFloat; let bottom: CGFloat; let lanes: Int }
-    struct Placed { let d: DYDanmaku; let lane: Int; let width: CGFloat; let dur: Double }
+    struct Placed { let d: DYDanmaku; let lane: Int; let width: CGFloat; let dur: Double; let start: Double }
 
     static func region(height: CGFloat, topInset: CGFloat, density: Density) -> Region {
         guard height.isFinite, height >= 0, topInset.isFinite else { return Region(top: 0, bottom: 0, lanes: 0) }
@@ -533,10 +600,13 @@ enum DYDanmakuPolicy {
     static func layout(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat,
                        density: Density, deduplicate: Bool) -> [Placed] {
         guard w.isFinite, w > 0, speed.isFinite, speed > 0, lanes > 0 else { return [] }
-        var free = Array(repeating: -Double.infinity, count: min(lanes, density.maxLanes))
+        let laneCount = min(lanes, density.maxLanes)
+        var free = Array(repeating: -Double.infinity, count: laneCount)
         var out: [Placed] = []
         var seenIDs = Set<String>(), lastShown: [String: Double] = [:]
-        var second = -Double.infinity, inSecond = 0
+        // 源数据一扎堆就只放前几条、后面直接丢，视觉上会「一片一片」。
+        // 改成：能放就放在原时刻；轨道都占着就顺延（最多 2.5 秒），把成团的弹幕摊成连续流。
+        let maxDelay = 2.5
         let sorted = items.enumerated().filter { $0.element.offset.isFinite && $0.element.offset >= 0 }
             .sorted { $0.element.offset == $1.element.offset ? $0.offset < $1.offset : $0.element.offset < $1.element.offset }
         for entry in sorted {
@@ -544,14 +614,18 @@ enum DYDanmakuPolicy {
             let text = normalized(d.text)
             guard !d.id.isEmpty, !text.isEmpty, !seenIDs.contains(d.id) else { continue }
             if deduplicate, let last = lastShown[text], d.offset - last < 10 { continue }
-            let bucket = floor(d.offset)
-            if bucket != second { second = bucket; inSecond = 0 }
-            guard inSecond < density.maxPerSecond,
-                  let lane = free.indices.first(where: { free[$0] <= d.offset }) else { continue }
             let width = d.text.unicodeScalars.reduce(CGFloat(6)) { $0 + ($1.value < 0x2E80 ? 9 : 16) }
-            free[lane] = d.offset + Double((width + gap) / speed)
-            out.append(Placed(d: d, lane: lane, width: width, dur: Double((w + width) / speed)))
-            seenIDs.insert(d.id); lastShown[text] = d.offset; inSecond += 1
+            // 选最早空出来的轨道
+            var lane = -1
+            var start = Double.infinity
+            for (i, f) in free.enumerated() {
+                let candidate = max(d.offset, f)
+                if candidate < start { start = candidate; lane = i }
+            }
+            guard lane >= 0, start - d.offset <= maxDelay else { continue }
+            free[lane] = start + Double((width + gap) / speed)
+            out.append(Placed(d: d, lane: lane, width: width, dur: Double((w + width) / speed), start: start))
+            seenIDs.insert(d.id); lastShown[text] = d.offset
         }
         return out
     }
@@ -618,8 +692,8 @@ struct DYDanmakuLayer: View {
                 Canvas(rendersAsynchronously: false) { gc, _ in
                     var regionContext = gc
                     regionContext.clip(to: Path(CGRect(x: 0, y: region.top, width: w, height: max(0, region.bottom - region.top))))
-                    for p in placed where t >= p.d.offset && t <= p.d.offset + p.dur {
-                        let x = w - CGFloat(t - p.d.offset) * speed
+                    for p in placed where t >= p.start && t <= p.start + p.dur {
+                        let x = w - CGFloat(t - p.start) * speed
                         let y = region.top + CGFloat(p.lane) * DYDanmakuPolicy.laneHeight
                         guard let sym = regionContext.resolveSymbol(id: p.d.id) else { continue }
                         regionContext.draw(sym, at: CGPoint(x: x, y: y), anchor: .topLeading)
