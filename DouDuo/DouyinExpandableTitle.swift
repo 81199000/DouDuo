@@ -26,7 +26,7 @@ struct DYExpandableTitle: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             Text(caption)
-                .lineLimit(expanded ? nil : 3)
+                .lineLimit(expanded ? nil : 1)   // 老板定：默认只显示一行，点「展开」看全部
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }

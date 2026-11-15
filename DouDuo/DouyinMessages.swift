@@ -727,6 +727,16 @@ struct DYMessagesScreen: View {
                     root
                         .frame(width: listWidth, height: geo.size.height)
                         .clipped()
+                        // 分栏时联系人和聊天之间画一条明显的竖线（老板要「明显的色差或分割线」）
+                        .overlay(alignment: rtl ? .leading : .trailing) {
+                            if split {
+                                theme.messages.splitDivider
+                                    .frame(width: theme.messages.splitDividerWidth)
+                                    .ignoresSafeArea()
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                         .padding(.trailing, split ? detailWidth : 0)
                         .offset(x: !split && navigation.hasDetail && !reduceMotion ? -direction * geo.size.width * 0.18 : 0)
                         .opacity(!navigation.hasDetail || split ? 1 : 0)
