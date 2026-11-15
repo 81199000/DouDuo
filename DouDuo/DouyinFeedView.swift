@@ -1704,6 +1704,7 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
+            if open { DYMessageOpenProbe.tapped() }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -3049,6 +3050,7 @@ struct DYClassicFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
+            if open { DYMessageOpenProbe.tapped() }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
