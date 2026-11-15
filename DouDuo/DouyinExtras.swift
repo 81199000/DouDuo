@@ -640,14 +640,52 @@ struct DYDanmakuClock {
     var anchorDate = Date()
     var rate: Double = 1
     var playing = false
+    /// 快进/拖动后的「冷静期」：这段时间里播放器报上来的时间还在乱跳（音频引擎重建、缓冲），
+    /// 只信自己按速率推出来的时间，不被一次次拉回去——否则弹幕一卡一卡地跳，1～2 秒后才顺。
+    var settleUntil = Date.distantPast
+    /// 冷静期里连续几次报告跟预测对得上，就提前结束冷静期
+    var agreeing = 0
 
     func now(_ d: Date) -> Double {
         playing ? anchorTime + d.timeIntervalSince(anchorDate) * rate : anchorTime
     }
 
+    /// 用户主动跳转（拖进度、快进/快退）：直接对齐到目标，并进入冷静期
+    mutating func seek(_ t: Double, playing p: Bool, rate r: Double) {
+        anchorTime = t
+        anchorDate = Date()
+        playing = p
+        rate = r
+        settleUntil = Date().addingTimeInterval(2.5)
+        agreeing = 0
+    }
+
+    /// 用户点了暂停/播放：立刻生效，结束冷静期
+    mutating func userToggle(_ t: Double, playing p: Bool, rate r: Double) {
+        settleUntil = .distantPast
+        anchorTime = t; anchorDate = Date(); playing = p; rate = r
+    }
+
     mutating func sync(_ t: Double, playing p: Bool, rate r: Double) {
-        let predicted = now(Date())
-        // 进度跳了（拖动 / 循环回开头 / 卡顿）或状态变了：直接对齐；否则差不多就别动，避免往回抖
+        let now = Date()
+        let predicted = self.now(now)
+        if now < settleUntil {
+            // 冷静期（刚快进/拖动完）：播放器在重建音频、缓冲，报上来的时间和播放状态都在抖。
+            // 不跳：只按 20% 往报告值靠拢，播放/暂停的抖动也不打断弹幕的连续位置。
+            if abs(predicted - t) < 0.35 {
+                agreeing += 1
+                if agreeing >= 2 { settleUntil = .distantPast }
+            } else {
+                agreeing = 0
+            }
+            // 跳转落点和目标最多差 0.5s（seek 容差）；偏差再大说明是真跳了，直接对齐
+            anchorTime = abs(predicted - t) > 1.5 ? t : predicted + (t - predicted) * 0.2
+            anchorDate = now
+            // 缓冲中播放器会短暂报 rate=0：不跟着停（停了 TimelineView 会暂停，恢复时再跳一下）
+            rate = r
+            return
+        }
+        // 进度跳了（循环回开头 / 卡顿）或状态变了：直接对齐；否则差不多就别动，避免往回抖
         if !p || !playing || r != rate || abs(predicted - t) > 0.35 {
             anchorTime = t
         } else {
@@ -689,10 +727,12 @@ struct DYDanmakuLayer: View {
                                                   density: density, deduplicate: deduplicate)
             TimelineView(.animation(minimumInterval: nil, paused: !clock.playing)) { ctx in
                 let t = clock.now(ctx.date)
+                // 每帧只给「此刻在屏上的」弹幕建贴图（长视频全片上千条，原来每帧都给上千条建 Text → 掉帧）
+                let onScreen = placed.filter { t >= $0.start - 0.2 && t <= $0.start + $0.dur }
                 Canvas(rendersAsynchronously: false) { gc, _ in
                     var regionContext = gc
                     regionContext.clip(to: Path(CGRect(x: 0, y: region.top, width: w, height: max(0, region.bottom - region.top))))
-                    for p in placed where t >= p.start && t <= p.start + p.dur {
+                    for p in onScreen where t >= p.start {
                         let x = w - CGFloat(t - p.start) * speed
                         let y = region.top + CGFloat(p.lane) * DYDanmakuPolicy.laneHeight
                         guard let sym = regionContext.resolveSymbol(id: p.d.id) else { continue }
@@ -700,7 +740,7 @@ struct DYDanmakuLayer: View {
                     }
                 } symbols: {
                     // 只排版一次，逐帧移动贴图；区域外再裁剪，避免遮挡下方内容。
-                    ForEach(placed, id: \.d.id) { p in
+                    ForEach(onScreen, id: \.d.id) { p in
                         Text(p.d.text)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.92))

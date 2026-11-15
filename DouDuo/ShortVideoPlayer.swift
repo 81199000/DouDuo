@@ -1408,7 +1408,7 @@ struct PlayerPage: View {
 
     private func togglePlay() {
         defer { lastNowPlaying = -10; refreshNowPlaying(vlc?.current ?? seamAudio.currentMediaTime ?? player?.currentTime().seconds ?? current) }   // 锁屏上的播放/暂停状态马上跟上
-        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; userPaused = !isPlaying; dmClock.sync(v.current, playing: v.isPlaying, rate: 1); return }
+        if let v = vlc { v.togglePlay(); isPlaying = v.isPlaying; userPaused = !isPlaying; dmClock.userToggle(v.current, playing: v.isPlaying, rate: 1); return }
         guard let p = player else { return }
         if isPlaying {
             seamAudio.pause()
@@ -1419,11 +1419,11 @@ struct PlayerPage: View {
         }
         userPaused = !isPlaying
         let pos = seamAudio.currentMediaTime ?? p.currentTime().seconds
-        dmClock.sync(pos, playing: isPlaying, rate: Double(playRate))
+        dmClock.userToggle(pos, playing: isPlaying, rate: Double(playRate))
     }
 
     private func seekTo(_ pos: Double) {
-        dmClock.sync(pos, playing: isPlaying, rate: Double(playRate))
+        dmClock.seek(pos, playing: isPlaying, rate: Double(playRate))
         if let v = vlc { v.seekTo(pos); current = pos; return }
         seamAudio.prepareForSeek()
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
