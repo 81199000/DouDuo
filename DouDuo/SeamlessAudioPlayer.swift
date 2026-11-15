@@ -236,7 +236,8 @@ final class DDAudioStream {
         self.asset = asset
     }
 
-    func prepareAndPrewarm(videoItem: AVPlayerItem? = nil) async -> PrepState {
+    /// - Parameter prewarm: 是否预解码开头 2 块。就地交接马上要 seek 到当前位置，开头那 2 块用不上
+    func prepareAndPrewarm(videoItem: AVPlayerItem? = nil, prewarm: Bool = true) async -> PrepState {
         if state != .idle {
             if state == .ready, let videoItem { Self.disableAudioTracks(on: videoItem) }
             return state
@@ -248,13 +249,13 @@ final class DDAudioStream {
         }
         let task = Task<PrepState, Never> { @MainActor [weak self] in
             guard let self else { return .unsupported }
-            return await self.doPrepare(videoItem: videoItem)
+            return await self.doPrepare(videoItem: videoItem, prewarm: prewarm)
         }
         prepTask = task
         return await task.value
     }
 
-    private func doPrepare(videoItem: AVPlayerItem?) async -> PrepState {
+    private func doPrepare(videoItem: AVPlayerItem?, prewarm: Bool) async -> PrepState {
         let startEpoch = epoch
         do {
             let tracks = try await asset.loadTracks(withMediaType: .audio)
@@ -296,6 +297,7 @@ final class DDAudioStream {
             if let videoItem { Self.disableAudioTracks(on: videoItem) }
 
             // 预解码开头 2 块（约 1 秒音频，仅 ~16KB 网络请求），滑入时 0ms 瞬时出声
+            guard prewarm else { return .ready }
             if let b1 = await decodeNextChunk(expectedEpoch: startEpoch) { predecoded.append(b1) }
             if let b2 = await decodeNextChunk(expectedEpoch: startEpoch) { predecoded.append(b2) }
             return .ready
@@ -521,6 +523,17 @@ final class DDSeamlessController {
     private var isMuted = false
     var onBackgroundEnded: (() -> Void)?
 
+    /// 1x 原生声音下第一次变速（长按 2x、上滑取消、锁定）时，就地把这一条的声音交给独立引擎。
+    /// 实测 AVPlayer 带着音轨改速率会冲刷内部音频队列：画面停 50~110ms、声音断一截，长按开始和松手各一次。
+    /// 而播放中关掉音轨本身不停画面，之后改速率也不停。所以：引擎先在画面前方对齐起播
+    /// （TimePitch 前瞻窗口内还没出声，原生声音照常响），引擎刚出声那一刻关原生音轨、画面切到目标速率。
+    /// 之后这一条留在引擎上（松手、再按都是 0ms 切换）；滑走后重新绑定时回到原生声音，不增加平时滑动的开销。
+    private var handoffAllowed = false
+    private var handoffGen: UInt64 = 0
+    private var handoffPending = false
+    /// 声音交接要等流准备好；等太久（在线流首包慢）就先按原生方式变速，交接完成后接着无缝
+    private let handoffNativeFallbackDelay: Double = 0.35
+
     /// 设置里的播放速度不是 1x 才启用独立音频引擎；1x 直接用 AVPlayer 原生声音。
     /// 引擎在主线程解码 AAC，1x 下没有收益反而拖慢滑动（1.3.13 卡顿反馈）。
     nonisolated static var engineWanted: Bool {
@@ -528,8 +541,9 @@ final class DDSeamlessController {
         return abs(rate - 1) > 0.001
     }
 
+    /// - Parameter engineHandoff: 原生声音（1x）时，变速是否允许就地交给独立引擎（画中画要原生声音，不允许）
     func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool,
-              useEngine: Bool = DDSeamlessController.engineWanted) {
+              useEngine: Bool = DDSeamlessController.engineWanted, engineHandoff: Bool = false) {
         reset()
         bindGen &+= 1
         let gen = bindGen
@@ -540,11 +554,12 @@ final class DDSeamlessController {
         self.isMuted = muted
         self.mode = .preparing
         #if DEBUG
-        ddWrite("DDSEAM bind engine=\(useEngine) rate=\(rate)")
+        ddWrite("DDSEAM bind engine=\(useEngine) handoff=\(engineHandoff) rate=\(rate)")
         #endif
         // 1x：不建音频流，直接走原生声音（预热池里若有这条的流也一并丢掉，音轨重新打开）
         if !useEngine {
             mode = .fallbackAVPlayer
+            handoffAllowed = engineHandoff
             if let asset = player.currentItem?.asset as? AVURLAsset {
                 DDAudioPreloadPool.shared.take(for: asset)?.cancel()
             }
@@ -621,6 +636,13 @@ final class DDSeamlessController {
             stopEngineOutput()
             videoPlayer?.isMuted = true
             videoPlayer?.pause()
+            // 长按时临时交给引擎的 1x 视频：滑走就还给原生声音，滑回来按 1x 原路起播（流保留，下次长按免准备）
+            if engagedByHandoff {
+                engagedByHandoff = false
+                mode = .fallbackAVPlayer
+                itemTracksObs?.invalidate(); itemTracksObs = nil
+                if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }
+            }
             return
         }
 
@@ -665,7 +687,154 @@ final class DDSeamlessController {
         case .preparing, .noAudio:
             if wantPlaying { videoPlayer?.rate = newRate }
         case .fallbackAVPlayer:
-            if wantPlaying { videoPlayer?.softRate(newRate) }
+            guard wantPlaying, let vp = videoPlayer else { return }
+            if handoffPending {
+                // 交接中：完成时按最新的 targetRate 起；已经先按原生方式变过速的，原生继续跟着变
+                if handoffNativeFallen, abs(vp.rate - newRate) > 0.001 { vp.softRate(newRate) }
+                return
+            }
+            if vp.rate > 0, abs(vp.rate - newRate) < 0.001 { return }
+            if handoffAllowed, vp.rate > 0 { beginEngineHandoff() } else { vp.softRate(newRate) }
+        }
+    }
+
+    // MARK: 1x 原生声音 → 独立引擎（就地交接，见 handoffAllowed）
+
+    private var handoffNativeFallen = false
+    private var engagedByHandoff = false
+
+    /// 作废进行中的交接；交接途中已占用的引擎当场释放（旧任务醒来发现代号变了就直接退出，不再碰引擎）
+    private func cancelHandoff() {
+        let wasPending = handoffPending
+        handoffGen &+= 1
+        handoffPending = false
+        handoffNativeFallen = false
+        if wasPending, mode == .fallbackAVPlayer, DDAudioEngineHub.shared.activeOwner == ownerID {
+            syncTimer?.invalidate(); syncTimer = nil
+            pendingBuffers = 0
+            DDAudioEngineHub.shared.release(owner: ownerID)
+        }
+    }
+
+    private func beginEngineHandoff() {
+        guard let vp = videoPlayer, let item = vp.currentItem, let asset = item.asset as? AVURLAsset else {
+            handoffAllowed = false
+            videoPlayer?.softRate(targetRate)
+            return
+        }
+        cancelHandoff()
+        handoffPending = true
+        let hGen = handoffGen, gen = bindGen
+        let audioStream = stream ?? DDAudioPreloadPool.shared.take(for: asset) ?? DDAudioStream(asset: asset)
+        stream = audioStream
+        let started = CACurrentMediaTime()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + handoffNativeFallbackDelay) { [weak self] in
+            guard let self, self.handoffGen == hGen, self.handoffPending, self.wantPlaying,
+                  let vp = self.videoPlayer else { return }
+            self.handoffNativeFallen = true
+            #if DEBUG
+            ddWrite("DDSEAM handoff slow → native rate \(self.targetRate)")
+            #endif
+            if abs(vp.rate - self.targetRate) > 0.001 { vp.softRate(self.targetRate) }
+        }
+
+        feedTask?.cancel()
+        feedTask = Task { @MainActor [weak self] in
+            // 不传 videoItem：准备好时不能马上关原生音轨，要等引擎出声那一刻
+            let prep = await audioStream.prepareAndPrewarm(prewarm: false)
+            guard let self, self.handoffGen == hGen, self.bindGen == gen, self.mode == .fallbackAVPlayer else { return }
+            guard prep == .ready, let fmt = audioStream.pcmFormat else {
+                // 无音轨 / 格式不支持：这一条以后都按原生方式变速
+                #if DEBUG
+                ddWrite("DDSEAM handoff unavailable prep=\(prep)")
+                #endif
+                self.handoffAllowed = false
+                self.abortHandoff(hGen)
+                return
+            }
+            await self.completeEngineHandoff(stream: audioStream, format: fmt, hGen: hGen, gen: gen, started: started)
+        }
+    }
+
+    /// 交接失败：释放引擎，原生声音按当前目标速率继续。已被别处作废（暂停 / 滑走 / 重新绑定）的旧交接什么都不做。
+    private func abortHandoff(_ hGen: UInt64) {
+        guard handoffGen == hGen, handoffPending else { return }
+        cancelHandoff()
+        if wantPlaying, let vp = videoPlayer, abs(vp.rate - targetRate) > 0.001 { vp.softRate(targetRate) }
+    }
+
+    private func completeEngineHandoff(stream: DDAudioStream, format: AVAudioFormat,
+                                       hGen: UInt64, gen: UInt64, started: CFTimeInterval) async {
+        let hub = DDAudioEngineHub.shared
+        func live() -> Bool {
+            handoffGen == hGen && bindGen == gen && wantPlaying && mode == .fallbackAVPlayer && videoPlayer != nil
+        }
+        guard live(), hub.allowsAutomaticStart, let vp = videoPlayer else { abortHandoff(hGen); return }
+        pendingBuffers = 0
+        // 出声前引擎按画面当前速率走（和原生声音同速），切换那一刻两边一起换到目标速率
+        let nativeRate = Double(max(vp.rate, 0.25))
+        do {
+            try hub.acquire(owner: ownerID, format: format, rate: Float(nativeRate), muted: isMuted)
+        } catch {
+            handoffAllowed = false
+            abortHandoff(hGen)
+            return
+        }
+        // 引擎从 play() 到真正出声隔着 TimePitch 前瞻窗口；再留一点给解码首块。
+        // 从画面「那时会走到的位置」开始解码，原生声音在此期间照常响。
+        let lead = max(0.02, min(0.12, hub.timePitch.latency))
+        stream.seek(to: vp.currentTime().seconds + (lead + 0.05) * nativeRate)
+        let epoch = stream.epoch
+        // 一块约 0.5~0.9 秒声音，够撑到切换后喂包循环接上
+        await enqueueOneChunk(gen: gen, streamEpoch: epoch)
+        guard live(), pendingBuffers > 0, hub.activeOwner == ownerID else { abortHandoff(hGen); return }
+
+        // 等画面走到「引擎出声时正好对上」的那一刻再 play
+        let wait = (stream.anchorMediaTime - vp.currentTime().seconds) / nativeRate - lead
+        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(min(wait, 0.5) * 1_000_000_000)) }
+        guard live(), hub.activeOwner == ownerID else { abortHandoff(hGen); return }
+        try? hub.ensureRunning()
+        hub.playerNode.play()
+        try? await Task.sleep(nanoseconds: UInt64(lead * 1_000_000_000))
+        guard live(), hub.activeOwner == ownerID else { abortHandoff(hGen); return }
+
+        // 引擎此刻出声：关原生音轨、画面切到目标速率——两步都不冲刷画面
+        guard let vpNow = videoPlayer, let item = vpNow.currentItem else { abortHandoff(hGen); return }
+        DDAudioStream.disableAudioTracks(on: item)
+        vpNow.isMuted = true
+        hub.setRate(targetRate, owner: ownerID)   // 交接途中可能已经松手 / 改速
+        hub.setMuted(isMuted, owner: ownerID)
+        vpNow.rate = targetRate
+        mode = .engaged
+        engagedByHandoff = true
+        handoffPending = false
+        handoffNativeFallen = false
+        itemTracksObs = item.observe(\.tracks, options: [.new]) { [weak self] it, _ in
+            DispatchQueue.main.async {
+                guard let self, self.bindGen == gen, self.mode == .engaged else { return }
+                DDAudioStream.disableAudioTracks(on: it)
+            }
+        }
+        #if DEBUG
+        let drift = vpNow.currentTime().seconds - (currentMediaTime ?? .nan)
+        ddWrite("DDSEAM handoff done in \(Int((CACurrentMediaTime() - started) * 1000))ms rate=\(targetRate) wait=\(Int(wait * 1000))ms drift=\(Int(drift * 1000))ms")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.mode == .engaged, let vp = self.videoPlayer, let a = self.currentMediaTime else { return }
+            ddWrite("DDSEAM handoff +1s drift=\(Int((vp.currentTime().seconds - a) * 1000))ms rate=\(vp.rate)")
+        }
+        #endif
+        startSyncLoop()
+        await feedLoop(stream: stream, gen: gen, streamEpoch: epoch)
+    }
+
+    private func feedLoop(stream: DDAudioStream, gen: UInt64, streamEpoch: UInt64) async {
+        while !Task.isCancelled && bindGen == gen && stream.epoch == streamEpoch {
+            if pendingBuffers < maxBufferedChunks && !stream.reachedEOF {
+                await enqueueOneChunk(gen: gen, streamEpoch: streamEpoch)
+            } else {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
         }
     }
 
@@ -718,6 +887,7 @@ final class DDSeamlessController {
 
     func pause() {
         wantPlaying = false
+        cancelHandoff()
         syncTimer?.invalidate()
         DDAudioEngineHub.shared.pause(owner: ownerID)
         videoPlayer?.pause()
@@ -823,14 +993,7 @@ final class DDSeamlessController {
             guard self.bindGen == gen, self.wantPlaying else { return }
             self.videoPlayer?.rate = self.targetRate
             self.startSyncLoop()
-
-            while !Task.isCancelled && self.bindGen == gen && stream.epoch == streamEpoch {
-                if self.pendingBuffers < self.maxBufferedChunks && !stream.reachedEOF {
-                    await self.enqueueOneChunk(gen: gen, streamEpoch: streamEpoch)
-                } else {
-                    try? await Task.sleep(nanoseconds: 40_000_000)
-                }
-            }
+            await self.feedLoop(stream: stream, gen: gen, streamEpoch: streamEpoch)
         }
     }
 
@@ -915,6 +1078,7 @@ final class DDSeamlessController {
     }
 
     private func stopEngineOutput() {
+        cancelHandoff()
         feedTask?.cancel()
         feedTask = nil
         syncTimer?.invalidate()
@@ -929,6 +1093,10 @@ final class DDSeamlessController {
         stopEngineOutput()
         itemStatusObs?.invalidate(); itemStatusObs = nil
         itemTracksObs?.invalidate(); itemTracksObs = nil
+        // 交接给引擎的 1x 视频把原生音轨关了：交还播放器前重新打开
+        if engagedByHandoff, let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }
+        engagedByHandoff = false
+        handoffAllowed = false
         stream?.cancel()
         stream = nil
         videoPlayer = nil
