@@ -127,8 +127,7 @@ enum DYLiveAdaptiveLayoutEngine {
         return (panes.video, panes.interaction, band.axis == .book)
     }
 
-    /// Extend only the painted interaction surface to the hinge center.
-    /// Controls and video keep the rectangles supplied by the system division.
+    /// Extend the interaction surface to the hinge center.
     static func interactionSurface(video: CGRect, interaction: CGRect, book: Bool) -> CGRect {
         if book {
             let edge = (video.maxX + interaction.minX) / 2
@@ -136,6 +135,16 @@ enum DYLiveAdaptiveLayoutEngine {
         }
         let edge = (video.maxY + interaction.minY) / 2
         return CGRect(x: interaction.minX, y: edge, width: interaction.width, height: interaction.maxY - edge)
+    }
+
+    /// Feed video and comments meet at the hinge center in either posture.
+    static func videoCommentPanes(video: CGRect, panel: CGRect, book: Bool) -> (video: CGRect, panel: CGRect) {
+        let panel = interactionSurface(video: video, interaction: panel, book: book)
+        let video = CGRect(origin: video.origin, size: CGSize(
+            width: book ? panel.minX - video.minX : video.width,
+            height: book ? video.height : panel.minY - video.minY
+        ))
+        return (video, panel)
     }
 
     static func occupiesDisplay(scene: CGRect, display: CGRect) -> Bool {

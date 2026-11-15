@@ -57,6 +57,10 @@ let bookSurface = DYLiveAdaptiveLayoutEngine.interactionSurface(video: bookLands
 check(tableSurface == CGRect(x: 0, y: 400, width: 400, height: 400), "lower surface begins at the fold center")
 check(bookSurface == CGRect(x: 400, y: 0, width: 400, height: 400), "right surface begins at the fold center")
 check(!overlaps(bookSurface, bookLandscape.video) && !overlaps(tableSurface, tableLandscape.video), "paint stays outside the video")
+let tableFeed = DYLiveAdaptiveLayoutEngine.videoCommentPanes(video: tableLandscape.video, panel: tableLandscape.interaction, book: false)
+let bookFeed = DYLiveAdaptiveLayoutEngine.videoCommentPanes(video: bookLandscape.video, panel: bookLandscape.interaction, book: true)
+check(tableFeed.video == CGRect(x: 0, y: 0, width: 400, height: tableHinge.frame.midY) && tableFeed.panel == tableSurface, "tabletop feed fills both sides up to the fold center")
+check(bookFeed.video == CGRect(x: 0, y: 0, width: bookHinge.frame.midX, height: 400) && bookFeed.panel == bookSurface, "book feed fills both sides up to the fold center")
 check(DYLiveAdaptiveLayoutEngine.occupiesDisplay(scene: bookBounds, display: bookBounds), "full-screen scene allows half-fold layout")
 check(!DYLiveAdaptiveLayoutEngine.occupiesDisplay(scene: CGRect(x: 400, y: 0, width: 400, height: 400), display: bookBounds), "system split does not auto-open the half-fold panel")
 
