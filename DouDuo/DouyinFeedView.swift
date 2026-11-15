@@ -1406,8 +1406,12 @@ struct DYUpstreamFeedScreen: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
+    /// 信息页「已盖上」：比 showMessages 晚一点置位。
+    /// 点信息时如果同一帧就把所有视频页标成 inactive，整列视频页重建 + 播放器拆停都挤在弹出前（实测 ~550ms 才开始弹）。
+    /// 先弹页面、动画走完再让视频页退场；弹出时外层视频已经由 pauseAll(.cover) 暂停，不会漏声。
+    @State private var messagesCovering = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
-    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || showMessages || authorTarget != nil }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
@@ -1678,7 +1682,10 @@ struct DYUpstreamFeedScreen: View {
             DouyinWebScreen(start: t.url)
         }
         .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover() }) {
-            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onWeb: { u in
+            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onMine: {
+                showMessages = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showMine = true }
+            }, onWeb: { u in
                 showMessages = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
             })
@@ -1704,8 +1711,17 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if open { DYMessageOpenProbe.tapped() }
-            if !open { Task { await refreshNoticeUnread() } }
+            if open {
+                DYMessageOpenProbe.tapped()
+                DDPlayback.shared.pauseAll(reason: .cover)   // 立即停声，不等视频页退场
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))   // 弹出动画走完再让视频页退场
+                    if showMessages { messagesCovering = true }
+                }
+            } else {
+                messagesCovering = false
+                Task { await refreshNoticeUnread() }
+            }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
         .task {
@@ -3085,7 +3101,7 @@ struct DYClassicFeedScreen: View {
                     .tint(nil)
             }
             Tab("消息", systemImage: "bubble.left.and.bubble.right", value: DYMainTab.messages) {
-                DYMessagesScreen(bridge: bridge, onWeb: { url in
+                DYMessagesScreen(bridge: bridge, onMine: { mainTab = .mine }, onWeb: { url in
                     mainTab = .home
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: url) }
                 }, forwardedShare: forwardedChat)
