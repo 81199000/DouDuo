@@ -89,7 +89,7 @@ struct DouyinWebScreen: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                theme.media.strongScrim.color(for: scheme).ignoresSafeArea()
+                Color.ddBackground.ignoresSafeArea()
                 DouyinWebContainer(model: model, zoom: zoom, start: start)
                     .ignoresSafeArea(edges: [.bottom, .horizontal])
                 if model.progress < 1 {
@@ -280,6 +280,7 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        DDWebAppearance.synchronize(webView)
         (webView as? DouyinFitWebView)?.syncViewport()
     }
 
@@ -448,24 +449,32 @@ private let ddVideoTapHookJS = #"""
 """#
 
 struct DouyinWebContainer: UIViewRepresentable {
+    @Environment(\.colorScheme) private var scheme
     @ObservedObject var model: DouyinWebModel
     let zoom: Double
     let start: URL
-    var reuseExisting = false
-
     func makeUIView(context: Context) -> WKWebView {
-        if reuseExisting, let existing = model.web { return existing }
-        return Self.instantiate(model: model, zoom: zoom, start: start)
+        Self.instantiate(model: model, zoom: zoom, start: start, scheme: scheme)
     }
 
-    static func instantiate(model: DouyinWebModel, zoom: Double, start: URL, includeProbe: Bool = false) -> WKWebView {
+    static func instantiate(model: DouyinWebModel, zoom: Double, start: URL, includeProbe: Bool = false,
+                            scheme: ColorScheme? = nil) -> WKWebView {
+        let isChat = DDWebAppearance.isChatURL(start)
         let cfg = WKWebViewConfiguration()
+        DDWebAppearance.install(in: cfg)
         cfg.websiteDataStore = .default()            // 登录态持久化
         #if DEBUG
-        if DYMessageFixture.enabled && start.path == "/chat" { cfg.websiteDataStore = .nonPersistent() }
+        if DYMessageFixture.enabled && isChat { cfg.websiteDataStore = .nonPersistent() }
         #endif
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []
+        #if DEBUG
+        // Inspect the live page while paused; autoplay promotions can otherwise
+        // cover XCTest's controls with the system video presenter.
+        if ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_LIVE"] == "1" {
+            cfg.mediaTypesRequiringUserActionForPlayback = .all
+        }
+        #endif
         // 网页全屏按钮走网页自己的全屏（同电脑版），不弹系统播放器；系统播放器退出后网页还以为在全屏，再点就没反应
         cfg.preferences.isElementFullscreenEnabled = true
         cfg.allowsPictureInPictureMediaPlayback = true
@@ -478,7 +487,7 @@ struct DouyinWebContainer: UIViewRepresentable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // 信息里的图片本地缓存：ddimg:// 由 App 供图，键只认路径（签名变化也能命中）
-        if start.path == "/chat" || start.path.hasPrefix("/chat") {
+        if isChat {
             cfg.setURLSchemeHandler(DYChatImageSchemeHandler(), forURLScheme: DYChatImageCache.scheme)
             cfg.userContentController.addUserScript(
                 WKUserScript(source: DYChatImageRewrite.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -511,21 +520,23 @@ struct DouyinWebContainer: UIViewRepresentable {
         wv.navigationDelegate = model
         wv.uiDelegate = model
         wv.allowsBackForwardNavigationGestures = true
-        wv.isOpaque = false
-        wv.backgroundColor = .clear
-        wv.scrollView.backgroundColor = .clear
-        if start.path == "/chat" {
-            wv.underPageBackgroundColor = .clear
-            wv.scrollView.keyboardDismissMode = .interactive
-        }
+        if isChat { wv.scrollView.keyboardDismissMode = .interactive }
         wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.userZoom = zoom
         #if DEBUG
         wv.isInspectable = true
         #endif
+        let stored = UserDefaults.standard.string(forKey: DDAppearance.key) ?? DDAppearance.dark.rawValue
+        let initialScheme = scheme ?? DDAppearance(rawValue: stored)?.colorScheme
+            ?? (wv.traitCollection.userInterfaceStyle == .dark ? .dark : .light)
+        DDWebAppearance.apply(to: wv, scheme: initialScheme, chat: isChat)
         model.attach(wv)
         #if DEBUG
-        if DYMessageFixture.enabled && start.path == "/chat" {
+        if ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_FIXTURE"] == "1" {
+            wv.loadHTMLString(DDAppearanceWebProbe.html, baseURL: start)
+            return wv
+        }
+        if DYMessageFixture.enabled && isChat {
             wv.loadHTMLString(DYMessageFixture.page, baseURL: URL(string: "https://www.douyin.com/chat"))
             return wv
         }
@@ -535,6 +546,7 @@ struct DouyinWebContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ wv: WKWebView, context: Context) {
+        DDWebAppearance.apply(to: wv, scheme: scheme, chat: DDWebAppearance.isChatURL(wv.url ?? start))
         (wv as? DouyinFitWebView)?.userZoom = zoom
     }
 }

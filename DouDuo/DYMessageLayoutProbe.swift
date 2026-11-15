@@ -6,6 +6,7 @@ struct DYMessageLayoutProbe: View {
     @AppStorage(DDChromeMode.key) private var mode = DDChromeMode.classic.rawValue
     @State private var tab = DYMainTab.messages
     @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
     private let bridge = DouyinBridge()
 
     var body: some View {
@@ -24,7 +25,6 @@ struct DYMessageLayoutProbe: View {
                 .accessibilityIdentifier("fixture.receive")
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var classicTabs: some View {
@@ -35,8 +35,7 @@ struct DYMessageLayoutProbe: View {
             }
             Tab("首页", systemImage: "house", value: DYMainTab.home) { Text("首页") }
         }
-        .tint(theme.accent.color(for: .dark))
-        .preferredColorScheme(.dark)
+        .tint(theme.accent.color(for: scheme))
     }
 }
 #endif

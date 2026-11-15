@@ -127,6 +127,22 @@ enum DYLiveAdaptiveLayoutEngine {
         return (panes.video, panes.interaction, band.axis == .book)
     }
 
+    /// Extend only the painted interaction surface to the hinge center.
+    /// Controls and video keep the rectangles supplied by the system division.
+    static func interactionSurface(video: CGRect, interaction: CGRect, book: Bool) -> CGRect {
+        if book {
+            let edge = (video.maxX + interaction.minX) / 2
+            return CGRect(x: edge, y: interaction.minY, width: interaction.maxX - edge, height: interaction.height)
+        }
+        let edge = (video.maxY + interaction.minY) / 2
+        return CGRect(x: interaction.minX, y: edge, width: interaction.width, height: interaction.maxY - edge)
+    }
+
+    static func occupiesDisplay(scene: CGRect, display: CGRect) -> Bool {
+        abs(scene.minX - display.minX) <= 1 && abs(scene.minY - display.minY) <= 1
+            && abs(scene.maxX - display.maxX) <= 1 && abs(scene.maxY - display.maxY) <= 1
+    }
+
     /// 房间还没出画，或尺寸非法时返回 nil。调用方据此保持未知方向，不用上一间的尺寸。
     static func presentationSize(ready: Bool, videoSize: CGSize) -> CGSize? {
         guard ready else { return nil }

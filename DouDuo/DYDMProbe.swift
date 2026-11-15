@@ -744,7 +744,8 @@ final class DYChatWebSession {
     static let shared = DYChatWebSession()
     private weak var parkView: UIView?
     private weak var messagesBox: UIView?
-    private var messagesVisible = false
+    private var messagesVisible: Bool { messagesBox != nil }
+    private var parkedScheme: ColorScheme?
     private var loop: Task<Void, Never>?
     private var started = false
     private var settled = false
@@ -763,8 +764,12 @@ final class DYChatWebSession {
     private var expectingRouteSeq: Int?
     private let chatURL = URL(string: "https://www.douyin.com/chat")!
 
-    func attachPark(_ view: UIView) {
+    func attachPark(_ view: UIView, scheme: ColorScheme) {
         parkView = view
+        parkedScheme = scheme
+        if !messagesVisible, let web = DYMessageCache.shared.chatModel.web {
+            DDWebAppearance.apply(to: web, scheme: scheme, chat: true)
+        }
         startIfNeeded()
         place()
     }
@@ -778,10 +783,17 @@ final class DYChatWebSession {
     /// 消息页最后一次的真实尺寸：挂回去时按这个尺寸放，避免从 1200x800 缩到手机宽度整页重排（进信息页那一下卡顿）
     private var lastMessagesSize = CGSize.zero
 
-    func attachMessages(_ view: UIView, model: DouyinWebModel) {
+    func attachMessages(_ view: UIView, model: DouyinWebModel, scheme: ColorScheme, active: Bool) {
+        guard active else {
+            detachMessages(view)
+            return
+        }
         if view.bounds.size.width > 1, view.bounds.size.height > 1 { lastMessagesSize = view.bounds.size }
+        let wasVisible = messagesVisible
         messagesBox = view
-        ensureWeb(model)
+        if !wasVisible { DYDMBannerCenter.shared.dismiss() }
+        ensureWeb(model, scheme: scheme)
+        if let web = model.web { DDWebAppearance.apply(to: web, scheme: scheme, chat: true) }
         place()
     }
 
@@ -789,6 +801,9 @@ final class DYChatWebSession {
         guard messagesBox === view else { return }
         DYMessageCache.shared.retainChat()
         messagesBox = nil
+        if let parkedScheme, let web = DYMessageCache.shared.chatModel.web {
+            DDWebAppearance.apply(to: web, scheme: parkedScheme, chat: true)
+        }
         place()
     }
 
@@ -798,13 +813,6 @@ final class DYChatWebSession {
     func noteMessagesSize(_ size: CGSize) {
         guard size.width > 1, size.height > 1, size != lastMessagesSize else { return }
         lastMessagesSize = size
-    }
-
-    func setMessagesVisible(_ visible: Bool) {
-        messagesVisible = visible
-        if !visible { DYMessageCache.shared.retainChat() }
-        if visible { DYDMBannerCenter.shared.dismiss() }
-        place()
     }
 
     func noteProvisionalNavigation() {
@@ -916,11 +924,12 @@ final class DYChatWebSession {
         if ticks % 15 == 0 { logSample() }
     }
 
-    private func ensureWeb(_ model: DouyinWebModel) {
+    private func ensureWeb(_ model: DouyinWebModel, scheme: ColorScheme? = nil) {
         guard model.web == nil, !creating else { return }
         creating = true
         defer { creating = false }
-        _ = DouyinWebContainer.instantiate(model: model, zoom: 1, start: chatURL, includeProbe: true)
+        _ = DouyinWebContainer.instantiate(model: model, zoom: 1, start: chatURL,
+                                          includeProbe: !DYDMProbe.blocksFixture, scheme: scheme ?? parkedScheme)
         DYMessageCache.shared.retainChat()
         place()
     }
@@ -934,7 +943,7 @@ final class DYChatWebSession {
         cache.retainChat()
         let target: UIView?
         let holder: String
-        if messagesVisible, let box = messagesBox {
+        if let box = messagesBox {
             target = box
             holder = "messages"
         } else if let park = parkView {
@@ -1153,6 +1162,8 @@ final class DYChatWebSession {
 }
 
 struct DYChatWebParkHost: UIViewRepresentable {
+    @Environment(\.colorScheme) private var scheme
+
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
@@ -1161,35 +1172,42 @@ struct DYChatWebParkHost: UIViewRepresentable {
         view.accessibilityElementsHidden = true
         view.alpha = 0.01
         view.backgroundColor = .clear
-        context.coordinator.bind(view)
+        context.coordinator.bind(view, scheme: scheme)
         return view
     }
-    func updateUIView(_ uiView: UIView, context: Context) { context.coordinator.bind(uiView) }
+    func updateUIView(_ uiView: UIView, context: Context) { context.coordinator.bind(uiView, scheme: scheme) }
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) { coordinator.unbind(uiView) }
     @MainActor
     final class Coordinator {
-        func bind(_ view: UIView) { DYChatWebSession.shared.attachPark(view) }
+        func bind(_ view: UIView, scheme: ColorScheme) {
+            DYChatWebSession.shared.attachPark(view, scheme: scheme)
+        }
         func unbind(_ view: UIView) { DYChatWebSession.shared.detachPark(view) }
     }
 }
 
-struct DYChatProbeSurface: UIViewRepresentable {
+/// A foreground host owns the same WebView that the feed prewarms.
+struct DYChatWebSurface: UIViewRepresentable {
+    @Environment(\.colorScheme) private var scheme
     @ObservedObject var model: DouyinWebModel
+    let active: Bool
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> UIView {
         let box = UIView()
         box.backgroundColor = .clear
         box.clipsToBounds = true
-        context.coordinator.bind(box, model: model)
+        context.coordinator.bind(box, model: model, scheme: scheme, active: active)
         return box
     }
     func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.bind(uiView, model: model)
+        context.coordinator.bind(uiView, model: model, scheme: scheme, active: active)
     }
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) { coordinator.unbind(uiView) }
     @MainActor
     final class Coordinator {
-        func bind(_ view: UIView, model: DouyinWebModel) { DYChatWebSession.shared.attachMessages(view, model: model) }
+        func bind(_ view: UIView, model: DouyinWebModel, scheme: ColorScheme, active: Bool) {
+            DYChatWebSession.shared.attachMessages(view, model: model, scheme: scheme, active: active)
+        }
         func unbind(_ view: UIView) { DYChatWebSession.shared.detachMessages(view) }
     }
 }
