@@ -599,7 +599,7 @@ struct PlayerPage: View {
                 DYSwipeProbe.rate()
                 let shown = firstFrame
                 telemetry.begin(p, id: id, duration: knownDuration)
-                DYLiveModel.log("DDFRAME \(id) shown=\(shown)")
+                DYLiveModel.log("DDFRAME \(id) shown=\(shown) t=\(String(format: "%.2f", p.currentTime().seconds)) audio=\(seamAudio.mode)")
                 #if DEBUG
                 logSwipeStart(p)
                 #endif
