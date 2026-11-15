@@ -57,6 +57,14 @@ test('gallery (note) share opens the post instead of leaving the web toast',()=>
   assert.strictEqual(r.sent[0].id,noteId);
   assert(r.ev.prevented&&r.ev.stopped);
 });
+test('gallery share (aweType 0 + image_count) opens the post',()=>{
+  // 真机抓到的图文分享 payload：aweType=0，带 image_count/is_slides，没有 /note/ 链接
+  const noteId='7707415688281018091';
+  const r=clickThroughHook({aweType:0,itemId:noteId,image_count:3,is_slides:true,awemeType:68},'/chat');
+  assert.strictEqual(r.sent[0].type,'video');
+  assert.strictEqual(r.sent[0].id,noteId);
+  assert(r.ev.prevented&&r.ev.stopped);
+});
 test('gallery share without any post link still leaves the web alone',()=>{
   const noteId='7501234567890123456';
   const r=clickThroughHook({aweType:68,itemId:noteId},'/chat',{querySelectorAll:()=>[]});
