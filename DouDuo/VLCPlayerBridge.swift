@@ -9,10 +9,12 @@ import VLCKitSPM
 struct VLCPlayerSurface: UIViewRepresentable {
     let controller: VLCPlayerController
     var fillWidth: Bool = true
+    var letterbox: UIColor? = nil
     func makeUIView(context: Context) -> VLCPlayerUIView {
         let v = VLCPlayerUIView()
         v.controller = controller
         v.fillWidth = fillWidth
+        v.backgroundColor = letterbox ?? UIColor(named: "AppBackground")
         controller.boundSurface = v
         guard !controller.blocksSurfaceAttachment else { return v }
         controller.mediaPlayer.drawable = v
@@ -35,6 +37,7 @@ struct VLCPlayerSurface: UIViewRepresentable {
         }
         uiView.controller = controller
         uiView.fillWidth = fillWidth
+        uiView.backgroundColor = letterbox ?? UIColor(named: "AppBackground")
         uiView.applyFill()   // videoSize 要播起来才有，靠 0.25s 刷新补上
     }
 }
@@ -44,7 +47,7 @@ final class VLCPlayerUIView: UIView {
     var fillWidth = true
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .black
+        backgroundColor = UIColor(named: "AppBackground")
         clipsToBounds = true
     }
     required init?(coder: NSCoder) { fatalError() }

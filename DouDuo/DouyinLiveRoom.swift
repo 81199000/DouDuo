@@ -1092,8 +1092,8 @@ struct DYLiveFeed: View {
                     safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
                 : shown.video
             ZStack {
-                Color.black
-                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth)
+                (shown.layout == .existing ? Color.ddBackground : Color.black)
+                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
                     .frame(width: videoFrame.width, height: videoFrame.height)
                     .position(x: videoFrame.midX, y: videoFrame.midY)
                     .allowsHitTesting(false)
@@ -1306,16 +1306,18 @@ struct DYLiveFeed: View {
     /// 按钮顶边取导航下沿加 8pt，若顶部安全区更靠下则改到安全区下沿。左右各自让开安全区。
     private func resolvedLayout(in geo: GeometryProxy) -> (shown: DYLiveAdaptiveDecision, stable: DYLiveAdaptiveMemory) {
         let bounds = CGRect(origin: .zero, size: geo.size)
-        let divisions = liveDivisions(in: geo)
+        let allowsFold = DYDuoMetrics.canUseFoldLayout
+        let divisions = allowsFold ? liveDivisions(in: geo) : []
+        let status: DYLiveHingeStatus = allowsFold ? hingeStatus : .unsupported
         let proposed = DYLiveAdaptiveLayoutEngine.decide(
             bounds: bounds,
-            status: hingeStatus,
+            status: status,
             divisions: divisions,
             videoSize: DYLiveAdaptiveLayoutEngine.presentationSize(ready: model.ready, videoSize: model.playbackVideoSize))
         let stable = DYLiveAdaptiveLayoutEngine.stabilize(
             previous: layoutMemory,
             proposed: proposed,
-            status: hingeStatus,
+            status: status,
             bounds: bounds,
             divisions: divisions)
         let manual = DYLiveLayoutToggle.manualApplies(
@@ -1393,7 +1395,7 @@ struct DYLiveFeed: View {
             Text(restoring ? "分屏" : "整屏")
                 .font(.subheadline.weight(.semibold))
                 .frame(width: placement.frame.width, height: placement.frame.height)
-                .ddGlassCapsule()
+                .ddMediaGlassCapsule()
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(restoring ? "live.layout.adaptive" : "live.layout.immersive")
@@ -1454,9 +1456,9 @@ struct DYLiveFeed: View {
                     .minimumScaleFactor(0.8)
                     .padding(.horizontal, 14)
                     .frame(minHeight: DYLivePreviewChrome.minTapHeight)
-                    .ddGlassCapsule()
+                    .ddMediaGlassCapsule()
             }
-            .foregroundStyle(foreground).buttonStyle(.plain)
+            .foregroundStyle(.primary).buttonStyle(.plain)
             .accessibilityIdentifier("live.discover")
             if !model.followLive.isEmpty { followLiveButton }
             Spacer(minLength: 0)
@@ -1602,9 +1604,9 @@ struct DYLiveFeed: View {
                 .minimumScaleFactor(0.8)
                 .padding(.horizontal, hSize == .compact ? 10 : 14)
                 .frame(minHeight: DYLivePreviewChrome.minTapHeight)
-                .ddGlassCapsule()
+                .ddMediaGlassCapsule()
         }
-        .foregroundStyle(foreground).buttonStyle(.plain)
+        .foregroundStyle(.primary).buttonStyle(.plain)
         .accessibilityIdentifier("live.follow")
         .accessibilityLabel("\(count) 位关注的主播正在直播")
     }
@@ -1819,9 +1821,9 @@ struct DYLiveFeed: View {
             if let sendError { Text(sendError).font(.caption).foregroundStyle(theme.status.warning.color(for: scheme)) }
             HStack(spacing: 8) {
                 TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
-                    .font(.subheadline).foregroundStyle(foreground).focused($inputFocused)
+                    .font(.subheadline).foregroundStyle(.primary).focused($inputFocused)
                     .submitLabel(.send).onSubmit(sendComment)
-                    .padding(.horizontal, 14).frame(height: 40).ddGlassCapsule()
+                    .padding(.horizontal, 14).frame(height: 40).ddMediaGlassCapsule()
                     .accessibilityIdentifier("live.chat.input")
                 if !draft.isEmpty {
                     Button(action: sendComment) {
@@ -1874,14 +1876,14 @@ private struct DYLiveRoomPage: View {
             let video = livePane(videoPane, fallback: geo.size)
             let interaction = livePane(interactionPane, fallback: geo.size)
             let topInset = DYLiveLayoutToggle.returnTopInset(paneMinY: interaction.minY, compact: hSize == .compact)
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 ZStack {
                 if DYLivePlaybackGate.mask(isCurrent: isCurrent, ready: model.ready, failed: model.playbackError != nil) == .coverPrevious {
                     ZStack {
-                        Color.black
+                        Color.ddBackground
                         if let cover = room.cover, let url = URL(string: cover) {
                             CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
-                                placeholder: { Color.black }
+                                placeholder: { Color.ddBackground }
                                 .frame(width: geo.size.width, height: geo.size.height).clipped()
                         }
                     }
@@ -1904,6 +1906,15 @@ private struct DYLiveRoomPage: View {
                 }
                 }
                 .placed(in: video)
+                if isCurrent, let axis = ambientAxis {
+                    let surface = DYLiveAdaptiveLayoutEngine.interactionSurface(
+                        video: video, interaction: interaction, book: axis == .horizontal)
+                    DouyinLiveAmbientBackground(
+                        coverURL: room.cover.flatMap(URL.init(string:)), axis: axis, isolationID: isolationID)
+                        .frame(width: surface.width, height: surface.height)
+                        .padding(.leading, surface.minX)
+                        .padding(.top, surface.minY)
+                }
                 Group {
                 if !isCurrent {
                     Color.clear.allowsHitTesting(false)
@@ -1945,7 +1956,7 @@ private struct DYLiveRoomPage: View {
                                         .accessibilityIdentifier("live.room.split")
                                     Button("重新连接", systemImage: "arrow.clockwise", action: model.retry)
                                     Button("官网互动（礼物）", systemImage: "safari") { onWeb(room.webURL) }
-                                    } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddGlassCircle() }
+                                    } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddMediaGlassCircle() }
                                     .accessibilityIdentifier("live.room.more")
                                 }
                             }
@@ -1977,7 +1988,7 @@ private struct DYLiveRoomPage: View {
                         Text(room.title).font(.subheadline).lineLimit(2)
                         Button(action: model.enterRoom) {
                             Text("进入直播间").font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 22).frame(height: 44).ddGlassCapsule()
+                                .padding(.horizontal, 22).frame(height: 44).ddMediaGlassCapsule()
                         }.buttonStyle(.plain).accessibilityIdentifier("live.room.enter")
                         if model.rooms.count > 1 && !model.isFollowedVisit {
                             Text("上滑切换直播间").font(.caption).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
@@ -1988,18 +1999,11 @@ private struct DYLiveRoomPage: View {
                     .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 24)
                 }
                 }
-                .background {
-                    if isCurrent, let axis = ambientAxis {
-                        DouyinLiveAmbientBackground(
-                            coverURL: room.cover.flatMap(URL.init(string:)),
-                            axis: axis,
-                            isolationID: isolationID)
-                            .clipped()
-                            .allowsHitTesting(false)
-                    }
-                }
-                .placed(in: interaction)
+                .frame(width: interaction.width, height: interaction.height)
+                .padding(.leading, interaction.minX)
+                .padding(.top, interaction.minY)
             }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .foregroundStyle(foreground)
         }
         #if DEBUG
@@ -2028,7 +2032,7 @@ private struct DYLiveRoomPage: View {
                     Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text("\(room.viewers) 在看").font(.caption2)
                 }
-            }.padding(.trailing, 12).padding(.leading, 4).padding(.vertical, 4).ddGlassCapsule()
+            }.padding(.trailing, 12).padding(.leading, 4).padding(.vertical, 4).foregroundStyle(.primary).ddMediaGlassCapsule()
             Spacer(minLength: 8)
         }
     }
@@ -2327,7 +2331,7 @@ private struct DYLiveCategories: View {
                                 if selection == zone { Image(systemName: "checkmark").font(.caption) }
                             }
                             .frame(maxWidth: .infinity).frame(height: 46)
-                            .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                            .foregroundStyle(Color.primary)
                             .ddGlassCapsule()
                         }.buttonStyle(.plain)
                     }
@@ -2530,8 +2534,8 @@ private struct DYFollowLiveSheet: View {
     let onLogin: () -> Void
     @StateObject private var model = DYFollowLiveList()
     @State private var foldActive = false
-    private var foreground: Color { theme.media.onMedia.color(for: scheme) }
-    private var secondary: Color { theme.media.onMediaSecondary.color(for: scheme) }
+    private var foreground: Color { Color.primary }
+    private var secondary: Color { Color.secondary }
     private var regularWidth: Bool { hSize == .regular && !foldActive }
     private var sheetDetent: CGFloat {
         DYFollowLiveSheetLayout.sheetHeight(
@@ -2589,11 +2593,11 @@ private struct DYFollowLiveSheet: View {
         .background {
             DYFollowFoldReader { foldActive = $0 }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Color.ddBackground.ignoresSafeArea())
         .presentationDetents([.height(sheetDetent)])
-        .presentationBackground(.black)
+        .presentationBackground(Color.ddBackground)
         .presentationDragIndicator(.visible)
-        .preferredColorScheme(.dark)
+
         .task { model.reload(bridge) }
         .onChange(of: bridge.followSession) { _, _ in
             model.rooms = []
@@ -2620,7 +2624,7 @@ private struct DYFollowLiveSheet: View {
                                 HStack(spacing: 8) {
                                     Text("直播中")
                                         .font(.caption2.weight(.bold))
-                                        .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                                        .foregroundStyle(Color.primary)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(Capsule().fill(theme.status.danger.color(for: scheme)))

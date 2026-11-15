@@ -90,6 +90,18 @@ enum DYDuoMetrics {
             .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 0
     }
 
+    /// A system split or floating window can still receive the display's
+    /// active hinge region. Only use it to lay out an app occupying the display.
+    static var canUseFoldLayout: Bool {
+        guard #available(iOS 27.1, *),
+              let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene }).first(where: { $0.keyWindow != nil }) else { return false }
+        let space = scene.effectiveGeometry.coordinateSpace
+        let display = scene.screen.coordinateSpace
+        return DYLiveAdaptiveLayoutEngine.occupiesDisplay(
+            scene: display.convert(space.bounds, from: space), display: display.bounds)
+    }
+
     /// 折痕是否处于激活状态（半折叠）。iOS 27.1 以下恒为 false。
     static func foldIsActive(_ proxy: GeometryProxy) -> Bool {
         #if DEBUG
@@ -97,7 +109,7 @@ enum DYDuoMetrics {
         if ProcessInfo.processInfo.environment["DOUDUO_FOLD"] == "1" { return true }
         #endif
         if #available(iOS 27.1, *) {
-            return proxy.reservedRegions(kind: .division).contains { $0.isActive }
+            return canUseFoldLayout && proxy.reservedRegions(kind: .division).contains { $0.isActive }
         }
         return false
     }
@@ -268,8 +280,9 @@ private struct DYSystemActionRail<Content: View>: View {
 struct DYRailReservedNudge: ViewModifier {
     var railEdge: HorizontalEdge? = nil
     var verticalSpace: ClosedRange<CGFloat>? = nil
+    var disabled = false
     func body(content: Content) -> some View {
-        if #available(iOS 27.1, *) {
+        if #available(iOS 27.1, *), !disabled {
             DYRailReservedNudgeBox(railEdge: railEdge, verticalSpace: verticalSpace) { content }
         } else {
             content
@@ -519,15 +532,17 @@ struct DYCommentPaneMetrics {
             let bottom = DYDuoMetrics.windowBottomInset
             let keyboardVisible = geo.safeAreaInsets.bottom > bottom + 1
             let bottomExtension = keyboardVisible ? 0 : min(geo.safeAreaInsets.bottom, bottom)
+            let surface = DYLiveAdaptiveLayoutEngine.interactionSurface(
+                video: hinge.video, interaction: hinge.panel, book: hinge.book)
             if hinge.book {
-                let split = (hinge.video.maxX + hinge.panel.minX) / 2
+                let split = surface.minX
                 paneOrigin = CGPoint(x: split, y: -geo.safeAreaInsets.top)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.trailing - split,
                                   height: h + geo.safeAreaInsets.top + bottomExtension)
                 trailingInset = max(geo.safeAreaInsets.trailing,
                     DYDuoMetrics.trailingOcclusionInset(geo, pane: hinge.panel))
             } else {
-                let split = (hinge.video.maxY + hinge.panel.minY) / 2
+                let split = surface.minY
                 paneOrigin = CGPoint(x: -geo.safeAreaInsets.leading, y: split)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
                                   height: h + bottomExtension - split)
@@ -652,11 +667,12 @@ struct DYCommentPlayerLayout<Video: View>: View {
                             .overlay(alignment: .leading) {
                                 if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                             }
-                            .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
+                            .padding(.leading, layout.paneOrigin.x)
+                            .padding(.top, layout.paneOrigin.y)
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .background(Color.black.ignoresSafeArea())
+                .background(Color.ddBackground.ignoresSafeArea())
                 .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
                     if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
                         DYStandaloneVideoActions(actions: showComments || layout.showsPane ? nil : actions, onBack: onBack)
@@ -699,6 +715,7 @@ private struct DYStandaloneBarPolicy: ViewModifier {
                 .toolbarVisibility(.visible, for: .navigationBar)
                 .toolbarVerticalCompressionBehavior(.prefersToolbarItems)
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
         } else {
             content.toolbar(.hidden, for: .navigationBar)
         }

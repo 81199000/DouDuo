@@ -18,10 +18,11 @@ messages = (ROOT / 'DouDuo/DouyinMessages.swift').read_text()
 bridge = (ROOT / 'DouDuo/DYChatWebBridge.swift').read_text()
 fixture = raw((ROOT / 'DouDuo/DYMessageFixture.swift').read_text(), 'html')
 css = raw(messages, 'chatChromeCSS')
-theme = (ROOT / 'DouDuo/Theme.swift').read_text()
-for placeholder, key in [('__DD_CHAT_CANVAS__', 'canvasCSS'), ('__DD_CHAT_SEPARATOR__', 'separatorCSS')]:
-    css = css.replace(placeholder, re.search(r'let ' + key + r' = "([^"]+)"', theme).group(1))
 helpers = raw(bridge, 'helpersJS')
+appearance = raw((ROOT / 'DouDuo/DDWebAppearance.swift').read_text(), 'bootstrap')
+# The fixture uses srcdoc, so only this local harness bypasses the production host guard.
+appearance = '\n'.join(line for line in appearance.splitlines() if 'location.hostname' not in line)
+appearance = appearance.replace(r"/^\/chat\/?$/.test(location.pathname)", "true")
 runner = '''
 (async () => {
   const check=(condition,message)=>{if(!condition)throw Error(message)};
@@ -65,6 +66,68 @@ runner = '''
   check(getComputedStyle(q('#settings')).visibility==='hidden','original settings cannot flash after native dismissal');
   const help=document.createElement('img');help.id='douyin-temp-sidebar';document.body.append(help);
   check(getComputedStyle(help).display==='none','late website help widget stays hidden');
+  // Model the public website event contract and its actual chat palette.
+  const official=document.createElement('div');official.id='official-chat';
+  official.innerHTML='<span style="color:var(--color-TextPrimary)">Official shell text</span><div data-sdk-theme="dark"><span class="sdk-bubble">Official message</span></div>';
+  document.body.append(official);
+  const sheet=document.createElement('style');
+  sheet.textContent=`
+    html[dark] { --color-text-0:#dddddd; }
+    .chatLight { --color-TextPrimary:#161823; }
+    .chatDark { --color-text-0:#d4d6db; --color-TextPrimary:rgba(255,255,255,.9); background:#202426; }
+    html[dark] .messageTextContent { color:#f6d740; }
+    [data-sdk-theme="dark"] .sdk-bubble { background:#292a30; color:#e8e9ed; }
+    [data-sdk-theme="light"] .sdk-bubble { background:#efeff3; color:#161823; }
+  `;
+  document.head.append(sheet);
+  let resolveSDK;
+  const ready = new Promise(resolve => { resolveSDK = resolve; });
+  const sdk = q('[data-sdk-theme]');
+  const sdkCalls = [];
+  const modules = {
+    708926: { EVENT:{changeTheme:'changeTheme'}, emit:(event,{theme}) => {
+      official.className = theme === 'dark' ? 'chatDark' : 'chatLight';
+    }},
+    230095: { a5:() => ready }
+  };
+  const runtime = id => modules[id];
+  runtime.m = modules;
+  window.webpackChunkdouyin_web=[];
+  window.webpackChunkdouyin_web.push=chunk=>{Array.prototype.push.call(window.webpackChunkdouyin_web,chunk);chunk[2](runtime)};
+  q('.bubble').classList.add('messageTextContent');
+  // The host can update while the remote SDK is still starting. The SDK must
+  // use the latest mode when ready and continue updating on later changes.
+  window.__ddSetAppearance('dark');
+  window.__ddSetAppearance('light');
+  check(official.classList.contains('chatLight'),'host shell already light');
+  check(sdk.dataset.sdkTheme==='dark','SDK theme is independent of host');
+  resolveSDK({saasApi:{changeTheme:isDark => {
+    check(typeof isDark==='boolean','SDK expects a dark-mode boolean');
+    sdkCalls.push(isDark);
+    sdk.dataset.sdkTheme = isDark ? 'dark' : 'light';
+  }}});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  check(sdkCalls.length===1 && sdkCalls[0]===false,'late SDK receives the latest theme once');
+  for (const [mode, bubble] of [['light','rgb(240, 241, 244)'], ['dark','rgb(36, 36, 40)'], ['light','rgb(240, 241, 244)']]) {
+    window.__ddSetAppearance(mode);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    check(sdk.dataset.sdkTheme===mode,'mounted IM updates to '+mode);
+    const sdkBubble = getComputedStyle(q('.sdk-bubble'));
+    check(sdkBubble.color===(mode==='light'?'rgb(22, 24, 35)':'rgb(232, 233, 237)'),'SDK bubble text '+mode);
+    check(sdkBubble.backgroundColor===(mode==='light'?'rgb(239, 239, 243)':'rgb(41, 42, 48)'),'SDK bubble background '+mode);
+    check(!q('#dd-appearance'),'no custom color palette in IM '+mode);
+    check(getComputedStyle(document.body).backgroundColor==='rgba(0, 0, 0, 0)','body reveals native canvas '+mode);
+    check(getComputedStyle(q('.chatDark,.chatLight')).backgroundColor==='rgba(0, 0, 0, 0)','shell reveals native canvas '+mode);
+    check(getComputedStyle(q('.messageMsgInputinputRow')).backgroundColor===(mode==='light'?'rgb(238, 238, 242)':'rgb(48, 49, 53)'),'official editor palette '+mode);
+    check(getComputedStyle(q('.bubble')).backgroundColor===bubble,'readable bubble '+mode);
+    if (mode==='dark') {
+      check(getComputedStyle(official).getPropertyValue('--color-text-0').trim()==='#d4d6db','official shell retains its own palette');
+      check(getComputedStyle(q('.bubble')).color==='rgb(246, 215, 64)','official bubble color preserved');
+    }
+    check(getComputedStyle(official.firstChild).color===(mode==='light'?'rgb(22, 24, 35)':'rgba(255, 255, 255, 0.9)'),'official IM theme event '+mode);
+    check(editor.isConnected && editor.textContent==='local draft only','draft intact '+mode);
+    check(list.scrollTop>0,'history scroll intact '+mode);
+  }
   check(editor.textContent==='local draft only','draft intact');
   check(list.scrollTop>0,'history scroll intact');
   check(await act('conversation:fixture-a','delete'),'local delete');
@@ -76,7 +139,7 @@ runner = '''
 runner = runner.replace('HELPERS', helpers).replace('ACTION', raw(bridge, 'conversationActionJS'))
 runner = runner.replace('OPTIONS', raw(bridge, 'optionsJS')).replace('PERFORM', raw(bridge, 'performOptionJS'))
 runner = runner.replace('SNAPSHOT', 'JSON.parse(' + raw(bridge, 'snapshotJS') + ')')
-fixture = fixture.replace('</head>', '<style>' + css + '</style></head>')
+fixture = fixture.replace('</head>', '<style>' + css + '</style><script>' + appearance + '</script></head>')
 fixture = fixture.replace('</body>', '<script>' + runner + '</script></body>')
 with tempfile.TemporaryDirectory(prefix='douduo-chat-css-') as directory:
     scratch = pathlib.Path(directory)
@@ -93,4 +156,4 @@ with tempfile.TemporaryDirectory(prefix='douduo-chat-css-') as directory:
         value = json.loads(html_module.unescape(match.group(1)))
         assert value['ok'], value
         assert value['width'] == width and value['height'] == height, value
-        print('PASS local IM: identity guards, pin/unpin/delete, official menu, transparent chrome, draft and scroll', value)
+        print('PASS local IM: identity guards, pin/unpin/delete, official menu, delayed SDK theme, bubble palette, transparent chrome, draft and scroll', value)

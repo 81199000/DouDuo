@@ -1704,7 +1704,6 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -1764,7 +1763,7 @@ struct DYUpstreamFeedScreen: View {
         return w > h ? (w * 0.55 > h) : false
     }
 
-    /// 半折叠按真实折痕切分（同直播 Layout A/B）：视频占折痕前一块，评论占折痕后一块，折痕本身留空。
+    /// 半折叠按真实折痕切分（同直播 Layout A/B）。
     /// 拿不到折痕几何（旧系统 / DOUDUO_FOLD 模拟）时返回 nil，调用方回退到比例切分。
     private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
         tab == .recommend ? DYDuoMetrics.hingeSplit(geo) : nil
@@ -1807,12 +1806,15 @@ struct DYUpstreamFeedScreen: View {
         let sideBySide = wide || bookFold
         let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
 
-        let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
-        let panelH = hinge.map { $0.panel.height } ?? (tableFold ? h * 0.45 : 0)
+        let surface = hinge.map {
+            DYLiveAdaptiveLayoutEngine.interactionSurface(video: $0.video, interaction: $0.panel, book: $0.book)
+        }
+        let panelW = surface?.width ?? sidePanelWidth(geo)
+        let panelH = surface?.height ?? (tableFold ? h * 0.45 : 0)
         let videoW = hinge?.video.width ?? (sideBySide && panelW > 0 ? w - panelW : w)
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
-        let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
-        let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
+        let panelX = surface?.minX ?? (sideBySide ? videoW : 0)
+        let panelY = surface?.minY ?? (tableFold ? videoH : 0)
         // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
         // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
         // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
@@ -1827,16 +1829,19 @@ struct DYUpstreamFeedScreen: View {
                 .frame(width: videoW, height: videoH, alignment: .topLeading)
             if showPanel, let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur,
-                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
-                    .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
+                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } },
+                               fillsPane: fold, trailingInset: fold ? panelInset : 0)
+                    .frame(width: sideBySide && !tableFold ? (fold ? panelW : max(0, panelW - panelInset)) : w,
                            height: tableFold ? panelH : h)
                     .dyDeskLight(tableFold)
                     .environment(\.dyCommentTrailingCleared, panelInset > 0)
-                    .offset(x: panelX, y: panelY)
+                    .padding(.leading, panelX)
+                    .padding(.top, panelY)
                     .id(cur.id)
             }
         }
-        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .frame(width: w, height: h, alignment: .topLeading)
+        .background((fold ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(.snappy, value: fold)
         .animation(showSearch ? nil : .snappy, value: showComments)
         .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
@@ -2058,7 +2063,7 @@ struct DYUpstreamFeedScreen: View {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) })
             }
                 .presentationDetents([.medium, .large])
-                .presentationBackground(.black)
+                .presentationBackground(Color.ddBackground)
         }
 
     }
@@ -2271,7 +2276,7 @@ struct DYUpstreamFeedScreen: View {
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
                 .frame(width: glass, height: glass)
                 .contentShape(Circle())
-                .ddGlassCircle()
+                .ddMediaGlassCircle()
             railProgressRing
         }
         // 占位固定：入口总高 50 + 下方间距，让入口到胶囊的距离和「胶囊到更多」一致（见 DDRailMetrics）
@@ -2382,7 +2387,7 @@ struct DYUpstreamFeedScreen: View {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
                     if let e = feed.error {
                         Text(e).font(.footnote).multilineTextAlignment(.center)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                         HStack {
                             Button("重试") { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id } }
                                 .buttonStyle(.borderedProminent)
@@ -2390,9 +2395,9 @@ struct DYUpstreamFeedScreen: View {
                                 .buttonStyle(.bordered)
                         }
                     } else {
-                        ProgressView().tint(theme.media.onMedia.color(for: scheme))
+                        ProgressView().tint(.primary)
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                     }
                     DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
@@ -3042,7 +3047,6 @@ struct DYClassicFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -3099,6 +3103,7 @@ struct DYClassicFeedScreen: View {
                         }
                         .toolbarVisibility(liveRoomOpen ? .hidden : .visible, for: .navigationBar)
                         .toolbarBackgroundVisibility(.hidden, for: .navigationBar, .bottomBar)
+                        .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
                         .toolbarMinimizationBehavior(.never, for: .navigationBar)
                         .scrollEdgeEffectHidden(true, for: .all)
                         // Hide the underlying native selector for compact
@@ -3116,6 +3121,7 @@ struct DYClassicFeedScreen: View {
         // Only the tab selector inherits this accent. Every tab restores the
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))
+        .toolbarColorScheme(mainTab == .home ? .dark : nil, for: .tabBar)
         .toolbarVisibility(.visible, for: .statusBar)
         .onChange(of: mainTab) { old, selected in
             saveSession()
@@ -3128,8 +3134,6 @@ struct DYClassicFeedScreen: View {
                 restoredTabPauseApplied = true
                 DDPlayback.shared.pauseAll(reason: .cover)
             }
-            // 网页归属也要同步（onChange 在「启动就是消息页」时不会触发）
-            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(showMessages) }
         }
     }
 
@@ -3210,12 +3214,13 @@ struct DYClassicFeedScreen: View {
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                 }
-                .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
+                .padding(.leading, layout.paneOrigin.x)
+                .padding(.top, layout.paneOrigin.y)
             }
         }
         .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in residentComments = resident }
-        .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
+        .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
         .animation(showSearch ? nil : .snappy, value: showComments)
         .animation(showSearch ? nil : .snappy, value: authorTarget?.id)
@@ -3535,6 +3540,10 @@ struct DYClassicFeedScreen: View {
             .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
             .padding(.top, headerTopInset)
             .accessibilityElement(children: .contain)
+            .background {
+                LinearGradient(colors: [.black.opacity(0.42), .clear], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea(edges: .top).allowsHitTesting(false)
+            }
             .accessibilityIdentifier("douyin.feed.header")
             .opacity(cleanScreen || liveRoomOpen ? 0 : 1)
             .allowsHitTesting(!cleanScreen && !liveRoomOpen)
@@ -3619,7 +3628,7 @@ struct DYClassicFeedScreen: View {
                 VStack(spacing: WuWeiDesign.Spacing.md) {
                     if let e = feed.error {
                         Text(e).font(.footnote).multilineTextAlignment(.center)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                         HStack {
                             Button("重试") { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id } }
                                 .buttonStyle(.borderedProminent)
@@ -3627,9 +3636,9 @@ struct DYClassicFeedScreen: View {
                                 .buttonStyle(.bordered)
                         }
                     } else {
-                        ProgressView().tint(theme.media.onMedia.color(for: scheme))
+                        ProgressView().tint(.primary)
                         Text(bridge.ready ? "加载推荐…" : "连接抖音…").font(.footnote)
-                            .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            .foregroundStyle(Color.secondary)
                     }
                     DYHashtagFilterButton(tags: []).buttonStyle(.bordered)
                 }
@@ -4077,7 +4086,7 @@ struct DYUpstreamVideoPage: View {
                         .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
-                .ddGlassCapsule()
+                .ddMediaGlassCapsule()
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
@@ -4102,7 +4111,7 @@ struct DYUpstreamVideoPage: View {
             }
             .padding(.vertical, 8)
             .frame(width: railWidth)
-            .ddGlassCapsule()
+            .ddMediaGlassCapsule()
             .frame(width: actionColumnWidth)
             moreMenu(fg)
         }
@@ -4199,7 +4208,7 @@ struct DYUpstreamVideoPage: View {
                 .foregroundStyle(fg)
                 .frame(width: 50, height: 50)
                 .contentShape(Circle())
-                .ddGlassCircle()
+                .ddMediaGlassCircle()
                 .frame(width: 54)
         }
         .menuStyle(.button)
@@ -4591,6 +4600,7 @@ struct DYClassicVideoPage: View {
             .frame(width: railWidth)
             .padding(.vertical, 7)
             .glassEffect(.regular, in: .capsule)
+            .environment(\.colorScheme, .dark)
     }
 
     private func toolbarActions(_ fg: Color) -> DYVideoToolbarActions {
@@ -4834,8 +4844,11 @@ struct DYCommentPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.panel")
-        .background(GlassBackground())
-        .modifier(DYRailReservedNudge())
+        .padding(.trailing, fillsPane ? trailingInset : 0)
+        .background {
+            if fillsPane { Color.ddBackground } else { GlassBackground() }
+        }
+        .modifier(DYRailReservedNudge(disabled: fillsPane))
         .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
@@ -4938,10 +4951,10 @@ struct DYCommentPanel: View {
                 inputBar
             }
             .fixedSize(horizontal: false, vertical: true)
-            .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+            .background(fillsPane ? Color.ddBackground : .clear)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+        .background(fillsPane ? Color.ddBackground : .clear)
         .clipped()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.panel")
@@ -5455,7 +5468,7 @@ struct DYCommentImageViewer: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
+            Color.ddBackground.ignoresSafeArea()
             TabView(selection: $page) {
                 ForEach(Array(target.images.enumerated()), id: \.offset) { i, img in
                     CachedAsyncImage(url: URL(string: img.full)) { v in v.resizable().scaledToFit() }
@@ -5489,6 +5502,7 @@ private struct DYTopChromeFrameKey: PreferenceKey {
 #if DEBUG
 extension DYFeedModel {
     static var hashtagFixtures: [DYAweme] {
+        let grid = ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1"
         let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
         let video = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("search-playback-fixture.mp4")
@@ -5496,7 +5510,7 @@ extension DYFeedModel {
          ("hashtag-travel", "周末记录 #旅行"),
          ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
             DYAweme(id: id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
-                    cover: nil, images: [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
+                    cover: nil, images: grid ? ["data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%271%27 height=%271%27/%3E"] : [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
                     stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
                     userDigged: nil, isCollect: nil, publishedAt: 1,
                     hashtagNames: id == "hashtag-cat" ? ["猫咪", "旅行", "摄影", "美食", "科技", "自然", "城市漫步", "运动"] : nil)

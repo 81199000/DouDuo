@@ -735,12 +735,12 @@ struct DYGrid: View {
                     }
                 }
                 if let error {
-                    Text(error).font(.footnote).foregroundStyle(.white.opacity(0.75))
+                    Text(error).font(.footnote).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center).padding(24)
                 } else if loading {
-                    ProgressView().tint(.white).padding(24)
+                    ProgressView().tint(.primary).padding(24)
                 } else if items.isEmpty {
-                    Text("这里还没有内容").font(.footnote).foregroundStyle(.white.opacity(0.6)).padding(40)
+                    Text("这里还没有内容").font(.footnote).foregroundStyle(.secondary).padding(40)
                 } else if hasMore {
                     Color.clear
                         .frame(height: 40)
@@ -789,6 +789,7 @@ struct DYGrid: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
             }
+            .clipped()
             .contentShape(Rectangle())
     }
 }
@@ -849,7 +850,7 @@ struct DYListPlayer: View {
     var body: some View {
         DYCommentPlayerLayout(bridge: bridge, aweme: current, showComments: $showComments, focus: commentFocus, onBack: { dismiss() }) { insets in
             ZStack(alignment: .topLeading) {
-                Color.black.ignoresSafeArea()
+                Color.ddBackground.ignoresSafeArea()
                 ScrollView(.vertical) {
                     DYPagerStack(items: items, currentID: currentID, page: { item in
                             DYVideoPage(item: item, isCurrent: item.id == currentID, insets: insets,
@@ -1059,24 +1060,23 @@ struct DYSearchScreen: View {
         }
         // 左缘右滑返回；Duo 内屏左右分栏时搜索在右半屏，左缘是分界线，不挂
         .dyEdgeBack(enabled: !edgeIsSplitDivider) { if let onClose { onClose() } else { dismiss() } }
-        .preferredColorScheme(.dark)
     }
 
     private var searchContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.6))
+                    Image(systemName: "magnifyingglass").foregroundStyle(Color.primary.opacity(0.6))
                         .fixedSize().accessibilityHidden(true)
-                    TextField("", text: $state.keyword, prompt: Text("搜索视频").foregroundStyle(.white.opacity(0.45)))
-                        .foregroundStyle(.white)
+                    TextField("", text: $state.keyword, prompt: Text("搜索视频").foregroundStyle(Color.primary.opacity(0.45)))
+                        .foregroundStyle(Color.primary)
                         .focused($focused)
                         .submitLabel(.search)
                         .onSubmit { run(state.keyword) }
                         .accessibilityIdentifier("douyin.search.field")
                     if !state.keyword.isEmpty {
                         Button { state.keyword = ""; state.lastRun = ""; state.model = nil; focused = true } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.5))
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(Color.primary.opacity(0.5))
                         }
                         .accessibilityLabel("清空搜索")
                         .accessibilityIdentifier("douyin.search.clear")
@@ -1084,8 +1084,8 @@ struct DYSearchScreen: View {
                     }
                 }
                 .padding(.horizontal, 12).frame(height: 38)
-                .background(Capsule().fill(.white.opacity(0.12)))
-                Button("搜索") { run(state.keyword) }.foregroundStyle(.white).font(.subheadline.weight(.semibold))
+                .background(Capsule().fill(Color.primary.opacity(0.12)))
+                Button("搜索") { run(state.keyword) }.foregroundStyle(Color.primary).font(.subheadline.weight(.semibold))
                     .accessibilityIdentifier("douyin.search.submit")
                     .fixedSize(horizontal: true, vertical: false)
             }
@@ -1104,8 +1104,8 @@ struct DYSearchScreen: View {
                             ForEach(state.suggestions) { s in
                                 Button { state.keyword = s.word; run(s.word) } label: {
                                     HStack {
-                                        Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.45))
-                                        Text(s.word).foregroundStyle(.white)
+                                        Image(systemName: "magnifyingglass").foregroundStyle(Color.primary.opacity(0.45))
+                                        Text(s.word).foregroundStyle(Color.primary)
                                         Spacer()
                                     }
                                     .padding(.horizontal, 16).padding(.vertical, 12)
@@ -1115,9 +1115,9 @@ struct DYSearchScreen: View {
                             }
                         } else if !history.isEmpty {
                             HStack {
-                                Text("搜索历史").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                                Text("搜索历史").font(.subheadline.weight(.semibold)).foregroundStyle(Color.primary)
                                 Spacer()
-                                Button("清空") { historyRaw = "" }.font(.caption).foregroundStyle(.white.opacity(0.6))
+                                Button("清空") { historyRaw = "" }.font(.caption).foregroundStyle(Color.primary.opacity(0.6))
                             }
                             .padding(16)
                             FlowTags(tags: history) { w in state.keyword = w; run(w) }
@@ -1131,7 +1131,7 @@ struct DYSearchScreen: View {
                 .scrollDismissesKeyboard(.interactively)
             }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Color.ddBackground.ignoresSafeArea())
         .task {
             guard state.hot.isEmpty else { return }
             #if DEBUG
@@ -1182,7 +1182,7 @@ struct DYSearchScreen: View {
 
     private var hotSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("抖音热搜").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+            Text("抖音热搜").font(.subheadline.weight(.semibold)).foregroundStyle(Color.primary)
                 .padding(.top, 20)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12, alignment: .leading)],
                       alignment: .leading, spacing: 6) {
@@ -1206,7 +1206,7 @@ struct DYSearchScreen: View {
         state.keyword = w
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_SEARCH_FIXTURE"] == "1" {
-            let items = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+            let items = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1" || ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1"
                 ? Array(DYFeedModel.hashtagFixtures.dropFirst()) : []
             let model = DYPagedModel { _ in (items: items, cursor: "0", hasMore: false) }
             state.model = model
@@ -1240,9 +1240,9 @@ struct FlowTags: View {
         FlowLayout(spacing: 8) {
             ForEach(tags, id: \.self) { t in
                 Button { onTap(t) } label: {
-                    Text(t).font(.subheadline).foregroundStyle(.white)
+                    Text(t).font(.subheadline).foregroundStyle(Color.primary)
                         .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(.white.opacity(0.12)))
+                        .background(Capsule().fill(Color.primary.opacity(0.12)))
                 }
                 .buttonStyle(.plain)
             }
@@ -1306,7 +1306,7 @@ struct DYMineScreen: View {
                     }
                 }
         }
-        .preferredColorScheme(.dark)
+
     }
 
     private var content: some View {
@@ -1318,8 +1318,8 @@ struct DYMineScreen: View {
                     Button { kind = k } label: {
                         VStack(spacing: 5) {
                             Text(k.title).font(.subheadline.weight(kind == k ? .bold : .medium))
-                                .foregroundStyle(.white.opacity(kind == k ? 1 : 0.6))
-                            Capsule().fill(.white).frame(width: 18, height: 2.5).opacity(kind == k ? 1 : 0)
+                                .foregroundStyle(Color.primary.opacity(kind == k ? 1 : 0.6))
+                            Capsule().fill(Color.primary).frame(width: 18, height: 2.5).opacity(kind == k ? 1 : 0)
                         }
                     }
                     .buttonStyle(.plain)
@@ -1338,7 +1338,7 @@ struct DYMineScreen: View {
         .background(alignment: .top) {
             DYSelfProfileBackdrop(cover: user?.cover)
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Color.ddBackground.ignoresSafeArea())
         .task {
             #if DEBUG
             // UI-only entry fixture: a real public work, never a fake account list.
@@ -1365,6 +1365,13 @@ struct DYMineScreen: View {
     private func ensure(_ k: DYListKind) {
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_ENTRY"] == "mine" { return }
+        if ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1" {
+            guard models[k] == nil else { return }
+            let model = DYPagedModel { _ in (items: DYFeedModel.hashtagFixtures, cursor: "0", hasMore: false) }
+            models[k] = model
+            Task { await model.loadMore() }
+            return
+        }
         #endif
         guard models[k] == nil else { return }
         let m = DYPagedModel { [bridge] cur in try await bridge.myList(k, cursor: cur) }
@@ -1380,12 +1387,12 @@ struct DYMineScreen: View {
                          onFollowers: { relations = DYRelationsTarget(kind: .followers, user: u) })
         } else if let e = userErr {
             VStack(spacing: 10) {
-                Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(.white.opacity(0.8)).font(.subheadline)
+                Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(Color.primary.opacity(0.8)).font(.subheadline)
                 Button("去登录") { onLogin() }.buttonStyle(.borderedProminent).tint(.pink)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 12)
         } else {
-            ProgressView().tint(.white).frame(height: 80)
+            ProgressView().tint(.primary).frame(height: 80)
         }
     }
 }
@@ -1419,7 +1426,7 @@ private struct DYSelfProfileBackdrop: View {
                     .clipped()
                     .overlay {
                         LinearGradient(
-                            colors: [.black.opacity(0.45), .black.opacity(0.05), .black],
+                            colors: [.ddBackground.opacity(0.88), .ddBackground.opacity(0.72), .ddBackground],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -1443,12 +1450,12 @@ struct DYUserHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 CachedAsyncImage(url: user.avatar.flatMap(URL.init(string:))) { img in img.resizable().scaledToFill() }
-                    placeholder: { Color.white.opacity(0.1) }
+                    placeholder: { Color.primary.opacity(0.1) }
                     .frame(width: 72, height: 72).clipShape(Circle())
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(user.name).font(.title3.weight(.bold)).foregroundStyle(.white)
+                    Text(user.name).font(.title3.weight(.bold)).foregroundStyle(Color.primary)
                     if let ip = user.ip, !ip.isEmpty {
-                        Text(ip).font(.caption).foregroundStyle(.white.opacity(0.55))
+                        Text(ip).font(.caption).foregroundStyle(Color.primary.opacity(0.55))
                     }
                 }
             }
@@ -1459,15 +1466,15 @@ struct DYUserHeader: View {
                 stat(user.works, "作品")
             }
             if !user.signature.isEmpty {
-                Text(user.signature).font(.footnote).foregroundStyle(.white.opacity(0.75)).lineLimit(3)
+                Text(user.signature).font(.footnote).foregroundStyle(Color.primary.opacity(0.75)).lineLimit(3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     private func stat(_ n: Int, _ t: String) -> some View {
         HStack(spacing: 4) {
-            Text(DYFormat.count(n)).font(.subheadline.weight(.bold)).foregroundStyle(.white)
-            Text(t).font(.caption).foregroundStyle(.white.opacity(0.6))
+            Text(DYFormat.count(n)).font(.subheadline.weight(.bold)).foregroundStyle(Color.primary)
+            Text(t).font(.caption).foregroundStyle(Color.primary.opacity(0.6))
         }
     }
     @ViewBuilder
@@ -1513,9 +1520,9 @@ struct DYAuthorScreen: View {
             if let u = user {
                 DYUserHeader(user: u)
             } else if let err {
-                Text(err).foregroundStyle(.white.opacity(0.7)).font(.footnote)
+                Text(err).foregroundStyle(Color.primary.opacity(0.7)).font(.footnote)
             } else {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, minHeight: 72)
+                ProgressView().tint(.primary).frame(maxWidth: .infinity, minHeight: 72)
             }
             if let s = author.secUid, let u = URL(string: "https://www.douyin.com/user/\(s)") {
                 Button {
@@ -1524,7 +1531,7 @@ struct DYAuthorScreen: View {
                 } label: {
                     Text("网页版")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(Color.primary.opacity(0.7))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.author.web")
@@ -1541,7 +1548,7 @@ struct DYAuthorScreen: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .background(Color.black)
+        .background(Color.ddBackground)
         .dyEdgeBack(enabled: edgeBackEnabled) { close() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.author.panel")
@@ -1705,7 +1712,7 @@ struct DYFollowFeed: View {
             if m.items.isEmpty {
                 VStack(spacing: 12) {
                     if let e = m.error {
-                        Text(e).font(.footnote).foregroundStyle(.white.opacity(0.75)).multilineTextAlignment(.center)
+                        Text(e).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         HStack {
                             Button("重试") {
                                 m.reset(); currentID.wrappedValue = nil
@@ -1718,10 +1725,10 @@ struct DYFollowFeed: View {
                             Button("登录") { onLogin() }.buttonStyle(.bordered)
                         }
                     } else if m.loading || m.hasMore {
-                        ProgressView().tint(.white)
-                        Text("加载关注…").font(.footnote).foregroundStyle(.white.opacity(0.7))
+                        ProgressView().tint(.primary)
+                        Text("加载关注…").font(.footnote).foregroundStyle(.secondary)
                     } else {
-                        Text("关注的人还没有新作品").font(.footnote).foregroundStyle(.white.opacity(0.7))
+                        Text("关注的人还没有新作品").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1897,17 +1904,17 @@ private struct DYSelfProfileBackdropPreview: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(alignment: .top) { DYSelfProfileBackdrop(cover: cover) }
-        .background(Color.black)
+        .background(Color.ddBackground)
     }
 }
 
 #Preview("无封面") {
     DYSelfProfileBackdropPreview(cover: nil)
-        .preferredColorScheme(.dark)
+
 }
 
 #Preview("无效地址") {
     DYSelfProfileBackdropPreview(cover: "not a url")
-        .preferredColorScheme(.dark)
+
 }
 #endif

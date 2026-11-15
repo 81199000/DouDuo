@@ -385,7 +385,7 @@ struct PlayerPage: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            Color.ddBackground
             // All playback entry points share this backdrop. Mask the player's
             // opaque letterbox below so uncovered areas reveal the blurred cover.
             // 老板要求「不要封面、不要预览图」：没出画面就保持纯黑（原来这里铺模糊封面，起播时会闪一下）
@@ -437,7 +437,8 @@ struct PlayerPage: View {
             #endif
             if seeking && !cleanScreen { seekHUD }
             if !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
-                Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
+                Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.9))
+                    .themeShadow(.mediaLabel)
                     .allowsHitTesting(false)
             }
             // 常驻倍速角标：只要不是 1 倍就一直显示；长按时再提示「下滑锁定 / 上滑取消」
@@ -1533,7 +1534,7 @@ final class PlayerUIView: UIView {
         super.init(frame: .zero)
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
-        backgroundColor = .black
+        backgroundColor = UIColor(named: "AppBackground")
         let nc = NotificationCenter.default
         bgObs = [
             nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
