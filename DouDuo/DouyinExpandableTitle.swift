@@ -145,6 +145,7 @@ struct DYVideoCaptionHeader: View {
     @ObservedObject var bridge: DouyinBridge
     let aweme: DYAweme
     let onClose: (() -> Void)?
+    var authorTrailingInset: CGFloat = 0
 
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -198,6 +199,7 @@ struct DYVideoCaptionHeader: View {
                     .accessibilityIdentifier("douyin.description.close")
                 }
             }
+            .padding(.trailing, authorTrailingInset)
             if let followError {
                 Text(followError).font(.caption).foregroundStyle(theme.status.danger.color(for: scheme))
             }
