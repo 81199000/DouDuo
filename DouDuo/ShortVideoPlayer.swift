@@ -589,6 +589,8 @@ struct PlayerPage: View {
                 logSwipeStart(p)
                 #endif
                 telemetry.begin(p, id: id, duration: knownDuration)
+                // 划入那一刻画面层是否已有第一帧（false = 用户会看到封面/黑屏过渡）
+                DYLiveModel.log("DDFRAME \(id) shown=\(firstFrame)")
                 isPlaying = true
                 seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
                 watchdog(p)
@@ -639,8 +641,8 @@ struct PlayerPage: View {
                 VideoSurface(player: hd, fillWidth: fillWidth).ignoresSafeArea()
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
-            // 封面只给「还没缓存、还没出帧」的在线视频兜底；本地已缓存的直接等首帧（几十毫秒），不铺封面
-            if !firstFrame, !url.isFileURL, let posterURL {
+            // 画面层还没出第一帧时一律先铺封面（本地缓存的也一样），滑动途中不会看到纯黑页；出帧即撤
+            if !firstFrame, let posterURL {
                 GeometryReader { g in
                     let screen = g.size.width / max(g.size.height, 1)
                     let video = videoAspect > 0 ? videoAspect : screen
@@ -946,6 +948,7 @@ struct PlayerPage: View {
             p.rate = playRate
         }
         if shouldPlay { watchdog(p); telemetry.begin(p, id: id, duration: knownDuration) }
+        else { primeFirstFrame(p) }
         #if DEBUG
         if isActive {
             let t0 = Date()
@@ -1109,6 +1112,29 @@ struct PlayerPage: View {
     private func detachObservers() {
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+    }
+
+    /// 提前挂载的相邻页：暂停的 AVPlayer 不会自己解第一帧，画面层一直是黑的，滑进来才开始解 → 「黑屏一下再播」。
+    /// 就绪后 preroll（解码首帧、填满开头缓冲）并把画面停在第一帧，滑过来直接有画面。
+    @State private var primeObs: NSKeyValueObservation?
+    private func primeFirstFrame(_ p: AVPlayer) {
+        guard let it = p.currentItem else { return }
+        let start = (resumePosition ?? 0) > 1 ? CMTime(seconds: resumePosition!, preferredTimescale: 600) : .zero
+        func prime() {
+            guard player === p, !isActive, p.rate == 0 else { return }
+            // seek 到确切位置会让画面层渲染这一帧；preroll 预先解码并缓冲起播所需数据
+            p.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                DispatchQueue.main.async {
+                    guard player === p, !isActive, p.rate == 0, p.status == .readyToPlay else { return }
+                    p.preroll(atRate: 1) { _ in }
+                }
+            }
+        }
+        if it.status == .readyToPlay { prime(); return }
+        primeObs = it.observe(\.status, options: [.new]) { item, _ in
+            guard item.status == .readyToPlay else { return }
+            DispatchQueue.main.async { primeObs?.invalidate(); primeObs = nil; prime() }
+        }
     }
 
     /// 起播看门狗：当前屏 6 秒还没走（网络抖 / 预加载的 item 失效），重建播放项再来一次
@@ -1397,6 +1423,7 @@ struct PlayerPage: View {
     }
 
     private func teardown() {
+        primeObs?.invalidate(); primeObs = nil
         pictureInPicture.invalidate()
         cancelUpgrade()
         if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
