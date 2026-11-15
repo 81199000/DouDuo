@@ -681,10 +681,28 @@ struct DYMessagesScreen: View {
     @ContentBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
-            // 老板定：整个信息界面靠左，右边留一条跟视频页同款的右侧栏（内外屏、横竖屏同一套）
-            HStack(spacing: 0) {
-                messagePanes
-                messageRail
+            // 老板定：整个信息界面靠左，右边一条跟视频页同款的右侧栏（内外屏、横竖屏同一套）。
+            // 右侧栏跟视频页一样用 DYAdaptiveActionRail：读系统竖栏那一列的宽度，伸进去居中对齐，
+            // 内容区只让出栏本身占的宽度（不再被安全区 + 栏宽挤两次）。
+            // 横屏时系统竖栏会被放到左边（toolbarVerticalEdge = .leading）；老板要右侧栏「横屏也一样」→ 一律放右边
+            DYAdaptiveActionRail { systemEdge in
+                GeometryReader { safe in
+                    let edge = HorizontalEdge.trailing
+                    // 系统竖栏也在右边时，栏居中到那一列；系统竖栏在左边（横屏）时右边没有系统列，离边 12
+                    let column = systemEdge == .trailing ? safe.safeAreaInsets.trailing : 0
+                    // 跟视频页同一公式：有系统竖栏时栏居中在那一列（+光学微调）；没有时离边 12
+                    let outer = column > 0 ? max(0, (column - Self.railWidth) / 2 + theme.media.expandedRailOpticalInset) : 12
+                    // 内容区右侧要让出：栏宽 + 栏外留白 − 系统竖栏本身（那一列内容区本来就不占）
+                    let reserve = max(0, Self.railWidth + outer * 2 - column)
+                    ZStack(alignment: edge == .leading ? .leading : .trailing) {
+                        messagePanes
+                            .padding(edge == .leading ? .leading : .trailing, reserve)
+                        messageRail
+                            .padding(.horizontal, outer)
+                            .frame(maxWidth: .infinity, alignment: edge == .leading ? .leading : .trailing)
+                            .ignoresSafeArea(edges: .horizontal)
+                    }
+                }
             }
         } else {
             legacyMessageContent
@@ -758,8 +776,6 @@ struct DYMessagesScreen: View {
     // MARK: 右侧栏（样式、宽度、底部位置照搬视频页右侧栏：54pt 玻璃胶囊、27pt 线框图标、下方小字）
 
     private static let railWidth: CGFloat = 54
-    /// 栏外留白：跟视频页 compact 时的 12pt 一致
-    private static let railOuterPadding: CGFloat = 8
 
     private var messageRail: some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
@@ -821,7 +837,6 @@ struct DYMessagesScreen: View {
         }
         // 底部位置跟视频页一致：离底 92pt
         .padding(.bottom, 92)
-        .padding(.horizontal, Self.railOuterPadding)
         .frame(maxHeight: .infinity, alignment: .bottom)
         .themeShadow(.floatingPanel)
         .ignoresSafeArea(.keyboard)
