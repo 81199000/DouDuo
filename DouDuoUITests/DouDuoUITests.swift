@@ -3313,6 +3313,20 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 合屏左贴边探针：连滑几条，看每页是否都收到铰链回调（日志 DDHINGE）
+    func testClosedAlignProbe() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autofit_v1", "NO"]
+        app.launch()
+        sleep(20)
+        for i in 0..<4 {
+            print("DDCHAT_SHOT_SWIPE\(i)"); sleep(3)
+            app.swipeUp(velocity: .fast)
+            sleep(5)
+        }
+        print("DDCHAT_SHOT_END"); sleep(3)
+    }
+
     /// 幕5 半折叠桌面式：滑评论
     func testTourFold() throws {
         let app = XCUIApplication()

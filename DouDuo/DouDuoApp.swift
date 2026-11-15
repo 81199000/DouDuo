@@ -90,6 +90,7 @@ struct DouDuoApp: App {
 
     var body: some Scene {
         WindowGroup {
+            Group {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
                 DYForwardLayoutProbe()
@@ -107,6 +108,8 @@ struct DouDuoApp: App {
             DouyinFeedScreen()
                 .preferredColorScheme(.dark)
             #endif
+            }
+            .modifier(DYHingeStateRoot())
         }
         // 退到后台 / 锁屏：短视频按「后台播放」停声。直播走同一条恢复，是否出声看「后台直播声音」。
         // 回到前台会先经过 inactive。这里如果当成后台，会把刚刚恢复的直播立刻停掉。

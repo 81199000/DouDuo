@@ -17,3 +17,10 @@ print("PASS closed-only alignment; unfolded portrait, narrow split panes, landsc
 p=Path(os.environ['TMPDIR'])/'closed-video-alignment.swift';p.write_text(code)
 subprocess.run(['swift',str(p)],check=True)
 assert '.onHingeChange' in s and 'context.hinge?.status == .closed' in s
+# 回归闸门：铰链状态只能在根视图读一次再经环境下发。每个视频页各自 onHingeChange 时，
+# 只有启动那一页收到回调，滑出来的新页永远居中（1.5.0 / 1.5.1 真机「合屏没靠左」）。
+mod = re.search(r'struct DYClosedPortraitAlignment.*?\n}\n', s, re.S).group()
+assert 'onHingeChange' not in mod and '@Environment(\\.dyHingeClosed)' in mod, 'DYClosedPortraitAlignment 不许自己监听铰链'
+app = (root/'DouDuo/DouDuoApp.swift').read_text()
+assert '.modifier(DYHingeStateRoot())' in app, 'App 根视图必须挂 DYHingeStateRoot'
+print("PASS hinge state read once at app root")
