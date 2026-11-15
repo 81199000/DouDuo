@@ -29,4 +29,6 @@ extension Color {
     static let ddMessageChatBackground = Color("MessageChatBackground")
     static let ddMessagePinnedRow = Color("MessagePinnedRow")
     static let ddSeparator = Color("AppSeparator")
+    /// 信息页左右分栏（联系人 | 聊天）之间的分割线，比普通分隔线更显眼
+    static let ddMessageSplitDivider = Color("MessageSplitDivider")
 }
