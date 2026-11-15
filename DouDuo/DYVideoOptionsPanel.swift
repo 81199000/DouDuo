@@ -8,7 +8,7 @@ struct DYVideoOptionsPanel: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @AppStorage("douyin_muted_v1") private var muted = false
-    @AppStorage("douyin_autofit_v1") private var autoFit = true
+    @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage("douyin_bg_play_v1") private var backgroundPlay = false
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
@@ -33,8 +33,10 @@ struct DYVideoOptionsPanel: View {
             ScrollView {
                 VStack(spacing: 12) {
                     HStack(spacing: 0) {
-                        shortcut("铺满宽度", icon: "arrow.up.left.and.arrow.down.right",
-                                 selected: autoFit, id: "douyin.options.fit") { autoFit.toggle() }
+                        if DYVideoFit.showsLabeledControl(on: .classicOptions) {
+                            shortcut(DYVideoFit.title, icon: "arrow.up.left.and.arrow.down.right",
+                                     selected: autoFit, id: "douyin.options.fit") { autoFit.toggle() }
+                        }
                         shortcut("静音", icon: muted ? "speaker.slash" : "speaker.wave.2",
                                  selected: muted, id: "douyin.options.muted") { muted.toggle() }
                         shortcut("听书模式", icon: "headphones",

@@ -158,7 +158,13 @@ enum LocalVideoLaunch {
 
 struct LocalVideoPlaybackView: View {
     let url: URL
-    let fillWidth: Bool
+    @State private var fillWidth: Bool
+
+    init(url: URL, fillWidth: Bool) {
+        self.url = url
+        _fillWidth = State(initialValue: fillWidth)
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -166,6 +172,7 @@ struct LocalVideoPlaybackView: View {
                                 isActive: true, topInset: 0, bottomInset: 0, resumePosition: nil,
                                 compactChrome: true, onEnded: nil, onDoubleTap: nil,
                                 onSavePosition: { _ in }, onClose: {}, fillWidth: fillWidth,
+                                onFillWidthChange: { fillWidth = $0 },
                                 videoAspect: Double(ProcessInfo.processInfo.environment["DOUDUO_LOCALASPECT"] ?? "") ?? 0)
         }
         .preferredColorScheme(.dark)
