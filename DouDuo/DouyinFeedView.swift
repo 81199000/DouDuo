@@ -4219,21 +4219,8 @@ struct DYClassicVideoPage: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.duoVisibleVideo) private var visibleVideo
     @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(\.dyHingeClosed) private var hingeClosed
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var chromeSidePadding: CGFloat { 12 }
-    @State private var pageSize: CGSize = .zero
-    /// 合屏（铰链 closed）首页：TikTok 式排版——视频靠左，互动胶囊贴着视频右边，
-    /// 系统竖栏只放清屏 + 我的/消息/首页三个页签（不再被互动胶囊挤成一个按钮）。
-    private var closedRail: Bool { hingeClosed && systemBars && !inlineNavigation && hSize == .compact }
-    /// 互动胶囊离页面右缘的距离：竖屏视频没铺满、已左贴边时，跟到视频右边；否则贴着系统竖栏左侧。
-    private var closedRailTrailing: CGFloat {
-        let w = pageSize.width, h = pageSize.height
-        let aspect = item.height > 0 ? item.width / item.height : 0
-        var gap: CGFloat = 0
-        if w > 0, h > w, aspect > 0, aspect < 1, !autoFit { gap = w - min(w, h * aspect) }
-        return max(systemColumnInset, gap) + 6
-    }
     // Full-bleed ancestors may report zero safe-area insets. Read the app's
     // foreground key window as a fallback, never a guessed device/rail width.
     private var systemColumnInset: CGFloat {
@@ -4266,10 +4253,6 @@ struct DYClassicVideoPage: View {
         // The 24 pt edge tuck is for the trailing Duo column. Restore the
         // complete system bottom inset when tabs become horizontal in portrait.
         let bottom = verticalBarEdge == nil && !inlineNavigation ? min(insets.bottom, 24) : 0
-        if closedRail {
-            return EdgeInsets(top: 0, leading: max(insets.leading, left), bottom: 0,
-                              trailing: closedRailTrailing + railWidth + 4)
-        }
         return EdgeInsets(top: 0, leading: max(insets.leading, left),
                           bottom: bottom, trailing: inlineNavigation ? 0 : max(systemColumnInset, railWidth + chromeSidePadding))
     }
@@ -4405,19 +4388,12 @@ struct DYClassicVideoPage: View {
             }
         }
         .overlay(alignment: .trailing) {
-            if !cleanScreen && closedRail {
-                actionCapsule(fg)
-                    .padding(.trailing, closedRailTrailing)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, DYDuoMetrics.mediaBottomPadding(mediaBottomInset) + 56)
-                    .accessibilityIdentifier("douyin.video.closedRail")
-            } else if !cleanScreen && !inlineNavigation && (!systemBars || verticalBarEdge == nil) {
+            if !cleanScreen && !inlineNavigation && (!systemBars || verticalBarEdge == nil) {
                 actionCapsule(fg)
                     .modifier(DYRailReservedNudge())
                     .padding(.trailing, actionRailTrailingPadding)
             }
         }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { pageSize = $0 }
         .preference(key: DYActiveVideoActionsKey.self,
                     value: systemBars && isCurrent && !inlineNavigation ? toolbarActions(fg) : nil)
         .overlay(alignment: .bottom) {
