@@ -417,6 +417,8 @@ struct DYMessagesScreen: View {
     @State private var navigation = DYMessageNavigation()
     @State private var visitedRoutes: Set<DYMsgRoute> = []
     @State private var openingChat: String?
+    /// 网页 DOM 真的切到这条会话了没有：没切之前用原生遮罩盖住，避免闪一下会话列表
+    @State private var chatDOMReady = true
     @State private var sidebarVisible = false
     @AppStorage("douyin_message_sidebar_fraction_v1") private var sidebarFraction = 0.36
     @State private var sidebarWidth: CGFloat = 320
@@ -731,7 +733,11 @@ struct DYMessagesScreen: View {
                     .accessibilityHidden(!navigation.hasDetail)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .onChange(of: geo.size, initial: true) { _, value in messageSize = value }
+            .onChange(of: geo.size, initial: true) { _, value in
+                messageSize = value
+                // 记住真实尺寸：下次关闭信息页时网页按这个尺寸留在后台，回来不用整页重排
+                DYChatWebSession.shared.noteMessagesSize(value)
+            }
         }
         .clipped()
         .modifier(DYEdgeSwipeBack(action: backFromMessage))
@@ -873,85 +879,61 @@ struct DYMessagesScreen: View {
         guard let web = chatModel.web else { return }
         let account = DYMessageCache.shared.accountScope
         guard !account.isEmpty else { return }
-        do {
-            _ = try? await web.callAsyncJavaScript("window.__ddAccountScope = scope;", arguments: ["scope": account], contentWorld: .page)
-            guard let result = try await web.evaluateJavaScript(Self.conversationsJS) as? String,
-                  let data = result.data(using: .utf8) else { return }
-            let delta = try JSONDecoder().decode(ConversationDelta.self, from: data)
-            guard DYMessageCache.shared.accountScope == account else { return }
-            if delta.items.isEmpty {
-                if conversations.isEmpty && delta.visible == 0 {
-                    let text = (try? await web.evaluateJavaScript("document.body.innerText")) as? String ?? ""
-                    chatStatus = text.contains("验证码登录") ? "私信需要登录，请使用网页版 / 登录" : "正在加载会话；如无记录可稍后重试"
-                } else {
-                    chatStatus = ""
-                }
-                _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
-                return
-            }
-            let oldRows = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let capturedAt = Date().timeIntervalSince1970
-            let rows = delta.items.map { row -> DYConversationRow in
-                var next = row
-                if let old = oldRows[row.id], old.time == row.time, old.preview == row.preview {
-                    next.observedAt = old.observedAt ?? capturedAt
-                } else { next.observedAt = capturedAt }
-                return next
-            }
-            let updated = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            if let selected = cache.selectedChat, let row = updated[selected.id], row != selected {
+        // 读取与合并都交给 DYConversationSync：后台预热和消息页用的是同一套逻辑
+        let outcome = await DYConversationSync.read(web: web, account: account)
+        guard DYMessageCache.shared.accountScope == account else { return }
+        if let status = outcome.status { chatStatus = status }
+        if !outcome.rows.isEmpty {
+            if conversations != outcome.rows { conversations = outcome.rows }
+            if let selected = cache.selectedChat,
+               let row = outcome.rows.first(where: { $0.id == selected.id }), row != selected {
                 cache.selectedChat = row
             }
-            let existing = Set(conversations.map(\.id))
-            // 按最后消息时间倒序：有新信息的朋友排最上面
-            let merged = (rows.filter { !existing.contains($0.id) } + conversations.map { updated[$0.id] ?? $0 })
-                .sorted(by: DYConversationRow.byTimeDesc)
-            cache.reconcileHiddenConversations(merged)
-            if merged != conversations {
-                conversations = merged
-                DYMessageCache.shared.snapshot.conversations = merged
-                DYMessageCache.shared.save()
-            }
-            // 合并成功才推进网页差异基线；失败或换账号时下次仍会重发这些行。
-            _ = try? await web.callAsyncJavaScript(Self.conversationsAckJS, arguments: ["revision": delta.revision], contentWorld: .page)
-            DYMessageCache.shared.retainChat()
             chatStatus = ""
-            await cache.resolveFollow(conversations.compactMap { $0.kind == 1 ? $0.sec : nil })
             let unfollowed = unfollowedConversations
             if unfollowed != cache.unfollowedRows { cache.unfollowedRows = unfollowed }
-        } catch {
-            chatStatus = "私信加载失败，请稍后重试"
         }
     }
 
     private func openConversation(_ row: DYConversationRow) async {
         guard openingChat == nil else { return }
-        #if DEBUG
         let started = Date()
-        defer { DYLiveModel.log("DDCHAT_TIMING open_ms=\(Int(Date().timeIntervalSince(started) * 1000))") }
-        #endif
         openingChat = row.id
         defer { openingChat = nil }
-        guard !composer.working else { return }
-        guard let web = chatModel.web else { return }
+        guard !composer.working, let web = chatModel.web else { return }
+        // 乐观跳转：点下就进聊天界面（原生表头 + 转圈），DOM 切换在后台完成。
+        // 以前要等网页 DOM 切完才跳，那段时间就是老板说的「点了要等很久」。
+        chatDOMReady = false
+        cache.selectedChat = row
+        navigation.openChat(row.id, from: nil)
         var result = await DYChatOpener.open(row, web: web)
         if case .notReady = result {
-            try? await Task.sleep(for: .milliseconds(1500))
+            try? await Task.sleep(for: .milliseconds(1200))
             result = await DYChatOpener.open(row, web: web)
         }
         switch result {
         case .opened:
             openedFromShare = false
-            cache.selectedChat = row
-            DYLiveModel.log("DDCHAT open stranger=\(row.stranger)")
-            navigation.openChat(row.id, from: nil)
+            chatDOMReady = true
+            DYLiveModel.log("DDCHAT open stranger=\(row.stranger) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
         case .notReady:
             chatStatus = "私信页面还没加载好，请稍后重试"
             DYLiveModel.log("DDCHAT open miss dom-not-ready")
+            rollbackOpen()
         case .notFound:
             chatStatus = "会话位置已变化，正在刷新，请再点一次"
+            DYLiveModel.log("DDCHAT open miss not-found")
+            rollbackOpen()
             await readConversations()
         }
+    }
+
+    /// 打开失败退回列表（乐观跳转的反向操作），别把人留在空白的聊天页
+    private func rollbackOpen() {
+        chatDOMReady = true
+        _ = navigation.back()
+        cache.selectedChat = nil
+        restoreConversationList()
     }
 
     private func openSharedConversation(_ receipt: DYForwardReceipt) async {
@@ -1006,6 +988,7 @@ struct DYMessagesScreen: View {
 
     private func restoreConversationList() {
         // Native cached rows are available immediately; web cleanup is serialized below.
+        chatDOMReady = true
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
         chatModel.web?.endEditing(true)
@@ -1077,7 +1060,17 @@ struct DYMessagesScreen: View {
         ZStack(alignment: .topLeading) {
             Color.black
             chatWeb
+                .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
+            if !chatDOMReady, navigation.isChat {
+                // 打开会话期间：原生黑底 + 转圈，不露网页的会话列表
+                ZStack {
+                    Color.black
+                    ProgressView().tint(.white)
+                }
+                .transition(.opacity)
+                .allowsHitTesting(true)
+            }
             if navigation.isChat, let row = selectedChat {
                 let author: DYAweme.Author? = row.kind == 1 && !(row.sec ?? "").isEmpty
                     ? .init(name: row.name, avatar: row.avatar, secUid: row.sec) : nil
@@ -1098,7 +1091,7 @@ struct DYMessagesScreen: View {
 
     /// 陌生人聚合项展开后，进第一屏里第一个真实会话（没有则停在陌生人列表，也能返回）
     /// 主列表：普通会话 + 陌生人聚合项。陌生人二级面板（StrangerConversationList）里的行不算主列表
-    private static let conversationsJS = #"""
+    static let conversationsJS = #"""
     (() => {
       const accountScope = window.__ddAccountScope || '';
       const inStranger = e => !!e.closest('[class*="StrangerConversationList"]');
@@ -1154,14 +1147,14 @@ struct DYMessagesScreen: View {
     """#
 
     /// 只有原生层成功合并后才推进差异基线；异常、换账号、乱序ACK不能吞掉更新。
-    private static let conversationsAckJS = #"""
+    static let conversationsAckJS = #"""
     const state = window.__ddConversationDelta;
     if (!state?.pending || state.pending.revision !== revision) return false;
     state.baseline = state.pending.rows; state.pending = null;
     return true;
     """#
 
-    private struct ConversationDelta: Decodable {
+    struct ConversationDelta: Decodable {
         let items: [DYConversationRow]
         let revision: String
         let visible: Int
@@ -1316,6 +1309,7 @@ struct DYMessagesScreen: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
+        let t0 = Date()
         let cache = DYMessageCache.shared
         await cache.prepare()
         // 先还原本地数据，不清空列表、不挡着等网络；随后只合并增量。
@@ -1325,6 +1319,8 @@ struct DYMessagesScreen: View {
             conversations = cache.snapshot.conversations.sorted(by: DYConversationRow.byTimeDesc)
         }
         recent = cache.page(700)?.items ?? []
+        // 进信息页的首屏成本：缓存直出花多久（老板要求「打开就不重新加载」）
+        DYLiveModel.log("DDMSGROOT cached_ms=\(Int(Date().timeIntervalSince(t0) * 1000)) chats=\(conversations.count) recent=\(recent.count)")
         #if DEBUG
         if DYMessageFixture.enabled { return }
         #endif

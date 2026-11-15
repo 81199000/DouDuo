@@ -566,9 +566,10 @@ struct DYDMBannerCard: View {
 }
 
 struct DYDMMonitorHost: View {
-    @AppStorage(DYDMNotificationSettings.notifyKey) private var notifications = false
     var body: some View {
-        if notifications && !DYDMProbe.blocksFixture {
+        // 不再只在「私信通知」打开时才挂：聊天网页需要常驻窗口，进信息页才能秒开
+        // （通知开关只控制横幅与轮询，见 DYDMProbe.enabled）
+        if !DYDMProbe.blocksFixture {
             DYChatWebParkHost()
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)

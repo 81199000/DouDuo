@@ -775,7 +775,11 @@ final class DYChatWebSession {
         place()
     }
 
+    /// 消息页最后一次的真实尺寸：挂回去时按这个尺寸放，避免从 1200x800 缩到手机宽度整页重排（进信息页那一下卡顿）
+    private var lastMessagesSize = CGSize.zero
+
     func attachMessages(_ view: UIView, model: DouyinWebModel) {
+        if view.bounds.size.width > 1, view.bounds.size.height > 1 { lastMessagesSize = view.bounds.size }
         messagesBox = view
         ensureWeb(model)
         place()
@@ -790,6 +794,11 @@ final class DYChatWebSession {
 
     var navigationEpoch: Int { epoch }
     var messagesAreVisible: Bool { messagesVisible }
+
+    func noteMessagesSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1, size != lastMessagesSize else { return }
+        lastMessagesSize = size
+    }
 
     func setMessagesVisible(_ visible: Bool) {
         messagesVisible = visible
@@ -850,11 +859,11 @@ final class DYChatWebSession {
         started = true
         getrusage(RUSAGE_SELF, &cpuMark)
         cpuAt = Date()
-        DYLiveModel.log("DDDM start gate=setting")
+        DYLiveModel.log("DDDM start gate=\(DYDMProbe.enabled ? "setting" : "prewarm")")
         loop = Task { @MainActor in
             while !Task.isCancelled {
                 await DYChatWebSession.shared.tick()
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(DYDMProbe.enabled ? 2 : 4))
             }
         }
     }
@@ -891,15 +900,18 @@ final class DYChatWebSession {
     }
 
     private func tick() async {
-        guard DYDMProbe.enabled else { return }
         ticks += 1
         let cache = DYMessageCache.shared
         if !settled || ticks % 15 == 0 {
             await cache.prepare()
             if cache.scopeGeneration > 0 { settled = true }
         }
-        if cache.chatModel.web == nil { ensureWeb(cache.chatModel) }
+        // 老板要求「进信息页不用重新加载」：只要已登录就把聊天网页常驻挂着，
+        // 跟「私信通知」开关无关；开关只管横幅和轮询。
+        if cache.chatModel.web == nil, cache.hasSession || DYDMProbe.enabled { ensureWeb(cache.chatModel) }
         place()
+        await DYChatPrewarm.shared.tick(web: cache.chatModel.web, messagesVisible: messagesVisible)
+        guard DYDMProbe.enabled else { return }
         await pull()
         if ticks % 15 == 0 { logSample() }
     }
@@ -943,7 +955,8 @@ final class DYChatWebSession {
             web.isUserInteractionEnabled = true
         } else {
             web.autoresizingMask = []
-            web.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+            let size = lastMessagesSize.width > 1 ? lastMessagesSize : CGSize(width: 1200, height: 800)
+            web.frame = CGRect(origin: .zero, size: size)
             web.isUserInteractionEnabled = false
         }
         logHolder(holder, window: web.window == nil ? 0 : 1)
