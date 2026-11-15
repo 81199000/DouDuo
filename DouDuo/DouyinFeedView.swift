@@ -2856,9 +2856,9 @@ struct DYClassicFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
-    @Environment(\.dyHingeClosed) private var hingeClosed
-    private var headerLeadingInset: CGFloat { sidePanelOpen ? 0 : insets.leading }
-    private var headerTrailingInset: CGFloat { sidePanelOpen ? 0 : insets.trailing }
+    /// Duo 横置（合屏外屏或完全展开内屏；半折不算）。
+    @State private var duoLandscape = false
+    private var titleCentersOnScreen: Bool { duoLandscape && !sidePanelOpen }
     @State private var supportsSidePanel = false
     @State private var residentComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
@@ -3152,6 +3152,9 @@ struct DYClassicFeedScreen: View {
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width >= DYDuoMetrics.legacyWideMin || (DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height)
                 } action: { supportsSidePanel = $0 }
+                .onGeometryChange(for: Bool.self) { proxy in
+                    DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
+                } action: { duoLandscape = $0 }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
                     let token = UUID(); wideToken = token
@@ -3537,17 +3540,14 @@ struct DYClassicFeedScreen: View {
                     .allowsHitTesting(!(showSearch && searchIsSplit))
                     .accessibilityHidden(showSearch && searchIsSplit)
                 }
-                .padding(.leading, headerLeadingInset)
-                .padding(.trailing, headerTrailingInset)
-                // 合屏外屏：状态栏竖排在一侧，左右安全区不对称，但视频是全屏画幅，标题按整屏居中，
-                // 否则看起来偏向另一侧。展开 / 半折 / 普通 iPhone 仍按避开安全区后的区域居中。
-                topBar
-                    .padding(.leading, hingeClosed ? 0 : headerLeadingInset)
-                    .padding(.trailing, hingeClosed ? 0 : headerTrailingInset)
+                // Duo 横置（合屏或展开）：视频铺满屏幕，但一侧的竖排状态栏/导航栏让左右安全区不对称；
+                // 标题抵消这份不对称，按整屏居中。竖置和普通 iPhone 仍在安全区内居中。
+                topBar.offset(x: titleCentersOnScreen ? (insets.trailing - insets.leading) / 2 : 0)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
-            .padding(.horizontal, 8)
+            .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
+            .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
             .padding(.top, headerTopInset)
             .accessibilityElement(children: .contain)
             .background {
