@@ -4326,6 +4326,8 @@ struct DYClassicVideoPage: View {
     @FocusState private var danmakuFocused: Bool
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
+    /// 右侧控制区按住任何位置都加速（对齐抖音）：它们盖在手势层之上或在系统栏里，由这个对象转给播放器。
+    @StateObject private var boost = DYBoostControl()
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
@@ -4382,6 +4384,7 @@ struct DYClassicVideoPage: View {
                                     onSwipeLeft: onChannelDrag == nil && !cleanScreen ? { (onNavigateLeft ?? onAuthor)() } : nil,
                                     onSwipeRight: onChannelDrag == nil && !cleanScreen ? { onShowFollowing?() } : nil,
                                     onContextMenu: { if !cleanScreen { showOptions = true } },
+                                    boost: boost,
                                     onHorizontalDrag: cleanScreen ? nil : onChannelDrag,
                                     onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
@@ -4551,7 +4554,7 @@ struct DYClassicVideoPage: View {
 
     private var authorButton: some View {
         DYAuthorAvatarControl(image: authorImage, name: item.author.name,
-                              onAuthor: onAuthor, follow: followBadge)
+                              onAuthor: guardedAuthor, follow: followBadge)
             .frame(width: railWidth)
     }
 
@@ -4559,6 +4562,7 @@ struct DYClassicVideoPage: View {
         guard bridge != nil, !authorFollowed,
               item.author.uid?.isEmpty == false || item.author.secUid?.isEmpty == false else { return nil }
         return AnyView(Button {
+            guard !boost.blocksTap else { return }
             Task { await followAuthor() }
         } label: {
             DYAuthorFollowMark(followed: false, busy: followBusy)
@@ -4595,18 +4599,20 @@ struct DYClassicVideoPage: View {
             .padding(.vertical, 7)
             .glassEffect(.regular, in: .capsule)
             .environment(\.colorScheme, .dark)
+            .modifier(DYHoldBoostArea(control: item.images.isEmpty ? boost : nil))
     }
 
     private func toolbarActions(_ fg: Color) -> DYVideoToolbarActions {
         DYVideoToolbarActions(
             avatarImage: authorImage, authorName: item.author.name,
-            onAuthor: onAuthor, follow: followBadge,
+            onAuthor: guardedAuthor, follow: followBadge,
             like: AnyView(railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)),
             comments: AnyView(railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)),
             collect: AnyView(railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                                      tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)),
-            share: AnyView(railItem("arrowshape.turn.up.right", DYFormat.count(item.stats.share), tint: fg, "douyin.share") { showShare = true })
+            share: AnyView(railItem("arrowshape.turn.up.right", DYFormat.count(item.stats.share), tint: fg, "douyin.share") { showShare = true }),
+            boost: item.images.isEmpty ? boost : nil
         )
     }
 
@@ -4641,8 +4647,11 @@ struct DYClassicVideoPage: View {
         .accessibilityIdentifier("douyin.video.actions")
     }
 
+    /// 长按加速后松手不进作者页。
+    private func guardedAuthor() { if !boost.blocksTap { onAuthor() } }
+
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
+        Button(action: { if !boost.blocksTap { act() } }) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .resizable().scaledToFit()
