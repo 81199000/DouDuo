@@ -931,7 +931,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         playFast: fast && fast !== (best || def) ? fast : null,
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
-        cover: first(v.cover) || first(v.origin_cover) || (a.images && a.images[0] && first(a.images[0])) || null,
+        // origin_cover = 原比例首帧（竖屏就是竖的）；cover 是网页推荐用的 4:3 横版裁切，会让竖屏视频先显示成横的
+        cover: first(v.origin_cover) || first(v.cover) || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,

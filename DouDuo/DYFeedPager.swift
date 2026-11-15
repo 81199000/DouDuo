@@ -14,16 +14,9 @@ struct DYFeedPager<Page: View>: View {
     @ViewBuilder let page: (DYAweme) -> Page
 
     var body: some View {
-        let cur = DYPagerWindow.currentIndex(items, currentID)
         ScrollView(.vertical) {
             // 非 Lazy：当前前 1 后 2 条提前挂真页面（第一帧已就绪），其余是轻量占位，见 DYPagerWindow
-            VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                    DYPagerSlot(item: item, index: i, current: cur) { page(item) }
-                        .containerRelativeFrame(pageAxes)
-                        .id(item.id)
-                }
-            }
+            DYPagerStack(items: items, currentID: currentID, page: page, pageAxes: pageAxes)
             .scrollTargetLayout()
             // 固定「更快」收尾（0.10s）；系统开了「减少动态效果」时自动退回系统分页。
             .background(DYPagingSpeedBridge(ids: items.map(\.id), currentID: $currentID))

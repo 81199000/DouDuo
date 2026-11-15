@@ -842,11 +842,8 @@ struct DYListPlayer: View {
         DYCommentPlayerLayout(bridge: bridge, aweme: current, showComments: $showComments, focus: commentFocus, onBack: { dismiss() }) { insets in
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
-                let cur = DYPagerWindow.currentIndex(items, currentID)
                 ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                            DYPagerSlot(item: item, index: i, current: cur) {
+                    DYPagerStack(items: items, currentID: currentID, page: { item in
                             DYVideoPage(item: item, isCurrent: item.id == currentID, insets: insets,
                                         resume: resume[item.id], liked: liked.contains(item.id), collected: collected.contains(item.id),
                                         onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
@@ -858,11 +855,7 @@ struct DYListPlayer: View {
                                         bridge: bridge, onToast: { show($0) },
                                         moreExtras: AnyView(Section { DYSettingsButton() }),
                                         onEnded: { playNext(after: item.id) })
-                            }
-                                .containerRelativeFrame([.horizontal, .vertical])
-                                .id(item.id)
-                        }
-                    }
+                    })
                     .scrollTargetLayout()
                     .background(DYPagingSpeedBridge(ids: items.map(\.id), currentID: $currentID))
                 }
@@ -1708,11 +1701,8 @@ struct DYFollowFeed: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                let cur = DYPagerWindow.currentIndex(m.items, currentID.wrappedValue)
                 ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(m.items.enumerated()), id: \.element.id) { i, item in
-                            DYPagerSlot(item: item, index: i, current: cur) {
+                    DYPagerStack(items: m.items, currentID: currentID.wrappedValue, page: { item in
                             DYVideoPage(item: item, isCurrent: active && item.id == currentID.wrappedValue, insets: insets,
                                         resume: resume[item.id], liked: liked.contains(item.id) || item.userDigged == 1,
                                         collected: collected.contains(item.id) || item.isCollect == 1,
@@ -1722,11 +1712,7 @@ struct DYFollowFeed: View {
                                         preloader: preloader, bridge: bridge, onToast: onToast,
                                         onNavigateLeft: onChannelDrag == nil ? onShowRecommendations : nil,
                                         onChannelDrag: onChannelDrag, onChannelDragEnd: onChannelDragEnd)
-                            }
-                                .containerRelativeFrame([.horizontal, .vertical])
-                                .id(item.id)
-                        }
-                    }
+                    })
                     .scrollTargetLayout()
                     .background(DYPagingSpeedBridge(ids: m.items.map(\.id), currentID: currentID))
                 }

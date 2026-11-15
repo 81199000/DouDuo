@@ -29,7 +29,7 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
         view.currentID = currentID
         if listChanged { view.reconcileAfterLayout() }
         view.didSettle = { id in
-            guard ids.contains(id) else { return }
+            guard ids.contains(id), currentID != id else { return }
             currentID = id
         }
         view.duration = reduceMotion ? nil : Self.fixedSpeed.duration
@@ -44,6 +44,7 @@ final class DYPagingSpeedHost: UIView {
     var currentID: String?
     var didSettle: (String) -> Void = { _ in }
     private var proxy: DYPagingDelegate?
+    /// 手指抬起、已知落到哪一页：提前切当前页起播，不等收尾动画
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { detach() } else { attachWhenReady() }
@@ -64,7 +65,8 @@ final class DYPagingSpeedHost: UIView {
         let next = DYPagingDelegate(scroll: scroll, duration: duration,
             ids: { [weak self] in self?.ids ?? [] },
             currentID: { [weak self] in self?.currentID },
-            didSettle: { [weak self] id in self?.didSettle(id) })
+            didSettle: { [weak self] id in self?.didSettle(id) },
+            willSettle: { [weak self] id in self?.didSettle(id) })
         proxy = next
         scroll.delegate = next
         #if DEBUG
@@ -88,6 +90,7 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private let ids: () -> [String]
     private let currentID: () -> String?
     private let didSettle: (String) -> Void
+    private let willSettle: (String) -> Void
     private var targetID: String?
     private var target: CGPoint?
     private var start = CGPoint.zero
@@ -99,8 +102,9 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private var size = CGSize.zero
 
     init(scroll: UIScrollView, duration: TimeInterval, ids: @escaping () -> [String],
-         currentID: @escaping () -> String?, didSettle: @escaping (String) -> Void) {
-        self.ids = ids; self.currentID = currentID; self.didSettle = didSettle
+         currentID: @escaping () -> String?, didSettle: @escaping (String) -> Void,
+         willSettle: @escaping (String) -> Void) {
+        self.ids = ids; self.currentID = currentID; self.didSettle = didSettle; self.willSettle = willSettle
         self.scroll = scroll; self.original = scroll.delegate; self.duration = duration
         self.size = scroll.bounds.size
         super.init()
@@ -138,6 +142,8 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         guard target != nil else { return }
+        // 播放提前：抬手即切到目标页（暂停在第一帧的播放器立刻开播），收尾动画与起播并行
+        if let id = targetID, id != currentID() { willSettle(id) }
         start = scrollView.contentOffset; startTime = CACurrentMediaTime(); animationDuration = duration
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)

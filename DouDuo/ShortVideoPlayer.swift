@@ -643,14 +643,22 @@ struct PlayerPage: View {
             }
             // 画面层还没出第一帧时一律先铺封面（本地缓存的也一样），滑动途中不会看到纯黑页；出帧即撤
             if !firstFrame, let posterURL {
+                // 按视频真实宽高比摆封面（和画面层同一铺满规则），出帧时位置尺寸完全一致，不跳
                 GeometryReader { g in
                     let screen = g.size.width / max(g.size.height, 1)
                     let video = videoAspect > 0 ? videoAspect : screen
-                    let same = (video < 1) == (screen < 1)
+                    let fills = fillWidth && (video < 1) == (screen < 1)
+                    let box: CGSize = fills
+                        ? (video > screen ? CGSize(width: g.size.height * video, height: g.size.height)
+                                          : CGSize(width: g.size.width, height: g.size.width / video))
+                        : (video > screen ? CGSize(width: g.size.width, height: g.size.width / video)
+                                          : CGSize(width: g.size.height * video, height: g.size.height))
                     CachedAsyncImage(url: posterURL) { img in
-                        img.resizable().aspectRatio(contentMode: fillWidth && same ? .fill : .fit)
+                        img.resizable().scaledToFill()
                     } placeholder: { Color.clear }
-                    .frame(width: g.size.width, height: g.size.height)
+                    .frame(width: box.width, height: box.height)
+                    .clipped()
+                    .position(x: g.size.width / 2, y: g.size.height / 2)
                 }
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
@@ -1122,12 +1130,18 @@ struct PlayerPage: View {
         let start = (resumePosition ?? 0) > 1 ? CMTime(seconds: resumePosition!, preferredTimescale: 600) : .zero
         func prime() {
             guard player === p, !isActive, p.rate == 0 else { return }
-            // seek 到确切位置会让画面层渲染这一帧；preroll 预先解码并缓冲起播所需数据
-            p.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            // 起点 0：开头就是关键帧，直接 preroll（解码首帧 + 缓冲起播所需数据），画面层随即有帧；
+            // 有续播位置时才 seek（容差放宽到前后 0.5 秒，落在最近的关键帧上，不做整段解码）
+            let preroll = {
                 DispatchQueue.main.async {
                     guard player === p, !isActive, p.rate == 0, p.status == .readyToPlay else { return }
                     p.preroll(atRate: 1) { _ in }
                 }
+            }
+            if start == .zero { preroll() }
+            else {
+                let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
+                p.seek(to: start, toleranceBefore: tol, toleranceAfter: tol) { _ in preroll() }
             }
         }
         if it.status == .readyToPlay { prime(); return }
