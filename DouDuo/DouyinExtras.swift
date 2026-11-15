@@ -645,6 +645,8 @@ struct DYDanmakuClock {
     var slew: Double = 0
     /// 快进/拖动后的「冷静期」：播放器在重建音频、缓冲，报上来的时间与暂停状态在抖，只做平滑追赶不硬跳
     var settleUntil = Date.distantPast
+    /// 用户每跳转一次 +1：弹幕层看到变化就清屏、从新位置重新出（抖音同款）
+    var epoch = 0
 
     func now(_ d: Date) -> Double {
         playing ? anchorTime + d.timeIntervalSince(anchorDate) * rate * (1 + slew) : anchorTime
@@ -654,6 +656,7 @@ struct DYDanmakuClock {
     mutating func seek(_ t: Double, playing p: Bool, rate r: Double) {
         anchorTime = t; anchorDate = Date(); playing = p; rate = r; slew = 0
         settleUntil = Date().addingTimeInterval(2.5)
+        epoch += 1
     }
 
     /// 用户点了暂停/播放：立刻生效
@@ -720,213 +723,19 @@ struct DYDanmakuLayer: View {
 
     var body: some View {
         GeometryReader { g in
-            let w = g.size.width
             let density = DYDanmakuPolicy.Density(rawValue: densityRaw) ?? .standard
             let region = DYDanmakuPolicy.region(height: g.size.height, topInset: topInset, density: density)
-            let speed = (w + 200) / 7
-            let placed = DYDanmakuLayout.shared.get(renderItems, w: w, lanes: region.lanes, speed: speed,
-                                                  density: density, deduplicate: deduplicate)
-            DYDanmakuSurface(placed: placed, generation: DYDanmakuLayout.shared.generation, clock: clock,
-                             regionTop: region.top, regionHeight: max(0, region.bottom - region.top),
-                             width: w, speed: speed)
-                .frame(width: w, height: g.size.height)
+            // 字号变大后轨道变高：按新行高重算这块区域能放几条轨道
+            let lanes = min(density.maxLanes, Int(max(0, (region.bottom - region.top) / DYDanmakuStyle.laneHeight)))
+            DYDanmakuLiveSurface(items: renderItems, clock: clock, regionTop: region.top,
+                                 regionHeight: max(0, region.bottom - region.top), lanes: lanes,
+                                 density: density, deduplicate: deduplicate)
+                .frame(width: g.size.width, height: g.size.height)
         }
         .allowsHitTesting(false)
     }
 }
 
-/// 弹幕渲染：Core Animation 图层 + CADisplayLink（ProMotion 120Hz）。
-/// 原来用 SwiftUI TimelineView + Canvas(symbols)：每帧都重建一遍在屏文字的贴图，实测只有 60fps、
-/// 两成帧超过 20ms，弹幕看着一顿一顿。现在每条弹幕的文字只光栅化一次（缓存成位图），
-/// 每帧只改图层位置，不经过 SwiftUI。
-struct DYDanmakuSurface: UIViewRepresentable {
-    let placed: [DYDanmakuPolicy.Placed]
-    let generation: Int
-    let clock: DYDanmakuClock
-    let regionTop: CGFloat
-    let regionHeight: CGFloat
-    let width: CGFloat
-    let speed: CGFloat
-
-    func makeUIView(context: Context) -> DYDanmakuView { DYDanmakuView() }
-    func updateUIView(_ v: DYDanmakuView, context: Context) {
-        v.update(placed: placed, generation: generation, clock: clock,
-                 regionTop: regionTop, regionHeight: regionHeight, width: width, speed: speed)
-    }
-    static func dismantleUIView(_ v: DYDanmakuView, coordinator: ()) { v.stop() }
-}
-
-final class DYDanmakuView: UIView {
-    private let clip = CALayer()
-    private var placed: [DYDanmakuPolicy.Placed] = []
-    private var generation = -1
-    private var clock = DYDanmakuClock()
-    private var width: CGFloat = 0
-    private var speed: CGFloat = 1
-    private var live: [String: CALayer] = [:]
-    private var pool: [CALayer] = []
-    private var images: [String: UIImage] = [:]
-    private var link: CADisplayLink?
-    // 诊断：实际出帧间隔
-    private var lastTS: CFTimeInterval = 0
-    private var gaps: [Double] = []
-    private var maxOn = 0
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        backgroundColor = .clear
-        clip.masksToBounds = true
-        layer.addSublayer(clip)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    func update(placed p: [DYDanmakuPolicy.Placed], generation g: Int, clock c: DYDanmakuClock,
-                regionTop: CGFloat, regionHeight: CGFloat, width w: CGFloat, speed sp: CGFloat) {
-        clock = c
-        width = w; speed = sp
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        clip.frame = CGRect(x: 0, y: regionTop, width: w, height: regionHeight)
-        CATransaction.commit()
-        if g != generation {
-            generation = g
-            placed = p
-            // 轨道/文字变了：在屏的图层全部回收，下一帧重新放
-            for (_, l) in live { l.removeFromSuperlayer(); pool.append(l) }
-            live.removeAll()
-            if images.count > 600 { images.removeAll() }
-        }
-        if clock.playing { start() } else { stop() }
-        render(clock.now(Date()))
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window == nil { stop() } else if clock.playing { start() }
-    }
-
-    private func start() {
-        guard link == nil, window != nil else { return }
-        let l = CADisplayLink(target: DYDanmakuTick(self), selector: #selector(DYDanmakuTick.tick(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-        l.add(to: .main, forMode: .common)
-        link = l
-        lastTS = 0
-    }
-
-    func stop() { link?.invalidate(); link = nil }
-
-    fileprivate func tick(_ l: CADisplayLink) {
-        if lastTS > 0 {
-            gaps.append(l.timestamp - lastTS)
-            if gaps.count >= 480 {
-                let avg = gaps.reduce(0, +) / Double(gaps.count)
-                let over = gaps.filter { $0 > 0.02 }.count
-                let p95 = gaps.sorted()[Int(Double(gaps.count) * 0.95)]
-                DYLiveModel.log("DDDMFRAME fps=\(Int(1 / max(avg, 0.001))) p95=\(Int(p95 * 1000))ms over20ms=\(over)/\(gaps.count) maxOnScreen=\(maxOn) total=\(placed.count) engine=ca")
-                gaps.removeAll(); maxOn = 0
-            }
-        }
-        lastTS = l.timestamp
-        // 用这一帧「将要显示」的时刻算位置，跟屏幕刷新对齐
-        let lead = l.targetTimestamp - CACurrentMediaTime()
-        render(clock.now(Date().addingTimeInterval(max(0, lead))))
-    }
-
-    private func render(_ t: Double) {
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        var seen = Set<String>()
-        for p in placed where t >= p.start && t <= p.start + p.dur {
-            let id = p.d.id
-            seen.insert(id)
-            let layer: CALayer
-            if let l = live[id] {
-                layer = l
-            } else {
-                layer = pool.popLast() ?? CALayer()
-                layer.anchorPoint = .zero
-                layer.contentsScale = UIScreen.main.scale
-                let img = image(for: p.d)
-                layer.contents = img.cgImage
-                layer.bounds = CGRect(origin: .zero, size: img.size)
-                clip.addSublayer(layer)
-                live[id] = layer
-            }
-            let x = width - CGFloat(t - p.start) * speed
-            let y = CGFloat(p.lane) * DYDanmakuPolicy.laneHeight
-            // 对齐到物理像素，避免文字在半像素上发虚、闪烁
-            let scale = layer.contentsScale
-            layer.position = CGPoint(x: (x * scale).rounded() / scale, y: y)
-        }
-        if seen.count != live.count {
-            for (id, l) in live where !seen.contains(id) {
-                l.removeFromSuperlayer(); pool.append(l); live[id] = nil
-            }
-        }
-        maxOn = max(maxOn, live.count)
-        CATransaction.commit()
-    }
-
-    private func image(for d: DYDanmaku) -> UIImage {
-        if let i = images[d.id] { return i }
-        let font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        let shadow = NSShadow()
-        shadow.shadowColor = UIColor.black.withAlphaComponent(0.7)
-        shadow.shadowBlurRadius = 1.5
-        shadow.shadowOffset = CGSize(width: 0, height: 1)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.92), .shadow: shadow,
-        ]
-        let text = d.text as NSString
-        let size = text.size(withAttributes: attrs)
-        let pad: CGFloat = 3
-        let box = CGSize(width: ceil(size.width) + pad * 2, height: ceil(size.height) + pad * 2)
-        let fmt = UIGraphicsImageRendererFormat.preferred()
-        fmt.opaque = false
-        let img = UIGraphicsImageRenderer(size: box, format: fmt).image { _ in
-            text.draw(at: CGPoint(x: pad, y: pad), withAttributes: attrs)
-        }
-        images[d.id] = img
-        return img
-    }
-}
-
-/// CADisplayLink 会强引用 target：用弱引用中转，视图销毁时不泄漏
-private final class DYDanmakuTick: NSObject {
-    weak var view: DYDanmakuView?
-    init(_ v: DYDanmakuView) { view = v }
-    @objc func tick(_ l: CADisplayLink) {
-        guard let view else { l.invalidate(); return }
-        MainActor.assumeIsolated { view.tick(l) }
-    }
-}
-
-/// 精确缓存输入和设置：中间一条内容变化、密度/去重切换均立即重排。
-@MainActor final class DYDanmakuLayout {
-    static let shared = DYDanmakuLayout()
-    private struct Key: Equatable {
-        let items: [DYDanmaku]
-        let w: CGFloat
-        let lanes: Int
-        let speed: CGFloat
-        let density: DYDanmakuPolicy.Density
-        let deduplicate: Bool
-    }
-    private var key: Key?
-    private var cache: [DYDanmakuPolicy.Placed] = []
-    /// 每次重新排布 +1：渲染层据此判断要不要重放图层
-    private(set) var generation = 0
-    func get(_ items: [DYDanmaku], w: CGFloat, lanes: Int, speed: CGFloat,
-             density: DYDanmakuPolicy.Density, deduplicate: Bool) -> [DYDanmakuPolicy.Placed] {
-        let next = Key(items: items, w: w, lanes: lanes, speed: speed, density: density, deduplicate: deduplicate)
-        if key != next {
-            cache = DYDanmakuPolicy.layout(items, w: w, lanes: lanes, speed: speed, density: density, deduplicate: deduplicate)
-            key = next
-            generation += 1
-        }
-        return cache
-    }
-}
 
 // MARK: - 保存到相册
 
