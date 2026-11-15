@@ -2076,9 +2076,14 @@ enum DYChatOpener {
     }
 
     static func open(_ row: DYConversationRow, web: WKWebView) async -> Result {
+        let t0 = Date()
         await cancelStrangerScan()
+        let tScan = Date()
         return await exclusive {
+            let tLock = Date()
             let r = await openUnlocked(row, web: web)
+            let inPage = (try? await web.evaluateJavaScript("(window.__ddOpenScroll||0)+','+(window.__ddOpenJS||-1)")) as? String ?? "-"
+            DYLiveModel.log("DDCHAT_STEP scan=\(Int(tScan.timeIntervalSince(t0)*1000)) lock=\(Int(tLock.timeIntervalSince(tScan)*1000)) unlocked=\(Int(Date().timeIntervalSince(tLock)*1000)) \(DYChatOpener.lastSteps) scrollPages,clickToOk=\(inPage)")
             if case .opened = r { visibleChatWeb = web }
             return r
         }
@@ -2101,7 +2106,9 @@ enum DYChatOpener {
         }
     }
 
+    static var lastSteps = ""
     private static func openUnlocked(_ row: DYConversationRow, web: WKWebView) async -> Result {
+        let s0 = Date()
         let scope = row.stranger ? "[class*=\"StrangerConversationList\"] " : ""
         if row.stranger {
             guard await waitFor(web, "[data-e2e=\"conversation-item\"], [class*=\"conversationStrangerBoxwrapper\"]") else { return .notReady }
@@ -2110,7 +2117,12 @@ enum DYChatOpener {
         } else {
             await collapseStranger(web)
         }
+        let s1 = Date()
         guard await waitFor(web, scope + "[data-e2e=\"conversation-item\"]") else { return .notReady }
+        let s2 = Date()
+        defer {
+            lastSteps = "collapse=\(Int(s1.timeIntervalSince(s0)*1000)) wait=\(Int(s2.timeIntervalSince(s1)*1000)) js=\(Int(Date().timeIntervalSince(s2)*1000)) loading=\(web.isLoading)"
+        }
         let script = #"""
           const inStranger = e => !!e.closest('[class*="StrangerConversationList"]');
           const titleOf = e => (e.querySelector('[class="conversationConversationItemtitle"]')?.textContent || '').trim();
@@ -2130,6 +2142,7 @@ enum DYChatOpener {
             return named.length === 1 ? named[0] : null;
           };
           let row = find();
+          window.__ddOpenScroll = 0;
           // 虚拟列表：不在可视区就逐屏往下找
           if (!row) {
             const wrap = document.querySelector(stranger === '1' ? '[class*="StrangerConversationListlistWrapper"]' : '[class*="ConversationListwrapper"]');
@@ -2138,6 +2151,7 @@ enum DYChatOpener {
               sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll', { bubbles: true }));
               for (let i = 0; i < 40 && !row; i++) {
                 await new Promise(r => setTimeout(r, 200));
+                window.__ddOpenScroll++;
                 row = find();
                 if (row || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2) break;
                 sc.scrollTop += Math.max(200, sc.clientHeight * 0.8);
@@ -2146,6 +2160,7 @@ enum DYChatOpener {
             }
           }
           if (!row) return 'miss';
+          window.__ddOpenT = performance.now();
           row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
           let style = document.getElementById('dd-chat-only');
           if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
@@ -2163,6 +2178,7 @@ enum DYChatOpener {
           window.__wuweiMinWidth = 320;
           window.__wuweiFixViewport?.();
           window.dispatchEvent(new Event('resize'));
+          window.__ddOpenJS = Math.round(performance.now() - (window.__ddOpenT || performance.now()));
           return 'ok';
         """#
         let r = try? await web.callAsyncJavaScript(script, arguments: ["id": row.id, "name": row.name, "avatar": row.avatar ?? "", "stranger": row.stranger ? "1" : "0", "appearanceCSS": chatChromeCSS], contentWorld: .page)
