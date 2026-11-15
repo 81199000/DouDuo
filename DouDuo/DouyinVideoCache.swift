@@ -265,7 +265,8 @@ actor DYVideoCache {
     /// 抖音直连 CDN 的 play 地址对 App 自己的请求会 403（播放器能播）；
     /// 实测 `/aweme/v1/play/`（带 sign，302 跳 CDN）和 playFast 可以正常下载。
     private func downloadURLs(_ a: DYAweme) -> [URL] {
-        [a.playAlt, a.playFast, a.play].compactMap { $0 }.compactMap { URL(string: $0) }
+        // 重定向地址优先（直连 CDN 现在 403），失败再试直连和低清
+        [a.play, a.playAlt, a.playFast].compactMap { $0 }.compactMap { URL(string: $0) }
     }
 
     private func storeHead(id: String) async {
