@@ -212,7 +212,9 @@ actor DYVideoCache {
         let plan = Self.plan(current: target, ahead: follow)
         let longIDs = Self.longHeadPlan(current: target, ahead: follow)
         for a in [target] + follow { pending[a.id] = a }
-        enqueueHeads(longIDs)
+        // 半截文件播不了（-11828），预存第一段已经没有意义：长视频改为整条后台缓存。
+        // 这里不再入队，避免白占 30MB 带宽和磁盘；已有头段文件启动时清掉。
+        _ = longIDs
         job = Task { [weak self] in
             guard let self else { return }
             for id in plan {
@@ -554,6 +556,15 @@ actor DYVideoCache {
     }
 
     /// 启动时清一次：上次看过的缓存全部删掉（老板要求「看过的清理掉，重启别再刷到旧的」）
+    /// 清掉历史遗留的「第一段」文件（新策略不再使用）
+    func purgeHeads() {
+        guard !heads.isEmpty else { return }
+        for h in heads { try? FileManager.default.removeItem(at: Self.headURL(h.id)) }
+        heads.removeAll()
+        saveHeads()
+        DYLiveModel.log("DDCACHE 清理历史头段 \(heads.count)")
+    }
+
     func purgeWatched() {
         let stale = entries.filter(\.watched)
         guard !stale.isEmpty else { return }
