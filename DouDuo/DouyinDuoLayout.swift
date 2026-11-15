@@ -24,6 +24,13 @@ enum DYDuoMetrics {
         return (p.first, p.second, p.book)
     }
 
+    static func videoCommentPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
+        guard let hinge = hingeSplit(geo) else { return nil }
+        let panes = DYLiveAdaptiveLayoutEngine.videoCommentPanes(
+            video: hinge.video, panel: hinge.panel, book: hinge.book)
+        return (panes.video, panes.panel, hinge.book)
+    }
+
     /// 窗格右侧被系统遮挡区（状态栏时间/信号）占掉的宽度，最多让 120pt。
     static func trailingOcclusionInset(_ geo: GeometryProxy, pane: CGRect) -> CGFloat {
         guard #available(iOS 27.1, *) else { return 0 }
@@ -522,7 +529,7 @@ struct DYCommentPaneMetrics {
          paneFraction: CGFloat? = nil) {
         let w = geo.size.width, h = geo.size.height
         resident = allowsResident && DYDuoMetrics.foldIsActive(geo)
-        if resident, let hinge = DYDuoMetrics.hingeSplit(geo) {
+        if resident, let hinge = DYDuoMetrics.videoCommentPanes(geo) {
             sideBySide = hinge.book
             showsPane = true
             videoSize = hinge.video.size
@@ -532,17 +539,15 @@ struct DYCommentPaneMetrics {
             let bottom = DYDuoMetrics.windowBottomInset
             let keyboardVisible = geo.safeAreaInsets.bottom > bottom + 1
             let bottomExtension = keyboardVisible ? 0 : min(geo.safeAreaInsets.bottom, bottom)
-            let surface = DYLiveAdaptiveLayoutEngine.interactionSurface(
-                video: hinge.video, interaction: hinge.panel, book: hinge.book)
             if hinge.book {
-                let split = surface.minX
+                let split = hinge.panel.minX
                 paneOrigin = CGPoint(x: split, y: -geo.safeAreaInsets.top)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.trailing - split,
                                   height: h + geo.safeAreaInsets.top + bottomExtension)
                 trailingInset = max(geo.safeAreaInsets.trailing,
                     DYDuoMetrics.trailingOcclusionInset(geo, pane: hinge.panel))
             } else {
-                let split = surface.minY
+                let split = hinge.panel.minY
                 paneOrigin = CGPoint(x: -geo.safeAreaInsets.leading, y: split)
                 paneSize = CGSize(width: w + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
                                   height: h + bottomExtension - split)

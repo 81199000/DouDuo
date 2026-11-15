@@ -1766,7 +1766,7 @@ struct DYUpstreamFeedScreen: View {
     /// 半折叠按真实折痕切分（同直播 Layout A/B）。
     /// 拿不到折痕几何（旧系统 / DOUDUO_FOLD 模拟）时返回 nil，调用方回退到比例切分。
     private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
-        tab == .recommend ? DYDuoMetrics.hingeSplit(geo) : nil
+        tab == .recommend ? DYDuoMetrics.videoCommentPanes(geo) : nil
     }
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
@@ -1789,7 +1789,7 @@ struct DYUpstreamFeedScreen: View {
         guard !showSearch else { return 0 }
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let w = geo.size.width, h = geo.size.height
-        if let p = foldPanes(geo) { return p.book ? max(0, w - p.video.width) : 0 }
+        if let p = foldPanes(geo) { return p.book ? p.panel.width : 0 }
         let bookFold = fold && w > h
         let sideBySide = w >= DYDuoMetrics.legacyWideMin || bookFold
         let showPanel = fold || (showComments && sideBySide && tab != .live)
@@ -1806,15 +1806,12 @@ struct DYUpstreamFeedScreen: View {
         let sideBySide = wide || bookFold
         let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
 
-        let surface = hinge.map {
-            DYLiveAdaptiveLayoutEngine.interactionSurface(video: $0.video, interaction: $0.panel, book: $0.book)
-        }
-        let panelW = surface?.width ?? sidePanelWidth(geo)
-        let panelH = surface?.height ?? (tableFold ? h * 0.45 : 0)
+        let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
+        let panelH = hinge?.panel.height ?? (tableFold ? h * 0.45 : 0)
         let videoW = hinge?.video.width ?? (sideBySide && panelW > 0 ? w - panelW : w)
         let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
-        let panelX = surface?.minX ?? (sideBySide ? videoW : 0)
-        let panelY = surface?.minY ?? (tableFold ? videoH : 0)
+        let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
+        let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
         // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
         // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
         // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
