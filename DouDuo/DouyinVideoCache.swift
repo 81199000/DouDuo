@@ -36,8 +36,10 @@ actor DYVideoCache {
     static let defaultCount = 5
     /// 超过这个时长不缓存（整条太大），直接在线播。30 分钟以内整条下，长视频切换也能秒开
     static let maxDuration: Double = 1800
-    /// 长视频（>10 分钟）预存的体积：文件第一段（1/4 或这个上限，取大者），够起播和看几分钟
+    /// 长视频（>10 分钟）预存的体积：文件第一段（1/4 或这个下限，取大者），够起播和看几分钟
     static let longHeadBytes = 32 * 1024 * 1024
+    /// 超过这个时长算长视频：只预存第一段，播起来 10 秒后再并发补后面几段（老板定的策略）
+    static let longThreshold: Double = 600
     /// 「已看过」的缓存最多留几条：看过的没必要占盘，重启也不该再刷到
     static let watchedKeep = 3
     /// 单条缓存体积上限（估算）：超过就不整条下，避免 20 分钟以上的大片把盘和带宽吃满
@@ -144,7 +146,7 @@ actor DYVideoCache {
     /// 长一些的（≤10 分钟）排在后面补；超过 10 分钟不缓存，起播靠预加载器提前读好的开头。
     /// 长视频只预存「第一段」的顺序（当前正在播的那条不抢带宽）
     nonisolated static func longHeadPlan(current: DYAweme, ahead: [DYAweme]) -> [String] {
-        func long(_ a: DYAweme) -> Bool { a.images.isEmpty && a.play != nil && a.duration > maxDuration }
+        func long(_ a: DYAweme) -> Bool { a.images.isEmpty && a.play != nil && a.duration > longThreshold }
         var out: [String] = []
         for a in ahead where long(a) && !out.contains(a.id) { out.append(a.id) }
         return out
@@ -185,13 +187,13 @@ actor DYVideoCache {
         func quick(_ a: DYAweme) -> Bool { a.duration > 0 && a.duration <= blockingDuration }
         /// 能整条下：时长在范围内、估算体积不至于太大
         func cacheable(_ a: DYAweme) -> Bool {
-            a.duration > 0 && a.duration <= maxDuration
+            a.duration > 0 && a.duration <= longThreshold
                 && a.duration * assumeBitsPerSecond / 8 <= sizeCap
         }
         let next = Array(ahead.prefix(1)), later = Array(ahead.dropFirst())
         // 正在播的这条：短的下完不碍事；长的（还在联网播）绝不同时整条下载，
         // 否则下载和播放抢同一条连接，起播要等到十秒以上（实测 dur=1228 等了 11.78s 还没起）
-        let currentIsLong = current.duration > blockingDuration && localURL(current.id) == nil
+        let currentIsLong = current.duration > longThreshold && localURL(current.id) == nil
         let order = (currentIsLong ? [] : [current]) + next + later
         var out: [String] = []
         for a in order where playable(a) && quick(a) && cacheable(a) && !out.contains(a.id) { out.append(a.id) }
