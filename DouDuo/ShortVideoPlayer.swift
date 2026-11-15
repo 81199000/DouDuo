@@ -371,6 +371,7 @@ struct PlayerPage: View {
     @State private var nextOpacity: Double = 0
     @State private var stalledTicks = 0
     @State private var headCompleted = false
+    @State private var lastTick: Double = 0
     /// 这条是不是从「预存的第一段」起播的（只有长视频会这样）
     private var hadStagedHead: Bool { headEndSeconds != nil && continuationURL != nil }
     @State private var telemetry = DYPlaybackTelemetry()
@@ -1279,6 +1280,11 @@ struct PlayerPage: View {
                 let pos = seamAudio.currentMediaTime ?? t.seconds
                 if !seeking { current = pos }
                 if !firstFrame, t.seconds > 0.02 { firstFrame = true }
+                // 往回跳检测：当前页播放中时间倒退（非用户拖动/循环）就记一笔，用来验证「回弹一帧」是否还在
+                if isActive, !seeking, p.rate > 0, lastTick > 0.3, t.seconds + 0.12 < lastTick, t.seconds > 0.05 {
+                    DYLiveModel.log("DDBACKJUMP \(id.suffix(6)) \(String(format: "%.2f→%.2f", lastTick, t.seconds))")
+                }
+                lastTick = t.seconds
                 // 起播/卡顿等待数据时让缓存下载让路（否则长视频被下载抢死，实测等 12 秒）
                 let waiting = player?.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 DYVideoCache.shared.reportPlaybackWaiting(waiting && isActive)

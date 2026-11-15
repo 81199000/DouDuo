@@ -72,7 +72,18 @@ final class DYAmbientFrameView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        attachEarly()
         updateLink()
+    }
+
+    /// 取帧输出必须在视频「还停着」的时候挂上：给正在起播的 AVPlayerItem 加 VideoOutput 会让播放管线重建，
+    /// 画面和声音一起顿一下、往回弹一帧（老板实测「有的视频会、有的不会」= 挂上去的时机碰上了起播）。
+    /// 页面一挂载（预热播放器已经接上）就挂，切过去起播时不再动管线。
+    private func attachEarly() {
+        guard window != nil, let item = player.currentItem, attachedItem !== item else { return }
+        attachedItem?.remove(output)
+        item.add(output)
+        attachedItem = item
     }
 
     private func updateLink() {
@@ -85,7 +96,9 @@ final class DYAmbientFrameView: UIView {
             link = l
         } else {
             link?.invalidate(); link = nil
-            attachedItem?.remove(output); attachedItem = nil
+            // 不再在失活时摘掉输出：摘/挂都会动播放管线，留着直到页面销毁（deinit 里摘）
+            if window == nil { attachedItem?.remove(output); attachedItem = nil }
+            else { attachEarly() }
         }
     }
 
