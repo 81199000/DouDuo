@@ -134,6 +134,16 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let index = Int(((targetContentOffset.pointee.y + scrollView.adjustedContentInset.top) / scrollView.bounds.height).rounded())
         let items = ids()
         guard items.indices.contains(index) else { return }
+        // 老板要求：下一个视频还没加载好就别让它翻过去（跟抖音原版一样）
+        // 只拦「往前翻」；往回翻是看过的，直接放行
+        let curIndex = items.firstIndex(where: { $0 == currentID() }) ?? index
+        if index > curIndex, !DYReadiness.isReady(items[index]) {
+            let curY = CGFloat(curIndex) * scrollView.bounds.height - scrollView.adjustedContentInset.top
+            targetContentOffset.pointee = CGPoint(x: scrollView.contentOffset.x, y: curY)
+            targetID = nil; target = nil
+            DYLiveModel.log("DDBLOCK next=\(items[index].suffix(4)) 未就绪，弹回当前页")
+            return
+        }
         targetID = items[index]
         target = targetContentOffset.pointee
         // Prevent system deceleration; CADisplayLink then moves to the system-selected page.

@@ -619,7 +619,7 @@ struct PlayerPage: View {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
                 ZStack {
-                    VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true } },
+                    VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true }; DYReadiness.mark(id) },
                                  pictureInPicture: pictureInPicture,
                                  pictureInPictureEnabled: cleanScreen && isActive,
                                  onPictureInPictureClose: {
