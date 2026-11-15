@@ -141,6 +141,7 @@ enum WuWeiDesign {
 // Only feed pages publish actions to the shared safe-area rail.
 extension EnvironmentValues {
     @Entry var dyRootRailTab: DYTab? = nil
+    @Entry var dyCommentTrailingCleared = false
     /// 系统铰链为 closed（合屏）。由根视图 DYHingeStateRoot 统一下发。
     @Entry var dyHingeClosed: Bool = false
 }
