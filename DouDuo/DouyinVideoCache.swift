@@ -34,8 +34,10 @@ actor DYVideoCache {
     static let shared = DYVideoCache()
     static let countKey = "douyin_cache_count_v2"
     static let defaultCount = 5
-    /// 超过这个时长不缓存（整条太大），直接在线播
-    static let maxDuration: Double = 600
+    /// 超过这个时长不缓存（整条太大），直接在线播。30 分钟以内整条下，长视频切换也能秒开
+    static let maxDuration: Double = 1800
+    /// 「已看过」的缓存最多留几条：看过的没必要占盘，重启也不该再刷到
+    static let watchedKeep = 3
     /// 不超过这个时长的算短视频：整条几秒内下完，优先下；更长的排在后面，不堵下一条
     static let blockingDuration: Double = 90
     /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
@@ -284,12 +286,29 @@ actor DYVideoCache {
 
     /// 超上限：先删看过的（最早的先删），还超就删最早加进来的
     private func evict() {
+        // 「已看过」最多留 watchedKeep 条，其余先删：看过的缓存没意义，重启也不该再刷到
+        var watched = entries.filter(\.watched).count
+        while watched > Self.watchedKeep, let idx = entries.firstIndex(where: \.watched) {
+            let e = entries.remove(at: idx)
+            try? FileManager.default.removeItem(at: Self.fileURL(e.aweme.id))
+            watched -= 1
+        }
         let lim = max(Self.limit, 0)
         while entries.count > lim || (entries.count > 1 && entries.reduce(0, { $0 + $1.bytes }) > Self.maxBytes) {
             let idx = entries.firstIndex(where: \.watched) ?? 0
             let e = entries.remove(at: idx)
             try? FileManager.default.removeItem(at: Self.fileURL(e.aweme.id))
         }
+    }
+
+    /// 启动时清一次：上次看过的缓存全部删掉（老板要求「看过的清理掉，重启别再刷到旧的」）
+    func purgeWatched() {
+        let stale = entries.filter(\.watched)
+        guard !stale.isEmpty else { return }
+        for e in stale { try? FileManager.default.removeItem(at: Self.fileURL(e.aweme.id)) }
+        entries.removeAll(where: \.watched)
+        save()
+        DYLiveModel.log("DDCACHE 清理已看过 \(stale.count) 条，剩 \(entries.count)")
     }
 
     private func save() {
