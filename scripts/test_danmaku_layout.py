@@ -35,7 +35,7 @@ fileprivate func placed(_ items: [DYDanmaku], lanes: Int = 6, speed: CGFloat = 1
     let result = DYDanmakuPolicy.layout(items, w: w, lanes: lanes,
                                       speed: speed, density: density, deduplicate: dedup)
     emit(result.map { p in
-        ["id": p.d.id, "text": p.d.text, "offset": p.d.offset,
+        ["id": p.d.id, "text": p.d.text, "offset": p.d.offset, "start": p.start,
          "lane": p.lane, "width": Double(p.width), "dur": p.dur] as [String: Any]
     })
 }
@@ -58,8 +58,9 @@ case "region":
     emit(rows)
 case "density0", "density1", "density2":
     let raw = Int(String(mode.last!))!
+    // 真实速度（约 85pt/s）才会体现轨道占用与顺延，极快速度下轨道永远空闲、密度无差别
     placed((0..<240).map { synthetic("burst-\($0)", "合成密度 \($0)", Double($0) * 0.025) },
-           density: DYDanmakuPolicy.Density(rawValue: raw)!)
+           speed: 85, density: DYDanmakuPolicy.Density(rawValue: raw)!)
 case "normalize":
     placed([synthetic("a", " ＨｅＬＬＯ　World ", 0),
             synthetic("b", "hello world", 1), synthetic("c", "HELLO\nWORLD", 2),
@@ -172,17 +173,25 @@ class DanmakuPolicyTests(unittest.TestCase):
                 if row["lanes"]:
                     self.assertLessEqual(top + row["lanes"] * 28, bottom + 1e-8)
 
-    def test_density_caps_and_distinct_throughput(self):
+    def test_density_spreads_bursts_and_raises_throughput(self):
+        """成团弹幕改为顺延排布：不再整团丢弃，且绝不早于原始时间出现。"""
         counts = []
-        for raw, (max_lanes, per_second) in enumerate([(2, 1), (4, 2), (6, 4)]):
+        for raw, max_lanes in enumerate([2, 4, 6]):
             output = self.run_case(f"density{raw}")
             self.assertTrue(output)
             counts.append(len(output))
-            buckets = collections.Counter(math.floor(p["offset"]) for p in output)
-            self.assertTrue(all(n <= per_second for n in buckets.values()), buckets)
             self.assertTrue(all(0 <= p["lane"] < max_lanes for p in output))
+            # 只会晚到，不会提前；顺延幅度有上限
+            self.assertTrue(all(p["start"] + 1e-9 >= p["offset"] for p in output))
+            self.assertTrue(all(p["start"] - p["offset"] <= 2.5 + 1e-9 for p in output), "延迟必须受限")
         self.assertLess(counts[0], counts[1])
         self.assertLess(counts[1], counts[2])
+
+    def test_burst_is_spread_instead_of_dropped(self):
+        """6 秒内涌入 240 条：旧策略每秒只放 2 条，新策略应摊到更长时间且留下更多。"""
+        output = self.run_case("density1")
+        self.assertGreater(len(output), 2 * 7, "成团数据不应该被整批丢弃")
+        self.assertGreater(max(p["start"] for p in output) - max(p["offset"] for p in output), 1.0)
 
     def test_normalizes_whitespace_case_and_fullwidth_without_emoji_loss(self):
         output = self.run_case("normalize")
@@ -226,9 +235,9 @@ class DanmakuPolicyTests(unittest.TestCase):
             self.assertAlmostEqual(p["dur"], (390 + p["width"]) / 100, places=6)
             lanes[p["lane"]].append(p)
         for lane in lanes.values():
-            lane.sort(key=lambda p: p["offset"])
+            lane.sort(key=lambda p: p["start"])
             for previous, current in zip(lane, lane[1:]):
-                travelled = (current["offset"] - previous["offset"]) * 100
+                travelled = (current["start"] - previous["start"]) * 100
                 self.assertGreaterEqual(travelled + 1e-7, previous["width"] + 28)
 
     def test_identical_input_order_has_deterministic_output(self):
