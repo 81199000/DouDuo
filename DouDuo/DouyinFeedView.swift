@@ -3534,12 +3534,15 @@ struct DYClassicFeedScreen: View {
                     .allowsHitTesting(!(showSearch && searchIsSplit))
                     .accessibilityHidden(showSearch && searchIsSplit)
                 }
+                // 只有两侧按钮避让左右安全区（挖孔/圆角）；视频是全屏画幅，频道标题按整幅画面居中，
+                // 不能跟着单侧安全区一起偏。
+                .padding(.leading, sidePanelOpen ? 0 : insets.leading)
+                .padding(.trailing, sidePanelOpen ? 0 : insets.trailing)
                 topBar
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
-            .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
-            .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
+            .padding(.horizontal, 8)
             .padding(.top, headerTopInset)
             .accessibilityElement(children: .contain)
             .background {
