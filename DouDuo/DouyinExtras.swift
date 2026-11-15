@@ -807,6 +807,9 @@ struct DYListPlayer: View {
     let title: String
     @State var items: [DYAweme]
     @State private var currentID: String?
+    /// 滚动位置单独一个状态：直接绑 currentID 的话，SwiftUI 在下一条滑过中线时就把它设成当前条并开播，
+    /// 画面还在往上走就已经出声了。当前条只在收尾动画停住时（DYPagingSpeedBridge.didSettle）才切。
+    @State private var scrollPos: String?
     let loadMore: (() async -> [DYAweme])?
     let onAuthor: (DYAweme) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -860,7 +863,9 @@ struct DYListPlayer: View {
                     .background(DYPagingSpeedBridge(ids: items.map(\.id), currentID: $currentID))
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $currentID, anchor: .center)
+                .scrollPosition(id: $scrollPos, anchor: .center)
+                .onAppear { scrollPos = currentID }
+                .onChange(of: currentID) { _, new in if scrollPos != new { scrollPos = new } }
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
 
@@ -1673,6 +1678,8 @@ struct DYFollowFeed: View {
     private var list: DYPagedModelHolder { retainedList ?? ownedList }
     @State private var ownedID: String?
     private var currentID: Binding<String?> { preservedSelection ?? $ownedID }
+    /// 同上：滚动位置与「当前条」分开，停住才切当前条
+    @State private var scrollPos: String?
     @State private var preloader = DYPreloader()
     @State private var resume: [String: Double] = [:]
     @State private var liked: Set<String> = []
@@ -1721,7 +1728,9 @@ struct DYFollowFeed: View {
                     .background(DYPagingSpeedBridge(ids: m.items.map(\.id), currentID: currentID))
                 }
                 .scrollTargetBehavior(.paging)
-                .scrollPosition(id: currentID, anchor: .center)
+                .scrollPosition(id: $scrollPos, anchor: .center)
+                .onAppear { scrollPos = currentID.wrappedValue }
+                .onChange(of: currentID.wrappedValue) { _, new in if scrollPos != new { scrollPos = new } }
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
             }
