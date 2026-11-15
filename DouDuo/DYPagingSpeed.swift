@@ -77,6 +77,60 @@ final class DYPagingSpeedHost: UIView {
     func detach() { proxy?.detach(); proxy = nil }
 }
 
+// MARK: - feed-paging-decision
+
+/// 竖滑松手后落到哪一页（纯计算，脚本可测）。
+/// 系统分页轻轻一碰就翻，所以自己定规则：慢拖要过 1/4 屏；快甩只看方向，但至少要真拖动一小段，防止点按带一下就翻。
+enum DYFeedPagingDecision {
+    /// 慢慢拖、松手时几乎不动：拖过这个比例的屏高才翻
+    static let distanceFraction: CGFloat = 0.25
+    /// 快甩速度（pt/ms，与 UIScrollView 松手速度同单位）。
+    /// 以前是 0.6 且只看抬手瞬时速度：快速小幅度一甩达不到，画面跟手上去了松手却弹回。
+    /// 0.35 ≈ Android ViewPager 的 400dp/s 甩动门槛。
+    static let flickVelocity: CGFloat = 0.35
+    /// 快甩至少拖动的距离（列表实际位移，不含系统起拖前的十来 pt 死区）
+    static let flickMinDistance: CGFloat = 16
+    /// 抬手前平均速度的统计窗口
+    static let recentWindow: CFTimeInterval = 0.08
+
+    /// - dragged: 这次手势的位移（pt，正 = 往下一条）
+    /// - velocity: 松手速度（pt/ms，正 = 往下一条）
+    /// - 返回 -1 上一条 / 0 原页 / 1 下一条
+    static func step(dragged: CGFloat, velocity: CGFloat, pageHeight: CGFloat) -> Int {
+        if abs(velocity) >= flickVelocity {
+            // 快甩看方向：顺着拖动方向甩才翻；拖出去又往回甩 = 撤回，留在原页
+            guard abs(dragged) >= flickMinDistance, (dragged > 0) == (velocity > 0) else { return 0 }
+            return velocity > 0 ? 1 : -1
+        }
+        let threshold = pageHeight * distanceFraction
+        if dragged >= threshold { return 1 }
+        if dragged <= -threshold { return -1 }
+        return 0
+    }
+
+    /// UIKit 给的是抬手那一刻的瞬时速度：抬手那一帧和上一帧位置相同就读成 0（模拟器实测手指一直在动、release=0.00），
+    /// 快速短甩时手指离屏前也常先减速，读数偏低。
+    /// 用抬手前 80ms 的平均速度兜底——同方向且更快时用它；抬手瞬间明确往回甩（反向且够快）则信瞬时速度。
+    static func effectiveVelocity(release: CGFloat, recent: CGFloat?) -> CGFloat {
+        guard let recent, abs(recent) > abs(release) else { return release }
+        if release != 0, (recent > 0) != (release > 0), abs(release) >= flickVelocity { return release }
+        return recent
+    }
+
+    /// 抬手前窗口内的平均速度（pt/ms）。samples 为拖动中记录的 (时间, contentOffset.y)，按时间递增，最后一个是抬手时刻。
+    /// 拖动比窗口还短时从拖动开始算；手指停住超过窗口再抬起，窗口内没有位移，结果是 0。
+    static func recentVelocity(_ samples: [(t: CFTimeInterval, y: CGFloat)],
+                               window: CFTimeInterval = recentWindow) -> CGFloat? {
+        guard let last = samples.last, samples.count >= 2 else { return nil }
+        let base = samples.last(where: { $0.t <= last.t - window }) ?? samples[0]
+        let dt = last.t - base.t
+        guard dt >= 0.008 else { return nil }
+        return (last.y - base.y) / CGFloat(dt * 1000)
+    }
+}
+
+// MARK: - feed-paging-decision-end
+
 private final class DYPagingDisplayTarget: NSObject {
     weak var owner: DYPagingDelegate?
     @objc func tick(_ link: CADisplayLink) { owner?.tick(link) }
@@ -92,6 +146,13 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private let didSettle: (String) -> Void
     private let willSettle: (String) -> Void
     private var targetID: String?
+    /// 这次拖动以哪一页为起点。快速连刷时上一次收尾动画还没停住就被新的拖动打断，
+    /// currentID 还没切（停稳才切），仍是上一次起拖的那一条；按它算，列表已经快到下一条了，
+    /// 这次快甩只会被判成「去下一条」= 落回上一次就要去的那一页，看起来像跟手上去又弹回。必须以上一次正要去的那一页为起点。
+    private var dragBaseID: String?
+    private var dragStartY: CGFloat?
+    /// 拖动中的 (时间, contentOffset.y)，用于算抬手前的平均速度
+    private var dragSamples: [(t: CFTimeInterval, y: CGFloat)] = []
     /// 收尾动画期间「应该在的位置」；SwiftUI 的 scrollPosition 在抬手切当前页时会把列表直接跳到终点，
     /// 下一帧动画又拉回中途 → 肉眼看到「往回跳一帧」。动画期间外部写入一律在同一帧内改回来。
     private var expected: CGPoint?
@@ -130,6 +191,7 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         original?.scrollViewDidScroll?(scrollView)
+        if scrollView.isDragging, link == nil { recordSample(scrollView) }
         guard link != nil, !writing, let e = expected, abs(scrollView.contentOffset.y - e.y) > 0.5 else { return }
         writing = true
         scrollView.setContentOffset(e, animated: false)
@@ -138,8 +200,18 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        // 先记住被打断的收尾要去哪一页，再停动画
+        dragBaseID = targetID ?? currentID()
         stop()
+        dragStartY = scrollView.contentOffset.y
+        dragSamples.removeAll(keepingCapacity: true)
+        recordSample(scrollView)
         original?.scrollViewWillBeginDragging?(scrollView)
+    }
+    private func recordSample(_ scrollView: UIScrollView) {
+        dragSamples.append((CACurrentMediaTime(), scrollView.contentOffset.y))
+        // 只用得到最近 80ms；留一点余量即可
+        if dragSamples.count > 64 { dragSamples.removeFirst(dragSamples.count - 32) }
     }
     func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
                                    targetContentOffset: UnsafeMutablePointer<CGPoint>) {
@@ -150,20 +222,27 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let items = ids()
         let h = scrollView.bounds.height
         let top = scrollView.adjustedContentInset.top
-        let curIndex0 = items.firstIndex(where: { $0 == currentID() })
-            ?? Int(((scrollView.contentOffset.y + top) / h).rounded())
-        // 翻页规则自己定（系统分页轻轻一碰就翻）：拖过 1/4 屏，或明确快甩，才翻到下一条/上一条；否则弹回原位
-        let dragged = (scrollView.contentOffset.y + top) - CGFloat(curIndex0) * h
-        let flick = abs(velocity.y) > 0.6
-        var index = curIndex0
-        if dragged > h * 0.25 || (flick && velocity.y > 0 && dragged > 0) { index = curIndex0 + 1 }
-        else if dragged < -h * 0.25 || (flick && velocity.y < 0 && dragged < 0) { index = curIndex0 - 1 }
+        let baseID = dragBaseID ?? currentID()
+        let baseIndex = items.firstIndex(where: { $0 == baseID })
+        let startY = dragStartY ?? scrollView.contentOffset.y
+        let curIndex0 = baseIndex ?? Int(((startY + top) / h).rounded())
+        // 翻页规则见 DYFeedPagingDecision：拖过 1/4 屏，或顺着方向快甩，才翻到下一条/上一条；否则弹回原位。
+        // 位移按这次手势自己的行程算：正常停稳后起拖，它就等于离当前页的距离；
+        // 打断上一次收尾时，以「上一次要去的页」为起点，这一甩再往前/后一页（连刷两下 = 走两条）。
+        let dragged = scrollView.contentOffset.y - startY
+        recordSample(scrollView)
+        let recent = DYFeedPagingDecision.recentVelocity(dragSamples)
+        let v = DYFeedPagingDecision.effectiveVelocity(release: velocity.y, recent: recent)
+        let step = DYFeedPagingDecision.step(dragged: dragged, velocity: v, pageHeight: h)
+        var index = curIndex0 + step
         index = min(max(index, 0), max(items.count - 1, 0))
+        DYLiveModel.log(String(format: "DDSWIPE step=%d dragged=%.0f/%.0f v=%.2f release=%.2f recent=%@",
+                               step, dragged, h, v, velocity.y, recent.map { String(format: "%.2f", $0) } ?? "-"))
         targetContentOffset.pointee.y = CGFloat(index) * h - top
         guard items.indices.contains(index) else { return }
         // 老板要求：下一个视频还没加载好就别让它翻过去（跟抖音原版一样）
         // 只拦「往前翻」；往回翻是看过的，直接放行
-        let curIndex = items.firstIndex(where: { $0 == currentID() }) ?? index
+        let curIndex = baseIndex ?? index
         if index > curIndex, !DYReadiness.isReady(items[index]) {
             let id = items[index]
             blockedCount[id, default: 0] += 1
