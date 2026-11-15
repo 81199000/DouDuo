@@ -890,7 +890,7 @@ struct DYListPlayer: View {
             if new == nil, let old { currentID = old; return }
             guard let i = items.firstIndex(where: { $0.id == new }) else { return }
             preloader.update(items, current: i)
-            DYFirstFrame.prefetch(items, from: i, ahead: 3)
+            // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
             if i >= items.count - 4, let loadMore, !loadingMore {
                 loadingMore = true
                 Task {
@@ -903,7 +903,7 @@ struct DYListPlayer: View {
         }
         .onAppear { if let i = items.firstIndex(where: { $0.id == currentID }) {
             preloader.update(items, current: i)
-            DYFirstFrame.prefetch(items, from: i, ahead: 3)
+            // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         } }
         .onDisappear { preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
