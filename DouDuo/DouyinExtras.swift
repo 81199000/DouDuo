@@ -1352,6 +1352,8 @@ struct DYMineScreen: View {
     let onLogin: () -> Void
     let onAuthor: (DYAweme) -> Void
     var onMessages: (() -> Void)? = nil
+    /// 嵌在信息页里（跟信息共用右侧栏）：不画自己的返回键、不做左缘返回
+    var embedded = false
     @State private var user: DYUser?
     @State private var userErr: String?
     @State private var kind: DYListKind = .post
@@ -1363,12 +1365,12 @@ struct DYMineScreen: View {
         NavigationStack {
             content
                 // 左缘右滑返回（和左上「返回」同条件：经典模式下「我的」是底部 Tab，没有上一层）
-                .dyEdgeBack(enabled: chromeModeRaw != DDChromeMode.duoClassic.rawValue) { dismiss() }
+                .dyEdgeBack(enabled: !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue) { dismiss() }
                 .modifier(DYSystemTabBar())
                 .navigationTitle(user?.name ?? "我的")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    if chromeModeRaw != DDChromeMode.duoClassic.rawValue {
+                    if !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
                     ToolbarItem(placement: .primaryAction) {
@@ -1444,7 +1446,14 @@ struct DYMineScreen: View {
         }
         #endif
         guard models[k] == nil else { return }
-        let m = DYPagedModel { [bridge] cur in try await bridge.myList(k, cursor: cur) }
+        let m = DYPagedModel { [bridge] cur in
+            let r = try await bridge.myList(k, cursor: cur)
+            // 诊断：「我的」作品封面不显示——看接口给没给封面地址、是什么样的地址
+            let noCover = r.items.filter { ($0.cover ?? "").isEmpty }.count
+            let sample = r.items.first?.cover.map { String($0.prefix(90)) } ?? "-"
+            DYLiveModel.log("DDMINE list=\(k.rawValue) n=\(r.items.count) noCover=\(noCover) sample=\(sample)")
+            return r
+        }
         models[k] = m
         Task { await m.loadMore() }
     }

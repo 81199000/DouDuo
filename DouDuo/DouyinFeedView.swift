@@ -1682,10 +1682,13 @@ struct DYUpstreamFeedScreen: View {
             DouyinWebScreen(start: t.url)
         }
         .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover() }) {
-            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onMine: {
-                showMessages = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showMine = true }
-            }, onWeb: { u in
+            // 信息 + 我的融合：点右侧栏「我的」在信息页里原地切换，返回键回到信息（不再跳到另一个全屏页）
+            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false },
+                             mineContent: AnyView(DYMineScreen(bridge: bridge,
+                                 onLogin: { showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
+                                 onAuthor: { a in showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { authorTarget = a.author } },
+                                 embedded: true)),
+                             onWeb: { u in
                 showMessages = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
             })
