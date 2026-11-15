@@ -40,17 +40,42 @@ struct DYPagerPlaceholder: View {
     }
 }
 
-/// 一页：窗口内是真页面，窗口外是占位。ForEach 里套这一层，三个分页器共用。
-struct DYPagerSlot<Page: View>: View {
-    let item: DYAweme
-    let index: Int
-    let current: Int
-    @ViewBuilder let page: () -> Page
+/// 竖滑分页的页面列表（三个分页器共用）：当前页立即挂载；挂载窗口的整体平移推迟到滑动收尾、起播之后
+/// （新挂一页 = 建播放器 + 解首帧，卸一页 = 销毁播放器，都在主线程，和起播挤在同一帧就会「卡一下」）。
+struct DYPagerStack<Page: View>: View {
+    let items: [DYAweme]
+    let currentID: String?
+    @ViewBuilder let page: (DYAweme) -> Page
+    var pageAxes: Axis.Set = [.horizontal, .vertical]
+    @State private var centerID: String?
+    @State private var shiftToken = 0
+    /// 起播后再平移窗口：这段时间里滑动已经停稳、画面已在播
+    static var shiftDelay: TimeInterval { 0.45 }
+
     var body: some View {
-        if DYPagerWindow.mounts(index, current: current) {
-            page()
-        } else {
-            DYPagerPlaceholder(item: item, showsCover: DYPagerWindow.showsCover(index, current: current))
+        let current = DYPagerWindow.currentIndex(items, currentID)
+        let center = centerID.flatMap { id in items.firstIndex { $0.id == id } } ?? current
+        VStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                Group {
+                    if i == current || DYPagerWindow.mounts(i, current: center) {
+                        page(item)
+                    } else {
+                        DYPagerPlaceholder(item: item, showsCover: DYPagerWindow.showsCover(i, current: current))
+                    }
+                }
+                .containerRelativeFrame(pageAxes)
+                .id(item.id)
+            }
+        }
+        .onAppear { if centerID == nil { centerID = currentID } }
+        .onChange(of: currentID) { _, id in
+            shiftToken += 1
+            let token = shiftToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.shiftDelay) {
+                guard token == shiftToken else { return }   // 连划时只在最后停下的那条平移一次
+                centerID = id
+            }
         }
     }
 }
