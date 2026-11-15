@@ -900,7 +900,12 @@ struct DYMessagesScreen: View {
         let started = Date()
         openingChat = row.id
         defer { openingChat = nil }
-        guard !composer.working, let web = chatModel.web else { return }
+        guard !composer.working else { return }
+        guard let web = chatModel.web else {
+            chatStatus = "私信页面还没准备好，请稍后再试"
+            DYLiveModel.log("DDCHAT open miss no-web")
+            return
+        }
         // 乐观跳转：点下就进聊天界面（原生表头 + 转圈），DOM 切换在后台完成。
         // 以前要等网页 DOM 切完才跳，那段时间就是老板说的「点了要等很久」。
         chatDOMReady = false
