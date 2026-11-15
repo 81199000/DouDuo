@@ -701,6 +701,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     @Binding var showComments: Bool
     @State private var captionItem: DYAweme?
     @State private var openedCommentsManually = false
+    @State private var cleanScreen = false
     var focus: DYCommentFocus? = nil
     var onBack: () -> Void
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
@@ -806,7 +807,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
             ZStack(alignment: .topLeading) {
                 video(geo.safeAreaInsets)
                     .environment(\.dyStandaloneBack, onBack)
-                    .environment(\.duoInlineVideoNavigation, layout.showsPane)
+                    .environment(\.duoInlineVideoNavigation, layout.showsPane || showComments)
+                    .environment(\.duoCleanScreen, cleanScreen)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
@@ -825,7 +827,9 @@ struct DYCommentPlayerLayout<Video: View>: View {
             .background(Color.black.ignoresSafeArea())
             .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
                 if #available(iOS 27.1, *), usesClassicLayout {
-                    DYStandaloneVideoActions(actions: showComments || layout.showsPane ? nil : actions, onBack: onBack)
+                    DYNativeVideoActions(actions: showComments || layout.showsPane ? nil : actions,
+                                         isClean: cleanScreen, onToggleClean: { cleanScreen.toggle() }, onBack: onBack)
+                        .id(horizontalCommentStatus || hidesCommentStatus)
                 }
             }
             .modifier(DYStandaloneBarPolicy(classic: true))
