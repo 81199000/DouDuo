@@ -2801,7 +2801,17 @@ struct DYClassicFeedScreen: View {
     }
     @State private var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
-    @State private var mainTab: DYMainTab = .home
+    /// 当前大页（首页/消息/我的/直播）持久化：
+    /// 以前是 @State + SwiftUI 的 TabView 选中态，重启后系统把界面恢复到「消息」，但代码里还是「首页」，
+    /// 于是停在信息页、外面的视频却在播。现在两边共用这一个值。
+    @AppStorage(DYMainTab.storageKey) private var mainTabRaw = DYMainTab.home.rawValue
+    private var mainTab: DYMainTab {
+        get { DYMainTab(rawValue: mainTabRaw) ?? .home }
+        nonmutating set { mainTabRaw = newValue.rawValue }
+    }
+    private var mainTabSelection: Binding<DYMainTab> {
+        Binding(get: { mainTab }, set: { mainTabRaw = $0.rawValue })
+    }
     @State private var forwardedChat: DYForwardReceipt?
     @State private var visibleVideo: DYAweme?
     @State private var cleanScreen = false
@@ -2818,6 +2828,8 @@ struct DYClassicFeedScreen: View {
     @State private var channelWidth: CGFloat = 0
     @State private var channelSettling = false
     @State private var playbackSuspended = false
+    /// 启动时就停在非首页：外层暂停只记一次，避免每次 scene 变化都加一层「被遮住」
+    @State private var restoredTabPauseApplied = false
     @StateObject private var followList = DYPagedModelHolder()
     @State private var followCurrentID: String?
     @State private var pendingUpdate: DDUpdate?
@@ -3046,7 +3058,7 @@ struct DYClassicFeedScreen: View {
     }
 
     private var systemTabs: some View {
-        TabView(selection: $mainTab) {
+        TabView(selection: mainTabSelection) {
             Tab("我的", systemImage: "person.crop.circle", value: DYMainTab.mine) {
                 DYMineScreen(bridge: bridge,
                              onLogin: { mainTab = .home; web = DYWebTarget(url: DouyinWeb.home) },
@@ -3098,9 +3110,19 @@ struct DYClassicFeedScreen: View {
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))
         .toolbarVisibility(.visible, for: .statusBar)
-        .onChange(of: mainTab) { _, selected in
+        .onChange(of: mainTab) { old, selected in
             saveSession()
             if selected != .home { DDPlayback.shared.pauseAll(reason: .cover) }
+            else if old != .home { DDPlayback.shared.releaseCover() }   // 回首页要成对释放，否则一直算「被遮住」
+        }
+        .task {
+            // 重启恢复：直接落在消息/我的/直播页时，外层视频必须保持暂停（只做一次，避免重复计数）
+            if mainTab != .home, !restoredTabPauseApplied {
+                restoredTabPauseApplied = true
+                DDPlayback.shared.pauseAll(reason: .cover)
+            }
+            // 网页归属也要同步（onChange 在「启动就是消息页」时不会触发）
+            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(showMessages) }
         }
     }
 

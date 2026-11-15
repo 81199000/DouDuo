@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Declaration order is also the system vertical tab bar's order.
 enum DYMainTab: String, CaseIterable, Hashable {
+    /// 当前大页的持久化键（重启恢复要和代码状态一致）
+    static let storageKey = "duoduomain_tab_v1"
     case mine = "我的", messages = "消息", home = "首页"
 }
 
