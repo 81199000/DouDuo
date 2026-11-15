@@ -14,7 +14,7 @@ struct DYMessageLayoutProbe: View {
             if mode == DDChromeMode.duoClassic.rawValue {
                 classicTabs
             } else {
-                DYMessagesScreen(bridge: bridge, onWeb: { _ in })
+                DYMessagesScreen(bridge: bridge, onClose: {}, onMine: {}, onWeb: { _ in })
             }
         }
         .overlay(alignment: .bottom) {
