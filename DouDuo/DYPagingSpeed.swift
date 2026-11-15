@@ -195,10 +195,10 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)
-        // 播放提前：抬手即切到目标页（暂停在第一帧的播放器立刻开播），收尾动画与起播并行。
-        // 放在动画启动之后：切当前页会让 SwiftUI 把列表直接跳到终点，此时动画已在跑，didScroll 能当帧改回
+        // 老板定：下一条完全滑到位、停住才开始播（不再抬手就起播，那样画面还在往上走就已经开播）。
+        // 切当前页统一放到收尾动画结束的 didSettle 里。
         if let id = targetID, id != currentID() {
-            DYSwipeProbe.lift(); DYSwipeProbe.mark("settle(\(id.suffix(4)))"); willSettle(id)
+            DYSwipeProbe.lift(); DYSwipeProbe.mark("lift(\(id.suffix(4)))")
         } else {
             DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
         }
@@ -231,6 +231,7 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             #if DEBUG
             ddWrite("DDPAGE settle id=\(targetID) ms=\(Int((CACurrentMediaTime() - startTime) * 1000))")
             #endif
+            DYLiveModel.log("DDSETTLE \(targetID.suffix(6)) 停住才起播 \(Int((CACurrentMediaTime() - startTime) * 1000))ms")
             didSettle(targetID)
         }
     }
