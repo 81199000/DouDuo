@@ -921,14 +921,20 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
       const st = a.statistics || {};
+      const allURLs = [...urls, ...((v.bit_rate || []).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
       const def = pickPlay(urls), br = bestRate(v), best = br ? pickPlay(br.play_addr.url_list) : null;
+      // 最优档没有重定向地址时，退而求其次找任意一档的重定向地址（直连 CDN 现在 403，不能用来起播）
+      const anyRedirect = pickRedirect(br ? br.play_addr.url_list : urls) || pickRedirect(allURLs);
       const fr = fastRate(v), fast = fr ? pickPlay(fr.play_addr.url_list) : null;
       const pd = v.play_addr || {};
       return {
         id: String(a.aweme_id), desc: a.desc || '',
         hashtagNames: [...new Set([...(a.text_extra || []).map(t => t.hashtag_name), ...(a.cha_list || []).map(t => t.cha_name)].filter(t => typeof t === 'string' && t.trim()))], width: v.width || 0, height: v.height || 0, duration: (v.duration || 0) / 1000,
-        play: best || def,
-        playAlt: pickRedirect(br ? br.play_addr.url_list : urls) || (best && def && best !== def ? def : null),
+        // ⚠️ 播放优先用重定向地址 /aweme/v1/play/：直连 CDN(douyinvod) 现在一律 403
+        //（2026-11 实测新拉的数据也是 403），拿它起播会一直等到 AVPlayer 超时（10–30 秒黑屏）。
+        // play = 重定向（能播、稳定）；playAlt = 直连 CDN（仅作兜底，下载仍优先用它快速重定向都行）
+        play: anyRedirect || best || def,
+        playAlt: best || def,
         playFast: fast && fast !== (best || def) ? fast : null,
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
