@@ -733,8 +733,10 @@ final class DouDuoUITests: XCTestCase {
         var chosen: XCUIElement?
         for _ in 0..<20 {
             var links = visibleTags()
-            let expand = app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
-            if links.isEmpty, expand.exists {
+            let expand = mode == "duoClassic"
+                ? app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
+                : app.buttons["douyin.description.toggle"].firstMatch
+            if links.isEmpty, expand.exists, mode == "duoClassic" || expand.label == "展开" {
                 expand.tap()
                 links = visibleTags()
             }
@@ -913,7 +915,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
                                 "-douyin_wide_landscape_v1", "NO",
-                                "-douduo_dismissed_update_v1", "1.5.3", "-duoduomain_tab_v1", "首页"]
+                                "-douduo_dismissed_update_v1", "1.5.4", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         XCTAssertTrue([466.0, 678.0, 669.0, 951.0].contains(app.frame.width), "This regression must run on an iPhone Duo display: \(app.frame)")
@@ -929,19 +931,25 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "hashtag-" + mode + "-search")
         app.buttons["douyin.search.back"].tap()
         XCTAssertTrue(tag.waitForExistence(timeout: 5))
-        let expand = app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
-        XCTAssertTrue(expand.waitForExistence(timeout: 5))
-        expand.tap()
-        XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["douyin.description.author"].exists)
-        XCTAssertTrue(app.staticTexts["douyin.comments.title"].exists)
-        XCTAssertTrue(app.scrollViews["douyin.comments.list"].exists)
-        attach(app, "caption-comments-" + mode)
-        app.buttons["douyin.description.close"].tap()
-        let prose = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", "日常")).firstMatch
-        XCTAssertTrue(prose.waitForExistence(timeout: 5))
-        prose.tap()
-        XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
+        if mode == "duoClassic" {
+            let expand = app.links.matching(NSPredicate(format: "label CONTAINS %@", "…")).firstMatch
+            XCTAssertTrue(expand.waitForExistence(timeout: 5))
+            expand.tap()
+            XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["douyin.description.author"].exists)
+            XCTAssertTrue(app.staticTexts["douyin.comments.title"].exists)
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].exists)
+            attach(app, "caption-comments-" + mode)
+            app.buttons["douyin.description.close"].tap()
+            let prose = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", "日常")).firstMatch
+            XCTAssertTrue(prose.waitForExistence(timeout: 5))
+            prose.tap()
+            XCTAssertTrue(app.buttons["douyin.description.close"].waitForExistence(timeout: 5))
+        } else {
+            let expand = app.buttons["douyin.description.toggle"].firstMatch
+            XCTAssertTrue(expand.waitForExistence(timeout: 5))
+            expand.tap()
+        }
         let lastTag = app.links["#摄影"].firstMatch
         XCTAssertTrue(lastTag.waitForExistence(timeout: 5))
         lastTag.tap()
@@ -3571,7 +3579,7 @@ final class DouDuoUITests: XCTestCase {
 
     func testConditionalTitleExpansion() throws {
         let app = XCUIApplication()
-        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
         app.launchArguments += ["-douyin_muted_v1", "YES"]
         addTeardownBlock { app.terminate() }
         app.launchEnvironment["DOUDUO_TITLETEST"] = "1"
@@ -3579,20 +3587,20 @@ final class DouDuoUITests: XCTestCase {
         let short = app.otherElements["title.short"]
         let long = app.otherElements["title.long"]
         XCTAssertTrue(short.waitForExistence(timeout: 10))
-        let action = NSPredicate(format: "label CONTAINS %@", "…")
-        XCTAssertFalse(short.links.matching(action).firstMatch.exists, "短标题不应出现展开按钮")
-        let expand = long.links.matching(action).firstMatch
-        XCTAssertTrue(expand.waitForExistence(timeout: 5), "长标题被截断时应有展开按钮")
+        XCTAssertFalse(short.buttons["douyin.description.toggle"].exists, "短标题不应出现展开按钮")
+        let toggle = long.buttons["douyin.description.toggle"]
+        XCTAssertTrue(toggle.exists, "长标题被截断时应有展开按钮")
+        XCTAssertEqual(toggle.label, "展开")
         let collapsedHeight = long.frame.height
-        XCTAssertLessThanOrEqual(collapsedHeight, 60, "默认最多三行")
-        expand.tap()
-        let collapse = long.links.matching(NSPredicate(format: "label CONTAINS %@", "收起")).firstMatch
-        XCTAssertTrue(collapse.exists)
+        XCTAssertLessThanOrEqual(long.staticTexts["douyin.description"].frame.height, 60, "默认最多三行")
+        toggle.tap()
+        XCTAssertEqual(toggle.label, "收起")
         sleep(1)
         XCTAssertGreaterThan(long.frame.height, collapsedHeight, "展开后应显示完整标题而不只是切换按钮文字")
         attach(app, "expanded-title")
-        collapse.tap()
-        XCTAssertTrue(expand.exists)
+        toggle.tap()
+        XCTAssertEqual(toggle.label, "展开")
+        sleep(1)
         attach(app, "conditional-title")
     }
 

@@ -380,9 +380,10 @@ struct PlayerPage: View {
     @State private var playbackID = UUID()
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
+    @Environment(\.dyUsesClassicVideoLayout) private var usesClassicVideoLayout
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
 
-    private var showsVideoAboveComments: Bool { isActive && commentVideoFrame != nil }
+    private var showsVideoAboveComments: Bool { usesClassicVideoLayout && isActive && commentVideoFrame != nil }
     private var fillsVideoPlane: Bool { fillWidth && !showsVideoAboveComments }
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
     private var playRate: Float { rateBoost ? 2 : Float(effectiveRate) }
@@ -400,30 +401,49 @@ struct PlayerPage: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
-            GeometryReader { geometry in
-                let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect,
-                                                   fillWidth: fillsVideoPlane)
-                let placement = showsVideoAboveComments
-                    ? DYVideoFit.commentPlacement(viewport: geometry.frame(in: .global), fitted: fitted, target: commentVideoFrame)
-                    : (scale: CGFloat(1), offset: CGSize.zero)
-                ZStack {
-                    videoPlane
-                        .mask {
-                            Rectangle()
-                                .frame(width: fitted.width, height: fitted.height)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if usesClassicVideoLayout {
+                GeometryReader { geometry in
+                    let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect,
+                                                       fillWidth: fillsVideoPlane)
+                    let placement = showsVideoAboveComments
+                        ? DYVideoFit.commentPlacement(viewport: geometry.frame(in: .global), fitted: fitted, target: commentVideoFrame)
+                        : (scale: CGFloat(1), offset: CGSize.zero)
+                    ZStack {
+                        videoPlane
+                            .mask {
+                                Rectangle()
+                                    .frame(width: fitted.width, height: fitted.height)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                            .scaleEffect(showsVideoAboveComments ? 1 : videoScale)
+                            .modifier(DYClosedPortraitAlignment(viewport: geometry.size,
+                                                               videoAspect: videoAspect, fills: fillsVideoPlane))
+                        if !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
+                            Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
                         }
-                        .scaleEffect(showsVideoAboveComments ? 1 : videoScale)
-                        .modifier(DYClosedPortraitAlignment(viewport: geometry.size,
-                                                           videoAspect: videoAspect, fills: fillsVideoPlane))
-                    if !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
-                        Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
                     }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .scaleEffect(placement.scale)
+                    .offset(x: placement.offset.width, y: placement.offset.height)
+                    .allowsHitTesting(false)
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .scaleEffect(placement.scale)
-                .offset(x: placement.offset.width, y: placement.offset.height)
-                .allowsHitTesting(false)
+            } else {
+                GeometryReader { outer in
+                    videoPlane
+                    .mask {
+                    GeometryReader { geometry in
+                        let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillWidth)
+                        Rectangle()
+                            .frame(width: fitted.width, height: fitted.height)
+                            .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    }
+                    }
+                    .scaleEffect(videoScale)
+                    .allowsHitTesting(false)
+                        // 仅系统铰链 closed 时左贴边；展开、半折、分屏均保持原来的居中。
+                        .modifier(DYClosedPortraitAlignment(viewport: outer.size,
+                                                           videoAspect: videoAspect, fills: fillWidth))
+                }
             }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
@@ -449,6 +469,10 @@ struct PlayerPage: View {
             }
             #endif
             if seeking && !cleanScreen { seekHUD }
+            if !usesClassicVideoLayout && !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
+                Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
+                    .allowsHitTesting(false)
+            }
             // 常驻倍速角标：只要不是 1 倍就一直显示；长按时再提示「下滑锁定 / 上滑取消」
             if !cleanScreen && (effectiveRate != 1 || rateBoost) {
                 VStack(alignment: .leading, spacing: 2) {

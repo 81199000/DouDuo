@@ -1385,11 +1385,7 @@ struct DYUpstreamFeedScreen: View {
     @State private var scrollEndTask: Task<Void, Never>?
     @State private var initialized = false
     @State private var refreshing = false
-    @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
-    @Environment(\.dyDuoLandscapeWindow) private var duoLandscapeWindow
-    @Environment(\.dyHingeClosed) private var hingeClosed
     @State private var showComments = false
-    @State private var captionItem: DYAweme?
     @State private var web: DYWebTarget?
     @State private var showSettings = false
     @State private var tab: DYTab = {
@@ -1449,18 +1445,13 @@ struct DYUpstreamFeedScreen: View {
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
-    private var presentsLandscapeComments: Bool {
-        showComments && !showSearch && tab != .live
-            && DYInlineCommentPlacement.applies(to: commentItem, enabled: stacksLandscapeComments)
-    }
-
     private var chrome: some View {
         let railMode = chromeMode.usesRail
         return ZStack(alignment: .top) {
             layoutRoot
                 .ignoresSafeArea(edges: [.top, .horizontal])
                 .environment(\.dyRootRailTab, (railMode && tab != .live) ? tab : nil)
-            if !presentsLandscapeComments, !railMode, !(tab == .live && (live.clean || live.entered)) {
+            if !railMode, !(tab == .live && (live.clean || live.entered)) {
                 VStack(spacing: 6) {
                     topBar
                 }
@@ -1476,13 +1467,13 @@ struct DYUpstreamFeedScreen: View {
             }
         }
         .overlayPreferenceValue(DYFeedRailPreference.self) { entries in
-            if !presentsLandscapeComments, railMode {
+            if railMode {
                 let entry = entries.first { $0.tab == tab && (tab != .recommend || $0.id == currentID) }
                 rootActionRail(entry, selector: false)
             }
         }
         .overlay {
-            if !presentsLandscapeComments, railMode, !(tab == .live && (live.clean || live.entered)) {
+            if railMode, !(tab == .live && (live.clean || live.entered)) {
                 if tab == .live, layoutAModuleAnchor.active, feedHost.width > 1 {
                     layoutAModuleButton.modifier(DYRailInputLock())
                 } else {
@@ -1667,14 +1658,9 @@ struct DYUpstreamFeedScreen: View {
 
     var body: some View {
         loadedFeed
-        .modifier(DYCommentBarPolicy(hidesStatus: hingeClosed && presentsLandscapeComments,
-                                     usesHorizontalStatus: false))
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
-        .onChange(of: showComments) { _, shown in
-            if shown { searchSession = nil }
-            else { captionItem = nil }
-        }
+        .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
@@ -1767,13 +1753,6 @@ struct DYUpstreamFeedScreen: View {
                     }
                 }
         }
-        .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : commentItem?.id)
-        .environment(\.dyExpandVideoCaption, { item in
-            withAnimation(.snappy) {
-                captionItem = item
-                showComments = true
-            }
-        })
     }
 
     /// 播放区是不是横的：平放/单屏看整个窗口；半折叠看视频实际占的那块
@@ -1809,16 +1788,10 @@ struct DYUpstreamFeedScreen: View {
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
-    private var commentItem: DYAweme? { (tab == .follow ? followCommentItem : current) ?? captionItem }
-
-    private func inlineComments(in geo: GeometryProxy) -> DYInlineCommentPlacement? {
-        guard showComments, !showSearch, tab != .live else { return nil }
-        return DYInlineCommentPlacement(geo, aweme: commentItem, enabled: stacksLandscapeComments,
-                                        showsCaption: captionItem != nil)
-    }
+    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
 
     private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
-        guard !showSearch, inlineComments(in: geo) == nil else { return 0 }
+        guard !showSearch else { return 0 }
         let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let w = geo.size.width, h = geo.size.height
         if let p = foldPanes(geo) { return p.book ? max(0, w - p.video.width) : 0 }
@@ -1829,7 +1802,6 @@ struct DYUpstreamFeedScreen: View {
     }
 
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let placement = inlineComments(in: geo)
         let fold = !showSearch && tab == .recommend && DYDuoMetrics.foldIsActive(geo)
         let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
         let w = geo.size.width, h = geo.size.height
@@ -1837,7 +1809,7 @@ struct DYUpstreamFeedScreen: View {
         let bookFold = fold && (hinge.map { $0.book } ?? (w > h))   // 书本姿态：左右分
         let tableFold = fold && !bookFold     // 桌面姿态：上下分
         let sideBySide = wide || bookFold
-        let showPanel = !showSearch && (fold || (showComments && placement == nil && sideBySide && tab != .live))
+        let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
 
         let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
         let panelH = hinge.map { $0.panel.height } ?? (tableFold ? h * 0.45 : 0)
@@ -1859,7 +1831,7 @@ struct DYUpstreamFeedScreen: View {
                 .frame(width: videoW, height: videoH, alignment: .topLeading)
             if showPanel, let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur,
-                               onClose: fold && captionItem == nil ? nil : { withAnimation(.snappy) { showComments = false } })
+                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } })
                     .frame(width: sideBySide ? max(0, panelW - panelInset) : w,
                            height: tableFold ? panelH : h)
                     .dyDeskLight(tableFold)
@@ -1871,12 +1843,7 @@ struct DYUpstreamFeedScreen: View {
         .background(theme.media.strongScrim.color(for: scheme).ignoresSafeArea())
         .animation(.snappy, value: fold)
         .animation(showSearch ? nil : .snappy, value: showComments)
-        .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,
-                                                  onClose: { showComments = false }))
-        .sheet(isPresented: Binding(
-            get: { !showSearch && showComments && placement == nil && !sideBySide && !fold },
-            set: { if placement == nil && !sideBySide && !fold { showComments = $0 } }
-        )) {
+        .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
             if let cur = commentItem {
                 DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
                     // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
@@ -2047,7 +2014,6 @@ struct DYUpstreamFeedScreen: View {
                              onToast: { showToast($0) }, onComments: { item in
                                  followCommentItem = item; showComments = true
                              })
-                    .environment(\.duoVisibleVideo, $followCommentItem)
             } else {
                 recommendArea
             }
@@ -2763,8 +2729,6 @@ struct DYVideoPage: View {
         self.onChannelDragEnd = onChannelDragEnd
     }
 
-    @Environment(\.duoVisibleVideo) private var visibleVideo
-
     var body: some View {
         Group {
             if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
@@ -2780,11 +2744,6 @@ struct DYVideoPage: View {
                     onDoubleTap: onDoubleTap, onComments: onComments, onSearch: onSearch, onAuthor: onAuthor,
                     onSavePosition: onSavePosition, preloader: preloader, bridge: bridge, onToast: onToast,
                     onDislike: onDislike, moreExtras: moreExtras, onEnded: onEnded, onBack: onBack ?? standaloneBack)
-            }
-        }
-        .onChange(of: isCurrent, initial: true) { _, active in
-            if active, visibleVideo.wrappedValue?.id != item.id {
-                visibleVideo.wrappedValue = item
             }
         }
         .modifier(DYForwardFeedbackPresentation(bottomInset: insets.bottom, isCurrent: isCurrent))
@@ -2919,6 +2878,10 @@ struct DYClassicFeedScreen: View {
     private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : current) ?? captionItem }
     private var horizontalCommentStatus: Bool {
         duoLandscapeWindow && showComments && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
+    }
+
+    private var hidesCommentStatus: Bool {
+        hingeClosed && showComments && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
     }
 
     private var presentsLandscapeComments: Bool {
@@ -3150,7 +3113,8 @@ struct DYClassicFeedScreen: View {
             Tab("首页", systemImage: "house", value: DYMainTab.home) {
                 NavigationStack {
                     layoutRoot
-                        .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal] : [])
+                        .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal]
+                                         : hidesCommentStatus ? .horizontal : [])
                         .coordinateSpace(.named("douduo.feed"))
                         .environment(\.duoSystemBars, true)
                         .environment(\.duoInlineVideoNavigation, sidePanelOpen)
@@ -3160,7 +3124,7 @@ struct DYClassicFeedScreen: View {
                             DYNativeVideoActions(actions: hidesVideoChrome ? nil : actions,
                                                  isClean: cleanScreen,
                                                  onToggleClean: { cleanScreen.toggle() })
-                                .id(horizontalCommentStatus || (hingeClosed && presentsLandscapeComments))
+                                .id(horizontalCommentStatus || hidesCommentStatus)
                         }
                         .toolbarVisibility(liveRoomOpen ? .hidden : .visible, for: .navigationBar)
                         .toolbarBackgroundVisibility(.hidden, for: .navigationBar, .bottomBar)
@@ -3170,7 +3134,7 @@ struct DYClassicFeedScreen: View {
                         // sheets too, so dismissing comments does not restore
                         // a previously expanded tab picker over the video rail.
                         .modifier(DYSystemTabBar(hidden: hidesVideoChrome || cleanScreen))
-                        .modifier(DYCommentBarPolicy(hidesStatus: hingeClosed && presentsLandscapeComments,
+                        .modifier(DYCommentBarPolicy(hidesStatus: hidesCommentStatus,
                                                      usesHorizontalStatus: horizontalCommentStatus))
                 }
                 .tint(nil)
@@ -3183,6 +3147,8 @@ struct DYClassicFeedScreen: View {
         // Only the tab selector inherits this accent. Every tab restores the
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))
+        // The tab container owns the system status bar when the toolbar axis changes.
+        .dyCommentStatusVisibility(hidden: mainTab == .home && hidesCommentStatus)
         .onChange(of: mainTab) { old, selected in
             saveSession()
             if selected != .home { DDPlayback.shared.pauseAll(reason: .cover) }
@@ -3303,7 +3269,7 @@ struct DYClassicFeedScreen: View {
         .dyBottomSheet(isPresented: Binding(
             get: { !showSearch && showComments && placement == nil && !layout.sideBySide && !layout.resident },
             set: { if placement == nil && !supportsSidePanel && !layout.resident { showComments = $0 } }
-        ), kind: .comments) {
+        ), kind: .comments, hidesStatusBar: hidesCommentStatus) {
             if let cur = commentAweme {
                 DYCommentSheet(bridge: bridge, aweme: cur, onClose: { showComments = false })
             }
@@ -3838,8 +3804,6 @@ struct DYUpstreamVideoPage: View {
     }
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.dyExpandVideoCaption) private var expandVideoCaption
-    @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
     let item: DYAweme
     let isCurrent: Bool
     let insets: EdgeInsets
@@ -3927,7 +3891,7 @@ struct DYUpstreamVideoPage: View {
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
-                                    videoAspect: item.videoAspect,
+                                    videoAspect: item.height > 0 ? item.width / item.height : 0,
                                     headEndSeconds: nil,
                                     continuationURL: nil,
                                     boost: boost)
@@ -3963,7 +3927,7 @@ struct DYUpstreamVideoPage: View {
                     .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 8 : 24))
                 }
                 // 长按加速时淡出按钮和信息，画面干净；不禁用点击区，手指按在按钮上也能继续加速。
-                .opacity(boost.boosting || commentVideoFrame != nil ? 0 : 1)
+                .opacity(boost.boosting ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: boost.boosting)
             } else {
                 // 默认：PR #12 之前的布局，左下信息 + 右侧按钮栏
@@ -3981,7 +3945,7 @@ struct DYUpstreamVideoPage: View {
                 }
                 .padding(.horizontal, chromeSidePadding)
                 .padding(.bottom, max(insets.bottom, 18) + (item.images.isEmpty ? 36 : 24))
-                .opacity(boost.boosting || commentVideoFrame != nil ? 0 : 1)
+                .opacity(boost.boosting ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: boost.boosting)
             }
         }
@@ -4125,8 +4089,7 @@ struct DYUpstreamVideoPage: View {
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,
                                   secondary: theme.media.onMediaSecondary.color(for: scheme),
-                                  hashtagNames: item.hashtagNames ?? [],
-                                  onExpand: expandVideoCaption.map { open in { open(item) } })
+                                  hashtagNames: item.hashtagNames ?? [])
             }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
@@ -4304,6 +4267,7 @@ struct DYClassicVideoPage: View {
     @Environment(\.toolbarVerticalEdge) private var verticalBarEdge
     @Environment(\.duoInlineVideoNavigation) private var inlineNavigation
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.duoVisibleVideo) private var visibleVideo
     @Environment(\.horizontalSizeClass) private var hSize
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var chromeSidePadding: CGFloat { 12 }
@@ -4449,6 +4413,7 @@ struct DYClassicVideoPage: View {
                                     onHorizontalDrag: cleanScreen ? nil : onChannelDrag,
                                     onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
+                    .environment(\.dyUsesClassicVideoLayout, true)
             } else {
                 // 图集也要有背景音乐（原来只翻图、没声音）
                 DYImageGallery(images: item.images,
@@ -4497,6 +4462,8 @@ struct DYClassicVideoPage: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
             })
         }
+        .onAppear { if isCurrent { publishVisible() } }
+        .onChange(of: isCurrent) { _, active in if active { publishVisible() } }
         .onReceive(followStates) { states in
             followedOverride = states[item.author.secUid ?? ""] ?? states[item.author.uid ?? ""]
         }
@@ -4523,7 +4490,10 @@ struct DYClassicVideoPage: View {
 
     /// 只有关注流需要把「当前可见视频」报给根视图（评论/标签用）；推荐流根视图自己有 currentID。
     /// 同一条不重复写，避免翻页时根视图多重算一轮。
-
+    private func publishVisible() {
+        guard visibleVideo.wrappedValue?.id != item.id else { return }
+        visibleVideo.wrappedValue = item
+    }
 
     private var danmakuBar: some View {
         HStack(spacing: 8) {
@@ -4584,7 +4554,7 @@ struct DYClassicVideoPage: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.author")
             if !item.desc.isEmpty {
-                DYExpandableTitle(text: item.desc, foreground: fg.opacity(0.9),
+                DYClassicExpandableTitle(text: item.desc, foreground: fg.opacity(0.9),
                                   secondary: fg.opacity(0.7), hashtagNames: item.hashtagNames ?? [],
                                   onExpand: expandVideoCaption.map { open in { open(item) } })
             }
@@ -4806,14 +4776,10 @@ struct DYCommentPanel: View {
     }
 
     @Environment(\.dyExpandedCaptionID) private var expandedCaptionID
-    private var showsCaption: Bool { expandedCaptionID == aweme.id }
+    private var showsCaption: Bool { usesClassicComments && expandedCaptionID == aweme.id }
 
     private var headerTrailingInset: CGFloat {
         horizontalStatus ? max(trailingInset, 184) : trailingInset
-    }
-
-    private var relatedSearchInHeading: Bool {
-        usesClassicComments || showsCaption
     }
 
     private var captionHeader: some View {
@@ -4839,7 +4805,7 @@ struct DYCommentPanel: View {
         if !showsCaption, let onClose {
             Button(action: onClose) {
                 Image(systemName: "xmark").font(.subheadline.weight(.semibold))
-                    .frame(width: usesClassicComments ? 44 : nil, height: usesClassicComments ? 44 : nil)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -4878,25 +4844,17 @@ struct DYCommentPanel: View {
                         Spacer(minLength: 0)
                     }
                     .frame(minHeight: max(44, DYDuoMetrics.windowSafeTop))
-                } else if usesClassicComments {
+                } else {
                     ZStack(alignment: .trailing) {
                         commentTitle.frame(maxWidth: .infinity)
                         closeButton
                     }
                     .frame(minHeight: showsCaption ? 30 : 44)
-                } else {
-                    HStack {
-                        commentTitle
-                        Spacer()
-                        closeButton
-                    }
-                    .padding(.vertical, showsCaption ? 4 : 12)
-                    .padding(.trailing, hSize == .regular && !trailingCleared ? 88 : 0)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.trailing, showsCaption ? trailingInset : headerTrailingInset)
-            if relatedSearchInHeading && !relatedWords.isEmpty {
+            if !relatedWords.isEmpty {
                 relatedSearch
                     .padding(.horizontal, 16)
                     .padding(.trailing, trailingInset)
@@ -4913,28 +4871,114 @@ struct DYCommentPanel: View {
 
     var body: some View {
         Group {
-            if usesClassicComments {
-                panelContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
-                    .clipped()
-            } else {
-                panelContent
-                    .background(GlassBackground())
-                    .modifier(DYRailReservedNudge())
+            if usesClassicComments { classicBody } else { upstreamBody }
+        }
+        .accessibilityValue(usesClassicComments ? "经典评论" : "上游评论")
+    }
+
+    private var upstreamBody: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(total > 0 ? "\(DYFormat.count(total)) 条评论" : "评论").font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("douyin.comments.title")
+                Spacer()
+                if let onClose {
+                    Button(action: onClose) { Image(systemName: "xmark").font(.subheadline.weight(.semibold)) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.comments.close")
+                }
             }
+            .foregroundStyle(.themeTextPrimary)
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示挤在一起，整体左移让位；
+            // 外层已按系统竖栏缩窄过面板时不再重复让位（issue #15）
+            .padding(.trailing, hSize == .regular && !trailingCleared ? 88 : 0)
+            Divider()
+            ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if focusMiss {
+                        Text("这条评论已删除或暂不可见").font(.caption).foregroundStyle(.themeTextSecondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                    ForEach(items) { c in
+                        VStack(alignment: .leading, spacing: 10) {
+                            row(c, parent: nil)
+                            if c.replies > 0 || !(replies[c.id] ?? []).isEmpty { replyBlock(c) }
+                        }
+                        .id(c.id)
+                    }
+                    if let error {
+                        Text(error).font(.caption).foregroundStyle(theme.status.danger.color(for: scheme))
+                    }
+                    if hasMore {
+                        ProgressView().frame(maxWidth: .infinity)
+                            .onAppear { Task { await load() } }
+                    } else if items.isEmpty {
+                        Text("还没有评论").font(.footnote).foregroundStyle(.themeTextSecondary).frame(maxWidth: .infinity)
+                    }
+                }
+                .scrollTargetLayout()   // 评论位置记忆要知道哪条在屏幕最上面
+                .padding(16)
+            }
+            .accessibilityIdentifier("douyin.comments.list")
+            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID, paused: restoringScroll))
+            .onChange(of: pendingRestoreID) { _, id in restoreUpstreamCommentPosition(proxy, to: id) }
+            .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
+            .onChange(of: highlight) { _, h in
+                guard let h else { return }
+                withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
+            }
+            }
+            if !relatedWords.isEmpty {
+                Divider()
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        Text("相关搜索").font(.caption).foregroundStyle(.themeTextSecondary)
+                        ForEach(relatedWords, id: \.self) { word in
+                            Button { searchRelated(word) } label: {
+                                Label(word, systemImage: "magnifyingglass")
+                                    .font(.footnote).lineLimit(1)
+                                    .foregroundStyle(theme.accent.color(for: scheme))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                }
+                .scrollIndicators(.hidden)
+                .accessibilityIdentifier("douyin.comments.relatedSearch")
+            }
+            Divider()
+            inputBar
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.panel")
-        .accessibilityValue(usesClassicComments ? "经典评论" : "上游评论")
-        .onGeometryChange(for: CGFloat.self) { geo in
-            DYDuoMetrics.bottomSafeAreaOverlap(in: geo)
-        } action: { bottomSafeArea = $0 }
+        .background(GlassBackground())
+        .modifier(DYRailReservedNudge())
         .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
         .fullScreenCover(item: $relatedQuery) { query in
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
         .onDisappear { saveCommentPosition() }
+    }
+
+    private var classicBody: some View {
+        panelContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+            .clipped()
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("douyin.comments.panel")
+            .onGeometryChange(for: CGFloat.self) { geo in
+                DYDuoMetrics.bottomSafeAreaOverlap(in: geo)
+            } action: { bottomSafeArea = $0 }
+            .task(id: aweme.id) { relatedWords = await bridge.relatedSearch(for: aweme) }
+            .fullScreenCover(item: $relatedQuery) { query in
+                DYRelatedSearchScreen(bridge: bridge, word: query.word)
+            }
+            .onDisappear { saveCommentPosition() }
     }
 
     private var panelContent: some View {
@@ -5007,18 +5051,11 @@ struct DYCommentPanel: View {
                 listAtTop = true
             }
             VStack(spacing: 0) {
-                if !relatedSearchInHeading && !relatedWords.isEmpty {
-                    Divider()
-                    relatedSearch
-                        .padding(.horizontal, 16)
-                        .padding(.trailing, trailingInset)
-                        .padding(.vertical, 10)
-                }
                 Divider()
                 inputBar
             }
             .fixedSize(horizontal: false, vertical: true)
-            .background(usesClassicComments && fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
+            .background(fillsPane ? Color(uiColor: .secondarySystemBackground) : .clear)
         }
     }
 
@@ -5052,6 +5089,23 @@ struct DYCommentPanel: View {
             if interval > 0 { try? await Task.sleep(for: .milliseconds(interval)) }
         }
         DYLiveModel.log("DDCOMMENTMEM scrolled aweme=\(aweme.id.suffix(6)) to=\(id.suffix(6)) top_now=\(topVisibleID?.suffix(6) ?? "-")")
+    }
+
+    private func restoreUpstreamCommentPosition(_ proxy: ScrollViewProxy, to id: String?) {
+        guard let id, items.contains(where: { $0.id == id }) else { restoringScroll = false; return }
+        var tx = Transaction(); tx.disablesAnimations = true
+        DispatchQueue.main.async {
+            withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+                    restoringScroll = false
+                    pendingRestoreID = nil
+                    DYLiveModel.log("DDCOMMENTMEM scrolled aweme=\(aweme.id.suffix(6)) to=\(id.suffix(6)) top_now=\(topVisibleID?.suffix(6) ?? "-")")
+                }
+            }
+        }
     }
 
     private func searchRelated(_ word: String) {
