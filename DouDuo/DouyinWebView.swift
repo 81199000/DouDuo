@@ -199,7 +199,15 @@ final class DouyinWebModel: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     /// 打开时像 App 一样直接进「推荐」竖屏流（首次访问会被导到精选）
     private var jumpedToFeed = false
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard DYDMProbe.enabled, webView === DYMessageCache.shared.chatModel.web else { return }
+        DYChatWebSession.shared.noteProvisionalNavigation()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if DYDMProbe.enabled, webView === DYMessageCache.shared.chatModel.web {
+            DYChatWebSession.shared.noteDidFinish()
+        }
         #if DEBUG
         // 模拟器调试：DOUDUO_OPEN=login 时自动点「登录」弹出扫码框
         if ProcessInfo.processInfo.environment["DOUDUO_OPEN"] == "login", !clickedLogin {
@@ -291,7 +299,9 @@ final class DDAppMessageHandler: NSObject, WKScriptMessageHandler {
     private let model: DouyinWebModel
     init(_ model: DouyinWebModel) { self.model = model }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let s = message.body as? String { model.onAppMessage?(s) }
+        guard let body = message.body as? String else { return }
+        if DYDMProbe.enabled, DYDMProbeBridge.consume(body, message: message) { return }
+        model.onAppMessage?(body)
     }
 }
 
@@ -368,6 +378,10 @@ struct DouyinWebContainer: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         if reuseExisting, let existing = model.web { return existing }
+        return Self.instantiate(model: model, zoom: zoom, start: start)
+    }
+
+    static func instantiate(model: DouyinWebModel, zoom: Double, start: URL, includeProbe: Bool = false) -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()            // 登录态持久化
         #if DEBUG
@@ -389,6 +403,10 @@ struct DouyinWebContainer: UIViewRepresentable {
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
         DYLiveModel.log("DDMSG ddmsg-handler registered")
+        if includeProbe {
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: DYDMProbeScript.install, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         // 电脑版直播间的播放器要 MediaSource，iPhone 的 WebView 只有 ManagedMediaSource（iOS 17.1+），
         // 没有它就一直「直播加载中」。这里把它补成 MediaSource；ManagedMediaSource 要求关掉隔空播放才能挂到 <video> 上
         cfg.userContentController.addUserScript(WKUserScript(source: """

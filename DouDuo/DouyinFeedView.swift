@@ -1620,8 +1620,10 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
+            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
+        .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
         .task {
             // 启动查一次新版本；关掉后同一版本不再提示
             if let u = await DDUpdateChecker.check() { pendingUpdate = u }
@@ -2669,6 +2671,9 @@ struct DouyinFeedScreen: View {
             }
         }
         .modifier(DYHashtagFilterPresentation())
+        .background(alignment: .topLeading) {
+            DYDMMonitorHost()
+        }
     }
 }
 
@@ -2927,8 +2932,10 @@ struct DYClassicFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
+            if DYDMProbe.enabled { DYChatWebSession.shared.setMessagesVisible(open) }
             if !open { Task { await refreshNoticeUnread() } }
         }
+        .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
         .task {
             // 启动查一次新版本；关掉后同一版本不再提示
             if let u = await DDUpdateChecker.check() { pendingUpdate = u }
