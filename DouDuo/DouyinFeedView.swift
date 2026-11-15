@@ -4070,14 +4070,24 @@ struct DYUpstreamVideoPage: View {
     private func actions(_ fg: Color) -> some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             if let onBack {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.backward")
-                        .font(.title2.weight(.medium))
-                        .foregroundStyle(fg)
-                        .frame(width: 50, height: 50)
+                // 简洁 / 极简：点开的视频（搜索、博主主页、我的、消息）没有底部进度条，
+                // 进度画在返回键外圈——跟首页模块入口同一颗进度环（同尺寸、同线宽、同颜色）。
+                ZStack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.backward")
+                            .font(.title2.weight(.medium))
+                            .foregroundStyle(fg)
+                            .frame(width: 50, height: 50)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .ddGlassCircle()
+                    if chromeMode.usesRail {
+                        DDRailProgressRing(show: isCurrent, fg: fg)
+                    }
                 }
-                .buttonStyle(.plain)
-                .ddGlassCapsule()
+                .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier("douyin.list.back")
             }
