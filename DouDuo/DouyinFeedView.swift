@@ -2864,13 +2864,14 @@ struct DYClassicFeedScreen: View {
         !showSearch && (residentComments || (supportsSidePanel && (authorTarget != nil || (showComments && !presentsLandscapeComments))))
     }
     private var hidesVideoChrome: Bool { (!showSearch && (showComments || residentComments || authorTarget != nil)) || liveRoomOpen }
+    private var innerPortrait: Bool { stacksLandscapeComments && !hingeClosed }
+    private var anchorsHeaderToWindow: Bool { horizontalCommentStatus || innerPortrait }
+
     private var headerTopInset: CGFloat {
-        // NavigationStack's inset includes a horizontal toolbar after rotation.
-        // The fixed video header needs only the physical window's safe area.
-        let physicalTop = UIApplication.shared.connectedScenes
+        let window = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.top ?? 0
-        return max(physicalTop, 8)
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        return max(window?.safeAreaInsets.top ?? 0, 8)
     }
 
     private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
@@ -3563,37 +3564,33 @@ struct DYClassicFeedScreen: View {
                     HStack {
                         DYVideoMoreMenu(extras: AnyView(moreExtrasMenu))
                         Spacer(minLength: 0)
-                        Button {
-                            openSearch()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .font(.title2)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .accessibilityLabel("搜索")
-                        .accessibilityIdentifier("douyin.search")
-                        .accessibilityValue(showSearch ? "已打开" : "未打开")
-                        .opacity(showSearch && searchIsSplit ? 0 : 1)
-                        .allowsHitTesting(!(showSearch && searchIsSplit))
-                        .accessibilityHidden(showSearch && searchIsSplit)
+                        if !innerPortrait { headerSearch }
                     }
-                    topBar
+                    if innerPortrait {
+                        // Leave the system controls at the trailing edge and keep the tabs centered.
+                        HStack(spacing: 8) {
+                            Color.clear.frame(width: 44, height: 1).accessibilityHidden(true)
+                            topBar
+                            headerSearch
+                        }
+                    } else {
+                        topBar
+                    }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
                 .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
                 .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
-                // The horizontal status bar belongs to the adjacent pane.
-                .padding(.top, horizontalCommentStatus ? 8 : headerTopInset)
-                .offset(y: horizontalCommentStatus ? -header.frame(in: .global).minY : 0)
+                // The adjacent pane owns the horizontal status bar in landscape.
+                .padding(.top, anchorsHeaderToWindow ? 8 : headerTopInset)
+                .offset(y: anchorsHeaderToWindow ? -header.frame(in: .global).minY : 0)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("douyin.feed.header")
                 .opacity(cleanScreen || liveRoomOpen || presentsLandscapeComments ? 0 : 1)
                 .allowsHitTesting(!cleanScreen && !liveRoomOpen && !presentsLandscapeComments)
                 .accessibilityHidden(cleanScreen || liveRoomOpen || presentsLandscapeComments)
             }
-            .ignoresSafeArea(.container, edges: horizontalCommentStatus ? .top : [])
+            .ignoresSafeArea(.container, edges: anchorsHeaderToWindow ? .top : [])
         }
         // The video and bottom chrome reach the physical screen; add the actual
         // home-indicator inset once, inside each page, rather than twice.
@@ -3607,6 +3604,23 @@ struct DYClassicFeedScreen: View {
                 .navigationBarBackButtonHidden()
         }
 
+    }
+
+    private var headerSearch: some View {
+        Button {
+            openSearch()
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.title2)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("搜索")
+        .accessibilityIdentifier("douyin.search")
+        .accessibilityValue(showSearch ? "已打开" : "未打开")
+        .opacity(showSearch && searchIsSplit ? 0 : 1)
+        .allowsHitTesting(!(showSearch && searchIsSplit))
+        .accessibilityHidden(showSearch && searchIsSplit)
     }
 
     /// 保留原版频道切换；两侧操作及安全区由系统导航栏管理。
@@ -4271,20 +4285,24 @@ struct DYClassicVideoPage: View {
     @Environment(\.duoSystemBars) private var systemBars
     @Environment(\.toolbarVerticalEdge) private var verticalBarEdge
     @Environment(\.duoInlineVideoNavigation) private var inlineNavigation
+    @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
+    @Environment(\.dyHingeClosed) private var hingeClosed
     @Environment(\.displayScale) private var displayScale
     @Environment(\.duoVisibleVideo) private var visibleVideo
     @Environment(\.horizontalSizeClass) private var hSize
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var chromeSidePadding: CGFloat { 12 }
-    // Full-bleed ancestors may report zero safe-area insets. Read the app's
-    // foreground key window as a fallback, never a guessed device/rail width.
-    private var systemColumnInset: CGFloat {
-        let windowInset = UIApplication.shared.connectedScenes
+    private var videoWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }
             .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
-        return max(insets.trailing, windowInset)
+            .first(where: \.isKeyWindow)
+    }
+
+    // Full-bleed ancestors can report zero insets; use the containing window as a fallback.
+    private var systemColumnInset: CGFloat {
+        max(insets.trailing, videoWindow?.safeAreaInsets.right ?? 0)
     }
     private var actionRailTrailingPadding: CGFloat {
         guard !inlineNavigation else { return chromeSidePadding }
@@ -4447,9 +4465,21 @@ struct DYClassicVideoPage: View {
         }
         .overlay(alignment: .trailing) {
             if !cleanScreen && commentVideoFrame == nil && !inlineNavigation && (!systemBars || verticalBarEdge == nil) {
-                actionCapsule(fg)
+                let rail = actionCapsule(fg)
                     .modifier(DYRailReservedNudge())
                     .padding(.trailing, actionRailTrailingPadding)
+                if systemBars && stacksLandscapeComments && !hingeClosed {
+                    GeometryReader { viewport in
+                        let viewportBottom = viewport.frame(in: .global).maxY
+                        let windowBottom = videoWindow?.bounds.maxY ?? viewportBottom
+                        // Keep the rail beside the description and clear of the home dock.
+                        let bottomPadding = max(0, viewportBottom - windowBottom + 96)
+                        rail.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                            .padding(.bottom, bottomPadding)
+                    }
+                } else {
+                    rail
+                }
             }
         }
         .preference(key: DYActiveVideoActionsKey.self,

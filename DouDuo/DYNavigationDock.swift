@@ -46,110 +46,117 @@ struct DYVideoToolbarActions {
 @available(iOS 27.1, *)
 struct DYNativeVideoActions: View {
     @Environment(\.toolbarVerticalEdge) private var verticalEdge
+    @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
+    @Environment(\.dyHingeClosed) private var hingeClosed
     let actions: DYVideoToolbarActions?
     let isClean: Bool
     let onToggleClean: () -> Void
+    var onBack: (() -> Void)? = nil
     @State private var anchorFrame: CGRect = .zero
     @State private var windowHeight: CGFloat = 0
+
+    // A standalone player replaces the home dock with clearance of the same height.
+    private var standaloneBottomClearance: CGFloat { onBack == nil ? 0 : 60 }
+    private var showsPortraitCleanControl: Bool {
+        onBack == nil && verticalEdge == nil && stacksLandscapeComments && !hingeClosed
+    }
     private var slotHeight: CGFloat {
-        guard !anchorFrame.isEmpty else { return 262 }
-        return max(262, (windowHeight - anchorFrame.maxY - 112).rounded(.down))
+        let minimum = 262 + standaloneBottomClearance
+        guard !anchorFrame.isEmpty else { return minimum }
+        return max(minimum, (windowHeight - anchorFrame.maxY - 112 + standaloneBottomClearance).rounded(.down))
+    }
+
+    private var cleanButton: some View {
+        Button(action: onToggleClean) {
+            Image(systemName: isClean ? "eye" : "eye.slash")
+                .font(.title3)
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel(isClean ? "退出清屏" : "清屏")
+        .accessibilityIdentifier("douyin.cleanScreen")
+    }
+
+    private func backButton(_ onBack: @escaping () -> Void) -> some View {
+        Button("返回", systemImage: "chevron.backward", action: onBack)
+            .labelStyle(.iconOnly)
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .accessibilityIdentifier("douyin.list.back")
+    }
+
+    private func standaloneControls(_ onBack: @escaping () -> Void) -> some View {
+        VStack(spacing: 4) {
+            backButton(onBack)
+            if actions != nil { cleanButton }
+        }
     }
 
     var body: some View {
-        Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: onToggleClean) {
-                        Image(systemName: isClean ? "eye" : "eye.slash")
-                            .font(.title3)
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                        .accessibilityLabel(isClean ? "退出清屏" : "清屏")
-                        .accessibilityIdentifier("douyin.cleanScreen")
-                        .background(DYToolbarFrameReader { frame, height in
-                            withTransaction(Transaction(animation: nil)) {
-                                anchorFrame = frame
-                                windowHeight = height
-                            }
-                        })
-                }
-                .axisBehavior(.verticalPreferred)
-                .visibilityPriority(.high)
-                .hidden(actions == nil)
-
-                // The stable clear-screen anchor is independent of this group's size.
-                // A new item identity invalidates the native cached fitting size.
-                ToolbarItem(id: "video-actions-\(Int(slotHeight))", placement: .bottomBar) {
-                    if verticalEdge != nil, let actions {
-                        VStack(spacing: 4) {
-                            DYAuthorAvatarControl(image: actions.avatarImage, name: actions.authorName,
-                                                  onAuthor: actions.onAuthor, follow: actions.follow)
-                            actions.like
-                            actions.comments
-                            actions.collect
-                            actions.share
-                        }
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular, in: .capsule)
-                        .frame(height: slotHeight, alignment: .bottom)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("douyin.video.actions")
-                    }
-                }
-                .sharedBackgroundVisibility(.hidden)
-                .axisBehavior(.verticalPreferred)
-                .visibilityPriority(.high)
-                .hidden(actions == nil || verticalEdge == nil || isClean)
+        ZStack(alignment: .topLeading) {
+            if verticalEdge == nil, let onBack {
+                standaloneControls(onBack)
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.leading, 8)
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if showsPortraitCleanControl, actions != nil {
+                cleanButton
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular, in: .circle)
+                    .padding(.trailing, 17)
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else {
+                Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
             }
-            // Retain the last measured slot across navigation and sheets.
-            // Resetting it would briefly expand the tabs on every return,
-            // until the system lays out the anchor again.
-    }
-}
-
-/// Standalone works have no tab selector. Keep Back separate from the compact
-/// interaction capsule, so the system never turns the video actions into More.
-@available(iOS 27.1, *)
-struct DYStandaloneVideoActions: View {
-    @Environment(\.toolbarVerticalEdge) private var verticalEdge
-    let actions: DYVideoToolbarActions?
-    let onBack: () -> Void
-
-    var body: some View {
-        Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("返回", systemImage: "chevron.backward", action: onBack)
-                        .labelStyle(.iconOnly).foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .accessibilityIdentifier("douyin.list.back")
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Group {
+                    if let onBack { standaloneControls(onBack) }
+                    else { cleanButton }
                 }
-                .axisBehavior(.verticalPreferred)
-                .visibilityPriority(.high)
-                ToolbarItem(placement: .bottomBar) {
-                    if let actions {
-                        VStack(spacing: 4) {
-                            DYAuthorAvatarControl(image: actions.avatarImage, name: actions.authorName,
-                                                  onAuthor: actions.onAuthor, follow: actions.follow)
-                            actions.like
-                            actions.comments
-                            actions.collect
-                            actions.share
-                        }
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular, in: .capsule)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("douyin.video.actions")
+                .background(DYToolbarFrameReader { frame, height in
+                    withTransaction(Transaction(animation: nil)) {
+                        anchorFrame = frame
+                        windowHeight = height
                     }
-                }
-                .sharedBackgroundVisibility(.hidden)
-                .axisBehavior(.verticalPreferred)
-                .visibilityPriority(.high)
-                .hidden(actions == nil || verticalEdge == nil)
+                })
             }
+            .axisBehavior(.verticalPreferred)
+            .visibilityPriority(.high)
+            .hidden(onBack == nil ? actions == nil || showsPortraitCleanControl : verticalEdge == nil)
+
+            // The stable controls anchor is independent of this group's size.
+            // A new item identity invalidates the native cached fitting size.
+            ToolbarItem(id: "video-actions-\(Int(slotHeight))", placement: .bottomBar) {
+                if verticalEdge != nil, let actions {
+                    VStack(spacing: 4) {
+                        DYAuthorAvatarControl(image: actions.avatarImage, name: actions.authorName,
+                                              onAuthor: actions.onAuthor, follow: actions.follow)
+                        actions.like
+                        actions.comments
+                        actions.collect
+                        actions.share
+                    }
+                    .padding(.vertical, 5)
+                    .glassEffect(.regular, in: .capsule)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("douyin.video.actions")
+                    .padding(.bottom, standaloneBottomClearance)
+                    .frame(height: slotHeight, alignment: .bottom)
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            .axisBehavior(.verticalPreferred)
+            .visibilityPriority(.high)
+            .hidden(actions == nil || verticalEdge == nil || isClean)
+        }
+        // Retain the last measured slot across navigation and sheets.
     }
 }
 
