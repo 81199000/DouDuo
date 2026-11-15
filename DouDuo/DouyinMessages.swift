@@ -610,8 +610,18 @@ struct DYMessagesScreen: View {
                         }
                     }
                 case "video-miss":
-                    // 抽不到 aweme_id 时回传卡片 HTML，用来迭代选择器
-                    DYLiveModel.log("DDVIDEOTAP miss " + String((obj["html"] as? String ?? "").prefix(500)))
+                    // 抽不到 aweme_id 时回传卡片线索（类名 / 图片数 / 链接 / payload 类型 / HTML 片段），用来迭代选择器
+                    let cls = obj["classes"] as? String ?? "-"
+                    let imgs = (obj["images"] as? NSNumber)?.intValue ?? -1
+                    let hrefs = (obj["hrefs"] as? [String])?.joined(separator: " ") ?? "-"
+                    let awe = obj["aweType"] as? String ?? "-"
+                    let keys = obj["keys"] as? String ?? "-"
+                    let iid = obj["itemId"] as? String ?? "-"
+                    DYLiveModel.log("DDVIDEOTAP miss cls=\(cls) img=\(imgs) awe=\(awe) id=\(iid) hrefs=\(hrefs) keys=\(keys)")
+                    let chain = obj["chain"] as? String ?? "-"
+                    let err = obj["err"] as? String ?? "-"
+                    DYLiveModel.log("DDVIDEOTAP chain=\(chain) err=\(err)")
+                    DYLiveModel.log("DDVIDEOTAP html " + String((obj["html"] as? String ?? "").prefix(400)))
                 case "video-probe":
                     let classes = (obj["classes"] as? [String]) ?? []
                     DYLiveModel.log("DDVIDEOPROBE " + classes.joined(separator: " | "))

@@ -312,6 +312,25 @@ private let ddVideoTapHookJS = #"""
 (() => {
   if (window.__ddVideoTapHook) return; window.__ddVideoTapHook = 1;
   const post = (o) => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
+    const payloadOf = root => {
+      const seen2 = new Set();
+      for (let n = root, d = 0; n && d < 12; n = n.parentElement, d++) {
+        for (const k of Object.keys(n)) {
+          if (k.startsWith('__reactProps')) {
+            const m = n[k]?.message;
+            if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+          }
+          if (!k.startsWith('__reactFiber') && !k.startsWith('__reactInternalInstance')) continue;
+          for (let f = n[k], depth = 0; f && depth < 24 && !seen2.has(f); f = f.return, depth++) {
+            seen2.add(f);
+            const m = f.memoizedProps?.message;
+            if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+          }
+        }
+        if (n.matches?.('[data-e2e="message-item"]')) break;
+      }
+      return null;
+    };
   const findID = (root) => {
     // Verified IM ShareAweme payload: message.parsedContent (aweType=800).
     // Never infer an aweme ID from a user/message ID or an arbitrary DOM attribute.
@@ -320,9 +339,14 @@ private let ddVideoTapHookJS = #"""
         const payload = message.parsedContent || JSON.parse(message.content || 'null');
         const id = payload?.itemId;
         if (typeof id !== 'string' || !/^\d{15,25}$/.test(id)) return null;
-        // 800 = 分享视频。图文的 aweType 不是 800，而且不能见 id 就认（会命中普通消息），
-        // 所以图文走下面的「链接/属性里有 /note/<id>」判定。
-        return Number(payload?.aweType) === 800 ? id : null;
+        // 800 = 分享视频；图文（笔记）分享的 aweType 是 0，payload 里带 image_count / is_slides /
+        // awemeType=68。只认「确实是作品卡」的 payload，避免把普通消息里的 id 当作品 id。
+        const awe = Number(payload?.aweType);
+        const isWork = awe === 800
+          || Number(payload?.image_count) > 0
+          || payload?.is_slides === true
+          || Number(payload?.awemeType) === 68;
+        return isWork ? id : null;
       } catch (_) { return null; }
     };
     const seen = new Set();
@@ -385,7 +409,33 @@ private let ddVideoTapHookJS = #"""
         return;
       }
       // 取不到作品 ID：交回网页自己处理，同时把卡片线索回传方便下次迭代
-      post({type: 'video-miss', html: 'shared-video-payload-unavailable', classes: String(media.className || '').slice(0, 200)});
+      let diag = {};
+      try {
+        diag.classes = String(media.className || '') + ' | ' + String(card.className || '');
+        diag.images = card.querySelectorAll ? card.querySelectorAll('img').length : -1;
+        diag.hrefs = card.querySelectorAll
+          ? [...card.querySelectorAll('[href]')].slice(0, 3).map(e => String(e.getAttribute('href') || '').slice(0, 120))
+          : [];
+        const pl = payloadOf(card);
+        diag.aweType = pl && pl.aweType != null ? String(pl.aweType) : null;
+        diag.keys = pl ? Object.keys(pl).slice(0, 24).join(',') : null;
+        diag.itemId = pl && /^\d{15,25}$/.test(String(pl.itemId || '')) ? String(pl.itemId) : null;
+        diag.html = String(card.outerHTML || '').slice(0, 500);
+        const chain = [];
+        for (let n = card, d = 0; n && d < 6 && chain.length < 14; n = n.parentElement, d++) {
+          for (const k of Object.keys(n).filter(k => k.startsWith('__react')).slice(0, 2)) {
+            for (let f = n[k], i = 0; f && i < 6 && chain.length < 14; f = f.return, i++) {
+              const p = f.memoizedProps;
+              if (!p) continue;
+              const names = Object.keys(p).slice(0, 8).join('/');
+              if (names) chain.push(d + ':' + i + ':' + names);
+              if (p.message) chain.push('MSG@' + d + ':' + i + ':' + Object.keys(p.message).slice(0, 10).join('/'));
+            }
+          }
+        }
+        diag.chain = chain.join(' ; ').slice(0, 800);
+      } catch (e) { diag.err = String(e && e.message); }
+      post(Object.assign({type: 'video-miss', html: 'shared-video-payload-unavailable'}, diag));
     } catch (e) {}
   }, true);
 })();
