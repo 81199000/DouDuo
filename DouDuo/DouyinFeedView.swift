@@ -3557,38 +3557,43 @@ struct DYClassicFeedScreen: View {
             #endif
         }
         .overlay(alignment: .top) {
-            // This is a sibling of the pager, never a child of a video page.
-            ZStack {
-                HStack {
-                    DYVideoMoreMenu(extras: AnyView(moreExtrasMenu))
-                    Spacer(minLength: 0)
-                    Button {
-                        openSearch()
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.title2)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
+            GeometryReader { header in
+                // This is a sibling of the pager, never a child of a video page.
+                ZStack {
+                    HStack {
+                        DYVideoMoreMenu(extras: AnyView(moreExtrasMenu))
+                        Spacer(minLength: 0)
+                        Button {
+                            openSearch()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                                .font(.title2)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("搜索")
+                        .accessibilityIdentifier("douyin.search")
+                        .accessibilityValue(showSearch ? "已打开" : "未打开")
+                        .opacity(showSearch && searchIsSplit ? 0 : 1)
+                        .allowsHitTesting(!(showSearch && searchIsSplit))
+                        .accessibilityHidden(showSearch && searchIsSplit)
                     }
-                    .accessibilityLabel("搜索")
-                    .accessibilityIdentifier("douyin.search")
-                    .accessibilityValue(showSearch ? "已打开" : "未打开")
-                    .opacity(showSearch && searchIsSplit ? 0 : 1)
-                    .allowsHitTesting(!(showSearch && searchIsSplit))
-                    .accessibilityHidden(showSearch && searchIsSplit)
+                    topBar
                 }
-                topBar
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
+                .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
+                // The horizontal status bar belongs to the adjacent pane.
+                .padding(.top, horizontalCommentStatus ? 8 : headerTopInset)
+                .offset(y: horizontalCommentStatus ? -header.frame(in: .global).minY : 0)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("douyin.feed.header")
+                .opacity(cleanScreen || liveRoomOpen || presentsLandscapeComments ? 0 : 1)
+                .allowsHitTesting(!cleanScreen && !liveRoomOpen && !presentsLandscapeComments)
+                .accessibilityHidden(cleanScreen || liveRoomOpen || presentsLandscapeComments)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white)
-            .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
-            .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
-            .padding(.top, headerTopInset)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("douyin.feed.header")
-            .opacity(cleanScreen || liveRoomOpen || presentsLandscapeComments ? 0 : 1)
-            .allowsHitTesting(!cleanScreen && !liveRoomOpen && !presentsLandscapeComments)
-            .accessibilityHidden(cleanScreen || liveRoomOpen || presentsLandscapeComments)
+            .ignoresSafeArea(.container, edges: horizontalCommentStatus ? .top : [])
         }
         // The video and bottom chrome reach the physical screen; add the actual
         // home-indicator inset once, inside each page, rather than twice.
