@@ -4941,51 +4941,70 @@ struct DYCommentPanel: View {
         VStack(spacing: 0) {
             if !showsCaption { commentHeading }
             ScrollViewReader { proxy in
-            ScrollView {
-                if showsCaption {
-                    captionHeader
-                    commentHeading
-                }
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if focusMiss {
-                        Text("这条评论已删除或暂不可见").font(.caption).foregroundStyle(.themeTextSecondary)
-                            .frame(maxWidth: .infinity)
-                    }
-                    ForEach(items) { c in
-                        VStack(alignment: .leading, spacing: 10) {
-                            row(c, parent: nil)
-                            if c.replies > 0 || !(replies[c.id] ?? []).isEmpty { replyBlock(c) }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if showsCaption {
+                            VStack(spacing: 0) {
+                                captionHeader
+                                commentHeading
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 8)
                         }
-                        .id(c.id)
+                        Group {
+                            if focusMiss {
+                                Text("这条评论已删除或暂不可见").font(.footnote).foregroundStyle(.themeTextSecondary)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            ForEach(items) { c in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    row(c, parent: nil)
+                                    if c.replies > 0 || !(replies[c.id] ?? []).isEmpty { replyBlock(c) }
+                                }
+                                .id(c.id)
+                            }
+                            if let error {
+                                Text(error).font(.caption).foregroundStyle(.themeTextSecondary)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            if hasMore {
+                                ProgressView().frame(maxWidth: .infinity)
+                                    .onAppear { Task { await load() } }
+                            } else if items.isEmpty {
+                                Text("还没有评论").font(.footnote).foregroundStyle(.themeTextSecondary)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.trailing, trailingInset)
+                        .padding(.bottom, 16)
                     }
-                    if let error {
-                        Text(error).font(.caption).foregroundStyle(theme.status.danger.color(for: scheme))
-                    }
-                    if hasMore {
-                        ProgressView().frame(maxWidth: .infinity)
-                            .onAppear { Task { await load() } }
-                    } else if items.isEmpty {
-                        Text("还没有评论").font(.footnote).foregroundStyle(.themeTextSecondary).frame(maxWidth: .infinity)
-                    }
+                    .scrollTargetLayout()
+                    .padding(.top, showsCaption ? 0 : 16)
                 }
-                .scrollTargetLayout()   // 评论位置记忆要知道哪条在屏幕最上面
-                .padding(.horizontal, 16)
-                .padding(.trailing, trailingInset)
-                .padding(.top, showsCaption ? 8 : 16)
-                .padding(.bottom, 16)
+                .clipped()
+                .modifier(DYScrollTopObserver(atTop: $listAtTop))
+                .modifier(DYPanelDismissGesture(isAtTop: listAtTop, allowsSwipeRight: true, onClose: onClose))
+                .accessibilityIdentifier("douyin.comments.list")
+                .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID, paused: restoringScroll))
+                .task(id: pendingRestoreID) {
+                    guard !showsCaption, let id = pendingRestoreID else { return }
+                    await restoreCommentPosition(proxy, to: id)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
+                .onChange(of: highlight) { _, h in
+                    guard !showsCaption, let h else { return }
+                    withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
+                }
             }
-            .clipped()
-            .modifier(DYScrollTopObserver(atTop: $listAtTop))
-            .modifier(DYPanelDismissGesture(isAtTop: listAtTop, allowsSwipeRight: true, onClose: onClose))
-            .accessibilityIdentifier("douyin.comments.list")
-            .modifier(DYCommentTopTracker(ids: items.map(\.id), top: $topVisibleID, paused: restoringScroll))
-            .onChange(of: pendingRestoreID) { _, id in restoreCommentPosition(proxy, to: id) }
-            .scrollDismissesKeyboard(.interactively)
-            .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
-            .onChange(of: highlight) { _, h in
-                guard let h else { return }
-                withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
-            }
+            .id(showsCaption)
+            .transition(.identity)
+            .onChange(of: showsCaption) { _, expanded in
+                guard expanded else { return }
+                restoringScroll = false
+                pendingRestoreID = nil
+                listAtTop = true
             }
             VStack(spacing: 0) {
                 if !relatedSearchInHeading && !relatedWords.isEmpty {
@@ -5016,21 +5035,23 @@ struct DYCommentPanel: View {
     /// 打开评论区：数据恢复后滚回上次看到的那条（不带动画）。
     /// LazyVStack 第一次布局还没量出远处行的高度，单次 scrollTo 可能停在半路，
     /// 所以下一帧和稍后各补一次，最后再放开「最上面那条」的跟踪。
-    private func restoreCommentPosition(_ proxy: ScrollViewProxy, to id: String?) {
-        guard let id, items.contains(where: { $0.id == id }) else { restoringScroll = false; return }
-        var tx = Transaction(); tx.disablesAnimations = true
-        DispatchQueue.main.async {
-            withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
-                    restoringScroll = false
-                    pendingRestoreID = nil
-                    DYLiveModel.log("DDCOMMENTMEM scrolled aweme=\(aweme.id.suffix(6)) to=\(id.suffix(6)) top_now=\(topVisibleID?.suffix(6) ?? "-")")
-                }
+    private func restoreCommentPosition(_ proxy: ScrollViewProxy, to id: String) async {
+        defer {
+            if !Task.isCancelled {
+                restoringScroll = false
+                pendingRestoreID = nil
             }
         }
+        guard items.contains(where: { $0.id == id }) else { return }
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        await Task.yield()
+        for interval in [80, 120, 0] {
+            guard !Task.isCancelled else { return }
+            withTransaction(tx) { proxy.scrollTo(id, anchor: .top) }
+            if interval > 0 { try? await Task.sleep(for: .milliseconds(interval)) }
+        }
+        DYLiveModel.log("DDCOMMENTMEM scrolled aweme=\(aweme.id.suffix(6)) to=\(id.suffix(6)) top_now=\(topVisibleID?.suffix(6) ?? "-")")
     }
 
     private func searchRelated(_ word: String) {
