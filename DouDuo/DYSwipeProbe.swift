@@ -82,3 +82,20 @@ enum DDAudioSessionGate {
     /// 被打断 / 切后台后要重新激活
     static func invalidate() { active = false }
 }
+
+
+import MachO
+/// 内存/播放器数打点：判断「同时暖 N 个播放器」到底吃多少内存
+enum DYMemoryProbe {
+    static var footprintMB: Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<Int32>.size)
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard r == KERN_SUCCESS else { return 0 }
+        return Double(info.phys_footprint) / 1024 / 1024
+    }
+}

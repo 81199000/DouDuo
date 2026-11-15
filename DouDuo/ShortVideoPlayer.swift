@@ -370,6 +370,9 @@ struct PlayerPage: View {
     @State private var nextPrimedAt: Double = 0
     @State private var nextOpacity: Double = 0
     @State private var stalledTicks = 0
+    @State private var headCompleted = false
+    /// 这条是不是从「预存的第一段」起播的（只有长视频会这样）
+    private var hadStagedHead: Bool { headEndSeconds != nil && continuationURL != nil }
     @State private var telemetry = DYPlaybackTelemetry()
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
@@ -1307,6 +1310,11 @@ struct PlayerPage: View {
                 let pos = seamAudio.currentMediaTime ?? t.seconds
                 if !seeking { current = pos }
                 if !firstFrame, t.seconds > 0.02 { firstFrame = true }
+                // 长视频：播起来 10 秒后把剩下的几段并发补齐（老板设计，避免一开始就抢带宽）
+                if isActive, !headCompleted, t.seconds > 10, hadStagedHead {
+                    headCompleted = true
+                    Task { await DYVideoCache.shared.completeLong(id: id) }
+                }
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)

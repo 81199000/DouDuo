@@ -1058,8 +1058,14 @@ private struct DYPlayerLayerView: UIViewRepresentable {
 /// 封面同时预取。窗口外的立即释放（硬解码会话有限，不能无限开）。
 @MainActor
 final class DYPreloader {
-    /// 提前暖 3 条（老板定：Duo 性能够，常驻 3 个播放器等切换）；只有过热/极热才降档省电
-    static let ahead = 3
+    /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
+    /// 只有过热/极热才降档省电
+    static var ahead: Int {
+        let n = DYVideoCache.limit
+        return min(max(n, 3), 10)
+    }
+    /// 只有最近的几条才做「预解码首帧 + preroll」，更远的只备播放器，省内存和 CPU
+    static let prerollAhead = 3
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -1072,7 +1078,7 @@ final class DYPreloader {
     func update(_ items: [DYAweme], current index: Int) {
         guard !disabled, items.indices.contains(index) else { return }
         let th = ProcessInfo.processInfo.thermalState
-        let ahead = th == .critical ? 1 : (th == .serious ? 2 : Self.ahead)
+        let ahead = th == .critical ? 1 : (th == .serious ? min(2, Self.ahead) : Self.ahead)
         let lo = index + 1, hi = min(items.count - 1, index + ahead)
         let window = lo <= hi ? Array(items[lo...hi]) : []
         let ids = Set(window.map(\.id))
@@ -1095,10 +1101,12 @@ final class DYPreloader {
             p.automaticallyWaitsToMinimizeStalling = true
             players[a.id] = p
             DDAudioPreloadPool.shared.prewarm(id: a.id, asset: asset, item: item)
-            // ready 后 preroll：把开头的数据和首帧解码好
-            obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
-                guard it.status == .readyToPlay else { return }
-                DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
+            // ready 后 preroll：把开头的数据和首帧解码好（只给最近的几条做）
+            if (window.firstIndex(where: { $0.id == a.id }) ?? 0) < Self.prerollAhead {
+                obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
+                    guard it.status == .readyToPlay else { return }
+                    DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
+                }
             }
             if let c = a.cover.flatMap(URL.init(string:)) { Task { _ = await ImageCache.shared.load(c) } }
         }
@@ -1576,6 +1584,9 @@ struct DYUpstreamFeedScreen: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
+        }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
+            DYLiveModel.log(String(format: "DDMEM 常驻=%.0fMB 缓存条数=%d 暖机=%d", DYMemoryProbe.footprintMB, DYVideoCache.limit, DYPreloader.ahead))
         }
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }
@@ -3710,7 +3721,11 @@ struct DYUpstreamVideoPage: View {
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
-                let url = DYVideoCache.localURL(item.id) ?? remote
+                // 长视频只预存了第一段：直接从这半截起播（moov 在文件头，可直接播），
+                // 播到段尾由播放器无缝接到在线流；播起来 10 秒后后台把剩下的补齐
+                let stagedHead = DYVideoCache.headFile(item.id)
+                let headSeam = stagedHead != nil ? DYVideoCache.headPlayableSeconds(item.id) : nil
+                let url = stagedHead ?? DYVideoCache.localURL(item.id) ?? remote
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
@@ -3729,8 +3744,8 @@ struct DYUpstreamVideoPage: View {
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
-                                    headEndSeconds: nil,
-                                    continuationURL: nil,
+                                    headEndSeconds: headSeam,
+                                    continuationURL: stagedHead != nil ? remote : nil,
                                     boost: boost)
             } else {
                 TabView {
@@ -4212,7 +4227,11 @@ struct DYClassicVideoPage: View {
         ZStack(alignment: .bottomLeading) {
             if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
-                let url = DYVideoCache.localURL(item.id) ?? remote
+                // 长视频只预存了第一段：直接从这半截起播（moov 在文件头，可直接播），
+                // 播到段尾由播放器无缝接到在线流；播起来 10 秒后后台把剩下的补齐
+                let stagedHead = DYVideoCache.headFile(item.id)
+                let headSeam = stagedHead != nil ? DYVideoCache.headPlayableSeconds(item.id) : nil
+                let url = stagedHead ?? DYVideoCache.localURL(item.id) ?? remote
                 // 复用播放器：左右切换作者/关注、双击点赞、分区长按、竖滑切视频、底部拖动进度及 VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: mediaBottomInset,
@@ -4232,8 +4251,8 @@ struct DYClassicVideoPage: View {
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
                                     posterURL: item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
-                                    headEndSeconds: nil,
-                                    continuationURL: nil,
+                                    headEndSeconds: headSeam,
+                                    continuationURL: stagedHead != nil ? remote : nil,
                                     onSwipeLeft: onChannelDrag == nil && !cleanScreen ? { (onNavigateLeft ?? onAuthor)() } : nil,
                                     onSwipeRight: onChannelDrag == nil && !cleanScreen ? { onShowFollowing?() } : nil,
                                     onContextMenu: { if !cleanScreen { showOptions = true } },
