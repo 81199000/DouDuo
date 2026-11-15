@@ -141,8 +141,6 @@ enum WuWeiDesign {
 // Only feed pages publish actions to the shared safe-area rail.
 extension EnvironmentValues {
     @Entry var dyRootRailTab: DYTab? = nil
-    /// 评论面板右侧已经让开系统竖栏（外层按遮挡区缩窄了宽度），面板内不必再给关闭键额外留 88pt。
-    @Entry var dyCommentTrailingCleared: Bool = false
     /// 系统铰链为 closed（合屏）。由根视图 DYHingeStateRoot 统一下发。
     @Entry var dyHingeClosed: Bool = false
 }

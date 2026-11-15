@@ -52,6 +52,12 @@ enum DYDuoMetrics {
             .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
     }
 
+    static func bottomSafeAreaExtension(_ geo: GeometryProxy) -> CGFloat {
+        let inset = geo.safeAreaInsets.bottom
+        let physicalBottom = windowBottomInset
+        return inset <= physicalBottom + 1 ? min(inset, physicalBottom) : 0
+    }
+
     static func mediaBottomPadding(_ containerInset: CGFloat) -> CGFloat {
         // The progress line sits 8 pt above its view's bottom. Lift the info
         // and progress together, retaining their existing music/line spacing.
@@ -407,9 +413,9 @@ struct DYPanelDismissGesture: ViewModifier {
     }
 }
 
-/// Keep a wide video visible above manually opened comments in the current window.
-struct DYLandscapeCommentPlacement {
-    let videoFrame: CGRect
+/// Compact descriptions use the same viewport as the in-place comment pane.
+struct DYInlineCommentPlacement {
+    let videoFrame: CGRect?
     let panelHeight: CGFloat
     let panelTop: CGFloat
     let panelWidth: CGFloat
@@ -420,17 +426,27 @@ struct DYLandscapeCommentPlacement {
         return aweme.videoAspect.isFinite && aweme.videoAspect > 1
     }
 
-    @MainActor init?(_ geo: GeometryProxy, aweme: DYAweme?, enabled: Bool) {
-        guard Self.applies(to: aweme, enabled: enabled),
-              !DYDuoMetrics.foldIsActive(geo), let aweme else { return nil }
+    @MainActor init?(_ geo: GeometryProxy, aweme: DYAweme?, enabled: Bool, showsCaption: Bool) {
+        guard !DYDuoMetrics.foldIsActive(geo), let aweme else { return nil }
+        let liftsVideo = Self.applies(to: aweme, enabled: enabled)
+        let compactCaption = showsCaption && (enabled || geo.size.width < DYDuoMetrics.legacyWideMin)
+        guard liftsVideo || compactCaption else { return nil }
 
         let bounds = geo.frame(in: .global)
-        let bottom = bounds.maxY + min(geo.safeAreaInsets.bottom, DYDuoMetrics.windowBottomInset)
-        let available = CGSize(width: bounds.width, height: bottom * 0.38)
-        let fitted = DYVideoFit.contentSize(container: available, videoAspect: aweme.videoAspect, fillWidth: false)
-        videoFrame = CGRect(x: bounds.minX, y: 0, width: bounds.width, height: fitted.height)
-        panelTop = videoFrame.maxY - bounds.minY
-        panelHeight = max(0, bottom - videoFrame.maxY)
+        let bottom = bounds.maxY + DYDuoMetrics.bottomSafeAreaExtension(geo)
+        let split: CGFloat
+        if liftsVideo {
+            let available = CGSize(width: bounds.width, height: max(0, bottom) * 0.38)
+            let fitted = DYVideoFit.contentSize(container: available, videoAspect: aweme.videoAspect, fillWidth: false)
+            let frame = CGRect(x: bounds.minX, y: 0, width: bounds.width, height: fitted.height)
+            videoFrame = frame
+            split = frame.maxY
+        } else {
+            videoFrame = nil
+            split = bounds.minY + (bottom - bounds.minY) * 0.38
+        }
+        panelTop = split - bounds.minY
+        panelHeight = max(0, bottom - split)
         panelWidth = bounds.width
     }
 }
@@ -438,10 +454,11 @@ struct DYLandscapeCommentPlacement {
 extension EnvironmentValues {
     @Entry var dyCommentVideoFrame: CGRect? = nil
     @Entry var dyStacksLandscapeComments = false
+    @Entry var dyDuoLandscapeWindow = false
 }
 
-struct DYLandscapeCommentOverlay: ViewModifier {
-    let placement: DYLandscapeCommentPlacement?
+struct DYInlineCommentOverlay: ViewModifier {
+    let placement: DYInlineCommentPlacement?
     let bridge: DouyinBridge
     let aweme: DYAweme?
     var focus: DYCommentFocus? = nil
@@ -480,6 +497,39 @@ extension View {
     func dyBottomSheet<Panel: View>(isPresented: Binding<Bool>, kind: DYBottomSheetKind,
                                    @ViewBuilder content: @escaping () -> Panel) -> some View {
         modifier(DYBottomSheetPresenter(isPresented: isPresented, kind: kind, panel: content))
+    }
+}
+
+/// Keep each appearance's existing compact comment surface.
+struct DYCompactCommentsPresentation<Panel: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    let usesEdgeSheet: Bool
+    @ViewBuilder var panel: () -> Panel
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if usesEdgeSheet {
+            content.dyBottomSheet(isPresented: $isPresented, kind: .comments, content: panel)
+        } else {
+            content.sheet(isPresented: $isPresented) {
+                panel().presentationDetents([.fraction(0.62)])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+    }
+}
+
+struct DYCommentBarPolicy: ViewModifier {
+    let hidesStatus: Bool
+    let usesHorizontalStatus: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 27.1, *) {
+            content
+                .toolbarVerticalBehavior(usesHorizontalStatus || hidesStatus ? .disabled : .automatic)
+                .toolbarVisibility(hidesStatus ? .hidden : .visible, for: .statusBar)
+        } else {
+            content
+        }
     }
 }
 
@@ -598,9 +648,7 @@ struct DYCommentPaneMetrics {
             // The hinge panes are measured inside the navigation safe area.
             // Extend the comment surface to the physical edges, just like the
             // video, instead of leaving a black border around a smaller card.
-            let bottom = DYDuoMetrics.windowBottomInset
-            let keyboardVisible = geo.safeAreaInsets.bottom > bottom + 1
-            let bottomExtension = keyboardVisible ? 0 : min(geo.safeAreaInsets.bottom, bottom)
+            let bottomExtension = DYDuoMetrics.bottomSafeAreaExtension(geo)
             if hinge.book {
                 let split = (hinge.video.maxX + hinge.panel.minX) / 2
                 paneOrigin = CGPoint(x: split, y: -geo.safeAreaInsets.top)
@@ -636,11 +684,7 @@ struct DYCommentPaneMetrics {
         trailingInset = geo.safeAreaInsets.trailing
         // Keyboard insets must not be added back to the panel height. Keep the
         // input above the keyboard while the background reaches the screen edge.
-        let containerBottom = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
-        let keyboardIsPresented = geo.safeAreaInsets.bottom > containerBottom + 1
-        let bottom = keyboardIsPresented ? 0 : min(geo.safeAreaInsets.bottom, containerBottom)
+        let bottom = DYDuoMetrics.bottomSafeAreaExtension(geo)
         paneSize = CGSize(width: sideBySide ? paneW + trailingInset : w,
                           height: tableFold ? paneH : h + geo.safeAreaInsets.top + bottom)
         paneOrigin = CGPoint(x: sideBySide ? videoSize.width : 0,
@@ -660,6 +704,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     @Environment(\.dySearchPresented) private var searchPresented
     @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
+    @Environment(\.dyDuoLandscapeWindow) private var duoLandscapeWindow
+    @Environment(\.dyHingeClosed) private var hingeClosed
     @ViewBuilder var video: (EdgeInsets) -> Video
 
     private var usesClassicLayout: Bool {
@@ -667,13 +713,13 @@ struct DYCommentPlayerLayout<Video: View>: View {
         return false
     }
 
-    private var commentItem: DYAweme? { captionItem ?? aweme }
+    private var commentItem: DYAweme? { aweme ?? captionItem }
 
     var body: some View {
         Group {
             if usesClassicLayout { classicBody } else { upstreamBody }
         }
-        .environment(\.dyExpandedCaptionID, captionItem?.id)
+        .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : commentItem?.id)
         .environment(\.dyExpandVideoCaption, { item in
             withAnimation(.snappy) {
                 captionItem = item
@@ -686,112 +732,73 @@ struct DYCommentPlayerLayout<Video: View>: View {
         }
     }
 
-    /// 默认 / 简洁 / 极简：与推荐页同一套评论几何——横屏（宽 ≥700）评论从右侧滑出、视频缩窄；
-    /// 半折叠按折痕常驻分屏（书本左右、桌面上下）；窄屏才走底部半屏 sheet。
+    private var horizontalCommentStatus: Bool {
+        duoLandscapeWindow && showComments && !searchPresented && commentItem != nil
+    }
+
+    private var presentsLandscapeComments: Bool {
+        showComments && !searchPresented && (focus == nil || openedCommentsManually || captionItem != nil)
+            && DYInlineCommentPlacement.applies(to: commentItem, enabled: stacksLandscapeComments)
+    }
+
     private var upstreamBody: some View {
+        playerLayout
+    }
+
+    private var classicBody: some View {
+        NavigationStack { playerLayout }
+    }
+
+    private var playerLayout: some View {
         GeometryReader { geo in
-            let placement = landscapeComments(in: geo)
+            let placement = showComments && !searchPresented
+                ? DYInlineCommentPlacement(geo, aweme: commentItem, enabled: presentsLandscapeComments,
+                                          showsCaption: captionItem != nil)
+                : nil
             let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented && placement == nil,
                                               allowsResident: !searchPresented)
-            let paneWidth = layout.sideBySide ? max(0, layout.paneSize.width - layout.trailingInset) : layout.paneSize.width
             ZStack(alignment: .topLeading) {
                 video(geo.safeAreaInsets)
                     .environment(\.dyStandaloneBack, onBack)
+                    .environment(\.duoInlineVideoNavigation, usesClassicLayout && layout.showsPane)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
-                                   onClose: layout.resident && captionItem == nil ? nil : { withAnimation(.snappy) { showComments = false } },
-                                   focus: focus)
+                                   onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
+                                   focus: focus, fillsPane: true, trailingInset: layout.trailingInset,
+                                   horizontalStatus: horizontalCommentStatus && !layout.resident)
                         .id(aweme.id)
-                        .frame(width: paneWidth, height: layout.paneSize.height)
+                        .frame(width: layout.paneSize.width, height: layout.paneSize.height)
+                        .clipped()
                         .dyDeskLight(layout.resident && !layout.sideBySide)
-                        .environment(\.dyCommentTrailingCleared, layout.sideBySide && layout.trailingInset > 0)
                         .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
                         .accessibilityIdentifier("douyin.list.commentPane")
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .background(Color.black.ignoresSafeArea())
+            .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
+                if #available(iOS 27.1, *), usesClassicLayout {
+                    DYStandaloneVideoActions(actions: showComments || layout.showsPane ? nil : actions, onBack: onBack)
+                }
+            }
+            .modifier(DYStandaloneBarPolicy(classic: usesClassicLayout))
             .animation(searchPresented ? nil : .snappy, value: showComments)
             .animation(searchPresented ? nil : .snappy, value: layout.resident)
-            .modifier(DYLandscapeCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,
-                                                      focus: focus, onClose: { showComments = false }))
-            .sheet(isPresented: Binding(
+            .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,
+                                             focus: focus, onClose: { showComments = false }))
+            .modifier(DYCompactCommentsPresentation(isPresented: Binding(
                 get: { showComments && !searchPresented && placement == nil && !layout.sideBySide && !layout.resident && commentItem != nil },
                 set: { if placement == nil && !layout.sideBySide && !layout.resident { showComments = $0 } }
-            )) {
+            ), usesEdgeSheet: usesClassicLayout) {
                 if let aweme = commentItem {
-                    DYCommentPanel(bridge: bridge, aweme: aweme,
-                                   onClose: { showComments = false }, focus: focus)
-                        // 与推荐页一致：竖屏锁死半屏，上滑不撑满
-                        .presentationDetents([.fraction(0.62)])
-                        .presentationDragIndicator(.visible)
+                    DYCommentSheet(bridge: bridge, aweme: aweme, onClose: { showComments = false }, focus: focus)
                 }
-            }
+            })
         }
-        .ignoresSafeArea(.container, edges: presentsLandscapeComments ? .top : [])
-    }
-
-    private var presentsLandscapeComments: Bool {
-        showComments && !searchPresented && (focus == nil || openedCommentsManually || captionItem != nil)
-            && DYLandscapeCommentPlacement.applies(to: commentItem, enabled: stacksLandscapeComments)
-    }
-
-    private func landscapeComments(in geo: GeometryProxy) -> DYLandscapeCommentPlacement? {
-        guard presentsLandscapeComments else { return nil }
-        return DYLandscapeCommentPlacement(geo, aweme: commentItem, enabled: stacksLandscapeComments)
-    }
-
-    private var classicBody: some View {
-        NavigationStack {
-            GeometryReader { geo in
-                let placement = landscapeComments(in: geo)
-                let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented && placement == nil,
-                                                  allowsResident: !searchPresented)
-                ZStack(alignment: .topLeading) {
-                    video(geo.safeAreaInsets)
-                        .environment(\.dyStandaloneBack, onBack)
-                        .environment(\.duoInlineVideoNavigation, layout.showsPane)
-                        .frame(width: layout.videoSize.width, height: layout.videoSize.height)
-                    if layout.showsPane, let aweme = commentItem {
-                        DYCommentPanel(bridge: bridge, aweme: aweme,
-                                       onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
-                                       focus: focus, fillsPane: true,
-                                       trailingInset: layout.trailingInset)
-                            .id(aweme.id)
-                            .frame(width: layout.paneSize.width, height: layout.paneSize.height)
-                            .clipped()
-                            .dyDeskLight(layout.resident && !layout.sideBySide)
-                            .overlay(alignment: .leading) {
-                                if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
-                            }
-                            .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-                .background(Color.black.ignoresSafeArea())
-                .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
-                    if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
-                        DYStandaloneVideoActions(actions: showComments || layout.showsPane ? nil : actions, onBack: onBack)
-                    }
-                }
-                .modifier(DYStandaloneBarPolicy(classic: chromeModeRaw == DDChromeMode.duoClassic.rawValue))
-                .animation(searchPresented ? nil : .snappy, value: showComments)
-                .animation(searchPresented ? nil : .snappy, value: layout.resident)
-                .modifier(DYLandscapeCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,
-                                                          focus: focus, onClose: { showComments = false }))
-                .dyBottomSheet(isPresented: Binding(
-                    get: { showComments && !searchPresented && placement == nil && !layout.sideBySide && !layout.resident && commentItem != nil },
-                    set: { if placement == nil && !layout.sideBySide && !layout.resident { showComments = $0 } }
-                ), kind: .comments) {
-                    if let aweme = commentItem {
-                        DYCommentSheet(bridge: bridge, aweme: aweme,
-                                       onClose: { showComments = false }, focus: focus)
-                    }
-                }
-            }
-            .ignoresSafeArea(.container, edges: presentsLandscapeComments ? .top : [])
-        }
+        .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal] : [])
+        .modifier(DYCommentBarPolicy(hidesStatus: hingeClosed && presentsLandscapeComments,
+                                     usesHorizontalStatus: horizontalCommentStatus))
     }
 }
 
@@ -864,6 +871,8 @@ struct DYHingeStateRoot: ViewModifier {
                 .environment(\.dyHingeClosed, closed)
                 .environment(\.dyStacksLandscapeComments,
                              DYDuoMetrics.isDuoHardware && (closed || (fullyOpen && portraitWindow)))
+                .environment(\.dyDuoLandscapeWindow,
+                             DYDuoMetrics.isDuoHardware && fullyOpen && !portraitWindow)
                 .onGeometryChange(for: Bool.self) { geo in
                     // Use the app window so a portrait Split View pane qualifies too.
                     let insets = geo.safeAreaInsets
