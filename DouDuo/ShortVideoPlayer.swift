@@ -519,6 +519,7 @@ struct PlayerPage: View {
             pauseForBackground()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            DDAudioSessionGate.invalidate()
             pictureInPicture.didEnterBackground()
             pauseForBackground()
         }
@@ -583,16 +584,23 @@ struct PlayerPage: View {
                 return
             }
             if active {
-                try? AVAudioSession.sharedInstance().setCategory(.playback)
-                try? AVAudioSession.sharedInstance().setActive(true)
+                DYSwipeProbe.active(id)
+                // 先开播：已缓冲够就跳过 AVPlayer 的「评估缓冲速率」等待，直接按目标速率走（抖音同款「零首帧」的关键）
+                DDAudioSessionGate.ensureActive()
+                isPlaying = true
+                if DYPlaybackTelemetry.bufferedAhead(p) >= 1.5, p.currentItem?.status == .readyToPlay,
+                   seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
+                    p.isMuted = seamAudio.mode == .noAudio || muted
+                    p.playImmediately(atRate: playRate)
+                }
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                DYSwipeProbe.rate()
+                let shown = firstFrame
+                telemetry.begin(p, id: id, duration: knownDuration)
+                DYLiveModel.log("DDFRAME \(id) shown=\(shown)")
                 #if DEBUG
                 logSwipeStart(p)
                 #endif
-                telemetry.begin(p, id: id, duration: knownDuration)
-                // 划入那一刻画面层是否已有第一帧（false = 用户会看到封面/黑屏过渡）
-                DYLiveModel.log("DDFRAME \(id) shown=\(firstFrame)")
-                isPlaying = true
-                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
                 watchdog(p)
             } else {
                 telemetry.end()
