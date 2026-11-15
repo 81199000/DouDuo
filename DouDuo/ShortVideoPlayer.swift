@@ -380,6 +380,10 @@ struct PlayerPage: View {
     @State private var playbackID = UUID()
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
+    @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
+
+    private var showsVideoAboveComments: Bool { isActive && commentVideoFrame != nil }
+    private var fillsVideoPlane: Bool { fillWidth && !showsVideoAboveComments }
     /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
     private var playRate: Float { rateBoost ? 2 : Float(effectiveRate) }
 
@@ -396,21 +400,30 @@ struct PlayerPage: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
-            GeometryReader { outer in
-                videoPlane
-                .mask {
-                GeometryReader { geometry in
-                    let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillWidth)
-                    Rectangle()
-                        .frame(width: fitted.width, height: fitted.height)
-                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            GeometryReader { geometry in
+                let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect,
+                                                   fillWidth: fillsVideoPlane)
+                let placement = showsVideoAboveComments
+                    ? DYVideoFit.commentPlacement(viewport: geometry.frame(in: .global), fitted: fitted, target: commentVideoFrame)
+                    : (scale: CGFloat(1), offset: CGSize.zero)
+                ZStack {
+                    videoPlane
+                        .mask {
+                            Rectangle()
+                                .frame(width: fitted.width, height: fitted.height)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                        .scaleEffect(showsVideoAboveComments ? 1 : videoScale)
+                        .modifier(DYClosedPortraitAlignment(viewport: geometry.size,
+                                                           videoAspect: videoAspect, fills: fillsVideoPlane))
+                    if !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
+                        Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
+                    }
                 }
-                }
-                .scaleEffect(videoScale)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .scaleEffect(placement.scale)
+                .offset(x: placement.offset.width, y: placement.offset.height)
                 .allowsHitTesting(false)
-                    // 仅系统铰链 closed 时左贴边；展开、半折、分屏均保持原来的居中。
-                    .modifier(DYClosedPortraitAlignment(viewport: outer.size,
-                                                       videoAspect: videoAspect, fills: fillWidth))
             }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
@@ -436,10 +449,6 @@ struct PlayerPage: View {
             }
             #endif
             if seeking && !cleanScreen { seekHUD }
-            if !cleanScreen && isActive && !isPlaying && (player != nil || vlc != nil) && !seeking {
-                Image(systemName: "play.fill").font(.system(size: 52 * ui)).foregroundStyle(.white.opacity(0.75))
-                    .allowsHitTesting(false)
-            }
             // 常驻倍速角标：只要不是 1 倍就一直显示；长按时再提示「下滑锁定 / 上滑取消」
             if !cleanScreen && (effectiveRate != 1 || rateBoost) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -618,12 +627,12 @@ struct PlayerPage: View {
         ZStack {
             if let vlc {
                 // 画面铺到屏幕边缘（状态栏/底部安全区也盖住）：跟抖音原生一样，不留上下黑边
-                VLCPlayerSurface(controller: vlc, fillWidth: fillWidth).ignoresSafeArea()
+                VLCPlayerSurface(controller: vlc, fillWidth: fillsVideoPlane).ignoresSafeArea()
             } else if let player {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
                 ZStack {
-                    VideoSurface(player: player, fillWidth: fillWidth, onReady: { if !firstFrame { firstFrame = true }; DYReadiness.mark(id) },
+                    VideoSurface(player: player, fillWidth: fillsVideoPlane, onReady: { if !firstFrame { firstFrame = true }; DYReadiness.mark(id) },
                                  pictureInPicture: pictureInPicture,
                                  pictureInPictureEnabled: cleanScreen && isActive,
                                  onPictureInPictureClose: {
@@ -637,7 +646,7 @@ struct PlayerPage: View {
                     // 头部缓存接在线流：新播放器先叠在上面亮相（已缓冲、时间点对齐），再撤掉旧的，
                     // 避免换 AVPlayerLayer 的 player 时断帧
                     if let np = nextPlayer {
-                        VideoSurface(player: np, fillWidth: fillWidth)
+                        VideoSurface(player: np, fillWidth: fillsVideoPlane)
                             .ignoresSafeArea()
                             .opacity(nextOpacity)
                             .allowsHitTesting(false)
@@ -648,7 +657,7 @@ struct PlayerPage: View {
             }
             if vlc == nil, let hd = hdPlayer {
                 // 0.001 而不是 0：完全透明的层可能不出画面，换上来时会黑一下
-                VideoSurface(player: hd, fillWidth: fillWidth).ignoresSafeArea()
+                VideoSurface(player: hd, fillWidth: fillsVideoPlane).ignoresSafeArea()
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
             // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面（老板嫌「开头跳一下预览图」）

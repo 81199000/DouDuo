@@ -4,6 +4,27 @@ import Testing
 
 @Suite("视频铺满宽度")
 struct DYVideoFitTests {
+    @Test(arguments: [16.0 / 9, 4.0 / 3, 2.39])
+    func commentPlacementFitsAndAlignsVideoAbovePanel(_ aspect: Double) {
+        let viewport = CGRect(x: 6, y: 12, width: 440, height: 720)
+        let target = CGRect(x: 16, y: 60, width: 420, height: 220)
+        let fitted = DYVideoFit.contentSize(container: viewport.size, videoAspect: aspect, fillWidth: false)
+        let placement = DYVideoFit.commentPlacement(viewport: viewport, fitted: fitted, target: target)
+        let width = fitted.width * placement.scale
+        let height = fitted.height * placement.scale
+        let center = CGPoint(x: viewport.midX + placement.offset.width, y: viewport.midY + placement.offset.height)
+
+        #expect(abs(width / height - aspect) < 0.001)
+        #expect(width <= target.width + 0.001)
+        #expect(abs(center.y - height / 2 - target.minY) < 0.001)
+        #expect(center.y + height / 2 <= target.maxY + 0.001)
+        #expect(abs(center.x - target.midX) < 0.001)
+
+        let restored = DYVideoFit.commentPlacement(viewport: viewport, fitted: fitted, target: nil)
+        #expect(restored.scale == 1)
+        #expect(restored.offset == .zero)
+    }
+
     @Test(arguments: [
         PinchCase(magnitude: 0.80, committed: false),
         PinchCase(magnitude: 0.93, committed: false),
