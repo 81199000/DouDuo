@@ -319,7 +319,10 @@ private let ddVideoTapHookJS = #"""
       try {
         const payload = message.parsedContent || JSON.parse(message.content || 'null');
         const id = payload?.itemId;
-        return Number(payload?.aweType) === 800 && typeof id === 'string' && /^\d{15,25}$/.test(id) ? id : null;
+        if (typeof id !== 'string' || !/^\d{15,25}$/.test(id)) return null;
+        // 800 = 分享视频。图文的 aweType 不是 800，而且不能见 id 就认（会命中普通消息），
+        // 所以图文走下面的「链接/属性里有 /note/<id>」判定。
+        return Number(payload?.aweType) === 800 ? id : null;
       } catch (_) { return null; }
     };
     const seen = new Set();
@@ -341,6 +344,20 @@ private let ddVideoTapHookJS = #"""
     }
     return null;
   };
+    // 图文分享（抖音的「笔记」）：卡片里带 /note/<作品id> 或 /video/<作品id> 的链接/属性
+    const idFromCard = card => {
+      const attr = (el, names) => { for (const n of names) { const v = el.getAttribute?.(n); if (v && /^\d{15,25}$/.test(v)) return v; } return null; };
+      const anchors = card.querySelectorAll ? [...card.querySelectorAll('[href],[data-aweme-id],[data-item-id],[data-id]')] : [];
+      for (const a of anchors) {
+        const href = a.getAttribute('href') || '';
+        const m = /\/(?:note|video|share\/(?:note|video))\/(\d{15,25})/.exec(href);
+        if (m) return m[1];
+        const direct = attr(a, ['data-aweme-id', 'data-item-id', 'data-id']);
+        if (direct) return direct;
+      }
+      const self = attr(card, ['data-aweme-id', 'data-item-id', 'data-id']);
+      return self || null;
+    };
   document.addEventListener('click', (ev) => {
     try {
       if (!/\/chat/.test(location.pathname)) return;
@@ -348,23 +365,27 @@ private let ddVideoTapHookJS = #"""
       const pane = t.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
       if (!pane) return;
       // 实测类名：分享视频卡 = MessageItemShareAweme* / BulletBulletVideo*
-      const media = t.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"]');
-      if (!media) return;
+      let media = t.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"],[class*="ShareImage"],[class*="BulletBulletImage"],[class*="imageCard"],[class*="ImageCard"]');
+      // 类名没覆盖到的分享卡：只要点在一条消息里，也照样试着从消息 payload 取作品 ID（取不到就交回网页）
+      if (!media) {
+        media = t.closest('[data-e2e="message-item"], [class*="MessageItem"]');
+        if (!media) return;
+      }
       // 严格向上找第一个「消息项」祖先（closest 会命中自身，不能用）
       let card = null;
       for (let n = media.parentElement; n && n !== pane; n = n.parentElement) {
         if (String(n.className || '').includes('MessageItem')) { card = n; break; }
       }
       if (!card) card = media;
-      const id = findID(card);
+      const id = findID(card) || idFromCard(card);
       if (id) {
         ev.preventDefault(); ev.stopPropagation();
         console.log('DDVIDEOTAP jump ' + id);
         post({type: 'video', id: id});
         return;
       }
-      // Leave unsupported cards to the official web UI; don't guess an ID.
-      post({type: 'video-miss', html: 'shared-video-payload-unavailable'});
+      // 取不到作品 ID：交回网页自己处理，同时把卡片线索回传方便下次迭代
+      post({type: 'video-miss', html: 'shared-video-payload-unavailable', classes: String(media.className || '').slice(0, 200)});
     } catch (e) {}
   }, true);
 })();

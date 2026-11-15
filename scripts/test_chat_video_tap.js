@@ -29,11 +29,11 @@ test('do not cross into another message row',()=>{
  const inner=element({__reactProps_x:{message:{parsedContent:{aweType:7,itemId:samples[1].itemId}}}},outer);
  assert.strictEqual(ctx.resolve(inner),null);
 });
-function clickThroughHook(payload, pathname='/chat') {
+function clickThroughHook(payload, pathname='/chat', cardProps={}) {
   let listener; const sent=[]; const ev={prevented:false,stopped:false,
     preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}};
   const pane=element({className:'componentsRightPanelwrapper'});
-  const card=element({className:'MessageItemShareAwemecontainer',__reactFiber_test:{memoizedProps:{},return:{memoizedProps:{message:{parsedContent:payload}}}}},pane);
+  const card=element(Object.assign({className:'MessageItemShareAwemecontainer',__reactFiber_test:{memoizedProps:{},return:{memoizedProps:{message:{parsedContent:payload}}}}},cardProps),pane);
   const play=element({className:'MessageItemShareAwemeplayIcon'},card);
   play.closest=selector=>selector.includes('componentsRightPanel')?pane:play;
   ev.target=play;
@@ -47,6 +47,20 @@ test('real play-icon click posts exact video ID and intercepts web playback',()=
 test('unknown message leaves official click alone',()=>{
  const r=clickThroughHook({aweType:7,itemId:samples[0].itemId});
  assert(!r.ev.prevented&&!r.ev.stopped);assert.strictEqual(r.sent[0].type,'video-miss');
+});
+test('gallery (note) share opens the post instead of leaving the web toast',()=>{
+  // 图文分享：payload 的 aweType 不是 800，靠卡片里的 /note/<id> 链接认出来
+  const noteId='7501234567890123456';
+  const anchor={getAttribute(n){return n==='href'?'https://www.douyin.com/note/'+noteId:null;}};
+  const r=clickThroughHook({aweType:68,itemId:noteId},'/chat',{querySelectorAll:sel=>sel.indexOf('[href]')>=0?[anchor]:[]});
+  assert.strictEqual(r.sent[0].type,'video');
+  assert.strictEqual(r.sent[0].id,noteId);
+  assert(r.ev.prevented&&r.ev.stopped);
+});
+test('gallery share without any post link still leaves the web alone',()=>{
+  const noteId='7501234567890123456';
+  const r=clickThroughHook({aweType:68,itemId:noteId},'/chat',{querySelectorAll:()=>[]});
+  assert(!r.ev.prevented);assert.strictEqual(r.sent[0].type,'video-miss');
 });
 test('non-chat routes are never intercepted',()=>{
  const r=clickThroughHook(samples[0],'/video/123');assert.strictEqual(r.sent.length,0);assert(!r.ev.prevented);
