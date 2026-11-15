@@ -191,7 +191,9 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
         if let t = target {
             let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
-            animationDuration = 0.22 + 0.10 * Double(min(remain, 1))
+            // 停住才起播后，收尾时长就是起播等待：0.22–0.32s 实测 lift→active≈320ms，老板觉得「又慢了」。
+            // 收到 0.16–0.22s：仍是推上来的减速，不是 0.10s 的闪
+            animationDuration = 0.16 + 0.06 * Double(min(remain, 1))
         } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)

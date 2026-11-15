@@ -1116,7 +1116,15 @@ final class DYPreloader {
             // 数据一到位就登记「可播」——分页器据此放行（这里是预热池，跟页面挂没挂载无关，
             // 所以窗口内的条目在滑到之前就已经是 ready 了）
             let nearIndex = window.firstIndex(where: { $0.id == a.id }) ?? 0
-            obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
+            obs[a.id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
+                if it.status == .failed {
+                    // 预热失败（之前直接把坏播放器交给页面 → 被判未就绪弹回 3 次再从零建，老板感觉「加载又慢了」）
+                    let e = it.error as NSError?
+                    let src = (it.asset as? AVURLAsset)?.url
+                    DYLiveModel.log("DDPRELOADFAIL \(a.id.suffix(6)) local=\(src?.isFileURL ?? false) err=\(e?.domain ?? "-")/\(e?.code ?? 0) under=\((e?.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain)/\($0.code)" } ?? "-")")
+                    DispatchQueue.main.async { self?.retry(a, remote: url, wasLocal: src?.isFileURL ?? false) }
+                    return
+                }
                 guard it.status == .readyToPlay else { return }
                 DYReadiness.mark(a.id)
                 // 最近的几条再补一次 preroll，把首帧解码出来，滑过去就是真画面
@@ -1130,7 +1138,10 @@ final class DYPreloader {
 
     /// 页面起播时来领；领走后由页面负责释放
     func take(_ id: String) -> AVPlayer? {
-        guard let p = players.removeValue(forKey: id) else { return nil }
+        guard let p = players[id] else { return nil }
+        // 失败的预热播放器不交给页面（交出去页面就拿着一个坏播放器等超时）
+        if p.currentItem?.status == .failed { return nil }
+        players.removeValue(forKey: id)
         obs.removeValue(forKey: id)?.invalidate()
         handedOut.insert(id)
         return p
@@ -1140,6 +1151,32 @@ final class DYPreloader {
         for (id, p) in players { release(id, p) }
         DDAudioPreloadPool.shared.clear()
         handedOut.removeAll()
+    }
+
+    /// 预热失败只重试一次：本地文件坏了就改用在线地址，在线失败就再建一次
+    private var retried: Set<String> = []
+    private func retry(_ a: DYAweme, remote: URL, wasLocal: Bool) {
+        guard let old = players[a.id], !retried.contains(a.id) else { return }
+        retried.insert(a.id)
+        release(a.id, old)
+        let item = AVPlayerItem(asset: DYMedia.asset(remote))
+        item.preferredForwardBufferDuration = 15
+        let p = AVPlayer(playerItem: item)
+        p.isMuted = true
+        p.automaticallyWaitsToMinimizeStalling = true
+        players[a.id] = p
+        obs[a.id] = item.observe(\.status, options: [.new]) { [weak p] it, _ in
+            if it.status == .failed {
+                DYLiveModel.log("DDPRELOADFAIL2 \(a.id.suffix(6)) err=\((it.error as NSError?).map { "\($0.domain)/\($0.code)" } ?? "-")")
+                // 两次都不行就别拦着用户了，放行给页面自己处理
+                DYReadiness.mark(a.id)
+                return
+            }
+            guard it.status == .readyToPlay else { return }
+            DYReadiness.mark(a.id)
+            DispatchQueue.main.async { p?.preroll(atRate: 1) { _ in } }
+        }
+        DYLiveModel.log("DDPRELOADRETRY \(a.id.suffix(6)) wasLocal=\(wasLocal) → 在线")
     }
 
     private func release(_ id: String, _ p: AVPlayer) {
