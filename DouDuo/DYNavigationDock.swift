@@ -52,13 +52,15 @@ struct DYNativeVideoActions: View {
     let isClean: Bool
     let onToggleClean: () -> Void
     var onBack: (() -> Void)? = nil
+    var inlineTopInset: CGFloat? = nil
     @State private var anchorFrame: CGRect = .zero
     @State private var windowHeight: CGFloat = 0
 
     // A standalone player replaces the home dock with clearance of the same height.
     private var standaloneBottomClearance: CGFloat { onBack == nil ? 0 : 60 }
-    private var showsPortraitCleanControl: Bool {
-        onBack == nil && verticalEdge == nil && stacksLandscapeComments && !hingeClosed
+    private var showsInlineCleanControl: Bool {
+        onBack == nil && verticalEdge == nil
+            && (!DYDuoMetrics.isDuoHardware || (stacksLandscapeComments && !hingeClosed))
     }
     private var slotHeight: CGFloat {
         let minimum = 262 + standaloneBottomClearance
@@ -103,13 +105,14 @@ struct DYNativeVideoActions: View {
                     .padding(.leading, 8)
                     .padding(.top, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if showsPortraitCleanControl, actions != nil {
+            } else if showsInlineCleanControl, actions != nil {
                 cleanButton
                     .buttonStyle(.plain)
                     .glassEffect(.regular, in: .circle)
                     .padding(.trailing, 17)
-                    .padding(.top, 8)
+                    .padding(.top, DYDuoMetrics.isDuoHardware ? 8 : max(inlineTopInset ?? DYDuoMetrics.windowSafeTop, 8) + 52)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .ignoresSafeArea(.container, edges: DYDuoMetrics.isDuoHardware ? [] : .top)
             } else {
                 Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
             }
@@ -129,7 +132,7 @@ struct DYNativeVideoActions: View {
             }
             .axisBehavior(.verticalPreferred)
             .visibilityPriority(.high)
-            .hidden(onBack == nil ? actions == nil || showsPortraitCleanControl : verticalEdge == nil)
+            .hidden(onBack == nil ? actions == nil || showsInlineCleanControl : verticalEdge == nil)
 
             // The stable controls anchor is independent of this group's size.
             // A new item identity invalidates the native cached fitting size.
@@ -145,6 +148,7 @@ struct DYNativeVideoActions: View {
                     }
                     .padding(.vertical, 5)
                     .glassEffect(.regular, in: .capsule)
+                    .environment(\.colorScheme, .dark)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("douyin.video.actions")
                     .padding(.bottom, standaloneBottomClearance)
