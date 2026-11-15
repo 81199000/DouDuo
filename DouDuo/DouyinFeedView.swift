@@ -1163,7 +1163,7 @@ final class DYFeedModel: ObservableObject {
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
-    @AppStorage("douyin_autofit_v1") var autoFit = true
+    @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
     /// 当前播放区是不是横的（宽 > 高），由页面布局同步
     var screenWide = false
     /// 候选池：拉到了但横屏限定下暂时不放的（保持推荐原顺序），以及启动时本地已缓存没看过的
@@ -2686,6 +2686,7 @@ struct DYClassicFeedScreen: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
+    @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @StateObject private var bridge = DouyinBridge()
@@ -3590,10 +3591,16 @@ struct DYClassicFeedScreen: View {
     private func showToast(_ s: String) { feed.showToast(s) }
 
 
-    /// 经典顶栏「更多」：静音 / 听书 / 自动连播在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
+    /// 经典顶栏「更多」：铺满宽度 / 静音 / 听书 / 自动连播在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
     @ViewBuilder
     private var moreExtrasMenu: some View {
         Section {
+            if DYVideoFit.showsLabeledControl(on: .classicMore) {
+                Toggle(isOn: $autoFit) {
+                    Label(DYVideoFit.title, systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .accessibilityIdentifier(DYVideoFit.moreIdentifier)
+            }
             Toggle(isOn: $muted) { Label("静音", systemImage: "speaker.slash") }
                 .accessibilityIdentifier("douyin.quick.muted")
             Toggle(isOn: $bgPlay) { Label("听书模式（后台播放）", systemImage: "headphones") }
@@ -3661,7 +3668,7 @@ struct DYUpstreamVideoPage: View {
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
-    @AppStorage("douyin_autofit_v1") private var autoFit = true
+    @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
@@ -3705,6 +3712,7 @@ struct DYUpstreamVideoPage: View {
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
                                     },
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
+                                    onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? danmaku : [],
                                     altURL: item.playAlt.flatMap(URL.init(string:)),
                                     quality: item.q,
@@ -4012,7 +4020,7 @@ struct DYUpstreamVideoPage: View {
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
 
-    /// 「更多」：转发 / 不感兴趣 / 下载 → 倍速 / 静音 / 听书 / 自动连播 → 发弹幕 → 设置。
+    /// 「更多」：转发 / 不感兴趣 / 下载 → 铺满宽度 / 倍速 / 静音 / 听书 / 自动连播 → 发弹幕 → 设置。
     @ViewBuilder
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
@@ -4030,8 +4038,14 @@ struct DYUpstreamVideoPage: View {
                 .disabled(saving)
                 .accessibilityIdentifier("douyin.save")
             }
-            // 表层：倍速 / 静音 / 听书 / 自动连播。其余全局偏好都在设置页，不重复。
+            // 表层：铺满宽度 / 倍速 / 静音 / 听书 / 自动连播。其余全局偏好都在设置页，不重复。
             Section {
+                if item.images.isEmpty, DYVideoFit.showsLabeledControl(on: .upstreamMore) {
+                    Toggle(isOn: $autoFit) {
+                        Label(DYVideoFit.title, systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .accessibilityIdentifier(DYVideoFit.moreIdentifier)
+                }
                 Menu {
                     Picker("倍速", selection: Binding(
                         get: { playbackRate },
@@ -4164,7 +4178,7 @@ struct DYClassicVideoPage: View {
     @State private var danmakuDraft = ""
     @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
-    @AppStorage("douyin_autofit_v1") private var autoFit = true
+    @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,

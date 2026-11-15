@@ -58,6 +58,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo.uitests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: DouDuo
+  DouDuoVideoFitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: DouDuo/DYVideoFit.swift
+      - path: DouDuoTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo.videofit.tests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   DouDuo:
     build:
@@ -67,3 +77,10 @@ schemes:
     test:
       targets:
         - DouDuoUITests
+  DouDuoVideoFitTests:
+    build:
+      targets:
+        DouDuoVideoFitTests: [test]
+    test:
+      targets:
+        - DouDuoVideoFitTests
