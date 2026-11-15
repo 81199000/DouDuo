@@ -4734,6 +4734,8 @@ struct DYCommentPanel: View {
     @State private var listAtTop = true
     @State private var bottomSafeArea = DYDuoMetrics.windowBottomInset
     @FocusState private var inputFocused: Bool
+    /// 设置里的开关：点评论/名字回复时是否自动弹出键盘（关掉后只进入「回复 @某人」状态，点输入框才弹）
+    @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
     @Environment(\.dyCommentTrailingCleared) private var trailingCleared
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?, focus: DYCommentFocus? = nil, fillsPane: Bool = false, trailingInset: CGFloat = 0) {
@@ -4795,6 +4797,8 @@ struct DYCommentPanel: View {
                 .padding(16)
             }
             .accessibilityIdentifier("douyin.comments.list")
+            .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
                 guard let h else { return }
                 withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
@@ -4912,6 +4916,8 @@ struct DYCommentPanel: View {
             .modifier(DYScrollTopObserver(atTop: $listAtTop))
             .modifier(DYPanelDismissGesture(isAtTop: listAtTop, allowsSwipeRight: true, onClose: onClose))
             .accessibilityIdentifier("douyin.comments.list")
+            .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(TapGesture().onEnded { if inputFocused, !replyAutoKeyboard { inputFocused = false } })
             .onChange(of: highlight) { _, h in
                 guard let h else { return }
                 withAnimation(.snappy) { proxy.scrollTo(h, anchor: .center) }
@@ -4952,7 +4958,7 @@ struct DYCommentPanel: View {
                 HStack {
                     Text("回复 @\(r.name)").font(.caption).foregroundStyle(.themeTextSecondary).lineLimit(1)
                     Spacer()
-                    Button { replyTo = nil; replyParent = nil } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                    Button { replyTo = nil; replyParent = nil; inputFocused = false } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
                         .buttonStyle(.plain).foregroundStyle(.themeTextSecondary)
                 }
             }
@@ -4987,6 +4993,15 @@ struct DYCommentPanel: View {
                     .frame(minHeight: usesClassicComments ? 44 : nil)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                     .accessibilityIdentifier("douyin.comment.input")
+                if inputFocused {
+                    Button { inputFocused = false } label: {
+                        Image(systemName: "keyboard.chevron.compact.down").font(.body)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.themeTextSecondary)
+                    .accessibilityLabel("收起键盘")
+                    .accessibilityIdentifier("douyin.comment.dismissKeyboard")
+                }
                 Button { Task { await send() } } label: {
                     if sending { ProgressView().controlSize(.small) }
                     else { Image(systemName: "paperplane.fill").font(.body.weight(.semibold)) }
@@ -5132,7 +5147,11 @@ struct DYCommentPanel: View {
         rowBody(c)
             .padding(.trailing, fillsPane && c.id == items.first?.id ? trailingInset : 0)
             .contentShape(Rectangle())
-            .onTapGesture { replyTo = c; replyParent = parent ?? c.parent; inputFocused = true }
+            .onTapGesture {
+                if inputFocused, replyTo?.id == c.id { inputFocused = false; return }   // 再点同一条 = 收键盘
+                replyTo = c; replyParent = parent ?? c.parent
+                if replyAutoKeyboard { inputFocused = true }
+            }
             .padding(highlight == c.id ? 6 : 0)
             .background {
                 if highlight == c.id {

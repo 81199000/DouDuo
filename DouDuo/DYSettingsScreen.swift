@@ -3,6 +3,7 @@ import SwiftUI
 /// 完整设置页：「更多 → 设置」点进来。所有全局偏好集中在这里，菜单里不再层层嵌套。
 /// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 自动连播 / 发弹幕）和铺满宽度都在表层菜单，这里不重复。
 struct DYSettingsScreen: View {
+    @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
     /// 打开「网页版 / 登录」：由宿主页面负责弹出网页并在关闭后重载签名页
     var onOpenWeb: () -> Void
     /// 刷新推荐：先收起设置页再刷，刷完 toast 由宿主页面显示
@@ -121,6 +122,12 @@ struct DYSettingsScreen: View {
                 }
 
                 Section {
+                    Toggle("点评论回复时自动弹出键盘", isOn: $replyAutoKeyboard)
+                        .accessibilityIdentifier("douyin.comment.autoKeyboard")
+                } header: { Text("评论") } footer: {
+                    Text("关掉后点名字只进入「回复 @某人」，点输入框才弹键盘。无论开关：往下拖评论列表、点输入框旁的键盘按钮、或再点一次同一条评论，都能收起键盘。")
+                }
+                Section {
                     Toggle("应用内私信通知", isOn: $dmNotifications)
                         .accessibilityIdentifier("settings.dm.notify")
                     Toggle("显示会话名称与头像", isOn: $dmDetail)
@@ -178,4 +185,10 @@ struct DYSettingsButton: View {
 
 extension EnvironmentValues {
     @Entry var dyOpenSettings: (() -> Void)? = nil
+}
+
+
+/// 评论键盘相关的设置键
+enum DYCommentKeyboard {
+    static let autoFocusKey = "douyin_comment_reply_autokeyboard_v1"
 }
