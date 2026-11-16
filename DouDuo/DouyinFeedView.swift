@@ -1365,19 +1365,6 @@ extension EnvironmentValues {
     @Entry var duoCleanScreen = false
 }
 
-private struct DYImmersiveStatusBar: ViewModifier {
-    let hidden: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 27.0, *) {
-            content.toolbarVisibility(hidden ? .hidden : .automatic, for: .statusBar)
-        } else {
-            content.statusBarHidden(hidden)
-        }
-    }
-}
-
 
 struct DYUpstreamFeedScreen: View {
     @State private var followCommentItem: DYAweme?
@@ -1429,15 +1416,7 @@ struct DYUpstreamFeedScreen: View {
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
     private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
-    @AppStorage("douyin_immersive_playback_v1") private var immersivePlayback = false
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
-    /// PR #47 原来靠视频页往外发 preference 判断「当前在作品页」——视频页在 ScrollView/LazyVStack 里，
-    /// preference 传不出来（老板实测「沉浸模式没效果」）。推荐/关注 Tab 本身就是作品页，直接用页面状态判断。
-    private var showImmersivePlayback: Bool {
-        immersivePlayback && (tab == .recommend || tab == .follow)
-            && !overlayOpen && !showSearch && !showComments
-            && !showSettings && web == nil
-    }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
     @State private var topNudge: CGFloat = 0
     /// 默认模式顶栏的垂直位置：
@@ -1682,9 +1661,6 @@ struct DYUpstreamFeedScreen: View {
 
     var body: some View {
         loadedFeed
-        .modifier(DYImmersiveStatusBar(hidden: showImmersivePlayback))
-        .persistentSystemOverlays(showImmersivePlayback ? .hidden : .automatic)
-        .onChange(of: showImmersivePlayback, initial: true) { _, on in DYLiveModel.log("DDIMMERSIVE hidden=\(on) pref=\(immersivePlayback) tab=\(tab)") }
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
@@ -3857,7 +3833,6 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
-    @AppStorage("douyin_immersive_playback_v1") private var immersivePlayback = false
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
@@ -4275,10 +4250,6 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.bgplay")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
-                Toggle(isOn: $immersivePlayback) {
-                    Label("沉浸模式（隐藏系统栏）", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                .accessibilityIdentifier("douyin.quick.immersive")
             }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
