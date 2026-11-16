@@ -901,11 +901,16 @@ struct DYListPlayer: View {
     let hardStopOnDismiss: Bool
     /// 打开期间把外层（首页/信息页底下的）播放压住；关掉时成对释放
     @State private var coverHeld = false
+    /// 点头像时作者页由播放器自己弹在上面。播放器是全屏页：交给底下的页面弹，会被播放器盖住，
+    /// 要返回关掉播放器后才看到（老板 11-16 报：搜索出来的视频点头像不跳，返回才跳）
+    let presentsAuthor: Bool
+    @State private var authorSheet: DYAweme.Author?
 
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
          loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
-         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false) {
+         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false, presentsAuthor: Bool = false) {
         self.bridge = bridge; self.title = title
+        self.presentsAuthor = presentsAuthor
         self.commentFocus = commentFocus
         self.hardStopOnDismiss = hardStopOnDismiss
         _showComments = State(initialValue: commentFocus != nil)
@@ -931,7 +936,7 @@ struct DYListPlayer: View {
                                         onDoubleTap: { toggleLike(item.id, force: true) },
                                         onComments: { withAnimation(.snappy) { showComments.toggle() } },
                                         onSearch: { DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() } },
-                                        onAuthor: { onAuthor(item) },
+                                        onAuthor: { if presentsAuthor { authorSheet = item.author } else { onAuthor(item) } },
                                         onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
                                         bridge: bridge, onToast: { show($0) },
                                         moreExtras: AnyView(Section { DYSettingsButton() }),
@@ -1004,6 +1009,15 @@ struct DYListPlayer: View {
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
+        .sheet(item: $authorSheet, onDismiss: { DDPlayback.shared.releaseCover() }) { a in
+            NavigationStack {
+                DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
+                    authorSheet = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { web = DYWebTarget(url: url) }
+                })
+            }
+            .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 作者页盖着时视频停
+        }
     }
 
     /// 「自动连播」打开时播完切下一条；到尾部先拉下一页
@@ -1248,7 +1262,7 @@ struct DYSearchScreen: View {
         }
         .fullScreenCover(item: $open, onDismiss: { state.presentsVideo = false }) { t in
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
-                         loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
+                         loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor, presentsAuthor: true)
         }
     }
 
@@ -1429,7 +1443,7 @@ struct DYMineScreen: View {
         .onChange(of: kind) { _, k in ensure(k) }
         .fullScreenCover(item: $open) { t in
             DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
-                         loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor)
+                         loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor, presentsAuthor: true)
         }
         .fullScreenCover(item: $relations) { t in
             DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid)

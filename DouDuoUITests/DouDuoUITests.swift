@@ -755,6 +755,40 @@ final class DouDuoUITests: XCTestCase {
     func testLiveHashtagClassicFlow() throws { verifyLiveHashtags(mode: "duoClassic") }
     func testLiveHashtagDefaultFlow() throws { verifyLiveHashtags(mode: "classic") }
 
+    /// 老板 11-16 报：搜索出来的视频点作者头像不跳，要返回关掉播放器才看到作者页。
+    /// 作者页必须直接弹在播放器上面，播放器不能先被关掉。
+    func testSearchResultAvatarOpensAuthorDirectly() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_SEARCH_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE", "DOUDUO_RESET_HASHTAG_FILTER"] {
+            app.launchEnvironment[flag] = "1"
+        }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douduo_dismissed_update_v1", "1.5.0"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let search = app.buttons["douyin.search"].firstMatch
+        if search.waitForExistence(timeout: 15) { search.tap() } else {
+            app.buttons["douyin.module.menu"].firstMatch.tap()
+            app.buttons["douyin.module.search"].firstMatch.tap()
+        }
+        XCTAssertTrue(app.textFields["douyin.search.field"].waitForExistence(timeout: 10))
+        app.buttons["douyin.search.hot.1"].tap()
+        let result = app.buttons["douyin.grid.item.hashtag-travel"].firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 10))
+        result.tap()
+        let back = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        // 简洁/极简模式：作者是左下的「@名字」（douyin.author）；经典模式：系统栏头像（douyin.author.avatar）
+        let avatar = app.buttons["douyin.author"].firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10))
+        avatar.tap()
+        let panel = app.descendants(matching: .any).matching(identifier: "douyin.author.panel").firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), "tapping the avatar must open the author page immediately")
+        attach(app, "search-result-author-direct")
+    }
+
     func testSearchPlaybackClassic() throws { verifySearchPlayback(mode: "duoClassic") }
     func testSearchPlaybackDefault() throws { verifySearchPlayback(mode: "classic") }
 
