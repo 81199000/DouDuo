@@ -803,13 +803,6 @@ struct DYCommentPlayerLayout<Video: View>: View {
                 }
             }
         }
-        // 简介：点开 = 评论面板顶部显示作者 / 全文 / 发布时间（与推荐页、经典同一套）
-        .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : aweme?.id)
-        .environment(\.dyExpandVideoCaption, { item in
-            captionItem = item
-            showComments = true
-        })
-        .onChange(of: showComments) { _, shown in if !shown { captionItem = nil } }
     }
 
     private var classicBody: some View {

@@ -1343,8 +1343,6 @@ extension EnvironmentValues {
 
 struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var followCommentItem: DYAweme?
-    /// 点简介打开的那条：评论面板顶部显示作者 / 全文 / 发布时间（与经典同一套，docs/ui-modes.md）
-    @State private var captionItem: DYAweme?
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
@@ -1634,10 +1632,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         loadedFeed
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
-        .onChange(of: showComments) { _, shown in
-            if shown { searchSession = nil }
-            else { captionItem = nil }
-        }
+        .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
@@ -1745,12 +1740,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     }
                 }
         }
-        .environment(\.dyExpandedCaptionID, captionItem?.id)
-        .environment(\.dyExpandVideoCaption, { item in
-            authorTarget = nil
-            captionItem = item
-            showComments = true
-        })
     }
 
     /// 播放区是不是横的：平放/单屏看整个窗口；半折叠看视频实际占的那块
@@ -1776,7 +1765,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
-    private var commentItem: DYAweme? { captionItem ?? (tab == .follow ? followCommentItem : current) }
+    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
 
     private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
         guard !showSearch else { return 0 }
@@ -3486,7 +3475,6 @@ struct DYUpstreamVideoPage: View {
             .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
         return max(insets.trailing, windowInset)
     }
-    @Environment(\.dyExpandVideoCaption) private var expandVideoCaption
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -3718,10 +3706,9 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.video.metadata")
             }
             if !item.desc.isEmpty {
-                DYVideoCaption(text: item.desc, foreground: fg,
-                               secondary: theme.media.onMediaSecondary.color(for: scheme),
-                               hashtagNames: item.hashtagNames ?? [],
-                               onExpand: expandVideoCaption.map { open in { open(item) } })
+                DYExpandableTitle(text: item.desc, foreground: fg,
+                                  secondary: theme.media.onMediaSecondary.color(for: scheme),
+                                  hashtagNames: item.hashtagNames ?? [])
             }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
@@ -4167,9 +4154,9 @@ struct DYClassicVideoPage: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.author")
             if !item.desc.isEmpty {
-                DYVideoCaption(text: item.desc, foreground: fg.opacity(0.9),
-                               secondary: fg.opacity(0.7), hashtagNames: item.hashtagNames ?? [],
-                               onExpand: expandVideoCaption.map { open in { open(item) } })
+                DYClassicExpandableTitle(text: item.desc, foreground: fg.opacity(0.9),
+                                  secondary: fg.opacity(0.7), hashtagNames: item.hashtagNames ?? [],
+                                  onExpand: expandVideoCaption.map { open in { open(item) } })
             }
             if let metadata = item.metadataText() {
                 Text(metadata).font(.caption2.weight(.regular))
@@ -4395,8 +4382,7 @@ struct DYCommentPanel: View {
     }
 
     @Environment(\.dyExpandedCaptionID) private var expandedCaptionID
-    /// 点简介打开的：顶部显示作者 / 关注 / 全文 / 发布时间，四种界面都一样
-    private var showsCaption: Bool { expandedCaptionID == aweme.id }
+    private var showsCaption: Bool { usesClassicComments && expandedCaptionID == aweme.id }
 
     private var headerTrailingInset: CGFloat {
         horizontalStatus ? max(trailingInset, 184) : trailingInset
@@ -4499,10 +4485,6 @@ struct DYCommentPanel: View {
 
     private var upstreamBody: some View {
         VStack(spacing: 0) {
-            if showsCaption {
-                DYVideoCaptionHeader(bridge: bridge, aweme: aweme, onClose: onClose)
-                Divider()
-            }
             HStack {
                 Text(total > 0 ? "\(DYFormat.count(total)) 条评论" : "评论").font(.subheadline.weight(.semibold))
                     .accessibilityIdentifier("douyin.comments.title")
