@@ -396,16 +396,23 @@ final class DouDuoUITests: XCTestCase {
     func testMessageRepeatedOpenBack() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": "classic"]
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": ProcessInfo.processInfo.environment["DD_MODE"] ?? "classic"]
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
         addTeardownBlock { app.terminate() }
         app.launch()
+        if ProcessInfo.processInfo.environment["DD_LANDSCAPE"] == "1" {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        }
         let row = app.buttons.matching(identifier: "douyin.conversation.row").matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
         let editor = app.textViews["douyin.messages.composer.editor"]
         for attempt in 0..<4 {
             XCTAssertTrue(row.waitForExistence(timeout: 15))
             let started = Date()
             row.tap()
+            // 打开中其他会话行不能整列变禁用（禁用 = 整列变暗，老板看到的「整个列表闪一下」）
+            let others = app.buttons.matching(identifier: "douyin.conversation.row").allElementsBoundByIndex
+            print("MESSAGE_ROWS enabled=\(others.filter(\.isEnabled).count)/\(others.count)")
             XCTAssertTrue(editor.waitForExistence(timeout: 3))
             print("MESSAGE_LATENCY open[\(attempt)]=\(Date().timeIntervalSince(started))")
             let returning = Date()

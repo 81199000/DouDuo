@@ -970,7 +970,8 @@ struct DYMessagesScreen: View {
                 .accessibilityIdentifier("douyin.conversation.row")
                 .listRowBackground(navigation.chatID == row.id ? theme.messages.selectedRow : row.isPinned == true ? theme.messages.pinnedRow : .clear)
                 .accessibilityAddTraits(navigation.chatID == row.id ? .isSelected : [])
-                .disabled(openingChat != nil || changingConversation != nil)
+                // 不再 .disabled：点会话时整列表变「禁用」→ 所有行一起变暗，打开完再变亮（老板说「整个列表闪一下」）。
+                // 防连点由 openConversation / 改会话流程开头的 guard 负责，视觉上不动列表。
                 .accessibilityValue(row.isPinned == true ? "已置顶" : "")
                 .anchorPreference(key: DYMessageRowBoundsKey.self, value: .bounds) {
                     row.isPinned == true ? [row.id: $0] : [:]
@@ -1093,7 +1094,7 @@ struct DYMessagesScreen: View {
     }
 
     private func openConversation(_ row: DYConversationRow) async {
-        guard openingChat == nil else { return }
+        guard openingChat == nil, changingConversation == nil else { return }
         let started = Date()
         openingChat = row.id
         defer { openingChat = nil }
@@ -2621,7 +2622,7 @@ struct DYStrangerListScreen: View {
                 ForEach(allRows) { row in
                     Button { Task { await open(row) } } label: { line(row) }
                         .buttonStyle(.plain)
-                        .disabled(opening != nil)
+                        // 同上：不禁用整列（会整列变暗闪一下），防连点靠 open() 里的 guard
                         .accessibilityIdentifier("douyin.stranger.row")
                 }
             }
@@ -2650,7 +2651,7 @@ struct DYStrangerListScreen: View {
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。
     private func open(_ row: DYConversationRow) async {
-        guard isActive else { return }
+        guard isActive, opening == nil else { return }
         guard let web = cache.chatModel.web else { return }
         opening = row.id
         onOpeningChanged(true)
