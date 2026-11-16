@@ -403,8 +403,9 @@ struct PlayerPage: View {
     @State private var playbackID = UUID()
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
-    /// 实际播放速度（含按住的临时 2 倍），交给独立音频引擎
-    private var playRate: Float { rateBoost ? 2 : Float(effectiveRate) }
+    /// 实际播放速度（含按住的临时 2 倍）：播放器、音频引擎、弹幕时钟和倍速角标都认这一个值
+    private var actualRate: Double { rateBoost ? 2 : effectiveRate }
+    private var playRate: Float { Float(actualRate) }
 
     var body: some View {
         ZStack {
@@ -466,9 +467,9 @@ struct PlayerPage: View {
                     .allowsHitTesting(false)
             }
             // 常驻倍速角标：只要不是 1 倍就一直显示；长按时再提示「下滑锁定 / 上滑取消」
-            if !cleanScreen && (effectiveRate != 1 || rateBoost) {
+            if !cleanScreen && actualRate != 1 {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(rateText(effectiveRate)).font(.caption.weight(.bold)).monospacedDigit()
+                    Text(rateText(actualRate)).font(.caption.weight(.bold)).monospacedDigit()
                         .accessibilityIdentifier("douyin.rateBadge")
                     if rateBoost {
                         Text(lockedBoost ? "上滑取消倍速" : "下滑锁定倍速")
