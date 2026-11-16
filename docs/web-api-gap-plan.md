@@ -36,6 +36,24 @@
 
 `music/aweme` 和 `challenge/aweme` 没通：要在登录态下再跑一次，确认是没登录的缘故还是被风控拦。同款音乐页和话题页能不能做取决于这两条。
 
+### 0.2 第二轮实测（2026-11-17，真机，**已登录**）
+
+| 接口 | 结果 |
+| --- | --- |
+| `comment/upload/auth` + ImageX 传图（`DOUDUO_IMGUP=1`） | 通。64×64 的 JPEG 走完申请、传图、提交三步，拿到 `Uri`、宽高、格式。原生请求不经过签名页也行 |
+| `aweme/related`、`related/recommend` | 通，各 10 条，`has_more` 为 1 |
+| `challenge/detail`、`challenge/aweme` | 通，作品 8 条（未登录时超时，登录后正常） |
+| `mix/list`、`mix/detail` | 通，合集 12 个 |
+| `collects/list`、`collects/video/list` | 通，夹内作品 9 条 |
+| `familiar/feed` | 通，列表在 `data` 里（3 条），不是 `aweme_list` |
+| `user/recommend` | 通，10 个 |
+| `hot/search/video/list` | 通，要 6 条只回 1 条 |
+| `music/detail`、`social/count`、`danmaku/conf/get` | 通 |
+| `music/aweme` | **不通**：HTTP 200、带了签名、body 为空，登录后也一样。按被风控拦处理，同款音乐页暂时做不了作品列表 |
+| `mix/aweme` | `status_code` 0 但 `aweme_list` 为 null、`has_more` 0。参数可能不对（`mix_scene`？），待查 |
+| `multi/aweme/detail` | `status_code` 0 但 `aweme_details` 为 null，body 写法待查 |
+| `view/user/visited/list` | `status_code` 5，原因未查 |
+
 ---
 
 ## 1. 评论发图（优先做）
