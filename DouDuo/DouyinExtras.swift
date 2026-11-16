@@ -270,17 +270,30 @@ extension DouyinBridge {
 
     /// 发评论 / 回复评论（replyID 非空 = 回复那条）
     /// 回复楼中楼：replyID = 一级评论 cid，replyToReplyID = 被回复的那条楼中楼 cid（网页 publishCommentItem 同款）
-    func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil) async throws -> DYComment {
-        let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0"]
+    /// image：已经传到 ImageX 的评论图片（`uploadCommentImage` 的结果）。带图时正文可以为空；一次一张（网页同款）
+    func publishComment(_ awemeID: String, text: String, replyID: String? = nil, replyToReplyID: String? = nil,
+                        image: DYImageXUploadResult? = nil) async throws -> DYComment {
+        let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0",
+                                   "imgUri": image?.uri ?? "", "imgW": String(image?.width ?? 0),
+                                   "imgH": String(image?.height ?? 0), "imgFmt": image?.format ?? ""]
+        let sentAt = Date().timeIntervalSince1970
         await ensureWriteReady()
         let d = try await call(Self.publishJS, args: args, attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
         if r.code == 8 { throw DYError.bad("抖音未登录：到「我的」点「去登录」，或从「设置」进「网页版 / 登录」") }
-        if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
+        if r.status == 200, (r.code ?? 0) == 0, let c = r.comment {
+            // 回执里没带图片地址时，去评论列表里把这条带图的找回来，不然本地显示成一条空评论
+            if image != nil, (c.images ?? []).isEmpty,
+               let mine = await findMySentComment(awemeID, text: text, replyID: replyID, imageSentAt: sentAt) { return mine }
+            return c
+        }
+        // 网页评论框的两个明确失败码：19 = 评论功能受限，3002575 = 健康分
+        if r.code == 19 { throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "由于违反社区规定，评论功能受限") }
+        if r.code == 3002575 { throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发布失败，账号健康分受限") }
         if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
         // 空响应/403 不代表没发出去：抖音常已写入但不回执，先去评论/楼中楼里核对，避免用户重复发送
-        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID) {
+        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID, imageSentAt: image == nil ? nil : sentAt) {
             DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
             return mine
         }
@@ -288,16 +301,20 @@ extension DouyinBridge {
     }
 
     /// 发送后核对：楼中楼查这一级评论的回复，一级评论查最新评论；按「我的昵称 + 正文开头」匹配
-    private func findMySentComment(_ awemeID: String, text: String, replyID: String?) async -> DYComment? {
+    /// imageSentAt 非空 = 这条带图：还要求评论里有图、时间不早于发送前两分钟；纯图评论没有正文可比，必须认得出是我发的
+    private func findMySentComment(_ awemeID: String, text: String, replyID: String?, imageSentAt: Double? = nil) async -> DYComment? {
         let norm = { (s: String) in s.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression) }
         let want = norm(text)
-        guard !want.isEmpty else { return nil }
+        guard !want.isEmpty || imageSentAt != nil else { return nil }
         let me = (try? await selfProfile())?.name ?? ""
+        if want.isEmpty, me.isEmpty { return nil }
         func match(_ items: [DYComment]) -> DYComment? {
             items.first { c in
                 let t = norm(c.text)
                 let head = String(want.prefix(12))
-                return (t == want || t.hasPrefix(head) || want.hasPrefix(String(t.prefix(12)))) && (me.isEmpty || c.name == me)
+                let textOK = want.isEmpty ? t.isEmpty : (t == want || t.hasPrefix(head) || want.hasPrefix(String(t.prefix(12))))
+                let imageOK = imageSentAt.map { !(c.images ?? []).isEmpty && c.time >= $0 - 120 } ?? true
+                return textOK && imageOK && (me.isEmpty || c.name == me)
             }
         }
         if let rid = replyID, !rid.isEmpty, rid != "0",
@@ -336,8 +353,15 @@ extension DouyinBridge {
     }
 
     private static let cmap = #"""
+    const cmapImg = o => { const u = o && o.url_list && o.url_list[0]; return u ? { u, w: o.width || 0, h: o.height || 0 } : null; };
+    const cmapImages = c => (c.image_list || []).map(x => {
+      const m = cmapImg(x.medium_url) || cmapImg(x.thumb_url) || cmapImg(x.crop_url) || cmapImg(x.origin_url);
+      const o = cmapImg(x.origin_url) || m;
+      return m ? { thumb: m.u, full: o.u, w: o.w || m.w, h: o.h || m.h } : null;
+    }).filter(Boolean);
     const cmap = c => c ? ({ id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
-      digg: c.digg_count || 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null }) : null;
+      digg: c.digg_count || 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null,
+      images: cmapImages(c) }) : null;
     """#
 
     // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
@@ -350,6 +374,12 @@ extension DouyinBridge {
     const P = q(Object.assign({ app_name: 'aweme', enter_from: 'video_detail', previous_page: 'video_detail' }, ident));
     const body = new URLSearchParams({ aweme_id: id, text: text, text_extra: '[]', comment_send_celltime: '0', comment_video_celltime: '0' });
     if (reply && reply !== '0') { body.set('reply_id', reply); body.set('reply_to_reply_id', (replyTo && replyTo !== '0') ? replyTo : '0'); }
+    // 带图：网页评论框传完图后往 body 里多放这几个字段；不带图时请求形状不变
+    const hasImage = typeof imgUri === 'string' && imgUri !== '';
+    if (hasImage) {
+      body.set('image_uri_list', imgUri); body.set('image_widths', imgW); body.set('image_heights', imgH); body.set('image_formats', imgFmt);
+      body.set('paste_edit_method', 'non_paste'); body.set('one_level_comment_rank', '-1');
+    }
     // 等安全 SDK 挂钩完成再发；x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记
     const sdk = typeof sdkReady === 'function' ? await sdkReady(6000) : false;
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
@@ -360,7 +390,7 @@ extension DouyinBridge {
     const signed = /a_bogus=/.test(r.u || '');
     const hooked = (f) => { try { return !/native code/.test(f().toString()); } catch (e) { return 'na'; } };
     const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none')
-      + ' sdk=' + sdk + ' signed=' + signed
+      + ' sdk=' + sdk + ' signed=' + signed + ' img=' + hasImage + ' imgBack=' + ((d.comment && d.comment.image_list) || []).length
       + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
       + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'

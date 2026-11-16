@@ -1,7 +1,56 @@
 import Foundation
+import ImageIO
+import UIKit
 
-// 评论发图的前两步：向抖音要 ImageX 临时凭证，再把图传上去。
-// 第三步（发评论时带上 image_uri_list 等字段）还没接，等探针在登录态下把前两步跑通再做。
+// 评论发图：向抖音要 ImageX 临时凭证，把图传上去；发评论时再带上 image_uri_list 等字段（见 publishComment）。
+
+/// 选好、处理好、等着发的一张评论图片
+struct DYCommentImageDraft: Equatable {
+    let data: Data
+    let fileName: String
+    let measured: DYImageXUploadResult
+    let preview: UIImage
+}
+
+enum DYCommentImagePrep {
+    /// 网页评论框的限制：单张不超过 10MB，宽高各不超过 10000
+    static let maxEdge = 10_000
+    /// 需要重新编码时缩到这个边长以内（手机原图动辄 4000 多像素，评论里用不上）
+    static let reencodeEdge = 2_560
+
+    /// 把相册给的原始文件变成能传的图。JPEG / PNG 且没超限的原样用；HEIC、GIF、超限的转成 JPEG。解不出来返回 nil。
+    nonisolated static func prepare(_ raw: Data) -> DYCommentImageDraft? {
+        guard let src = CGImageSourceCreateWithData(raw as CFData, nil), CGImageSourceGetCount(src) > 0,
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let pw = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let ph = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, pw > 0, ph > 0
+        else { return nil }
+        func thumb(_ edge: Int) -> CGImage? {
+            CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,   // 把拍照方向转正
+                kCGImageSourceThumbnailMaxPixelSize: edge,
+            ] as CFDictionary)
+        }
+        guard let small = thumb(240) else { return nil }
+        let preview = UIImage(cgImage: small)
+        let type = (CGImageSourceGetType(src) as String?) ?? ""
+        let passthrough: [String: String] = ["public.jpeg": "jpeg", "public.png": "png"]
+        if let format = passthrough[type], raw.count <= DYImageXRequests.maxBytes, max(pw, ph) <= maxEdge {
+            return DYCommentImageDraft(data: raw, fileName: "comment." + (format == "jpeg" ? "jpg" : "png"),
+                                       measured: DYImageXUploadResult(uri: "", width: pw, height: ph, format: format), preview: preview)
+        }
+        for (edge, quality) in [(reencodeEdge, 0.85), (reencodeEdge, 0.6), (1_600, 0.7)] as [(Int, CGFloat)] {
+            guard let cg = thumb(edge), let data = UIImage(cgImage: cg).jpegData(compressionQuality: quality) else { continue }
+            if data.count <= DYImageXRequests.maxBytes {
+                return DYCommentImageDraft(data: data, fileName: "comment.jpg",
+                                           measured: DYImageXUploadResult(uri: "", width: cg.width, height: cg.height, format: "jpeg"),
+                                           preview: preview)
+            }
+        }
+        return nil
+    }
+}
 
 private struct DYUploadAuthResp: Decodable {
     let status: Int
