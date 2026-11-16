@@ -670,12 +670,31 @@ struct PlayerPage: View {
             if pressing { v.setRate(2); rateBoost = true } else if rateBoost { v.setRate(Float(effectiveRate)); rateBoost = false }
             return
         }
-        guard player != nil else { return }
+        guard let p = player else { return }
+        DYBoostProbe.begin(pressing ? "on" : "off", mode: "\(seamAudio.mode)", player: p)
+        let direct = seamAudio.mode == .fallbackAVPlayer
+        if direct {
+            // 老板实机选定（A/B/C 对比 2026-11-16）：变速时不让 AVPlayer 因「2 倍速要更多缓冲」先停下来等
+            //（原做法实测按下/松手后偶发 0.3～0.6s 画面停住）。2 倍速期间多缓冲 30s 兜底，松手 0.6s 后恢复默认。
+            p.automaticallyWaitsToMinimizeStalling = false
+            if pressing { p.currentItem?.preferredForwardBufferDuration = 30 }
+        }
         // 声音交给独立音频引擎变速（不断流、不爆音），画面速率由引擎的软同步跟随
-        if pressing { rateBoost = true; seamAudio.setRate(2) }
+        if pressing {
+            rateBoost = true
+            if direct { p.softRate(2, fadeOut: 0.09, fadeIn: 0.16) } else { seamAudio.setRate(2) }
+        }
         else if rateBoost {
             rateBoost = false
-            if isPlaying { seamAudio.setRate(Float(effectiveRate)) } else { seamAudio.pause() }
+            if isPlaying {
+                if direct { p.softRate(Float(effectiveRate), fadeOut: 0.09, fadeIn: 0.16) } else { seamAudio.setRate(Float(effectiveRate)) }
+            } else { seamAudio.pause() }
+            if direct {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    p.automaticallyWaitsToMinimizeStalling = true
+                    p.currentItem?.preferredForwardBufferDuration = 0
+                }
+            }
         }
     }
 
@@ -1597,18 +1616,29 @@ extension AVPlayer {
     static var softRatePending = false
     /// 实测 AVPlayer 换速率会硬切断声音再硬恢复（啪声，恢复处是稳态的 100+ 倍）：
     /// 先 30ms 淡出 → 变速 → 等它内部的静音段过去 → 40ms 淡入，啪声降到与稳态同量级
-    func softRate(_ r: Float) {
+    func softRate(_ r: Float, fadeOut: Double = 0.03, fadeIn: Double = 0.04) {
         AVPlayer.softGen += 1
         let gen = AVPlayer.softGen, wasPlaying = rate > 0, q = DispatchQueue.main
         AVPlayer.softRatePending = true
-        for i in 1...6 { q.asyncAfter(deadline: .now() + Double(i) * 0.005) { [weak self] in if gen == AVPlayer.softGen { self?.volume = Float(6 - i) / 6 } } }
-        q.asyncAfter(deadline: .now() + 0.035) { [weak self] in
+        let outSteps = max(3, Int(fadeOut / 0.006)), inSteps = max(4, Int(fadeIn / 0.006))
+        for i in 1...outSteps {
+            q.asyncAfter(deadline: .now() + fadeOut * Double(i) / Double(outSteps)) { [weak self] in
+                if gen == AVPlayer.softGen { self?.volume = Float(outSteps - i) / Float(outSteps) }
+            }
+        }
+        let switchAt = fadeOut + 0.005
+        q.asyncAfter(deadline: .now() + switchAt) { [weak self] in
             AVPlayer.softRatePending = false
-            guard let self, !(wasPlaying && self.rate == 0 && r > 0) else { return }   // 这 35ms 里被暂停了就不再拉起
+            guard let self, !(wasPlaying && self.rate == 0 && r > 0) else { return }   // 这段时间里被暂停了就不再拉起
             self.rate = r
         }
-        // 本项目静音用 isMuted、不调 volume，所以淡入终点固定为 1
-        for i in 1...8 { q.asyncAfter(deadline: .now() + 0.22 + Double(i) * 0.005) { [weak self] in if gen == AVPlayer.softGen { self?.volume = Float(i) / 8 } } }
+        // 等 AVPlayer 换速内部的静音段过去（~185ms）再淡入；本项目静音用 isMuted、不调 volume，所以淡入终点固定为 1
+        let inStart = switchAt + 0.185
+        for i in 1...inSteps {
+            q.asyncAfter(deadline: .now() + inStart + fadeIn * Double(i) / Double(inSteps)) { [weak self] in
+                if gen == AVPlayer.softGen { self?.volume = Float(i) / Float(inSteps) }
+            }
+        }
     }
 }
 
@@ -1616,4 +1646,63 @@ extension AVPlayer {
 /// 用户自己按的暂停是明确意图，不能被生命周期回调覆盖。
 enum DYResumePolicy {
     static func shouldResumeAfterBackground(userPaused: Bool) -> Bool { !userPaused }
+}
+
+
+/// 诊断：长按加速/松手前后 1 秒的掉帧与播放器状态（DDBOOST）
+@MainActor enum DYBoostProbe {
+    private static var link: CADisplayLink?
+    private static var last: CFTimeInterval = 0
+    private static var start: CFTimeInterval = 0
+    private static var maxGap: CFTimeInterval = 0
+    private static var drops = 0
+    private static var label = ""
+    private static weak var player: AVPlayer?
+    private static var stallAt: [Int] = []
+    private static var lastT: Double = -1
+    private static var frozen = 0
+    private static var frozenEarly = 0
+    private static var maxJump: Double = 0
+    private static let target = Tick()
+
+    static func begin(_ what: String, mode: String, player p: AVPlayer?) {
+        link?.invalidate()
+        label = "\(what) mode=\(mode)"; player = p
+        start = CACurrentMediaTime(); last = 0; maxGap = 0; drops = 0; stallAt = []; lastT = -1; frozen = 0; frozenEarly = 0; maxJump = 0
+        let l = CADisplayLink(target: target, selector: #selector(Tick.tick(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        l.add(to: .main, forMode: .common)
+        link = l
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { finish() }
+    }
+    fileprivate static func frame(_ ts: CFTimeInterval) {
+        if last > 0 {
+            let g = ts - last
+            maxGap = max(maxGap, g)
+            if g > 0.025 { drops += 1 }
+        }
+        last = ts
+        if let p = player, p.timeControlStatus != .playing { stallAt.append(Int((ts - start) * 1000)) }
+        if let p = player {
+            let t = p.currentTime().seconds
+            if lastT >= 0, last > 0 {
+                let dt = t - lastT
+                if dt <= 0.0001 {                         // 画面时间没走 = 视觉上卡住
+                    frozen += 1
+                    if ts - start < 0.3 { frozenEarly += 1 }
+                }
+                maxJump = max(maxJump, dt)
+            }
+            lastT = t
+        }
+    }
+    private static func finish() {
+        guard link != nil else { return }
+        link?.invalidate(); link = nil
+        let stall = stallAt.isEmpty ? "-" : "\(stallAt.first!)..\(stallAt.last!)ms(n=\(stallAt.count))"
+        DYLiveModel.log("DDBOOST \(label) maxGap=\(Int(maxGap * 1000))ms drops=\(drops) notPlaying=\(stall) frozenFrames=\(frozen) early300=\(frozenEarly) maxStep=\(Int(maxJump * 1000))ms rate=\(player?.rate ?? -1)")
+    }
+    private final class Tick: NSObject {
+        @objc func tick(_ l: CADisplayLink) { MainActor.assumeIsolated { DYBoostProbe.frame(l.timestamp) } }
+    }
 }
