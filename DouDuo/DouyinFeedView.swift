@@ -1362,6 +1362,12 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var handoffID: String?
 
     @State private var followCommentItem: DYAweme?
+    // 评论排布与经典同一份（DYCommentStage）；系统铰链状态同一来源（DYHingeStateRoot）
+    @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
+    @Environment(\.dyDuoLandscapeWindow) private var duoLandscapeWindow
+    @Environment(\.dyHingeClosed) private var hingeClosed
+    @State private var residentComments = false
+    @State private var bookFoldComments = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
@@ -1443,7 +1449,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             layoutRoot
                 .ignoresSafeArea(edges: [.top, .horizontal])
                 .environment(\.dyRootRailTab, (railMode && tab != .live) ? tab : nil)
-            if !railMode, !(tab == .live && (live.clean || live.entered)) {
+            if !railMode, !(tab == .live && (live.clean || live.entered)), !commentsOpen {
                 VStack(spacing: 6) {
                     topBar
                 }
@@ -1459,13 +1465,13 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             }
         }
         .overlayPreferenceValue(DYFeedRailPreference.self) { entries in
-            if railMode {
+            if railMode, !commentsOpen {
                 let entry = entries.first { $0.tab == tab && (tab != .recommend || $0.id == currentID) }
                 rootActionRail(entry, selector: false)
             }
         }
         .overlay {
-            if railMode, !(tab == .live && (live.clean || live.entered)) {
+            if railMode, !(tab == .live && (live.clean || live.entered)), !commentsOpen {
                 if tab == .live, layoutAModuleAnchor.active, feedHost.width > 1 {
                     layoutAModuleButton.modifier(DYRailInputLock())
                 } else {
@@ -1512,6 +1518,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         // 简洁/极简模式的 ignoresSafeArea 已在 layoutRoot 上，这里不重复加，避免影响侧边栏的安全区测量。
         .modifier(DDClassicTopInset(active: !railMode))
         .coordinateSpace(.named("douduo.feed"))
+        .environment(\.dyCommentsOpen, commentsOpen)
+        // 外屏叠放评论时状态栏让位（与经典首页同口径）
+        .modifier(DYCommentBarPolicy(hidesStatus: hidesCommentStatus,
+                                     usesHorizontalStatus: horizontalCommentStatus))
         // 直播间返回键只保留 DYLiveRoomPage 里那一颗画面内「返回」胶囊：
         // 主视图不挂 NavigationStack / toolbar，避免 Duo 系统侧栏再渲染一个重复的返回按钮。
     }
@@ -1750,7 +1760,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @ViewBuilder
     private var layoutRoot: some View {
         GeometryReader { geo in
-            let wide = Self.playAreaIsWide(geo)
+            let wide = DYFeedOrientation.playAreaIsWide(geo)
             let panelW = sidePanelWidth(geo)
             // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲（默认模式的顶栏用）
             let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
@@ -1772,19 +1782,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
     }
 
-    /// 播放区是不是横的：平放/单屏看整个窗口；半折叠看视频实际占的那块
-    private static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_FORCEWIDE"] == "1" { return true }
-        #endif
-        let w = geo.size.width, h = geo.size.height
-        guard DYDuoMetrics.foldIsActive(geo) else { return w > h }
-        // 选片方向沿用 1.3.13 的口径：按整屏形状判断，不按半折叠后视频那一块。
-        // 1.3.14 曾改成按视频块判断：竖着拿的桌面半折叠，视频块约 669x455 被判成「横屏」，
-        // 推荐流只放横屏视频，竖屏短视频几乎刷不到（老板反馈「短视频减少了」），已撤回。
-        return w > h ? (w * 0.55 > h) : false
-    }
-
     /// 半折叠按真实折痕切分（同直播 Layout A/B）。
     /// 拿不到折痕几何（旧系统 / DOUDUO_FOLD 模拟）时返回 nil，调用方回退到比例切分。
     private func foldPanes(_ geo: GeometryProxy) -> (video: CGRect, panel: CGRect, book: Bool)? {
@@ -1797,75 +1794,36 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
     private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
 
+    private var horizontalCommentStatus: Bool {
+        (bookFoldComments || (duoLandscapeWindow && showComments))
+            && !showSearch && authorTarget == nil && tab != .live && commentItem != nil
+    }
+    private var hidesCommentStatus: Bool {
+        (hingeClosed || stacksLandscapeComments) && showComments && !showSearch
+            && authorTarget == nil && tab != .live && commentItem != nil
+    }
+    /// 评论打开 → 顶栏、右侧栏、模块圆钮、视频上的按钮全部收起，评论在最顶层（老板 2026-11-17）
+    /// 评论打开或半折常驻 → 菜单和视频上的按钮全部收起，评论在最顶层（与经典 hidesVideoChrome 同口径）
+    private var commentsOpen: Bool {
+        !showSearch && tab != .live && commentItem != nil && (showComments || residentComments)
+    }
+
     private func sidePanelWidth(_ geo: GeometryProxy) -> CGFloat {
-        guard !showSearch else { return 0 }
-        let fold = tab == .recommend && DYDuoMetrics.foldIsActive(geo)
-        let w = geo.size.width, h = geo.size.height
-        if let p = foldPanes(geo) { return p.book ? p.panel.width : 0 }
-        let bookFold = fold && w > h
-        let sideBySide = w >= DYDuoMetrics.legacyWideMin || bookFold
-        let showPanel = fold || (showComments && sideBySide && tab != .live)
-        return showPanel && sideBySide ? (bookFold ? w * 0.45 : min(380, w * 0.42)) : 0
+        let resident = DYCommentPaneMetrics(geo, isPresented: false, allowsResident: !showSearch && tab != .live)
+        return resident.showsPane && resident.sideBySide ? geo.size.width - resident.videoSize.width : 0
     }
 
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let fold = !showSearch && tab == .recommend && DYDuoMetrics.foldIsActive(geo)
-        let wide = geo.size.width >= DYDuoMetrics.legacyWideMin
-        let w = geo.size.width, h = geo.size.height
-        let hinge = showSearch ? nil : foldPanes(geo)
-        let bookFold = fold && (hinge.map { $0.book } ?? (w > h))   // 书本姿态：左右分
-        let tableFold = fold && !bookFold     // 桌面姿态：上下分
-        let sideBySide = wide || bookFold
-        let showPanel = !showSearch && (fold || (showComments && sideBySide && tab != .live))
-
-        let panelW = hinge?.panel.width ?? sidePanelWidth(geo)
-        let panelH = hinge?.panel.height ?? (tableFold ? h * 0.45 : 0)
-        let videoW = hinge?.video.width ?? (sideBySide && panelW > 0 ? w - panelW : w)
-        let videoH = hinge?.video.height ?? (tableFold ? h - panelH : h)
-        let panelX = hinge?.panel.minX ?? (sideBySide ? videoW : 0)
-        let panelY = hinge?.panel.minY ?? (tableFold ? videoH : 0)
-        let panelBottomExtension = fold ? DYDuoMetrics.bottomSafeAreaExtension(in: geo) : 0
-        // 评论栏在右侧（书本半折叠 / 展开平放）时：右边让开系统状态栏（时间/信号）用内缩。
-        // 否则 DYCommentPanel 里的 DYRailReservedNudge 会把整块面板往左平移约 84pt：
-        // 压回折痕或盖住视频，右侧还空出一条缝（issue #15「评论右侧与竖栏距离太大」）。
-        let panelInset: CGFloat = {
-            guard sideBySide, panelW > 0 else { return 0 }
-            let pane = CGRect(x: panelX, y: panelY, width: panelW, height: h)
-            return DYDuoMetrics.trailingOcclusionInset(geo, pane: pane)
-        }()
-
-        return ZStack(alignment: .topLeading) {
-            feedArea
-                .frame(width: videoW, height: videoH, alignment: .topLeading)
-            if showPanel, let cur = commentItem {
-                DYCommentPanel(bridge: bridge, aweme: cur,
-                               onClose: fold ? nil : { withAnimation(.snappy) { showComments = false } },
-                               fillsPane: fold, trailingInset: fold ? panelInset : 0)
-                    .frame(width: sideBySide && !tableFold ? (fold ? panelW : max(0, panelW - panelInset)) : w,
-                           height: tableFold ? panelH : h)
-                    .padding(.bottom, panelBottomExtension)
-                    .background {
-                        if fold { Color.ddBackground }
-                    }
-                    .dyDeskLight(tableFold)
-                    .environment(\.dyCommentTrailingCleared, panelInset > 0)
-                    .padding(.leading, panelX)
-                    .padding(.top, panelY)
-                    .id(cur.id)
-            }
-        }
-        .frame(width: w, height: h, alignment: .topLeading)
-        .background((fold ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
-        .animation(.snappy, value: fold)
-        .animation(showSearch ? nil : .snappy, value: showComments)
-        .sheet(isPresented: Binding(get: { !showSearch && showComments && !sideBySide && !fold }, set: { showComments = $0 })) {
-            if let cur = commentItem {
-                DYCommentPanel(bridge: bridge, aweme: cur, onClose: { showComments = false })
-                    // 竖屏锁死半屏：不给 .large，上滑不能把评论区撑满整屏
-                    .presentationDetents([.fraction(0.62)])
-                    .presentationDragIndicator(.visible)
-            }
-        }
+        // 评论排布四种界面同一份：DYCommentStage（搬自经典）
+        DYCommentStage(geo: geo, bridge: bridge, aweme: commentItem, showComments: $showComments,
+                       showSearch: showSearch, isLive: tab == .live,
+                       stacksLandscapeComments: stacksLandscapeComments,
+                       hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                       feed: { feedArea },
+                       onLayout: { resident, bookFold in
+                           residentComments = resident
+                           bookFoldComments = bookFold
+                       })
     }
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
@@ -3031,7 +2989,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @ViewBuilder
     private var layoutRoot: some View {
         GeometryReader { geo in
-            let wide = Self.playAreaIsWide(geo)
+            let wide = DYFeedOrientation.playAreaIsWide(geo)
             flatArrangement(geo)
                 .onAppear { feed.screenWide = wide }
                 .onChange(of: geo.safeAreaInsets, initial: true) { _, value in
@@ -3074,84 +3032,31 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         })
     }
 
-    /// 播放区是不是横的：平放/单屏看整个窗口；半折叠看视频实际占的那块
-    private static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_FORCEWIDE"] == "1" { return true }
-        #endif
-        let w = geo.size.width, h = geo.size.height
-        guard DYDuoMetrics.foldIsActive(geo) else { return w > h }
-        // 与默认布局同一口径：按整屏形状判断横竖，不按半折叠后视频那一块（见 DYUpstreamFeedScreen.playAreaIsWide）。
-        // 按视频块判断会把竖拿的桌面半折叠判成横屏，推荐流只排横屏视频，竖屏短视频几乎刷不到。
-        return w > h ? (w * 0.55 > h) : false
-    }
-
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
-        let placement = showComments && !showSearch && authorTarget == nil && tab != .live
-            ? DYInlineCommentPlacement(geo, aweme: commentAweme, enabled: stacksLandscapeComments,
-                                       showsCaption: captionItem != nil, usesCompactPanel: stacksLandscapeComments)
-            : nil
-        let showsAuthorPane = supportsSidePanel && authorTarget != nil
-        let layout = DYCommentPaneMetrics(geo, isPresented: !showSearch && (showsAuthorPane || (showComments && placement == nil)),
-                                          allowsResident: !showSearch && tab != .live,
-                                          paneFraction: showsAuthorPane ? 0.5 : nil,
-                                          keepsSideBySide: showsAuthorPane && authorWorkOpen)
-        let w = geo.size.width, h = geo.size.height
-
-        return ZStack(alignment: .topLeading) {
-            feedArea
-                .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
-            if layout.showsPane {
-                Group {
-                    if showsAuthorPane, let author = authorTarget {
-                        DYAuthorScreen(bridge: bridge, author: author,
-                                       onWeb: { web = DYWebTarget(url: $0) },
-                                       onClose: { withAnimation(.snappy) { authorTarget = nil } },
-                                       onWorkPresentationChange: { authorWorkOpen = $0 })
-                            .padding(.trailing, layout.trailingInset)
-                            .id(author.id)
-                    } else if let cur = commentAweme {
-                        DYCommentPanel(bridge: bridge, aweme: cur,
-                                       onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
-                                       fillsPane: true,
-                                       trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
-                                       horizontalStatus: horizontalCommentStatus)
-                            .id(cur.id)
-                    }
-                }
-                .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
-                .frame(width: layout.paneSize.width, height: layout.paneSize.height)
-                .clipped()
-                .dyDeskLight(layout.resident && !layout.sideBySide && authorTarget == nil)
-                .overlay(alignment: .leading) {
-                    if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
-                }
-                .padding(.leading, layout.paneOrigin.x)
-                .padding(.top, layout.paneOrigin.y)
-            }
-        }
-        .frame(width: w, height: h, alignment: .topLeading)
-        .onChange(of: layout.resident, initial: true) { _, resident in residentComments = resident }
-        .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
-            bookFoldComments = bookFold
-        }
-        .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
-        .animation(showSearch ? nil : .snappy, value: layout.resident)
-        .animation(!showSearch && layout.sideBySide ? .snappy : nil, value: showComments)
-        .animation(showSearch ? nil : .snappy, value: authorTarget?.id)
-        .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentAweme,
-                                                  onClose: { showComments = false }))
-        .dyBottomSheet(isPresented: Binding(
-            get: { !showSearch && showComments && placement == nil && !layout.sideBySide && !layout.resident },
-            set: { if placement == nil && !supportsSidePanel && !layout.resident { showComments = $0 } }
-        ), kind: .comments, hidesStatusBar: hidesCommentStatus) {
-            if let cur = commentAweme {
-                DYCommentSheet(bridge: bridge, aweme: cur, onClose: { showComments = false })
-            }
-        }
+        // 评论排布四种界面同一份：DYCommentStage（原样搬自这里）
+        DYCommentStage(geo: geo, bridge: bridge, aweme: commentAweme, showComments: $showComments,
+                       showSearch: showSearch, isLive: tab == .live,
+                       stacksLandscapeComments: stacksLandscapeComments,
+                       hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                       showsCaption: captionItem != nil,
+                       authorPane: (id: authorTarget?.id, workOpen: authorWorkOpen, supportsSidePanel: supportsSidePanel),
+                       feed: { feedArea },
+                       author: {
+                           if let author = authorTarget {
+                               DYAuthorScreen(bridge: bridge, author: author,
+                                              onWeb: { web = DYWebTarget(url: $0) },
+                                              onClose: { withAnimation(.snappy) { authorTarget = nil } },
+                                              onWorkPresentationChange: { authorWorkOpen = $0 })
+                                   .id(author.id)
+                           }
+                       },
+                       onLayout: { resident, bookFold in
+                           residentComments = resident
+                           bookFoldComments = bookFold
+                       })
     }
 
     /// Only an explicit tap on the selected recommendation channel refreshes.
@@ -3539,6 +3444,7 @@ struct DYUpstreamVideoPage: View {
             .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
         return max(insets.trailing, windowInset)
     }
+    @Environment(\.dyCommentsOpen) private var commentsOpen
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     let item: DYAweme
@@ -3651,7 +3557,9 @@ struct DYUpstreamVideoPage: View {
                     .allowsHitTesting(false)
             }
 
-            if chromeMode.usesRail {
+            if commentsOpen {
+                // 评论打开：视频上的按钮 / 信息全部收起，评论在最顶层
+            } else if chromeMode.usesRail {
                 // 简洁 / 极简：整组按钮跟着系统侧栏边缘走（PR #12）
                 DYAdaptiveActionRail { edge in
                     HStack(alignment: .bottom, spacing: 12) {
@@ -4380,8 +4288,9 @@ struct DYCommentPanel: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.dyCommentTrailingCleared) private var trailingCleared
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    /// 评论面板四种界面统一用经典样式（老板 2026-11-17 定，外屏内屏都一样）。
     private var usesClassicComments: Bool {
-        if #available(iOS 27.1, *) { return chromeModeRaw == DDChromeMode.duoClassic.rawValue }
+        if #available(iOS 27.1, *) { return true }
         return false
     }
     let bridge: DouyinBridge

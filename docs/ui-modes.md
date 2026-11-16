@@ -10,6 +10,8 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 | --- | --- | --- |
 | 推荐流数据（共用） | `DouDuo/DYRecommendFeedHost.swift` | 刷新推荐、自动连播、不感兴趣、话题屏蔽、存档会话、上报观看、点赞收藏、预加载、未读数、打开搜索。**只写这一份。** |
 | 弹幕（共用） | `DouDuo/DYDanmakuInput.swift` | 拉弹幕、发弹幕、输入条。 |
+| 推荐页评论（共用） | `DouDuo/DYCommentStage.swift` | 评论怎么摆：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板、右划关闭。**评论位置只改这里**。 |
+| 推荐流横竖选片（共用） | `DYVideoFit.feedPlaysLandscape` + `DYFeedOrientation` | 「横屏时只放横屏内容」按什么算横屏。 |
 | 推荐页外壳 | `DYUpstreamFeedScreen`（默认/简洁/极简）、`DYClassicFeedScreen`（经典） | 只负责摆放：菜单、顶栏、评论面板位置。都遵守 `DYRecommendFeedHost`。 |
 | 视频页外壳 | `DYUpstreamVideoPage`、`DYClassicVideoPage` | 只负责按钮放在哪个容器里。 |
 
@@ -36,14 +38,10 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
    - 默认 / 简洁 / 极简：左右滑是**快进快退**。
    - 理由：简洁和极简没有底部进度条，左右滑是唯一的快进方式；合并会让它们没法快进。
 
-4. **打开评论时隐藏状态栏**
-   - 只在经典模式的 Duo 外屏，或内屏把评论叠放在视频下方时。
-   - 理由：系统竖栏和状态栏会抢顶部位置，其它模式没有系统竖栏。
-
-5. **清屏按钮的位置**
+4. **清屏按钮的位置**
    - 经典挂在系统竖栏上；其它模式靠长按面板。功能相同，只是入口位置不同（属于第 1 条）。
 
-6. **简介（视频描述）**
+5. **简介（视频描述）**
    - 经典：默认 3 行，点正文 / 「…展开」打开简介面板（作者、关注、全文、发布时间，下面接评论）——`DYClassicExpandableTitle`。
    - 默认 / 简洁 / 极简：默认 1 行，点「展开」原地展开、「收起」收回——`DYExpandableTitle`。
    - 理由：老板 2026-11-17 试用后决定各管各的（统一成面板的版本已回滚，见 bf20b3f 的 revert）。不要再把两边合并。
@@ -53,8 +51,20 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 - [x] 推荐流数据操作（14 个函数）合成一份
 - [x] 弹幕拉取 / 发送 / 输入条合成一份
 - [x] 点已选中的「推荐」刷新推荐（简洁 / 极简的模块菜单里显示为「刷新推荐」）
-- [ ] Duo 外屏打开评论：横屏视频移到顶部，评论在下
-- [ ] 半折时评论常驻
+- [x] 推荐页评论（老板 2026-11-17 定「直接套经典的评论区」）：四种模式同一份 `DYCommentStage` + 经典评论面板样式
+  - Duo 外屏：横屏视频移到顶部，评论在下，贴满宽（原来简洁右边空约 84pt 的问题随之消失）
+  - 内屏横拿：评论从右侧滑出、视频缩窄；横屏右划关闭
+  - 半折：评论常驻
+  - 评论打开 / 半折常驻时：顶栏、右侧按钮栏、模块圆钮、视频上的按钮全部收起，评论在最顶层
+  - 外屏叠放评论时状态栏让位（原「必须分开」第 4 条，已统一）
+  - 坑：侧栏评论时视频区必须裁边（`DDClipIf`），否则播放器的环境光底（忽略安全区、铺满整屏）会盖住右侧评论栏 → 简洁内屏评论空白
+  - 回归：`testOuterLandscapeVideoLiftsAboveCommentsInEveryMode`、`testInnerSideCommentsSwipeRightToCloseInEveryMode`、`testPhysicalHalfFoldCommentsHideSidebar`（四种模式）、`testCommentPresentationIsUnifiedAcrossLayouts`
+- [x] 推荐流横竖选片（老板 2026-11-17）：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
+- [ ] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）评论还分 `classicBody` / `upstreamBody` 两份，待接 `DYCommentStage`
+
+## 模拟器测 Duo 各姿态
+
+Xcode 27 模拟器窗口（DeviceHub）底栏右侧四个按钮：旋转 / 外屏 / 半折叠 / 展开。脚本里切换见 skill `douduo-app-development`「模拟器切 Duo 姿态」。外屏截图 `--display=1`，内屏 `--display=3`。内屏 / 半折的问题先在模拟器复现，别拿真机当测试机。
 
 ## 改动前自检
 
