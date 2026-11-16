@@ -980,7 +980,6 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
 
-
     private static let watchJS = #"""
     const s = await req('POST', '/aweme/v2/web/aweme/stats/?' + q({}),
       new URLSearchParams({ aweme_type: type, item_id: id, source: '0', play_delta: '1' }).toString());
@@ -1342,42 +1341,38 @@ extension EnvironmentValues {
     @Entry var duoCleanScreen = false
 }
 
-
-struct DYUpstreamFeedScreen: View {
+struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var followCommentItem: DYAweme?
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var bridge = DouyinBridge()
-    @StateObject private var feed = DYFeedModel()
+    @StateObject var bridge = DouyinBridge()
+    @StateObject var feed = DYFeedModel()
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
-    @State private var preloader = DYPreloader()
-    @State private var resume: [String: Double] = [:]
-    @State private var currentID: String?
-    @State private var scrollID: String?
-    @State private var userScrolling = false
-    @State private var scrollEndTask: Task<Void, Never>?
-    @State private var initialized = false
-    @State private var refreshing = false
-    @State private var showComments = false
+    @State var preloader = DYPreloader()
+    @State var resume: [String: Double] = [:]
+    @State var currentID: String?
+    @State var scrollID: String?
+    @State var userScrolling = false
+    @State var scrollEndTask: Task<Void, Never>?
+    @State var initialized = false
+    @State var refreshing = false
+    @State var showComments = false
     @State private var web: DYWebTarget?
     @State private var showSettings = false
-    @State private var tab: DYTab = {
+    @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
         if e["DOUDUO_STARTFOLLOW"] == "1" { return .follow }
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
-    @State private var searchSession: DYSearchSession?
+    @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
-    private func openSearch() {
-        DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
-    }
-    @State private var lastFeedPull = Date.distantPast
+    @State var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
     /// 顶栏「我的」按钮用的账号头像
@@ -1419,11 +1414,8 @@ struct DYUpstreamFeedScreen: View {
     private let peek = DDPeekInfo.shared
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
-    @State private var noticeUnread = 0
+    @State var noticeUnread = 0
     @State private var wideToken = UUID()
-
-    private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
-    private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
     private var chrome: some View {
         let railMode = chromeMode.usesRail
@@ -1769,16 +1761,6 @@ struct DYUpstreamFeedScreen: View {
         tab == .recommend ? DYDuoMetrics.videoCommentPanes(geo) : nil
     }
 
-    /// 当前条之后按新的方向/比例重排；不够就接着拉
-    private func remixUpcoming() {
-        guard tab == .recommend || !feed.items.isEmpty else { return }
-        feed.remix(after: currentIndex)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        lastFeedPull = .distantPast
-        focusCurrent()
-    }
-
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
@@ -1856,56 +1838,6 @@ struct DYUpstreamFeedScreen: View {
         }
     }
 
-    private func refreshNoticeUnread() async {
-        guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
-    }
-
-    /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
-    private func reportWatch(old: String?, new: String?) {
-        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
-        var seen = false
-        if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
-           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard currentID == new else { return }
-            await bridge.reportWatch(item, preID: old, preSeen: seen)
-        }
-    }
-
-    private func saveSession() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
-        var positions = resume
-        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
-            positions[id] = max(0, DDNowPlaying.time)
-        }
-        DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
-    }
-
-    /// 自动连播：播完滑到下一条；快到底时先补一页
-    private func playNext(after id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < feed.items.count {
-            advance(from: id, to: feed.items[i + 1].id)
-        } else {
-            Task {
-                await feed.loadMore(bridge)
-                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    advance(from: id, to: feed.items[j + 1].id)
-                }
-            }
-        }
-    }
-
-    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
-    private func advance(from: String, to: String) {
-        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
-    }
-
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
     /// 要换一批推荐走「更多 → 刷新推荐」。
     private func selectTab(_ target: DYTab) {
@@ -1915,83 +1847,6 @@ struct DYUpstreamFeedScreen: View {
             liveModuleRequest = nil
         }
         tab = target
-    }
-
-    /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
-    @MainActor private func refreshRecommendations() async {
-        guard !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
-        guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
-        guard !replacement.items.isEmpty else {
-            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
-            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
-            return
-        }
-        showComments = false
-        scrollEndTask?.cancel(); userScrolling = false
-        preloader.clear()
-        feed.replaceRecommendations(with: replacement)
-        resume = [:]
-        currentID = feed.items.first?.id
-        scrollID = currentID
-        lastFeedPull = Date()
-        saveSession()
-        showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
-    }
-
-    private func applyHashtagFilter() async {
-        let previousID = currentID
-        currentID = feed.applyHashtagFilter(currentID: currentID)
-        if previousID != currentID {
-            scrollEndTask?.cancel()
-            userScrolling = false
-            showComments = false
-            scrollID = currentID
-            preloader.clear()
-        }
-        saveSession()
-        guard initialized else { return }
-        while feed.loading {
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        if feed.items.isEmpty { await feed.loadMore(bridge) }
-        guard !Task.isCancelled else { return }
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        focusCurrent()
-        saveSession()
-    }
-
-    private func focusCurrent() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard !refreshing, let i = currentIndex else { return }
-        preloader.update(feed.items, current: i)
-        // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
-        let curID = feed.items[i].id
-        let ahead = Array(feed.items.dropFirst(i + 1))
-        let currentItem = feed.items[i]
-        Task {
-            await DYVideoCache.shared.markWatched(curID)
-            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
-        }
-        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
-        let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
-            lastFeedPull = Date()
-            Task {
-                await feed.loadMore(bridge)
-                if let j = currentIndex {
-                    preloader.update(feed.items, current: j)
-                    await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
-                    if feed.items.count - j - 1 < want { focusCurrent() }
-                }
-            }
-        }
     }
 
     @ViewBuilder
@@ -2402,45 +2257,7 @@ struct DYUpstreamFeedScreen: View {
                            onEnded: { playNext(after: item.id) })
     }
 
-    /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
-    /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
-    private func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
-
-
-    /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
-    private func dislike(_ id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        let next = i + 1 < feed.items.count ? feed.items[i + 1].id : (i > 0 ? feed.items[i - 1].id : nil)
-        scrollEndTask?.cancel(); userScrolling = false
-        showComments = false
-        if currentID == id { currentID = next; scrollID = next }
-        feed.items.remove(at: i)
-        resume[id] = nil
-        saveSession()
-        showToast("将减少此类推荐")
-        Task {
-            await DYVideoCache.shared.markWatched(id)
-            do {
-                switch try await bridge.dislike(id) {
-                case .ok: break
-                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
-                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
-                }
-            } catch {
-                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
-            }
-        }
-        if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
-    }
-
-    /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
-    private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
-
-
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
-
-    private func showToast(_ s: String) { feed.showToast(s) }
-
 
     /// 「更多」最后一节：设置（点进完整设置页）。刷新推荐 / 弹幕 / 界面都在设置页里。
     @ViewBuilder
@@ -2449,7 +2266,6 @@ struct DYUpstreamFeedScreen: View {
     }
 
 }
-
 
 struct DYWebTarget: Identifiable { let id = UUID(); let url: URL }
 
@@ -2742,47 +2558,44 @@ extension EnvironmentValues {
 }
 
 @available(iOS 27.1, *)
-struct DYClassicFeedScreen: View {
+struct DYClassicFeedScreen: DYRecommendFeedHost {
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @StateObject private var bridge = DouyinBridge()
-    @StateObject private var feed = DYFeedModel()
+    @StateObject var bridge = DouyinBridge()
+    @StateObject var feed = DYFeedModel()
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
-    @State private var preloader = DYPreloader()
-    @State private var resume: [String: Double] = [:]
-    @State private var currentID: String?
-    @State private var scrollID: String?
-    @State private var userScrolling = false
-    @State private var scrollEndTask: Task<Void, Never>?
-    @State private var initialized = false
-    @State private var refreshing = false
+    @State var preloader = DYPreloader()
+    @State var resume: [String: Double] = [:]
+    @State var currentID: String?
+    @State var scrollID: String?
+    @State var userScrolling = false
+    @State var scrollEndTask: Task<Void, Never>?
+    @State var initialized = false
+    @State var refreshing = false
     @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
     @Environment(\.dyDuoLandscapeWindow) private var duoLandscapeWindow
     @Environment(\.dyHingeClosed) private var hingeClosed
-    @State private var showComments = false
+    @State var showComments = false
     @State private var captionItem: DYAweme?
     @State private var web: DYWebTarget?
     @State private var showSettings = false
-    @State private var tab: DYTab = {
+    @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
         if e["DOUDUO_STARTFOLLOW"] == "1" { return .follow }
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
-    @State private var searchSession: DYSearchSession?
+    @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
-    private func openSearch() {
-        DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
-    }
-    @State private var lastFeedPull = Date.distantPast
+    @State var lastFeedPull = Date.distantPast
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     /// 当前大页（首页/消息/我的/直播）持久化：
     /// 以前是 @State + SwiftUI 的 TabView 选中态，重启后系统把界面恢复到「消息」，但代码里还是「首页」，
@@ -2827,7 +2640,7 @@ struct DYClassicFeedScreen: View {
     private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || showMessages || authorWorkOpen || (authorTarget != nil && !supportsSidePanel) }
     /// 全局播放速度；长按临时倍速不修改持久化偏好。
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
-    @State private var noticeUnread = 0
+    @State var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
     /// Duo 横置（合屏外屏或完全展开内屏；半折不算）。
@@ -2852,8 +2665,6 @@ struct DYClassicFeedScreen: View {
         max(DYDuoMetrics.windowSafeTop, DYDuoMetrics.isDuoHardware ? 0 : contentTopInset, 8)
     }
 
-    private var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
-    private var current: DYAweme? { currentIndex.map { feed.items[$0] } }
     private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : current) ?? captionItem }
     private var horizontalCommentStatus: Bool {
         (bookFoldComments || (duoLandscapeWindow && showComments))
@@ -2869,7 +2680,6 @@ struct DYClassicFeedScreen: View {
         showComments && !showSearch && authorTarget == nil && tab != .live
             && DYInlineCommentPlacement.applies(to: commentAweme, enabled: stacksLandscapeComments)
     }
-
 
     var body: some View {
         systemTabs
@@ -3207,16 +3017,6 @@ struct DYClassicFeedScreen: View {
         return w > h ? (w * 0.55 > h) : false
     }
 
-    /// 当前条之后按新的方向/比例重排；不够就接着拉
-    private func remixUpcoming() {
-        guard tab == .recommend || !feed.items.isEmpty else { return }
-        feed.remix(after: currentIndex)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        lastFeedPull = .distantPast
-        focusCurrent()
-    }
-
     /// 一套布局通吃所有状态，且**不换容器**（换容器会重建播放器 → 黑屏 / 重播）：
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
@@ -3285,51 +3085,6 @@ struct DYClassicFeedScreen: View {
         }
     }
 
-    private func refreshNoticeUnread() async {
-        guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
-    }
-
-    /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
-    private func reportWatch(old: String?, new: String?) {
-        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
-        var seen = false
-        if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
-           DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard currentID == new else { return }
-            await bridge.reportWatch(item, preID: old, preSeen: seen)
-        }
-    }
-
-    private func saveSession() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard let id = currentID, feed.items.contains(where: { $0.id == id }) else { return }
-        var positions = resume
-        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite {
-            positions[id] = max(0, DDNowPlaying.time)
-        }
-        DYFeedSession(items: feed.items, currentID: id, positions: positions).save()
-    }
-
-    /// 自动连播：播完滑到下一条；快到底时先补一页
-    private func playNext(after id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < feed.items.count {
-            advance(from: id, to: feed.items[i + 1].id)
-        } else {
-            Task {
-                await feed.loadMore(bridge)
-                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    advance(from: id, to: feed.items[j + 1].id)
-                }
-            }
-        }
-    }
-
     /// Only an explicit tap on the selected recommendation channel refreshes.
     /// Swipes and programmatic channel selection preserve the current video.
     private func tapChannel(_ target: DYTab) {
@@ -3339,11 +3094,6 @@ struct DYClassicFeedScreen: View {
         } else {
             selectTab(target)
         }
-    }
-
-    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
-    private func advance(from: String, to: String) {
-        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
 
     private func selectTab(_ target: DYTab) {
@@ -3445,83 +3195,6 @@ struct DYClassicFeedScreen: View {
                 channelSettling = false
             }
             playbackSuspended = false
-        }
-    }
-
-    /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
-    @MainActor private func refreshRecommendations() async {
-        guard !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
-        guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
-        guard !replacement.items.isEmpty else {
-            showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
-            DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
-            return
-        }
-        showComments = false
-        scrollEndTask?.cancel(); userScrolling = false
-        preloader.clear()
-        feed.replaceRecommendations(with: replacement)
-        resume = [:]
-        currentID = feed.items.first?.id
-        scrollID = currentID
-        lastFeedPull = Date()
-        saveSession()
-        showToast("推荐已刷新")
-        DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
-    }
-
-    private func applyHashtagFilter() async {
-        let previousID = currentID
-        currentID = feed.applyHashtagFilter(currentID: currentID)
-        if previousID != currentID {
-            scrollEndTask?.cancel()
-            userScrolling = false
-            showComments = false
-            scrollID = currentID
-            preloader.clear()
-        }
-        saveSession()
-        guard initialized else { return }
-        while feed.loading {
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        if feed.items.isEmpty { await feed.loadMore(bridge) }
-        guard !Task.isCancelled else { return }
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        focusCurrent()
-        saveSession()
-    }
-
-    private func focusCurrent() {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
-        #endif
-        guard !refreshing, let i = currentIndex else { return }
-        preloader.update(feed.items, current: i)
-        // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
-        let curID = feed.items[i].id
-        let ahead = Array(feed.items.dropFirst(i + 1))
-        let currentItem = feed.items[i]
-        Task {
-            await DYVideoCache.shared.markWatched(curID)
-            await DYVideoCache.shared.focus(current: currentItem, ahead: ahead)
-        }
-        // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
-        let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
-            lastFeedPull = Date()
-            Task {
-                await feed.loadMore(bridge)
-                if let j = currentIndex {
-                    preloader.update(feed.items, current: j)
-                    await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
-                    if feed.items.count - j - 1 < want { focusCurrent() }
-                }
-            }
         }
     }
 
@@ -3759,44 +3432,6 @@ struct DYClassicFeedScreen: View {
                            } : nil)
     }
 
-    /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
-    /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
-    private func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
-
-
-    /// 不感兴趣：立刻从列表拿掉并切到下一条，后台告诉抖音（失败只提示，不把视频塞回来）
-    private func dislike(_ id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        let next = i + 1 < feed.items.count ? feed.items[i + 1].id : (i > 0 ? feed.items[i - 1].id : nil)
-        scrollEndTask?.cancel(); userScrolling = false
-        showComments = false
-        if currentID == id { currentID = next; scrollID = next }
-        feed.items.remove(at: i)
-        resume[id] = nil
-        saveSession()
-        showToast("将减少此类推荐")
-        Task {
-            await DYVideoCache.shared.markWatched(id)
-            do {
-                switch try await bridge.dislike(id) {
-                case .ok: break
-                case .notLoggedIn: showToast("抖音未登录，「不感兴趣」没同步到账号")
-                case .failed(let why): showToast("「不感兴趣」同步失败：\(why)")
-                }
-            } catch {
-                showToast("「不感兴趣」同步失败：\(error.localizedDescription)")
-            }
-        }
-        if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
-    }
-
-    /// 收藏 / 取消收藏（同步到抖音账号的「收藏」）
-    private func toggleCollect(_ id: String) { feed.toggleCollect(id, bridge: bridge) }
-
-
-    private func showToast(_ s: String) { feed.showToast(s) }
-
-
     /// 经典顶栏「更多」：铺满宽度 / 静音 / 听书 / 自动连播在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
     @ViewBuilder
     private var moreExtrasMenu: some View {
@@ -3867,13 +3502,9 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var heart = false
-    @State private var danmaku: [DYDanmaku] = []
-    @State private var danmakuLoaded = false
     @State private var saving = false
-    @State private var showDanmakuInput = false
-    @State private var danmakuDraft = ""
-    @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
+    @StateObject private var dm = DYDanmakuModel()
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
@@ -3922,7 +3553,7 @@ struct DYUpstreamVideoPage: View {
                                     },
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
-                                    danmaku: danmakuOn ? danmaku : [],
+                                    danmaku: danmakuOn ? dm.items : [],
                                     altURL: nil,
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
@@ -3991,94 +3622,36 @@ struct DYUpstreamVideoPage: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if showDanmakuInput, rootRailTab == nil || onBack != nil {
-                danmakuBar.padding(.bottom, max(insets.bottom, 12) + 6)
+            if dm.showInput, rootRailTab == nil || onBack != nil {
+                DYDanmakuBar(model: dm, focused: $danmakuFocused, onSend: sendDanmaku).padding(.bottom, max(insets.bottom, 12) + 6)
             }
         }
-        .preference(key: DYFeedInputActivePreference.self, value: isCurrent && showDanmakuInput)
+        .preference(key: DYFeedInputActivePreference.self, value: isCurrent && dm.showInput)
         .preference(key: DYFeedComposerPreference.self, value: composerEntry)
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in
-            if !c { showDanmakuInput = false }
+            if !c { dm.showInput = false }
             if c, onBack == nil { DYBoostRouter.shared.adopt(boost) }
         }
         .onAppear { if isCurrent, onBack == nil { DYBoostRouter.shared.adopt(boost) } }
-        // 弹幕：轮到这条时才拉（一次拉整条视频的）
-        .task(id: isCurrent) {
-            guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
-            danmakuLoaded = true
-            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
-            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
-                danmaku = DYDanmaku.merged(danmaku, chunk)
-            }
-            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
-            if Task.isCancelled { danmakuLoaded = false }
-            let sorted = danmaku.map(\.offset).sorted()
-            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
-            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
-        }
+        // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
+        .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
+    }
+
+    private func sendDanmaku() {
+        Task { if await dm.send(item, bridge: bridge, onToast: onToast) { danmakuFocused = false } }
     }
 
     private var composerEntry: [DYFeedComposerEntry] {
-        guard isCurrent, showDanmakuInput, onBack == nil, let rootRailTab else { return [] }
+        guard isCurrent, dm.showInput, onBack == nil, let rootRailTab else { return [] }
         return [DYFeedComposerEntry(id: item.id, tab: rootRailTab,
-                                   content: AnyView(danmakuBar.padding(.bottom, 8)))]
+                                   content: AnyView(DYDanmakuBar(model: dm, focused: $danmakuFocused, onSend: sendDanmaku).padding(.bottom, 8)))]
     }
 
     private func railEntry(_ fg: Color) -> [DYFeedRailEntry] {
         guard isCurrent, onBack == nil, let rootRailTab else { return [] }
         return [DYFeedRailEntry(id: item.id, tab: rootRailTab, actions: AnyView(actions(fg)))]
-    }
-
-    private var danmakuBar: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $danmakuDraft, prompt: Text("发个弹幕见证当下").foregroundStyle(.white.opacity(0.5)))
-                .foregroundStyle(.white)
-                .focused($danmakuFocused)
-                .submitLabel(.send)
-                .onSubmit { sendDanmaku() }
-                .padding(.horizontal, 14).frame(height: 40)
-                .background(Capsule().fill(.black.opacity(0.6)))
-                .accessibilityIdentifier("douyin.danmaku.input")
-            Button(action: sendDanmaku) {
-                if danmakuSending { ProgressView().tint(.white) }
-                else { Text("发送").font(.subheadline.weight(.semibold)) }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).frame(height: 40)
-            .background(Capsule().fill(theme.accent.color(for: scheme)))
-            .disabled(danmakuDraft.trimmingCharacters(in: .whitespaces).isEmpty || danmakuSending)
-            .accessibilityIdentifier("douyin.danmaku.send")
-            Button { showDanmakuInput = false; danmakuFocused = false } label: {
-                Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 40)
-            }
-            .accessibilityIdentifier("douyin.danmaku.close")
-        }
-        .padding(.horizontal, 12)
-    }
-
-    private func sendDanmaku() {
-        let text = danmakuDraft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !danmakuSending, let b = bridge else { return }
-        danmakuSending = true
-        let at = DDNowPlaying.id == item.id ? DDNowPlaying.time : 0
-        Task {
-            do {
-                let id = try await b.postDanmaku(item.id, text: text, offset: at)
-                // 自己发的立刻上屏（从当前时间点开始飘）
-                danmaku.append(DYDanmaku(id: id, text: text, offset: at + 0.3))
-                danmaku.sort { $0.offset < $1.offset }
-                danmakuDraft = ""
-                showDanmakuInput = false
-                danmakuFocused = false
-                onToast?("弹幕已发送")
-            } catch {
-                onToast?("弹幕发送失败：\(error.localizedDescription)")
-            }
-            danmakuSending = false
-        }
     }
 
     private func save() {
@@ -4291,7 +3864,7 @@ struct DYUpstreamVideoPage: View {
             }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
-                    showDanmakuInput = true
+                    dm.showInput = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { danmakuFocused = true }
                 }
                 .accessibilityIdentifier("douyin.danmaku.open")
@@ -4407,14 +3980,10 @@ struct DYClassicVideoPage: View {
     @Environment(\.ddScale) private var ui
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @State private var heart = false
-    @State private var danmaku: [DYDanmaku] = []
-    @State private var danmakuLoaded = false
     @State private var showShare = false
     @State private var showOptions = false
-    @State private var showDanmakuInput = false
-    @State private var danmakuDraft = ""
-    @State private var danmakuSending = false
     @FocusState private var danmakuFocused: Bool
+    @StateObject private var dm = DYDanmakuModel()
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
     /// 右侧控制区按住任何位置都加速（对齐抖音）：它们盖在手势层之上或在系统栏里，由这个对象转给播放器。
@@ -4464,7 +4033,7 @@ struct DYClassicVideoPage: View {
                                     },
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
-                                    danmaku: danmakuOn ? danmaku : [],
+                                    danmaku: danmakuOn ? dm.items : [],
                                     altURL: nil,
                                     quality: item.q,
                                     fastURL: item.playFast.flatMap(URL.init(string:)),
@@ -4533,7 +4102,7 @@ struct DYClassicVideoPage: View {
         .preference(key: DYActiveVideoActionsKey.self,
                     value: systemBars && isCurrent && !inlineNavigation ? toolbarActions(fg) : nil)
         .overlay(alignment: .bottom) {
-            if showDanmakuInput { danmakuBar.padding(.bottom, max(insets.bottom, 0) + 4) }
+            if dm.showInput { DYDanmakuBar(model: dm, focused: $danmakuFocused, onSend: sendDanmaku).padding(.bottom, max(insets.bottom, 0) + 4) }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: liked) { old, new in !old && new }
         .dyBottomSheet(isPresented: $showShare, kind: .share) {
@@ -4541,7 +4110,7 @@ struct DYClassicVideoPage: View {
         }
         .dyBottomSheet(isPresented: $showOptions, kind: .options) {
             DYVideoOptionsPanel(onDislike: onDislike, onSendDanmaku: bridge == nil ? nil : {
-                showDanmakuInput = true
+                dm.showInput = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
             })
         }
@@ -4557,21 +4126,13 @@ struct DYClassicVideoPage: View {
             authorImage = image.map(circularAvatar)
         }
         .animation(.snappy, value: heart)
-        .onChange(of: isCurrent) { _, c in if !c { showDanmakuInput = false } }
-        // 弹幕：轮到这条时才拉（一次拉整条视频的）
-        .task(id: isCurrent) {
-            guard isCurrent, !danmakuLoaded, item.images.isEmpty, let b = bridge else { return }
-            danmakuLoaded = true
-            // 接口单次只能拿到约 30 秒的弹幕，长视频按 60 秒窗口边拉边显示
-            for await chunk in b.danmakuStream(item.id, durationMs: Int(item.duration * 1000)) {
-                danmaku = DYDanmaku.merged(danmaku, chunk)
-            }
-            // 中途滑走会取消任务：标记回 false，回来重新把剩下的窗口补齐
-            if Task.isCancelled { danmakuLoaded = false }
-            let sorted = danmaku.map(\.offset).sorted()
-            let gapMax = zip(sorted, sorted.dropFirst()).map { $1 - $0 }.max() ?? 0
-            DYLiveModel.log("DDDM id=\(item.id) n=\(danmaku.count) dur=\(String(format: "%.1f", item.duration))s range=\(sorted.first.map { String(format: "%.1f", $0) } ?? "-")..\(sorted.last.map { String(format: "%.1f", $0) } ?? "-") gapMax=\(String(format: "%.1f", gapMax))s afterHalf=\(sorted.filter { $0 > item.duration / 2 }.count)")
-        }
+        .onChange(of: isCurrent) { _, c in if !c { dm.showInput = false } }
+        // 弹幕：轮到这条时才拉（一次拉整条视频的）——共用 DYDanmakuModel
+        .task(id: isCurrent) { await dm.load(item, isCurrent: isCurrent, bridge: bridge) }
+    }
+
+    private func sendDanmaku() {
+        Task { if await dm.send(item, bridge: bridge, onToast: onToast) { danmakuFocused = false } }
     }
 
     /// 只有关注流需要把「当前可见视频」报给根视图（评论/标签用）；推荐流根视图自己有 currentID。
@@ -4579,55 +4140,6 @@ struct DYClassicVideoPage: View {
     private func publishVisible() {
         guard visibleVideo.wrappedValue?.id != item.id else { return }
         visibleVideo.wrappedValue = item
-    }
-
-    private var danmakuBar: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $danmakuDraft, prompt: Text("发个弹幕见证当下").foregroundStyle(.white.opacity(0.5)))
-                .foregroundStyle(.white)
-                .focused($danmakuFocused)
-                .submitLabel(.send)
-                .onSubmit { sendDanmaku() }
-                .padding(.horizontal, 14).frame(height: 40)
-                .background(Capsule().fill(.black.opacity(0.6)))
-                .accessibilityIdentifier("douyin.danmaku.input")
-            Button(action: sendDanmaku) {
-                if danmakuSending { ProgressView().tint(.white) }
-                else { Text("发送").font(.subheadline.weight(.semibold)) }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14).frame(height: 40)
-            .background(Capsule().fill(theme.accent.color(for: scheme)))
-            .disabled(danmakuDraft.trimmingCharacters(in: .whitespaces).isEmpty || danmakuSending)
-            .accessibilityIdentifier("douyin.danmaku.send")
-            Button { showDanmakuInput = false; danmakuFocused = false } label: {
-                Image(systemName: "xmark").font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 40)
-            }
-        }
-        .padding(.horizontal, 12)
-    }
-
-    private func sendDanmaku() {
-        let text = danmakuDraft.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !danmakuSending, let b = bridge else { return }
-        danmakuSending = true
-        let at = DDNowPlaying.id == item.id ? DDNowPlaying.time : 0
-        Task {
-            do {
-                let id = try await b.postDanmaku(item.id, text: text, offset: at)
-                // 自己发的立刻上屏（从当前时间点开始飘）
-                danmaku.append(DYDanmaku(id: id, text: text, offset: at + 0.3))
-                danmaku.sort { $0.offset < $1.offset }
-                danmakuDraft = ""
-                showDanmakuInput = false
-                danmakuFocused = false
-                onToast?("弹幕已发送")
-            } catch {
-                onToast?("弹幕发送失败：\(error.localizedDescription)")
-            }
-            danmakuSending = false
-        }
     }
 
     /// 作者、文案、元数据、音乐；音乐贴近进度条，作者头像归入互动栏。
@@ -4770,7 +4282,6 @@ struct DYClassicVideoPage: View {
         .accessibilityLabel((id == "douyin.like" ? "点赞" : id == "douyin.comments" ? "评论" : id == "douyin.collect" ? "收藏" : "分享") + "，" + text)
         .accessibilityIdentifier(id)
     }
-
 
 }
 
@@ -5889,7 +5400,6 @@ private struct DYFitCornerGlyph: Shape {
         return p
     }
 }
-
 
 /// 评论区位置记忆（内存里，按视频 id，最多记 20 条视频）。
 /// 关掉评论区再打开：不重新加载，评论、展开的楼中楼、点赞状态原样恢复，并滚回上次看到的那条。
