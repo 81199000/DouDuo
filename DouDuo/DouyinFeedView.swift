@@ -11,6 +11,7 @@ import SwiftUI
 import Combine
 import WebKit
 import AVFoundation
+import PhotosUI
 
 // MARK: - 数据
 
@@ -1537,6 +1538,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_CPROBE"] == "1" { Task { await DYCommentApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_WEBAPI"] == "1" { Task { await DYWebApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_IMGUP"] == "1" { Task { await DYWebApiProbe.uploadSmoke(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
@@ -2766,6 +2769,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_CPROBE"] == "1" { Task { await DYCommentApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_WEBAPI"] == "1" { Task { await DYWebApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_IMGUP"] == "1" { Task { await DYWebApiProbe.uploadSmoke(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
@@ -4412,6 +4417,11 @@ struct DYCommentPanel: View {
     @State private var atError: String?
     @State private var sending = false
     @State private var sendErr: String?
+    /// 评论配图：相册里选中的那一项 → 处理好等着发的图 → 已经传上去的结果（发评论失败再点发送时不重传）
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var imageDraft: DYCommentImageDraft?
+    @State private var imageUploaded: DYImageXUploadResult?
+    @State private var imageLoading = false
     @State private var digged: Set<String> = []
     @State private var diggShown: [String: Int] = [:]
     @State private var relatedWords: [String] = []
@@ -4798,6 +4808,29 @@ struct DYCommentPanel: View {
             if let e = sendErr {
                 Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
             }
+            if imageLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text("处理图片…").font(.caption2).foregroundStyle(.themeTextSecondary)
+                }
+            } else if let img = imageDraft {
+                ZStack(alignment: .topTrailing) {
+                    Image(uiImage: img.preview).resizable().scaledToFill()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    Button { clearCommentImage() } label: {
+                        Image(systemName: "xmark.circle.fill").font(.body)
+                            .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 6, y: -6)
+                    .disabled(sending)
+                    .accessibilityLabel("移除图片")
+                    .accessibilityIdentifier("douyin.comment.image.remove")
+                }
+                .padding(.top, 6)
+                .accessibilityIdentifier("douyin.comment.image.preview")
+            }
             HStack(spacing: 8) {
                 Button {
                     showEmoji.toggle()
@@ -4819,6 +4852,18 @@ struct DYCommentPanel: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.comment.at")
+                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                    Image(systemName: "photo").font(.body)
+                        .foregroundStyle(imageDraft != nil ? theme.accent.color(for: scheme) : .themeTextSecondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(sending)
+                .accessibilityLabel("添加图片")
+                .accessibilityIdentifier("douyin.comment.image")
+                .onChange(of: pickedPhoto) { _, item in
+                    guard let item else { return }
+                    Task { await loadCommentImage(item) }
+                }
                 TextField(replyTo == nil ? "说点什么…" : "回复 \(replyTo!.name)", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($inputFocused)
@@ -4840,8 +4885,8 @@ struct DYCommentPanel: View {
                     else { Image(systemName: "paperplane.fill").font(.body.weight(.semibold)) }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary : theme.accent.color(for: scheme))
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                .foregroundStyle(hasCommentContent ? theme.accent.color(for: scheme) : Color.secondary)
+                .disabled(!hasCommentContent || sending || imageLoading)
                 .accessibilityIdentifier("douyin.comment.send")
             }
             if showEmoji {
@@ -4953,16 +4998,52 @@ struct DYCommentPanel: View {
         return Array(out.prefix(30))
     }
 
+    /// 有字或有图就能发（网页同款：带图时正文可以为空）
+    private var hasCommentContent: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageDraft != nil
+    }
+
+    private func clearCommentImage() {
+        pickedPhoto = nil; imageDraft = nil; imageUploaded = nil
+    }
+
+    private func loadCommentImage(_ item: PhotosPickerItem) async {
+        imageLoading = true
+        defer { imageLoading = false }
+        imageUploaded = nil
+        guard let raw = try? await item.loadTransferable(type: Data.self) else {
+            imageDraft = nil; pickedPhoto = nil
+            sendErr = "没能读取这张图片"
+            return
+        }
+        let prepared = await Task.detached(priority: .userInitiated) { DYCommentImagePrep.prepare(raw) }.value
+        guard pickedPhoto == item else { return }   // 处理期间又换了一张或点了移除
+        if let prepared {
+            imageDraft = prepared; sendErr = nil
+        } else {
+            imageDraft = nil; pickedPhoto = nil
+            sendErr = "这张图片用不了（格式不支持或太大）"
+        }
+    }
+
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+        guard hasCommentContent, !sending, !imageLoading else { return }
         sending = true
         defer { sending = false }
         do {
+            // 先传图再发评论；图传上去了但评论没发成时留着结果，再点发送不重传
+            var image: DYImageXUploadResult?
+            if let img = imageDraft {
+                if imageUploaded == nil {
+                    imageUploaded = try await bridge.uploadCommentImage(img.data, fileName: img.fileName, measured: img.measured)
+                }
+                image = imageUploaded
+            }
             // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
             let top = replyParent ?? replyTo?.id
             let c = try await bridge.publishComment(aweme.id, text: text, replyID: top,
-                                                    replyToReplyID: replyParent == nil ? nil : replyTo?.id)
+                                                    replyToReplyID: replyParent == nil ? nil : replyTo?.id, image: image)
             if let top {
                 replies[top, default: []].insert(c, at: 0)
             } else {
@@ -4970,6 +5051,7 @@ struct DYCommentPanel: View {
                 total += 1
             }
             draft = ""; replyTo = nil; replyParent = nil; sendErr = nil
+            clearCommentImage()
             inputFocused = false
         } catch {
             sendErr = "发送失败：\(error.localizedDescription)"
