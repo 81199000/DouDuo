@@ -132,6 +132,8 @@ enum DYWebApiProbe {
             ctx.fill(CGRect(origin: .zero, size: size))
         }
         guard let data = image.jpegData(compressionQuality: 0.8) else { return log("没生成出测试图") }
+        // 和 run 一样：刚启动时签名页没挂好，取凭证的请求会直接断
+        await bridge.ensureWriteReady()
         do {
             let r = try await bridge.uploadCommentImage(
                 data, fileName: "probe.jpg", measured: DYImageXUploadResult(uri: "", width: 64, height: 64, format: "jpeg"))
