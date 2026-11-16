@@ -4187,7 +4187,7 @@ struct DYUpstreamVideoPage: View {
                 }
                 if item.images.isEmpty {
                     // 有些视频铺满后会裁掉边缘，随手切回完整画面
-                    // 铺满时显示收拢图标，完整画面时显示展开图标。
+                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
                     railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
                              "douyin.fit") {
                         autoFit.toggle()
@@ -4209,7 +4209,7 @@ struct DYUpstreamVideoPage: View {
             VStack(spacing: 2) {
                 Group {
                     if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: autoFit)
+                        DYFitCornerGlyph(inward: !autoFit)   // 11-14 老板定：图标按「点了会怎样」显示（PR #47 的反向改动不采纳）
                             .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
                             .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
                     } else {
