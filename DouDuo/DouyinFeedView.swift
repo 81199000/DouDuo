@@ -1697,10 +1697,6 @@ struct DYUpstreamFeedScreen: View {
             })
             // 信息页盖着时外层视频必须停，切后台再回来也不许自己恢复
             .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
-            // fullScreenCover 不继承外层的状态栏设置，默认 .automatic：
-            // 切后台再回来系统会重算，常把时间/信号判成隐藏（老板实测「信息页退出 App 回来信号不见了」）。
-            // 跟视频页同一口径明确显示。
-            .modifier(DYStatusBarVisible())
         }
         .task { await refreshNoticeUnread() }
         .task {
@@ -2091,7 +2087,6 @@ struct DYUpstreamFeedScreen: View {
                          onLogin: { showMine = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
                          onAuthor: { a in authorTarget = a.author })
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
-                .modifier(DYStatusBarVisible())
         }
         .sheet(item: $authorTarget) { a in
             NavigationStack {
@@ -5774,18 +5769,6 @@ struct DYCommentTopTracker: ViewModifier {
             }
         } else {
             content
-        }
-    }
-}
-
-/// 全屏覆盖页（信息 / 我的）明确显示状态栏（时间 / 信号）。
-/// fullScreenCover 不继承外层设置，默认交给系统判断，切后台回来可能被判成隐藏。
-struct DYStatusBarVisible: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 27.0, *) {
-            content.toolbarVisibility(.visible, for: .statusBar)
-        } else {
-            content.statusBarHidden(false)
         }
     }
 }
