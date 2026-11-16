@@ -76,7 +76,7 @@
 
 以上协议细节（region、service、上传地址、提交方式）都是照评论输入框实际用的那版上传器源码写的，签名算法另用 AWS 官方测试向量和一份独立的 Python 实现对过账（`scripts/test_imagex_upload.py`）。
 
-还没验证的只有真实联网行为：`upload/auth` 在 WKWebView 签名页里是否正常返回（2026-11-09 无登录 curl 得到的是「用户未登录」，说明路径本身是通的）；ImageX 网关是否校验 `Origin` / `Referer`（原生请求里已经照网页的样子带上）。用 `DOUDUO_IMGUP=1` 在登录态下跑一次就能确认。
+**已实测（2026-11-17，真机，已登录）**：`DOUDUO_IMGUP=1` 上传自检通过；随后从评论输入栏真发了一条带图评论，`comment/publish` 返回 `status_code` 0，回执的 `comment.image_list` 里带着那张图。原生请求直接打 ImageX 网关可行，不需要退回到签名页里传。
 
 ### 1.2 实现
 
@@ -84,15 +84,19 @@
 | --- | --- | --- |
 | 凭证（已写） | `DouyinBridge+CommentImage.swift` 的 `commentUploadCredential()` | 走现有 `call(...)`，在签名页里发 `comment/upload/auth` |
 | 上传（已写） | `DYImageXUploader.swift`；入口是 `DouyinBridge.uploadCommentImage(_:fileName:measured:)` | 原生 `URLSession` 完成申请 → 传图 → 提交；AWS4 签名用 `CryptoKit` 的 HMAC-SHA256，CRC32 自己查表算 |
-| 发布 | `DouyinExtras.swift:273` `publishComment` 加可选参数 `image: DYCommentImageRef?`；`publishJS`（`:344`）有图时往 body 追加四个字段 | 不改无图时的请求形状 |
-| 回显 | `DouyinExtras.swift:339` 的 `cmap` | 现在不带图片字段，发出去的图评在本地列表里会是一条空评论；改成复用评论列表那套映射（`ddImages`，`:539-553`） |
-| 核对 | `DouyinExtras.swift:291` `findMySentComment` | 现在 `guard !want.isEmpty` 直接返回 nil，纯图评论拿不到回执时无法核对；加一条「我的昵称 + 带图 + 时间在发送之后」的匹配 |
-| 界面 | `DouyinFeedView.swift:5240` 附近（表情、@ 按钮旁） | 加 `PhotosPicker` 按钮；选中后在输入框上方显示缩略图和移除按钮；发送按钮的禁用条件（`:5271-5272`）改为「文字和图片都为空才禁用」；`send()`（`:5384`）同步放开 |
-| 预处理 | 同上 | HEIC 转 JPEG；超过 10MB 或边长超过 10000 时先压缩，再不行才提示 |
+| 发布（已写） | `DouyinExtras.swift` 的 `publishComment` 加可选参数 `image: DYImageXUploadResult?`；`publishJS` 有图时往 body 追加那几个字段 | 不改无图时的请求形状（`scripts/test_comment_send.js` 有用例盯着） |
+| 回显（已写） | `DouyinExtras.swift` 的 `cmap` | 回执里的 `image_list` 按评论列表同一套规则映射成图片；回执没带图时去评论列表里把这条找回来 |
+| 核对（已写） | `DouyinExtras.swift` 的 `findMySentComment` | 带图时加一条「我的昵称 + 评论里有图 + 时间不早于发送前两分钟」的匹配，纯图评论也能核对 |
+| 界面（已写） | `DouyinFeedView.swift` 评论输入栏（@ 按钮右边） | `PhotosPicker` 按钮；选中后在输入框上方显示缩略图和移除按钮；文字和图片都为空才禁用发送 |
+| 预处理（已写） | `DouyinBridge+CommentImage.swift` 的 `DYCommentImagePrep` | JPEG / PNG 没超限的原样传；HEIC、GIF、超过 10MB 或边长超过 10000 的转成 JPEG（最长边 2560），再不行才提示 |
 
 上传放原生而不是放进签名页的理由：不用把几 MB 的图片塞进 `callAsyncJavaScript`；上传请求本身不需要抖音的签名；进度、取消、重试都好做。如果实测发现 ImageX 校验 `Origin` / `Referer`，退路是在签名页里用 `fetch` 实现同一套流程。
 
-风控注意：上传成功但 publish 失败时不要自动重发（沿用现在「不自动重试写操作」的规矩）；上传凭证用完即弃，不落盘、不进日志。
+风控注意：上传成功但 publish 失败时不自动重发（沿用现在「不自动重试写操作」的规矩），用户再点发送时复用已经传好的图，不重传；上传凭证用完即弃，不落盘、不进日志。
+
+还没做：评论里发表情包（网页评论框里图片和表情包二选一，字段是 `sticker_id` 等七个）；私信里的评论入口（`DouyinMessages.swift` 那处 `publishComment` 调用）没有加选图。
+
+还没测：回复里带图、纯图评论、HEIC 照片、超大图压缩这几种情况只有代码，没有逐个在真机上发过。
 
 ### 1.3 顺带发现的问题
 
