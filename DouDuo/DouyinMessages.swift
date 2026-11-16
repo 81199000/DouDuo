@@ -818,10 +818,10 @@ struct DYMessagesScreen: View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             Spacer(minLength: 0)
             // 返回：单独一颗圆（跟视频页从搜索进入时的返回圆钮一致）
-            if showingMine || navigation.hasDetail || chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil {
+            if (!showingMine && navigation.hasDetail) || chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil {
                 Button {
-                    if showingMine { withAnimation(.easeOut(duration: 0.18)) { showingMine = false } }
-                    else if navigation.hasDetail { backFromMessage() }
+                    // 信息、我的是并列两页：返回只退当前页里的上一层，到顶就关掉整页回视频（不再「我的 → 返回 → 信息」）
+                    if !showingMine && navigation.hasDetail { backFromMessage() }
                     else if let onClose { onClose() } else { dismissRoot() }
                 } label: {
                     Image(systemName: "chevron.backward")
@@ -834,7 +834,7 @@ struct DYMessagesScreen: View {
                 .glassEffect(.regular.interactive(), in: .circle)
                 .disabled(openingChat != nil)
                 .accessibilityLabel("返回")
-                .accessibilityIdentifier(navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
+                .accessibilityIdentifier(!showingMine && navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
             }
             // 四个分类 + 聊天时的「更多」：一条玻璃胶囊
             VStack(spacing: theme.media.actionItemSpacing) {
@@ -850,10 +850,17 @@ struct DYMessagesScreen: View {
             .glassEffect(.regular, in: .capsule)
             // 我的：直接进「我的」
             if mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
-                railButton(icon: "person.crop.circle", title: "我的", selected: showingMine, badge: 0,
-                           id: "douyin.messages.mine") {
-                    if mineContent != nil { withAnimation(.easeOut(duration: 0.18)) { showingMine.toggle() } }
-                    else { onMine?() }
+                VStack(spacing: theme.media.actionItemSpacing) {
+                    railButton(icon: "bubble.left.and.bubble.right", title: "信息", selected: !showingMine, badge: 0,
+                               id: "douyin.messages.tab.messages") {
+                        if showingMine { withAnimation(.easeOut(duration: 0.18)) { showingMine = false } }
+                    }
+                    railButton(icon: "person.crop.circle", title: "我的", selected: showingMine, badge: 0,
+                               id: "douyin.messages.mine") {
+                        if mineContent != nil {
+                            if !showingMine { withAnimation(.easeOut(duration: 0.18)) { showingMine = true } }
+                        } else { onMine?() }
+                    }
                 }
                     .padding(.vertical, 6)
                     .frame(width: Self.railWidth)
