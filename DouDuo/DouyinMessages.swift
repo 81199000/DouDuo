@@ -216,8 +216,10 @@ final class DYMessageCache: ObservableObject {
             if batch == 0 { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
             incoming.append(contentsOf: fresh.items)
             if !fresh.hasMore || fresh.items.isEmpty || fresh.maxTime == cursor || fresh.items.contains(where: { known.contains($0.id) }) { break }
-            // 没有缓存时只取首页，历史仍由用户下滑分页获取。
-            if old == nil { break }
+            // 没有缓存（或缓存不足一页）时也要连拉几页：抖音单页只给 10 条，
+            // 只取首页会出现「消息中心永远只有 10 条」——老板报的「只显示 20 个人」就是这个。
+            // 首屏给到 3 页（约 30 条）够填满一屏，再往下由用户下滑分页继续。
+            if old == nil && batch >= 2 { break }
             cursor = fresh.maxTime
         }
         var byID = Dictionary((old?.items ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
