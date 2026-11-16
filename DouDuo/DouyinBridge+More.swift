@@ -134,6 +134,29 @@ extension DouyinBridge {
         return (p.follow > 0, p.uid)
     }
 
+    /// Resolve a video author and publish the same follow state to every surface.
+    func followVideoAuthor(_ author: DYAweme.Author) async throws -> String? {
+        var uid = author.uid
+        if uid?.isEmpty != false, let sec = author.secUid {
+            let state = try await followState(sec: sec)
+            if state.followed {
+                rememberFollow(author, followed: true)
+                return nil
+            }
+            uid = state.uid
+        }
+        guard let uid, !uid.isEmpty else { return "暂时无法获取作者信息" }
+        switch try await followUser(uid, follow: true) {
+        case .ok:
+            rememberFollow(author, followed: true)
+            return nil
+        case .notLoggedIn:
+            return "抖音未登录，请先登录"
+        case .failed(let message):
+            return "关注失败：" + message
+        }
+    }
+
     /// 关注 / 取消关注。只在按钮点击时调用，测试不要打这条。
     func followUser(_ uid: String, follow: Bool) async throws -> DYActionResult {
         let d = try await call(Self.followWriteJS, args: ["uid": uid, "type": follow ? "1" : "0"], attempts: 1)

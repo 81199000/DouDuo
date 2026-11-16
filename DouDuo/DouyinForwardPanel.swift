@@ -15,13 +15,6 @@ struct DYForwardPanelAction: Identifiable {
     let symbol: String
 }
 
-struct DYForwardContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat { 0 }
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 /// 仅负责原生面板内容。父视图控制视频上方的位置、可用宽度、遮罩和发送确认。
 /// 联系人与可用操作均由父视图传入；不在这里读取网页或发送消息。
 struct DYClassicNativeForwardPanel: View {
@@ -69,7 +62,7 @@ struct DYClassicNativeForwardPanel: View {
         .fixedSize(horizontal: false, vertical: true)
         .background {
             GeometryReader { geo in
-                Color.clear.preference(key: DYForwardContentHeightKey.self, value: geo.size.height)
+                Color.clear.preference(key: DYBottomPanelContentHeightKey.self, value: geo.size.height)
             }
         }
         .foregroundStyle(.themeTextPrimary)
