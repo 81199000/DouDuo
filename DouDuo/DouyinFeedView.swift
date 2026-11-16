@@ -1913,15 +1913,20 @@ struct DYUpstreamFeedScreen: View {
     private func playNext(after id: String) {
         guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
         if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
+            advance(from: id, to: feed.items[i + 1].id)
         } else {
             Task {
                 await feed.loadMore(bridge)
                 if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
+                    advance(from: id, to: feed.items[j + 1].id)
                 }
             }
         }
+    }
+
+    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    private func advance(from: String, to: String) {
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
@@ -3307,15 +3312,20 @@ struct DYClassicFeedScreen: View {
     private func playNext(after id: String) {
         guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
         if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
+            advance(from: id, to: feed.items[i + 1].id)
         } else {
             Task {
                 await feed.loadMore(bridge)
                 if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
+                    advance(from: id, to: feed.items[j + 1].id)
                 }
             }
         }
+    }
+
+    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    private func advance(from: String, to: String) {
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
