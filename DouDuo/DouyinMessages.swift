@@ -822,7 +822,6 @@ struct DYMessagesScreen: View {
 
     private var messageRail: some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
-            Spacer(minLength: 0)
             // 返回：单独一颗圆（跟视频页从搜索进入时的返回圆钮一致）
             if (!showingMine && navigation.hasDetail) || chromeModeRaw != DDChromeMode.duoClassic.rawValue || onClose != nil {
                 Button {
@@ -873,6 +872,10 @@ struct DYMessagesScreen: View {
                     .glassEffect(.regular, in: .capsule)
             }
         }
+        // 跟视频页右侧栏同一套避让：状态栏（时间/信号环）显示时是系统遮挡区，
+        // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
+        // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
+        .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92))
         // 底部位置跟视频页一致：离底 92pt
         .padding(.bottom, 92)
         .frame(maxHeight: .infinity, alignment: .bottom)
