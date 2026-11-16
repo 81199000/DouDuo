@@ -38,6 +38,26 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
     static func dismantleUIView(_ view: DYPagingSpeedHost, coordinator: ()) { view.detach() }
 }
 
+/// 自动连播翻页：播完后像手滑一样把下一条推上来（议题 #21-4：以前是直接切换，没有滑动动画）。
+/// 由正挂着的分页代理执行收尾动画，停稳后照常走 didSettle 切当前条起播（「停住才播」不变）。
+@MainActor
+enum DYPagerAdvance {
+    private static var delegates: [WeakDelegate] = []
+    private struct WeakDelegate { weak var value: DYPagingDelegate? }
+    fileprivate static func register(_ d: DYPagingDelegate) {
+        delegates.removeAll { $0.value == nil || $0.value === d }
+        delegates.append(WeakDelegate(value: d))
+    }
+    /// 返回 false = 没有分页代理接手（系统「减少动态效果」等），调用方自己直接切
+    static func request(from: String, to: String) -> Bool {
+        delegates.removeAll { $0.value == nil }
+        for d in delegates.reversed() {
+            if let d = d.value, d.animateAdvance(from: from, to: to) { return true }
+        }
+        return false
+    }
+}
+
 final class DYPagingSpeedHost: UIView {
     var duration: TimeInterval?
     var ids: [String] = []
@@ -69,6 +89,7 @@ final class DYPagingSpeedHost: UIView {
             willSettle: { [weak self] id in self?.didSettle(id) })
         proxy = next
         scroll.delegate = next
+        DYPagerAdvance.register(next)
         #if DEBUG
         ddWrite("DDPAGE attach duration=\(duration)")
         #endif
@@ -137,7 +158,7 @@ private final class DYPagingDisplayTarget: NSObject {
 }
 
 /// Preserves SwiftUI's target selection and all optional delegate methods. Only settling changes.
-private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
+final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     weak var scroll: UIScrollView?
     private weak var original: UIScrollViewDelegate?
     var duration: TimeInterval
@@ -315,6 +336,24 @@ private final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             DYLiveModel.log("DDSETTLE \(targetID.suffix(6)) 停住才起播 \(Int((CACurrentMediaTime() - startTime) * 1000))ms")
             didSettle(targetID)
         }
+    }
+    /// 自动连播：从当前页滑到下一页（跟手滑收尾同一套 tick，结束时 didSettle 起播）。
+    /// 只在这个分页器的当前条就是播完的那条、且不在拖动/收尾中时接手。
+    @MainActor
+    func animateAdvance(from: String, to: String) -> Bool {
+        guard let scroll, scroll.delegate === self, scroll.window != nil, !scroll.isDragging,
+              link == nil, currentID() == from, let index = ids().firstIndex(of: to) else { return false }
+        let y = CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top
+        targetID = to
+        target = CGPoint(x: scroll.contentOffset.x, y: y)
+        start = scroll.contentOffset; startTime = CACurrentMediaTime()
+        expected = start; jumpFixes = 0
+        // 比手滑收尾（0.16–0.22s）慢一点：没有手指带着，要看得出是「滑上来」而不是闪过去
+        animationDuration = 0.34
+        let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
+        link = next; next.add(to: .main, forMode: .common)
+        DYLiveModel.log("DDAUTONEXT slide \(from.suffix(4))→\(to.suffix(4))")
+        return true
     }
     func reconcileAfterLayout() {
         stop()

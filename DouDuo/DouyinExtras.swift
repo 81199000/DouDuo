@@ -1021,9 +1021,14 @@ struct DYListPlayer: View {
     }
 
     /// 「自动连播」打开时播完切下一条；到尾部先拉下一页
+    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    private func advance(from: String, to: String) {
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
+    }
+
     private func playNext(after id: String) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < items.count { withAnimation { currentID = items[i + 1].id }; return }
+        if i + 1 < items.count { advance(from: id, to: items[i + 1].id); return }
         guard let loadMore, !loadingMore else { return }
         loadingMore = true
         Task {
@@ -1032,7 +1037,7 @@ struct DYListPlayer: View {
             items.append(contentsOf: more.filter { !seen.contains($0.id) })
             loadingMore = false
             if let j = items.firstIndex(where: { $0.id == id }), j + 1 < items.count {
-                withAnimation { currentID = items[j + 1].id }
+                advance(from: id, to: items[j + 1].id)
             }
         }
     }
