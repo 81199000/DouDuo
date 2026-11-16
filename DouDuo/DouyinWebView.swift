@@ -115,6 +115,8 @@ struct DouyinWebScreen: View {
                 .padding(.top, 4)
             }
         }
+        // 网页版里可能登录 / 退出 / 切账号：关掉后下次进信息页重新核对账号
+        .onDisappear { DYMessageCache.shared.invalidateScope() }
     }
 
     private func point(in size: CGSize, extra: CGSize) -> CGPoint {

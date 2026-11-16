@@ -67,6 +67,8 @@ struct DYImageGallery: View {
     let isActive: Bool
     let muted: Bool
     var hidesIndex = false
+    /// 双击点赞（视频页是播放器手势处理的；图集原来没接 → 老板说「图文无法双击点赞」）
+    var onDoubleTap: (() -> Void)? = nil
 
     @StateObject private var audio = DYGalleryAudio()
 
@@ -81,6 +83,9 @@ struct DYImageGallery: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: hidesIndex ? .never : .always))
+        // simultaneous：不抢 TabView 左右翻图的滑动
+        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap?() })
+        .accessibilityIdentifier("douyin.gallery")
         .onAppear {
             DYLiveModel.log("DDGALLERY 打开 n=\(images.count) music=\(musicURL?.host ?? "-") active=\(isActive) muted=\(muted)")
             audio.sync(url: musicURL, active: isActive, muted: muted)

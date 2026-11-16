@@ -61,6 +61,8 @@ struct DDTheme {
         let sidebarTint = Color.ddMessageListBackground
         let pinnedRow = Color.ddMessagePinnedRow
         let selectedRow = Color.ddMessagePinnedRow
+        let splitDivider = Color.ddMessageSplitDivider
+        let splitDividerWidth: CGFloat = 1
         let headerHeight: CGFloat = 60
     }
     let messages = Messages()

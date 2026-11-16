@@ -41,6 +41,8 @@ struct DYVideoToolbarActions {
     let comments: AnyView
     let collect: AnyView
     let share: AnyView
+    /// 当前视频的长按加速；图集没有播放器，为 nil。
+    var boost: DYBoostControl? = nil
 }
 
 @available(iOS 27.1, *)
@@ -56,20 +58,28 @@ struct DYNativeVideoActions: View {
     @State private var anchorFrame: CGRect = .zero
     @State private var windowHeight: CGFloat = 0
 
-    // A standalone player replaces the home dock with clearance of the same height.
-    private var standaloneBottomClearance: CGFloat { onBack == nil ? 0 : 60 }
+    // Start with the capsule's natural size. A Live Activity can push the
+    // primary controls down far enough that the usual empty spacing no longer fits.
+    private var railHeight: CGFloat { 262 }
+    private var availableBelowControls: CGFloat { max(0, windowHeight - anchorFrame.maxY) }
+    private var standaloneBottomClearance: CGFloat {
+        guard onBack != nil, !anchorFrame.isEmpty else { return 0 }
+        return min(60, max(0, availableBelowControls - railHeight - 70))
+    }
     private var showsInlineCleanControl: Bool {
         onBack == nil && verticalEdge == nil
             && (!DYDuoMetrics.isDuoHardware || (stacksLandscapeComments && !hingeClosed))
     }
     private var slotHeight: CGFloat {
-        let minimum = 262 + standaloneBottomClearance
+        let minimum = railHeight + standaloneBottomClearance
         guard !anchorFrame.isEmpty else { return minimum }
-        return max(minimum, (windowHeight - anchorFrame.maxY - 112 + standaloneBottomClearance).rounded(.down))
+        let preferred = (availableBelowControls - 112 + standaloneBottomClearance).rounded(.down)
+        let dockClearance: CGFloat = onBack == nil ? 90 : 66
+        return max(minimum, min(preferred, availableBelowControls - dockClearance))
     }
 
     private var cleanButton: some View {
-        Button(action: onToggleClean) {
+        Button(action: { if actions?.boost?.blocksTap != true { onToggleClean() } }) {
             Image(systemName: isClean ? "eye" : "eye.slash")
                 .font(.title3)
                 .foregroundStyle(.white)
@@ -78,15 +88,17 @@ struct DYNativeVideoActions: View {
         }
         .accessibilityLabel(isClean ? "退出清屏" : "清屏")
         .accessibilityIdentifier("douyin.cleanScreen")
+        .modifier(DYHoldBoostArea(control: actions?.boost))
     }
 
     private func backButton(_ onBack: @escaping () -> Void) -> some View {
-        Button("返回", systemImage: "chevron.backward", action: onBack)
+        Button("返回", systemImage: "chevron.backward", action: { if actions?.boost?.blocksTap != true { onBack() } })
             .labelStyle(.iconOnly)
             .foregroundStyle(.white)
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .accessibilityIdentifier("douyin.list.back")
+            .modifier(DYHoldBoostArea(control: actions?.boost))
     }
 
     private func standaloneControls(_ onBack: @escaping () -> Void) -> some View {
@@ -136,7 +148,7 @@ struct DYNativeVideoActions: View {
 
             // The stable controls anchor is independent of this group's size.
             // A new item identity invalidates the native cached fitting size.
-            ToolbarItem(id: "video-actions-\(Int(slotHeight))", placement: .bottomBar) {
+            ToolbarItem(id: "video-actions-\(Int(slotHeight))-\(Int(standaloneBottomClearance))", placement: .bottomBar) {
                 if verticalEdge != nil, let actions {
                     VStack(spacing: 4) {
                         DYAuthorAvatarControl(image: actions.avatarImage, name: actions.authorName,
@@ -153,6 +165,7 @@ struct DYNativeVideoActions: View {
                     .accessibilityIdentifier("douyin.video.actions")
                     .padding(.bottom, standaloneBottomClearance)
                     .frame(height: slotHeight, alignment: .bottom)
+                    .modifier(DYHoldBoostArea(control: actions.boost))
                 }
             }
             .sharedBackgroundVisibility(.hidden)
