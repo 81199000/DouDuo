@@ -672,29 +672,12 @@ struct PlayerPage: View {
         }
         guard let p = player else { return }
         DYBoostProbe.begin(pressing ? "on" : "off", mode: "\(seamAudio.mode)", player: p)
-        let direct = seamAudio.mode == .fallbackAVPlayer
-        if direct {
-            // 老板实机选定（A/B/C 对比 2026-11-16）：变速时不让 AVPlayer 因「2 倍速要更多缓冲」先停下来等
-            //（原做法实测按下/松手后偶发 0.3～0.6s 画面停住）。2 倍速期间多缓冲 30s 兜底，松手 0.6s 后恢复默认。
-            p.automaticallyWaitsToMinimizeStalling = false
-            if pressing { p.currentItem?.preferredForwardBufferDuration = 30 }
-        }
-        // 声音交给独立音频引擎变速（不断流、不爆音），画面速率由引擎的软同步跟随
-        if pressing {
-            rateBoost = true
-            if direct { p.softRate(2, fadeOut: 0.09, fadeIn: 0.16) } else { seamAudio.setRate(2) }
-        }
+        // PR #42（@ImSingee）：1x 原生声音下第一次变速，就地把声音交给独立引擎（AVPlayer 带音轨改速率会冲刷音频队列、画面停 50~110ms）。
+        // 之后这一条留在引擎上，松手/再按都是 0ms 变速。所以这里统一走 seamAudio.setRate，不再直接调 AVPlayer.softRate。
+        if pressing { rateBoost = true; seamAudio.setRate(2) }
         else if rateBoost {
             rateBoost = false
-            if isPlaying {
-                if direct { p.softRate(Float(effectiveRate), fadeOut: 0.09, fadeIn: 0.16) } else { seamAudio.setRate(Float(effectiveRate)) }
-            } else { seamAudio.pause() }
-            if direct {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    p.automaticallyWaitsToMinimizeStalling = true
-                    p.currentItem?.preferredForwardBufferDuration = 0
-                }
-            }
+            if isPlaying { seamAudio.setRate(Float(effectiveRate)) } else { seamAudio.pause() }
         }
     }
 
@@ -918,7 +901,8 @@ struct PlayerPage: View {
                 seamAudio.loopToZero(rate: playRate, muted: muted)
             }
         }
-        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted, useEngine: !cleanScreen && DDSeamlessController.engineWanted)
+        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted, useEngine: !cleanScreen && DDSeamlessController.engineWanted,
+                       engineHandoff: !cleanScreen)
     }
 
     private func setup(prepared: AVPlayer? = nil) {
@@ -1314,9 +1298,10 @@ struct PlayerPage: View {
                 if isActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)
-                // 仅在罕见回退模式下每 0.25s 拉回锁定倍速；engaged 模式下由 seamAudio 的 Soft PLL 维护速率
+                // 原生声音模式下每 0.25s 拉回锁定倍速（交给 seamAudio：能交接给独立引擎就不走会卡一下的原生变速）；
+                // engaged 模式下由 seamAudio 的 Soft PLL 维护速率
                 if seamAudio.mode == .fallbackAVPlayer, !rateBoost, p.rate > 0, p.rate != Float(effectiveRate), !AVPlayer.softRatePending {
-                    p.softRate(Float(effectiveRate))
+                    seamAudio.setRate(Float(effectiveRate))
                 }
                 if let d = p.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
                 // 头部缓存 → 在线流：提前预热，到点直接交接（不等 ended，避免尾部没数据干等）
