@@ -443,6 +443,10 @@ struct DYMessagesScreen: View {
     @State private var openingChat: String?
     /// 网页 DOM 真的切到这条会话了没有：没切之前用原生遮罩盖住，避免闪一下会话列表
     @State private var chatDOMReady = true
+    /// 上次离开这条会话时截的聊天画面：网页切会话期间先铺这张，像微信一样点进去立刻有内容
+    @State private var chatPlaceholder: UIImage?
+    /// 最近一次打开会话有没有用上快照（给 UI 测试读；转场很快，测试抓不到那一下的遮罩）
+    @State private var lastOpenUsedSnapshot = false
     @State private var chatSurfaceActive = false
     @State private var sidebarVisible = false
     @AppStorage("douyin_message_sidebar_fraction_v1") private var sidebarFraction = 0.36
@@ -1094,11 +1098,13 @@ struct DYMessagesScreen: View {
     }
 
     private func openConversation(_ row: DYConversationRow) async {
-        guard openingChat == nil, changingConversation == nil else { return }
+        guard openingChat == nil, changingConversation == nil else {
+            DYLiveModel.log("DDCHAT open skip busy opening=\(openingChat ?? "-") changing=\(changingConversation ?? "-")"); return
+        }
         let started = Date()
         openingChat = row.id
         defer { openingChat = nil }
-        guard !composer.working else { return }
+        guard !composer.working else { DYLiveModel.log("DDCHAT open skip composer-working"); return }
         guard let web = chatModel.web else {
             chatStatus = "私信页面还没准备好，请稍后再试"
             DYLiveModel.log("DDCHAT open miss no-web")
@@ -1107,6 +1113,9 @@ struct DYMessagesScreen: View {
         // 乐观跳转：点下就进聊天界面（原生表头 + 转圈），DOM 切换在后台完成。
         // 以前要等网页 DOM 切完才跳，那段时间就是老板说的「点了要等很久」。
         chatDOMReady = false
+        chatPlaceholder = snapshotKey(for: row.id, web: web).flatMap { DYChatSnapshotCache.shared.image(for: $0) }
+        lastOpenUsedSnapshot = chatPlaceholder != nil
+        DYLiveModel.log("DDCHAT_SNAP open id=\(row.id.suffix(6)) hit=\(chatPlaceholder != nil)")
         cache.selectedChat = row
         navigation.openChat(row.id, from: nil)
         var result = await DYChatOpener.open(row, web: web)
@@ -1128,6 +1137,13 @@ struct DYMessagesScreen: View {
             let settled = await DYChatOpener.settle(web)
             guard navigation.chatID == row.id else { return }
             chatDOMReady = true
+            chatPlaceholder = nil
+            // 第一次进这条会话（没有快照）：停稳一会儿（等头像/图片加载）就截一张，下次进来直接有画面
+            Task { [weak web] in
+                try? await Task.sleep(for: .milliseconds(900))
+                guard let web, navigation.chatID == row.id, chatDOMReady else { return }
+                await captureChatSnapshot(row.id, web: web)
+            }
             DYLiveModel.log("DDCHAT open stranger=\(row.stranger) ms=\(Int(Date().timeIntervalSince(started) * 1000)) prep_ms=\(Int(Date().timeIntervalSince(t1) * 1000)) settle=\(settled.frames)f/\(settled.ms)ms composer=\(composer.isConnected(to: row.id))")
             Task { [weak web] in
                 guard let web else { return }
@@ -1149,6 +1165,7 @@ struct DYMessagesScreen: View {
     /// 打开失败退回列表（乐观跳转的反向操作），别把人留在空白的聊天页
     private func rollbackOpen() {
         chatDOMReady = true
+        chatPlaceholder = nil
         _ = navigation.back()
         cache.selectedChat = nil
         restoreConversationList()
@@ -1187,6 +1204,7 @@ struct DYMessagesScreen: View {
     }
 
     private func backFromMessage() {
+        DYLiveModel.log("DDCHAT back tap detail=\(navigation.hasDetail) opening=\(openingChat ?? "-") working=\(composer.working)")
         guard navigation.hasDetail, openingChat == nil else { return }
         #if DEBUG
         let started = Date()
@@ -1206,16 +1224,29 @@ struct DYMessagesScreen: View {
 
     private func restoreConversationList() {
         // Native cached rows are available immediately; web cleanup is serialized below.
+        let leaving = chatDOMReady ? cache.selectedChat?.id : nil
         chatDOMReady = true
+        chatPlaceholder = nil
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
         chatModel.web?.endEditing(true)
         Task {
             if let web = chatModel.web {
+                // 网页切回列表之前，把刚看的聊天画面（含最新消息）截下来，下次进这条会话直接铺
+                if let leaving { await captureChatSnapshot(leaving, web: web) }
                 await DYChatOpener.restoreList(web, collapseStrangerPanel: wasStranger)
             }
             await readConversations()
         }
+    }
+
+    private func snapshotKey(for chatID: String, web: WKWebView) -> DYChatSnapshotCache.Key? {
+        DYChatSnapshotCache.shared.key(scope: cache.accountScope, chatID: chatID, size: web.bounds.size, dark: scheme == .dark)
+    }
+
+    private func captureChatSnapshot(_ chatID: String, web: WKWebView) async {
+        guard let key = snapshotKey(for: chatID, web: web) else { return }
+        await DYChatSnapshotCache.shared.capture(web, key: key)
     }
 
     private func selectCategory(_ route: DYMsgRoute) {
@@ -1270,11 +1301,21 @@ struct DYMessagesScreen: View {
             DYChatWebSurface(model: chatModel, active: chatSurfaceActive)
                 .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
+                .accessibilityValue(lastOpenUsedSnapshot ? "snapshot" : "fresh")
             if !chatDOMReady, navigation.isChat {
-                // 打开会话期间：使用聊天室底色 + 转圈，不露网页的会话列表
-                ZStack {
+                // 打开会话期间：有上次的聊天画面就直接铺上（像微信，点进去立刻有内容），
+                // 没有才用聊天室底色 + 转圈；都不露网页的会话列表
+                ZStack(alignment: .topLeading) {
                     Color.ddMessageChatBackground
-                    ProgressView().tint(.primary)
+                    if let chatPlaceholder {
+                        Image(uiImage: chatPlaceholder)
+                            .resizable()
+                            .frame(width: chatPlaceholder.size.width, height: chatPlaceholder.size.height)
+                            .accessibilityIdentifier("douyin.messages.chat.snapshot")
+                    } else {
+                        ProgressView().tint(.primary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
                 .transition(.opacity)
                 .allowsHitTesting(true)

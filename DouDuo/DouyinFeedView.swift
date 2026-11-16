@@ -3903,7 +3903,12 @@ struct DYUpstreamVideoPage: View {
                 DYImageGallery(images: item.images,
                                musicURL: item.musicURL.flatMap(URL.init(string:)),
                                isActive: isCurrent,
-                               muted: muted)
+                               muted: muted,
+                               onDoubleTap: {
+                                   onDoubleTap()
+                                   heart = true
+                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
+                               })
             }
 
             if heart {
@@ -4436,7 +4441,12 @@ struct DYClassicVideoPage: View {
                                musicURL: item.musicURL.flatMap(URL.init(string:)),
                                isActive: isCurrent,
                                muted: DYGalleryAudio.globalMuted,
-                               hidesIndex: cleanScreen)
+                               hidesIndex: cleanScreen,
+                               onDoubleTap: {
+                                   onDoubleTap()
+                                   heart = true
+                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
+                               })
             }
 
             if heart && !cleanScreen {
