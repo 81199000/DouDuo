@@ -242,3 +242,18 @@ struct DYRefreshProbeAnchor: View {
     }
 }
 #endif
+
+/// 推荐流按横 / 竖选片的口径，四种界面共用（「横屏时只放横屏内容」开关据此生效）。
+/// 老板 2026-11-17 定：半折叠时横竖反过来——
+/// - 竖着拿半折（桌面姿态，上面放视频、下面评论）→ 视频区是横的，按**横屏**规则放
+/// - 横着拿半折（书本姿态，左边视频、右边评论）→ 视频区是竖的，按**竖屏**规则放
+/// - 没半折：看整个窗口宽 > 高
+/// （1.3.14 曾按视频块判断后又撤回，那次是「短视频变少」；这次是老板明确要求半折按反向选片。）
+enum DYFeedOrientation {
+    static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_FORCEWIDE"] == "1" { return true }
+        #endif
+        return DYVideoFit.feedPlaysLandscape(window: geo.size, halfFolded: DYDuoMetrics.foldIsActive(geo))
+    }
+}

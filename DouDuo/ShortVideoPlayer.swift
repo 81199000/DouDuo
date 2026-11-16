@@ -407,7 +407,9 @@ struct PlayerPage: View {
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
     @Environment(\.accessibilityReduceMotion) private var commentReduceMotion
 
-    private var showsVideoAboveComments: Bool { usesClassicVideoLayout && isActive && commentVideoFrame != nil }
+    /// 评论打开且外屏要把横屏视频移到评论上方：四种界面都一样（评论统一用经典几何，老板 2026-11-17 定）
+    private var showsVideoAboveComments: Bool { isActive && commentVideoFrame != nil }
+
     private var fillsVideoPlane: Bool { fillWidth && !showsVideoAboveComments }
     /// 实际播放速度（含按住的临时 2 倍）：播放器、音频引擎、弹幕时钟和倍速角标都认这一个值
     private var actualRate: Double { rateBoost ? 2 : effectiveRate }
@@ -456,20 +458,30 @@ struct PlayerPage: View {
                 }
             } else {
                 GeometryReader { outer in
+                    // 评论打开、外屏把横屏视频移到评论上方：与经典同一套位移（DYVideoFit.commentPlacement），
+                    // 不切换渲染分支，避免重建画面层闪黑。
+                    let lift = showsVideoAboveComments
+                        ? DYVideoFit.commentPlacement(viewport: outer.frame(in: .global),
+                                                      fitted: DYVideoFit.contentSize(container: outer.size, videoAspect: videoAspect, fillWidth: false),
+                                                      target: commentVideoFrame)
+                        : (scale: CGFloat(1), offset: CGSize.zero)
                     videoPlane
                     .mask {
                     GeometryReader { geometry in
-                        let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillWidth)
+                        let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillsVideoPlane)
                         Rectangle()
                             .frame(width: fitted.width, height: fitted.height)
                             .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     }
                     }
-                    .scaleEffect(videoScale)
+                    .scaleEffect(showsVideoAboveComments ? 1 : videoScale)
                     .allowsHitTesting(false)
                         // 仅系统铰链 closed 时左贴边；展开、半折、分屏均保持原来的居中。
                         .modifier(DYClosedPortraitAlignment(viewport: outer.size,
-                                                           videoAspect: videoAspect, fills: fillWidth))
+                                                           videoAspect: videoAspect, fills: fillsVideoPlane))
+                    .scaleEffect(lift.scale)
+                    .offset(x: lift.offset.width, y: lift.offset.height)
+                    .animation(commentReduceMotion ? nil : .snappy, value: showsVideoAboveComments)
                 }
             }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
@@ -488,6 +500,9 @@ struct PlayerPage: View {
                 .accessibilityIdentifier("douyin.video.boostStarts")
                 .allowsHitTesting(false)
             if isActive {
+                // 评论打开时视频是否已移到评论上方（外屏横屏视频）
+                Text((showsVideoAboveComments ? "lifted" : "inPlace") + String(format: " a=%.2f", videoAspect)).font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("douyin.video.lift").allowsHitTesting(false)
                 Text(isPlaying ? "playing" : "paused").font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("douyin.video.playback").allowsHitTesting(false)
                 Text(!pictureInPicture.supported ? "unsupported" : pictureInPicture.active ? "active" : (pictureInPicture.canStart ? "ready" : "waiting"))

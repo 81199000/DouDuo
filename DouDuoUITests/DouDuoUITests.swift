@@ -1486,29 +1486,60 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
+    /// 内屏横拿：评论从右侧滑出，右划关闭——四种界面同一套（评论统一，老板 2026-11-17）
+    func testInnerSideCommentsSwipeRightToCloseInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["duoClassic", "rail", "classic", "minimal"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                    "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 60), mode)
+            guard app.windows.firstMatch.frame.width >= 700 else { throw XCTSkip("需要内屏横拿") }
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮"); button?.tap()
+            let comments = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(comments.waitForExistence(timeout: 15), "\(mode): 评论没出来")
+            XCTAssertGreaterThan(comments.frame.minX, app.windows.firstMatch.frame.width * 0.4, "\(mode): 评论应在右侧")
+            XCTAssertFalse(app.buttons["douyin.like"].firstMatch.isHittable, "\(mode): 评论打开时视频按钮应收起")
+            attach(app, "inner-side-comments-" + mode)
+            comments.swipeUp()
+            let start = comments.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 3)))
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForNonExistence(timeout: 5), "\(mode): 右划应关闭评论")
+            app.terminate()
+        }
+    }
+
+    /// 半折评论常驻：四种界面同一套（评论统一，老板 2026-11-17）
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
         continueAfterFailure = false
-        let app = launchOnlineRegression()
-        XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForExistence(timeout: 15), "实际半折自动显示评论")
-        pauseRegressionVideo(app)
-        attach(app, "physical-half-fold-comments")
-        for id in ["douyin.like", "douyin.share", "douyin.cleanScreen", "首页"] {
-            XCTAssertFalse(app.buttons[id].firstMatch.isHittable, id + " 半折评论时隐藏")
+        for mode in ["duoClassic", "rail", "classic", "minimal"] {
+            let app = launchOnlineRegression(mode: mode)
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForExistence(timeout: 15), "\(mode) 实际半折自动显示评论")
+            pauseRegressionVideo(app)
+            attach(app, "physical-half-fold-comments-" + mode)
+            for id in ["douyin.like", "douyin.share", "douyin.cleanScreen", "首页"] {
+                XCTAssertFalse(app.buttons[id].firstMatch.isHittable, mode + " " + id + " 半折评论时隐藏")
+            }
+            let panel = app.descendants(matching: .any).matching(identifier: "douyin.comments.panel").firstMatch
+            let screen = app.windows.firstMatch.frame
+            if screen.width > screen.height {
+                XCTAssertLessThanOrEqual(panel.frame.minY, screen.minY + 2, "半折评论背景贴顶")
+                XCTAssertGreaterThanOrEqual(panel.frame.maxY, screen.maxY - 2, "半折评论背景贴底")
+                XCTAssertGreaterThanOrEqual(panel.frame.maxX, screen.maxX - 2, "半折评论背景贴右边")
+                let title = app.staticTexts["douyin.comments.title"].firstMatch
+                let composer = app.descendants(matching: .any).matching(identifier: "douyin.comment.send").firstMatch
+                XCTAssertTrue(title.exists)
+                XCTAssertTrue(composer.exists)
+                XCTAssertLessThan(title.frame.minX - panel.frame.minX, 40, "横向状态栏应与左侧评论标题同排")
+                XCTAssertGreaterThan(composer.frame.midX, screen.maxX - 64, "评论操作应使用原系统竖栏占用的空间")
+            }
+            XCTAssertFalse(app.buttons["douyin.comments.close"].exists, "\(mode) 半折时评论继续常驻")
+            app.terminate()
         }
-        let panel = app.descendants(matching: .any).matching(identifier: "douyin.comments.panel").firstMatch
-        let screen = app.windows.firstMatch.frame
-        if screen.width > screen.height {
-            XCTAssertLessThanOrEqual(panel.frame.minY, screen.minY + 2, "半折评论背景贴顶")
-            XCTAssertGreaterThanOrEqual(panel.frame.maxY, screen.maxY - 2, "半折评论背景贴底")
-            XCTAssertGreaterThanOrEqual(panel.frame.maxX, screen.maxX - 2, "半折评论背景贴右边")
-            let title = app.staticTexts["douyin.comments.title"].firstMatch
-            let composer = app.descendants(matching: .any).matching(identifier: "douyin.comment.send").firstMatch
-            XCTAssertTrue(title.exists)
-            XCTAssertTrue(composer.exists)
-            XCTAssertLessThan(title.frame.minX - panel.frame.minX, 40, "横向状态栏应与左侧评论标题同排")
-            XCTAssertGreaterThan(composer.frame.midX, screen.maxX - 64, "评论操作应使用原系统竖栏占用的空间")
-        }
-        XCTAssertFalse(app.buttons["douyin.comments.close"].exists, "半折时评论继续常驻")
     }
 
     func testCleanScreenRestoresStableSidebar() throws {
@@ -2695,6 +2726,63 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 外屏横屏视频打开评论：四种界面都把视频移到评论上方（经典几何，老板 2026-11-17）
+    func testOuterLandscapeVideoLiftsAboveCommentsInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "classic", "minimal", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7707707401935336335"   // 1920x1080 横屏视频
+            app.launchArguments += ["-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页",
+                                    "-douyin_autoplay_v1", "NO", "-douyin_muted_v1", "YES"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7707707401935336335", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 45), mode)
+            guard app.windows.firstMatch.frame.width < 560 else { throw XCTSkip("需要外屏") }
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮")
+            button?.tap()
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(list.waitForExistence(timeout: 10), "\(mode): 评论列表没出来")
+            // 视频层在评论打开时对无障碍隐藏（经典的叠放评论是模态），锚点可能读不到；读得到就必须是 lifted
+            let lift = app.staticTexts["douyin.video.lift"].firstMatch
+            if lift.waitForExistence(timeout: 2) {
+                let lifted = NSPredicate(format: "label BEGINSWITH 'lifted'")
+                XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: lifted, evaluatedWith: lift)], timeout: 5), .completed,
+                               "\(mode): 横屏视频没有移到评论上方（\(lift.label)）")
+            }
+            XCTAssertGreaterThan(list.frame.minY, app.windows.firstMatch.frame.height * 0.3, "\(mode): 评论应在视频下方")
+            XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, "\(mode): 评论右边不应留空")
+            attach(app, "outer-landscape-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 评论四种界面统一用经典那套（DYCommentStage）：点评论按钮，评论列表出来、输入框可点、菜单全部收起。
+    func testCommentsOpenInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "classic", "minimal", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                    "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            XCTAssertTrue(wait(label: "hashtag-cat", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 20), mode)
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮")
+            button?.tap()
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(list.waitForExistence(timeout: 10), "\(mode): 评论列表没出来")
+            XCTAssertGreaterThan(list.frame.height, 100, "\(mode): 评论列表高度太小 \(list.frame)")
+            attach(app, "comments-open-" + mode)
+            if mode != "duoClassic" {
+                XCTAssertFalse(app.buttons.matching(identifier: "douyin.module.menu").allElementsBoundByIndex.contains { $0.isHittable },
+                               "\(mode): 评论打开时模块圆钮应收起")
+            }
+            app.terminate()
+        }
+    }
+
     /// 在「更多」第一层切换界面模式，立即生效。
     func testStandaloneCommentsRespectLayout() throws {
         continueAfterFailure = false
@@ -2719,11 +2807,8 @@ final class DouDuoUITests: XCTestCase {
             let related = app.scrollViews["douyin.comments.relatedSearch"].firstMatch
             XCTAssertTrue(list.waitForExistence(timeout: 10))
             XCTAssertTrue(related.waitForExistence(timeout: 20))
-            if mode == "duoClassic" { XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2) }
-            else {
-                XCTAssertGreaterThanOrEqual(related.frame.minY, list.frame.maxY - 2)
-                XCTAssertFalse(app.otherElements["douyin.sheet.edgeSurface"].exists)
-            }
+            // 评论面板四种界面统一经典样式（老板 2026-11-17）：相关搜索在评论列表上方
+            XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方")
             attach(app, "v14-standalone-comments-" + mode)
             app.buttons["douyin.comments.close"].firstMatch.tap()
             XCTAssertTrue(app.buttons["douyin.list.back"].firstMatch.isHittable)
@@ -2760,7 +2845,7 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "v14-classic-search-return")
     }
 
-    func testCommentPresentationIsIsolatedAcrossLayouts() throws {
+    func testCommentPresentationIsUnifiedAcrossLayouts() throws {
         continueAfterFailure = false
         for mode in ["classic", "rail", "minimal", "duoClassic"] {
             let app = launchChrome(mode)
@@ -2775,19 +2860,12 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(related.waitForExistence(timeout: 20))
             let input = app.descendants(matching: .any).matching(identifier: "douyin.comment.input").firstMatch
             XCTAssertTrue(input.isHittable)
-            if mode == "duoClassic" {
-                XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2)
-                if app.windows.firstMatch.frame.width < 700 {
-                    XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2)
-                    XCTAssertEqual(list.frame.minX, 0, accuracy: 2)
-                }
-            } else {
-                XCTAssertGreaterThanOrEqual(related.frame.minY, list.frame.maxY - 2)
-                XCTAssertFalse(app.otherElements["douyin.sheet.edgeSurface"].exists)
-                if app.windows.firstMatch.frame.width >= 700 {
-                    XCTAssertTrue(app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.contains { $0.isHittable },
-                                  mode + " 内屏评论不能隐藏互动栏")
-                }
+            // 评论四种界面统一用经典样式（老板 2026-11-17 定，docs/ui-modes.md）：
+            // 相关搜索在评论列表上方；窄屏贴边占满宽，不在右边留空；打开评论时视频上的按钮收起。
+            XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方（经典样式）")
+            if app.windows.firstMatch.frame.width < 700 {
+                XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, mode + " 评论右边不应留空")
+                XCTAssertEqual(list.frame.minX, 0, accuracy: 2)
             }
             attach(app, "v14-comments-" + mode)
             app.buttons["douyin.comments.close"].firstMatch.tap()
@@ -4664,10 +4742,10 @@ extension DouDuoUITests {
         XCTAssertTrue(recommend.waitForExistence(timeout: 10))
     }
 
-    private func launchOnlineRegression(pinned: Bool = true, forceWide: Bool = false) -> XCUIApplication {
+    private func launchOnlineRegression(pinned: Bool = true, forceWide: Bool = false, mode: String = "duoClassic") -> XCUIApplication {
         let app = XCUIApplication()
         addTeardownBlock { app.terminate() }
-        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
         if forceWide {
             app.launchEnvironment["DOUDUO_FORCEWIDE"] = "1"
             app.launchArguments += ["-douyin_wide_landscape_v1", "YES"]
