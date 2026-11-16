@@ -425,6 +425,8 @@ extension DouyinBridge {
     static let postJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
     const d = parse(r.t) || {};
+    // 自己的作品：origin_cover 是全黑占位图（2026-11-16 实测 360×721 全 0），改用 cover
+    (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });
     return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
     """#
 
@@ -1450,7 +1452,7 @@ struct DYMineScreen: View {
             let r = try await bridge.myList(k, cursor: cur)
             // 诊断：「我的」作品封面不显示——看接口给没给封面地址、是什么样的地址
             let noCover = r.items.filter { ($0.cover ?? "").isEmpty }.count
-            let sample = r.items.first?.cover.map { String($0.prefix(90)) } ?? "-"
+            let sample = r.items.first?.cover ?? "-"
             DYLiveModel.log("DDMINE list=\(k.rawValue) n=\(r.items.count) noCover=\(noCover) sample=\(sample)")
             return r
         }
