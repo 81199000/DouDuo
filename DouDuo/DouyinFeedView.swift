@@ -1883,6 +1883,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             Text(String(format: "%g", playbackRate)).font(.caption2).opacity(0.01)
                 .accessibilityIdentifier("douyin.rate")
                 .allowsHitTesting(false)
+            DYRefreshProbeAnchor()
             #endif
         }
         // 顶栏要压在系统状态栏那一行，所以整块忽略顶部安全区；
@@ -1941,7 +1942,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         // 触摸区左右各扩 hPad、上下各扩 14（图标与字号不动）
         HStack(spacing: spacing) {
             ForEach(DYTab.allCases, id: \.self) { t in
-                Button { selectTab(t) } label: {
+                Button { tapChannel(t, switchTab: selectTab) } label: {
                     VStack(spacing: 3) {
                         Text(t.title)
                             .font(.headline.weight(tab == t ? .bold : .medium))
@@ -1958,6 +1959,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.channel.\(t == .follow ? "follow" : t == .recommend ? "recommend" : "live")")
+                .accessibilityValue(t == .recommend && refreshing ? "正在刷新" : tab == t ? "已选择" : "")
             }
             // 消息只留图标，未读红点仍独立显示。
             Button { showMessages = true } label: {
@@ -2138,8 +2141,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                      arrowEdge: opensUpward ? .bottom : (edge == .trailing ? .trailing : .leading)) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(DYTab.allCases, id: \.self) { target in
-                        minimalMenuRow(target.title, target.symbol, selected: tab == target, id: "douyin.module.item.\(target)") {
-                            selectTab(target)
+                        minimalMenuRow(target == .recommend && tab == .recommend ? "刷新推荐" : target.title,
+                                       target == .recommend && tab == .recommend ? "arrow.clockwise" : target.symbol,
+                                       selected: tab == target, id: "douyin.module.item.\(target)") {
+                            tapChannel(target, switchTab: selectTab)
                         }
                     }
                     if tab == .live {
@@ -3089,11 +3094,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     /// Swipes and programmatic channel selection preserve the current video.
     private func tapChannel(_ target: DYTab) {
         guard !channelSettling else { return }
-        if target == .recommend, tab == .recommend {
-            Task { await refreshRecommendations() }
-        } else {
-            selectTab(target)
-        }
+        tapChannel(target, switchTab: selectTab)
     }
 
     private func selectTab(_ target: DYTab) {
@@ -3236,6 +3237,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Text(String(format: "%g", playbackRate)).font(.caption2).opacity(0.01)
                 .accessibilityIdentifier("douyin.rate")
                 .allowsHitTesting(false)
+            DYRefreshProbeAnchor()
             #endif
         }
         .overlay(alignment: .top) {
