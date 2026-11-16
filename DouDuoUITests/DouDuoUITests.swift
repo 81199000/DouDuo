@@ -413,9 +413,17 @@ final class DouDuoUITests: XCTestCase {
             // 打开中其他会话行不能整列变禁用（禁用 = 整列变暗，老板看到的「整个列表闪一下」）
             let others = app.buttons.matching(identifier: "douyin.conversation.row").allElementsBoundByIndex
             print("MESSAGE_ROWS enabled=\(others.filter(\.isEnabled).count)/\(others.count)")
+            // 第二次起进同一条会话：网页切会话期间先铺上次的聊天快照（像微信，点进去立刻有内容，不转圈）
+            let detail = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.detail").firstMatch
+            _ = detail.waitForExistence(timeout: 3)
+            let snap = detail.exists && (detail.value as? String) == "snapshot"
+            print("MESSAGE_SNAPSHOT open[\(attempt)] used=\(snap)")
+            if attempt > 0 { XCTAssertTrue(snap, "re-opening a chat shows the cached snapshot immediately") }
             XCTAssertTrue(editor.waitForExistence(timeout: 3))
             print("MESSAGE_LATENCY open[\(attempt)]=\(Date().timeIntervalSince(started))")
             let returning = Date()
+            let backs = app.buttons.matching(identifier: "douyin.messages.back").allElementsBoundByIndex
+            _ = backs
             app.buttons["douyin.messages.back"].firstMatch.tap()
             XCTAssertTrue(row.waitForExistence(timeout: 2))
             XCTAssertTrue(row.isEnabled)
