@@ -873,13 +873,31 @@ private struct DYBottomYKey: PreferenceKey {
 
 // MARK: - 列表播放器（从网格点进来，上下滑接着看）
 
+/// Lives with the presentation request so a window transfer can remount the
+/// player without restoring the original grid selection or losing progress.
+@Observable @MainActor
+final class DYListPlayback {
+    var items: [DYAweme]
+    var currentID: String?
+    var resume: [String: Double] = [:]
+    var liked: Set<String>
+    var collected: Set<String>
+    var loadingMore = false
+
+    init(items: [DYAweme], start: Int) {
+        self.items = items
+        currentID = items.indices.contains(start) ? items[start].id : items.first?.id
+        liked = Set(items.filter { $0.userDigged == 1 }.map(\.id))
+        collected = Set(items.filter { $0.isCollect == 1 }.map(\.id))
+    }
+}
+
 struct DYListPlayer: View {
     @State private var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     let bridge: DouyinBridge
     let title: String
-    @State var items: [DYAweme]
-    @State private var currentID: String?
+    @State private var playback: DYListPlayback
     /// 滚动位置单独一个状态：直接绑 currentID 的话，SwiftUI 在下一条滑过中线时就把它设成当前条并开播，
     /// 画面还在往上走就已经出声了。当前条只在收尾动画停住时（DYPagingSpeedBridge.didSettle）才切。
     @State private var scrollPos: String?
@@ -887,12 +905,8 @@ struct DYListPlayer: View {
     let onAuthor: (DYAweme) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var preloader = DYPreloader()
-    @State private var resume: [String: Double] = [:]
-    @State private var liked: Set<String> = []
-    @State private var collected: Set<String> = []
     @State private var showComments = false
     @State private var toast: String?
-    @State private var loadingMore = false
     @State private var showSettings = false
     @State private var web: DYWebTarget?
     /// 从消息点评论进来：自动开评论区并定位那条评论
@@ -909,46 +923,52 @@ struct DYListPlayer: View {
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
          loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
          commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false, presentsAuthor: Bool = false) {
+        self.init(bridge: bridge, title: title, playback: DYListPlayback(items: items, start: start),
+                  loadMore: loadMore, onAuthor: onAuthor, commentFocus: commentFocus,
+                  hardStopOnDismiss: hardStopOnDismiss, presentsAuthor: presentsAuthor)
+    }
+
+    init(bridge: DouyinBridge, title: String, playback: DYListPlayback,
+         loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
+         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false, presentsAuthor: Bool = false) {
         self.bridge = bridge; self.title = title
         self.presentsAuthor = presentsAuthor
         self.commentFocus = commentFocus
         self.hardStopOnDismiss = hardStopOnDismiss
         _showComments = State(initialValue: commentFocus != nil)
-        _items = State(initialValue: items)
-        _currentID = State(initialValue: items.indices.contains(start) ? items[start].id : items.first?.id)
-        self.loadMore = loadMore; self.onAuthor = onAuthor
-        var l = Set<String>(), c = Set<String>()
-        for a in items { if a.userDigged == 1 { l.insert(a.id) }; if a.isCollect == 1 { c.insert(a.id) } }
-        _liked = State(initialValue: l); _collected = State(initialValue: c)
+        _playback = State(initialValue: playback)
+        self.loadMore = loadMore
+        self.onAuthor = onAuthor
     }
 
-    private var current: DYAweme? { items.first { $0.id == currentID } }
+    private var current: DYAweme? { playback.items.first { $0.id == playback.currentID } }
 
     var body: some View {
+        @Bindable var playback = playback
         DYCommentPlayerLayout(bridge: bridge, aweme: current, showComments: $showComments, focus: commentFocus, onBack: { dismiss() }) { insets in
             ZStack(alignment: .topLeading) {
                 Color.ddBackground.ignoresSafeArea()
                 ScrollView(.vertical) {
-                    DYPagerStack(items: items, currentID: currentID, page: { item in
-                            DYVideoPage(item: item, isCurrent: item.id == currentID, insets: insets,
-                                        resume: resume[item.id], liked: liked.contains(item.id), collected: collected.contains(item.id),
+                    DYPagerStack(items: playback.items, currentID: playback.currentID, page: { item in
+                            DYVideoPage(item: item, isCurrent: item.id == playback.currentID, insets: insets,
+                                        resume: playback.resume[item.id], liked: playback.liked.contains(item.id), collected: playback.collected.contains(item.id),
                                         onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
                                         onDoubleTap: { toggleLike(item.id, force: true) },
-                                        onComments: { withAnimation(.snappy) { showComments.toggle() } },
+                                        onComments: { showComments.toggle() },
                                         onSearch: { DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() } },
                                         onAuthor: { if presentsAuthor { authorSheet = item.author } else { onAuthor(item) } },
-                                        onSavePosition: { resume[item.id] = $0 }, preloader: preloader,
+                                        onSavePosition: { playback.resume[item.id] = $0 }, preloader: preloader,
                                         bridge: bridge, onToast: { show($0) },
                                         moreExtras: AnyView(Section { DYSettingsButton() }),
                                         onEnded: { playNext(after: item.id) })
                     })
                     .scrollTargetLayout()
-                    .background(DYPagingSpeedBridge(ids: items.map(\.id), currentID: $currentID))
+                    .background(DYPagingSpeedBridge(ids: playback.items.map(\.id), currentID: $playback.currentID))
                 }
                 .scrollTargetBehavior(.paging)
                 .scrollPosition(id: $scrollPos, anchor: .center)
-                .onAppear { scrollPos = currentID }
-                .onChange(of: currentID) { _, new in if scrollPos != new { scrollPos = new } }
+                .onAppear { scrollPos = playback.currentID }
+                .onChange(of: playback.currentID) { _, new in if scrollPos != new { scrollPos = new } }
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea()
 
@@ -966,6 +986,14 @@ struct DYListPlayer: View {
         .dyEdgeBack(enabled: searchSession == nil) { dismiss() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.list.player")
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            Text(playback.currentID ?? "-")
+                .font(.caption2).opacity(0.01)
+                .accessibilityIdentifier("douyin.list.currentID")
+                .allowsHitTesting(false)
+        }
+        #endif
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
@@ -974,23 +1002,23 @@ struct DYListPlayer: View {
         .environment(\.duoSystemBars, true)
         .environment(\.duoCleanScreen, false)
         .environment(\.duoInlineVideoNavigation, false)
-        .onChange(of: currentID) { old, new in
-            if new == nil, let old { currentID = old; return }
-            guard let i = items.firstIndex(where: { $0.id == new }) else { return }
-            preloader.update(items, current: i)
+        .onChange(of: playback.currentID) { old, new in
+            if new == nil, let old { playback.currentID = old; return }
+            guard let i = playback.items.firstIndex(where: { $0.id == new }) else { return }
+            preloader.update(playback.items, current: i)
             // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
-            if i >= items.count - 4, let loadMore, !loadingMore {
-                loadingMore = true
+            if i >= playback.items.count - 4, let loadMore, !playback.loadingMore {
+                playback.loadingMore = true
                 Task {
                     let more = await loadMore()
-                    let seen = Set(items.map(\.id))
-                    items.append(contentsOf: more.filter { !seen.contains($0.id) })
-                    loadingMore = false
+                    let seen = Set(playback.items.map(\.id))
+                    playback.items.append(contentsOf: more.filter { !seen.contains($0.id) })
+                    playback.loadingMore = false
                 }
             }
         }
-        .onAppear { if let i = items.firstIndex(where: { $0.id == currentID }) {
-            preloader.update(items, current: i)
+        .onAppear { if let i = playback.items.firstIndex(where: { $0.id == playback.currentID }) {
+            preloader.update(playback.items, current: i)
             // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         } }
         .onDisappear {
@@ -1023,21 +1051,21 @@ struct DYListPlayer: View {
     /// 「自动连播」打开时播完切下一条；到尾部先拉下一页
     /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
     private func advance(from: String, to: String) {
-        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { playback.currentID = to } }
     }
 
     private func playNext(after id: String) {
-        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < items.count { advance(from: id, to: items[i + 1].id); return }
-        guard let loadMore, !loadingMore else { return }
-        loadingMore = true
+        guard let i = playback.items.firstIndex(where: { $0.id == id }) else { return }
+        if i + 1 < playback.items.count { advance(from: id, to: playback.items[i + 1].id); return }
+        guard let loadMore, !playback.loadingMore else { return }
+        playback.loadingMore = true
         Task {
             let more = await loadMore()
-            let seen = Set(items.map(\.id))
-            items.append(contentsOf: more.filter { !seen.contains($0.id) })
-            loadingMore = false
-            if let j = items.firstIndex(where: { $0.id == id }), j + 1 < items.count {
-                advance(from: id, to: items[j + 1].id)
+            let seen = Set(playback.items.map(\.id))
+            playback.items.append(contentsOf: more.filter { !seen.contains($0.id) })
+            playback.loadingMore = false
+            if let j = playback.items.firstIndex(where: { $0.id == id }), j + 1 < playback.items.count {
+                advance(from: id, to: playback.items[j + 1].id)
             }
         }
     }
@@ -1048,24 +1076,24 @@ struct DYListPlayer: View {
     }
 
     private func toggleLike(_ id: String, force: Bool?) {
-        let has = liked.contains(id), want = force ?? !has
+        let has = playback.liked.contains(id), want = force ?? !has
         guard want != has else { return }
-        if want { liked.insert(id) } else { liked.remove(id) }
+        if want { playback.liked.insert(id) } else { playback.liked.remove(id) }
         Task {
             let r = try? await bridge.digg(id, like: want)
             if case .ok = r { return }
-            if want { liked.remove(id) } else { liked.insert(id) }
+            if want { playback.liked.remove(id) } else { playback.liked.insert(id) }
             show(r.map { if case .notLoggedIn = $0 { return "抖音未登录" } else { return "点赞失败" } } ?? "点赞失败")
         }
     }
 
     private func toggleCollect(_ id: String) {
-        let want = !collected.contains(id)
-        if want { collected.insert(id) } else { collected.remove(id) }
+        let want = !playback.collected.contains(id)
+        if want { playback.collected.insert(id) } else { playback.collected.remove(id) }
         Task {
             let r = try? await bridge.favorite(id, add: want)
             if case .ok = r { show(want ? "已收藏" : "已取消收藏"); return }
-            if want { collected.remove(id) } else { collected.insert(id) }
+            if want { playback.collected.remove(id) } else { playback.collected.insert(id) }
             show("收藏失败")
         }
     }
@@ -1110,12 +1138,18 @@ final class DYPagedModel: ObservableObject {
     }
 }
 
+@MainActor
 struct DYListTarget: Identifiable {
     let id = UUID()
     let title: String
-    let items: [DYAweme]
-    let start: Int
     let model: DYPagedModel?
+    let playback: DYListPlayback
+
+    init(title: String, items: [DYAweme], start: Int, model: DYPagedModel?) {
+        self.title = title
+        self.model = model
+        playback = DYListPlayback(items: items, start: start)
+    }
 }
 
 // MARK: - 搜索
@@ -1266,7 +1300,7 @@ struct DYSearchScreen: View {
             state.suggestions = result
         }
         .fullScreenCover(item: $open, onDismiss: { state.presentsVideo = false }) { t in
-            DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
+            DYListPlayer(bridge: bridge, title: t.title, playback: t.playback,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor, presentsAuthor: true)
         }
     }
@@ -1445,7 +1479,7 @@ struct DYMineScreen: View {
         .onAppear { ensure(kind) }
         .onChange(of: kind) { _, k in ensure(k) }
         .fullScreenCover(item: $open) { t in
-            DYListPlayer(bridge: bridge, title: t.title, items: t.items, start: t.start,
+            DYListPlayer(bridge: bridge, title: t.title, playback: t.playback,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor, presentsAuthor: true)
         }
         .fullScreenCover(item: $relations) { t in
@@ -1639,7 +1673,7 @@ struct DYAuthorScreen: View {
             }
             DYGrid(items: posts, hasMore: hasMore, loading: loading, error: postErr, onLoadMore: { requestMore() }, onOpen: { i in
                 onWorkPresentationChange?(true)
-                player = DYAuthorPlay(index: i)
+                player = DYAuthorPlay(playback: DYListPlayback(items: posts, start: i))
             })
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("douyin.author.works")
@@ -1664,7 +1698,7 @@ struct DYAuthorScreen: View {
                 .dyVerticalPreferred()
         }
         .fullScreenCover(item: $player, onDismiss: { onWorkPresentationChange?(false) }) { p in
-            DYListPlayer(bridge: bridge, title: author.name.isEmpty ? "作品" : author.name, items: posts, start: p.index,
+            DYListPlayer(bridge: bridge, title: author.name.isEmpty ? "作品" : author.name, playback: p.playback,
                          loadMore: { await loadPosts() }, onAuthor: { _ in })
         }
         .task {
@@ -1771,7 +1805,7 @@ struct DYAuthorScreen: View {
 
 private struct DYAuthorPlay: Identifiable {
     let id = UUID()
-    let index: Int
+    let playback: DYListPlayback
 }
 
 // MARK: - 关注流
@@ -2016,5 +2050,3 @@ private struct DYSelfProfileBackdropPreview: View {
 
 }
 #endif
-
-

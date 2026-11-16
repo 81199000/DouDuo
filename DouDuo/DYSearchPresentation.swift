@@ -29,6 +29,7 @@ struct DYSearchPresentation: ViewModifier {
     @Binding var isSplit: Bool
     var onOpen: () -> Void = {}
     @State private var allowsSplit = false
+    @State private var measuredSplit = false
 
     private var split: Bool { allowsSplit && session != nil }
     private var fullScreen: Binding<Bool> {
@@ -77,10 +78,18 @@ struct DYSearchPresentation: ViewModifier {
                     .onGeometryChange(for: Bool.self) { geometry in
                         DYDuoMetrics.isDuoHardware && geometry.size.width > geometry.size.height
                             && geometry.size.width >= 700 && geometry.size.height >= 600
-                    } action: { allowsSplit = $0 }
+                    } action: { measuredSplit = $0 }
             }
             // The keyboard must not turn a portrait search into a landscape split.
             .ignoresSafeArea(.keyboard)
+        }
+        // Moving search between its pane and cover would otherwise dismiss a
+        // result player presented by that search view.
+        .onChange(of: measuredSplit, initial: true) { _, measured in
+            if session?.presentsVideo != true { allowsSplit = measured }
+        }
+        .onChange(of: session?.presentsVideo == true) { _, playing in
+            if !playing { allowsSplit = measuredSplit }
         }
         // Publish the available layout before opening search, so the video does
         // not briefly deactivate/reactivate and lose a user's paused state.
