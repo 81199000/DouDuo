@@ -1652,7 +1652,8 @@ struct DYAuthorScreen: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
+            // 返回放进右侧竖栏（跟信息页/视频页一致，老板定），排在关注上面；不再占左上角
+            ToolbarItem(placement: .primaryAction) {
                 Button("返回", systemImage: "chevron.backward", action: close)
                     .accessibilityIdentifier("douyin.author.back")
             }
