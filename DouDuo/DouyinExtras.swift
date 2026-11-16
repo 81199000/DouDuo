@@ -276,7 +276,7 @@ extension DouyinBridge {
         let d = try await call(Self.publishJS, args: args, attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
-        if r.code == 8 { throw DYError.bad("抖音未登录：到「我的」→「网页版 / 登录」登录后再发") }
+        if r.code == 8 { throw DYError.bad("抖音未登录：到「我的」点「去登录」，或从「设置」进「网页版 / 登录」") }
         if r.status == 200, (r.code ?? 0) == 0, let c = r.comment { return c }
         if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
         // 空响应/403 不代表没发出去：抖音常已写入但不回执，先去评论/楼中楼里核对，避免用户重复发送
@@ -1394,9 +1394,7 @@ struct DYMineScreen: View {
                     if !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("网页版 / 登录", systemImage: "safari") { onLogin() }
-                    }
+                    // 「网页版 / 登录」按钮已按老板要求去掉：未登录时页内仍有「去登录」入口，功能不受影响
                 }
         }
 
