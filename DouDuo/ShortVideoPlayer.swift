@@ -1351,6 +1351,7 @@ struct PlayerPage: View {
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
                                                              object: p.currentItem, queue: .main) { _ in
             MainActor.assumeIsolated {
+                DYLiveModel.log("DDEND id=\(id.suffix(4)) autoNext=\(onEnded != nil) active=\(isActive)")
                 if continueFromRemote(p) { return }
                 if let onEnded {
                     onEnded()
@@ -1451,6 +1452,7 @@ struct PlayerPage: View {
     }
 
     private func seekTo(_ pos: Double) {
+        DYLiveModel.log("DDSEEK id=\(id.suffix(4)) to=\(String(format: "%.1f", pos))/\(String(format: "%.1f", duration)) playing=\(isPlaying) seam=\(seamAudio.isEngaged) autoNext=\(onEnded != nil)")
         dmClock.seek(pos, playing: isPlaying, rate: Double(playRate))
         if let v = vlc { v.seekTo(pos); current = pos; return }
         seamAudio.prepareForSeek()
