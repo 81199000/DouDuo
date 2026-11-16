@@ -27,6 +27,22 @@ protocol DYRecommendFeedHost: View {
 
 @MainActor
 extension DYRecommendFeedHost {
+    /// 用户点了频道（关注 / 推荐 / 直播）。四种界面的频道入口都走这里：
+    /// 默认的顶栏、简洁 / 极简的模块菜单、经典的顶部频道栏。
+    /// 点**已选中的「推荐」= 刷新推荐**；其它情况交给各界面自己的 `switchTab`（经典有跟手切换动画）。
+    /// 滑动切换、程序切换（调试 / 回到推荐）不走这里，不会误刷新。
+    func tapChannel(_ target: DYTab, switchTab: (DYTab) -> Void) {
+        if target == .recommend, tab == .recommend {
+            DYLiveModel.log("DDREFRESH tap selected recommend")
+            #if DEBUG
+            DYRefreshProbe.shared.count += 1
+            #endif
+            Task { await refreshRecommendations() }
+        } else {
+            switchTab(target)
+        }
+    }
+
     var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
@@ -206,3 +222,22 @@ extension DYRecommendFeedHost {
     /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
     func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
 }
+
+#if DEBUG
+/// UI 测试锚点：点已选中「推荐」触发刷新的次数（离线数据刷不出新视频，靠它确认确实刷了）。
+@MainActor
+final class DYRefreshProbe: ObservableObject {
+    static let shared = DYRefreshProbe()
+    @Published var count = 0
+}
+
+/// 挂在推荐页上，把刷新次数暴露给 UI 测试（`douyin.refreshCount`）。
+struct DYRefreshProbeAnchor: View {
+    @ObservedObject private var probe = DYRefreshProbe.shared
+    var body: some View {
+        Text("\(probe.count)").font(.caption2).opacity(0.01)
+            .accessibilityIdentifier("douyin.refreshCount")
+            .allowsHitTesting(false)
+    }
+}
+#endif

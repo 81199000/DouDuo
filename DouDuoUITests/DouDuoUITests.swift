@@ -2662,6 +2662,39 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "chrome-minimal")
     }
 
+    /// 点已选中的「推荐」= 刷新推荐，四种界面都一样（docs/ui-modes.md）。
+    /// 离线数据刷不到新视频，这里只验证「点了确实触发刷新」：入口的 value 会短暂变成「正在刷新」。
+    func testTapSelectedRecommendRefreshesInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["classic", "rail", "minimal", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+            app.launchEnvironment["DOUDUO_REFRESH_PROBE"] = "1"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                    "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            let current = app.staticTexts["douyin.currentID"].firstMatch
+            XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 20), "\(mode): 首屏没出来")
+            let entry: XCUIElement
+            if mode == "rail" || mode == "minimal" {
+                let menu = app.buttons["douyin.module.menu"].firstMatch
+                XCTAssertTrue(menu.waitForExistence(timeout: 10), "\(mode): 没有模块入口")
+                menu.tap()
+                entry = app.buttons["douyin.module.item.recommend"].firstMatch
+                XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(mode): 模块菜单里没有推荐")
+                XCTAssertEqual(entry.label, "刷新推荐", "\(mode): 已在推荐时，菜单项应显示「刷新推荐」")
+            } else {
+                entry = app.buttons["douyin.channel.recommend"].firstMatch
+                XCTAssertTrue(entry.waitForExistence(timeout: 10), "\(mode): 没有推荐频道按钮")
+            }
+            entry.tap()
+            let refreshed = app.staticTexts["douyin.refreshCount"].firstMatch
+            XCTAssertTrue(wait(label: "1", on: refreshed, timeout: 5), "\(mode): 点已选中的推荐没有触发刷新")
+            app.terminate()
+        }
+    }
+
     /// 在「更多」第一层切换界面模式，立即生效。
     func testStandaloneCommentsRespectLayout() throws {
         continueAfterFailure = false
