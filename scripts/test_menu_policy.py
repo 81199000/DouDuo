@@ -126,7 +126,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertEqual(menu.count('"不感兴趣"'), 1)
         # 表层：倍速 / 静音 / 听书 / 自动连播 + 发弹幕；刷新推荐、弹幕设置、界面都只在设置页
         for token in ('"douyin.quick.speed"', "$muted", "$bgPlay", "$autoNext", '"douyin.quick.autonext"',
-                      '"发弹幕"', "showDanmakuInput = true", "danmakuFocused = true", "moreExtras"):
+                      '"发弹幕"', "dm.showInput = true", "danmakuFocused = true", "moreExtras"):
             self.assertIn(token, menu)
         for gone in ("DYDanmakuOptions", "$chromeModeRaw", '"刷新推荐"', "界面模式"):
             self.assertNotIn(gone, menu)
