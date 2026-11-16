@@ -16,6 +16,19 @@ struct DYFeedPager<Page: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        ScrollViewReader { proxy in
+            pager
+            // 切换界面模式后新建的分页器要从中间某条接着播：LazyVStack 首次布局不认 scrollPosition 初值，
+            // 会停在第一条（当前条的页面根本没挂上）。出现后显式滚过去一次；当前条就是第一条时什么也不做。
+            .onAppear {
+                scrollID = currentID
+                guard let id = currentID, items.first?.id != id else { return }
+                DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
+            }
+        }
+    }
+
+    private var pager: some View {
         ScrollView(.vertical) {
             // 非 Lazy：当前前 1 后 2 条提前挂真页面（第一帧已就绪），其余是轻量占位，见 DYPagerWindow
             DYPagerStack(items: items, currentID: currentID, page: page, pageAxes: pageAxes)
@@ -25,7 +38,6 @@ struct DYFeedPager<Page: View>: View {
         }
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $scrollID, anchor: .center)
-        .onAppear { scrollID = currentID }
         .simultaneousGesture(DragGesture(minimumDistance: 8)
             .onChanged { value in
                 guard abs(value.translation.height) > abs(value.translation.width) else { return }

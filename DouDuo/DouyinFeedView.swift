@@ -1182,6 +1182,10 @@ final class DYFeedModel: ObservableObject {
     @Published var isLoggedIn = false
     private var hasMore = true
     private let defaults: UserDefaults
+    /// 切换界面模式（经典 ⇄ 默认/简洁/极简）会换一套根视图：当前条和各条进度记在模型上，
+    /// 新根视图接着播同一条，不重新拉推荐（见 handoff()）。
+    var handoffCurrentID: String?
+    var handoffPositions: [String: Double] = [:]
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
@@ -1341,13 +1345,28 @@ extension EnvironmentValues {
     @Entry var duoCleanScreen = false
 }
 
+
 struct DYUpstreamFeedScreen: DYRecommendFeedHost {
+    init(bridge: DouyinBridge, feed: DYFeedModel) {
+        self.bridge = bridge
+        self.feed = feed
+        // 从另一套界面切过来：接着播同一条、同一进度
+        // 首次布局 LazyVStack 不认 scrollPosition 初值（会停在第一条），由 DYFeedPager.onAppear 显式滚到当前条。
+        let handoff = feed.handoff()
+        _resume = State(initialValue: handoff?.positions ?? [:])
+        _handoffID = State(initialValue: handoff?.currentID)
+        _currentID = State(initialValue: handoff?.currentID)
+        _scrollID = State(initialValue: handoff?.currentID)
+    }
+    @State private var handoffID: String?
+
     @State private var followCommentItem: DYAweme?
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dismiss) private var dismiss
-    @StateObject var bridge = DouyinBridge()
-    @StateObject var feed = DYFeedModel()
+    /// 签名页和推荐流由 DouyinFeedScreen 持有，两套根视图共用：切换界面模式不重新连接、不换一批视频。
+    @ObservedObject var bridge: DouyinBridge
+    @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
@@ -1537,19 +1556,27 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             Task { myUser = try? await bridge.selfProfile() }
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
-            if let restored = feed.restoreForLaunch() {
-                resume = restored.positions
-                currentID = restored.currentID
-                scrollID = currentID
+            let handedOff = handoffID.map { id in feed.items.contains { $0.id == id } } ?? false
+            if handedOff, let id = handoffID {
+                // 从另一套界面切过来（init 里已接手进度）：列表原样沿用，不重排、不重新拉推荐
+                DYLiveModel.log("DDHANDOFF id=\(id.suffix(6)) at=\(String(format: "%.1f", resume[id] ?? 0)) n=\(feed.items.count)")
+                currentID = id
+                scrollID = id
+            } else {
+                if let restored = feed.restoreForLaunch() {
+                    resume = restored.positions
+                    currentID = restored.currentID
+                    scrollID = currentID
+                }
+                // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
+                if currentIndex != nil { feed.remix(after: currentIndex) }
+                await feed.loadMore(bridge)
+                if currentID == nil { currentID = feed.items.first?.id }
+                focusCurrent()
             }
-            // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-            if currentIndex != nil { feed.remix(after: currentIndex) }
-            await feed.loadMore(bridge)
-            if currentID == nil { currentID = feed.items.first?.id }
-            focusCurrent()
             #if DEBUG
             // 用真实作品详情复验元数据显示，不造预览数据、不做账号互动。
-            if let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
+            if !handedOff, let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
                let item = try? await bridge.awemeDetail(id) {
                 feed.items = [item]; currentID = item.id; scrollID = item.id
                 focusCurrent()
@@ -2541,14 +2568,24 @@ struct DYVideoPage: View {
     }
 }
 
+/// 签名页 + 推荐流：挂在 DouyinFeedScreen 上，经典与默认/简洁/极简两套根视图共用。
+/// 以前两套根视图各建一份，切换界面模式等于重新启动一次推荐流（换一批视频、进度丢失）。
+/// 不带 @Published：外层不需要跟着推荐流的变化重算。
+@MainActor
+final class DYFeedShared: ObservableObject {
+    let bridge = DouyinBridge()
+    let feed = DYFeedModel()
+}
+
 struct DouyinFeedScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    @StateObject private var shared = DYFeedShared()
     var body: some View {
         Group {
             if #available(iOS 27.1, *), chromeModeRaw == DDChromeMode.duoClassic.rawValue {
-                DYClassicFeedScreen()
+                DYClassicFeedScreen(bridge: shared.bridge, feed: shared.feed)
             } else {
-                DYUpstreamFeedScreen()
+                DYUpstreamFeedScreen(bridge: shared.bridge, feed: shared.feed)
             }
         }
         .modifier(DYHashtagFilterPresentation())
@@ -2564,14 +2601,28 @@ extension EnvironmentValues {
 
 @available(iOS 27.1, *)
 struct DYClassicFeedScreen: DYRecommendFeedHost {
+    init(bridge: DouyinBridge, feed: DYFeedModel) {
+        self.bridge = bridge
+        self.feed = feed
+        // 从另一套界面切过来：接着播同一条、同一进度
+        // 首次布局 LazyVStack 不认 scrollPosition 初值（会停在第一条），由 DYFeedPager.onAppear 显式滚到当前条。
+        let handoff = feed.handoff()
+        _resume = State(initialValue: handoff?.positions ?? [:])
+        _handoffID = State(initialValue: handoff?.currentID)
+        _currentID = State(initialValue: handoff?.currentID)
+        _scrollID = State(initialValue: handoff?.currentID)
+    }
+    @State private var handoffID: String?
+
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    @StateObject var bridge = DouyinBridge()
-    @StateObject var feed = DYFeedModel()
+    /// 签名页和推荐流由 DouyinFeedScreen 持有，两套根视图共用：切换界面模式不重新连接、不换一批视频。
+    @ObservedObject var bridge: DouyinBridge
+    @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
@@ -2733,19 +2784,27 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
-            if let restored = feed.restoreForLaunch() {
-                resume = restored.positions
-                currentID = restored.currentID
-                scrollID = currentID
+            let handedOff = handoffID.map { id in feed.items.contains { $0.id == id } } ?? false
+            if handedOff, let id = handoffID {
+                // 从另一套界面切过来（init 里已接手进度）：列表原样沿用，不重排、不重新拉推荐
+                DYLiveModel.log("DDHANDOFF id=\(id.suffix(6)) at=\(String(format: "%.1f", resume[id] ?? 0)) n=\(feed.items.count)")
+                currentID = id
+                scrollID = id
+            } else {
+                if let restored = feed.restoreForLaunch() {
+                    resume = restored.positions
+                    currentID = restored.currentID
+                    scrollID = currentID
+                }
+                // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
+                if currentIndex != nil { feed.remix(after: currentIndex) }
+                await feed.loadMore(bridge)
+                if currentID == nil { currentID = feed.items.first?.id }
+                focusCurrent()
             }
-            // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-            if currentIndex != nil { feed.remix(after: currentIndex) }
-            await feed.loadMore(bridge)
-            if currentID == nil { currentID = feed.items.first?.id }
-            focusCurrent()
             #if DEBUG
             // 用真实作品详情复验元数据显示，不造预览数据、不做账号互动。
-            if let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
+            if !handedOff, let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
                let item = try? await bridge.awemeDetail(id) {
                 feed.items = [item]; currentID = item.id; scrollID = item.id
                 focusCurrent()
@@ -5346,6 +5405,20 @@ extension DYFeedModel {
             }
         }
     }
+    /// 两套根视图的 saveSession 都会调：记下当前条与各条进度，供切换界面模式后的另一套根视图接手。
+    func noteCurrent(_ id: String, positions: [String: Double]) {
+        handoffCurrentID = id
+        handoffPositions = positions
+    }
+
+    /// 新根视图初始化时取：当前条还在列表里才算数；正在播的那条用播放器的实时进度（比 5 秒一次的存档新）。
+    func handoff() -> (currentID: String, positions: [String: Double])? {
+        guard let id = handoffCurrentID, items.contains(where: { $0.id == id }) else { return nil }
+        var positions = handoffPositions
+        if DDNowPlaying.id == id, DDNowPlaying.time.isFinite { positions[id] = max(0, DDNowPlaying.time) }
+        return (id, positions)
+    }
+
     /// 启动秒开：先恢复上次会话；没有会话就从本地已缓存未看的视频按竖横比例挑 6 条。
     /// 返回要定位的当前条和各条进度；都没有返回 nil。
     func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
