@@ -24,6 +24,20 @@ private struct DYRelationPage: Decodable {
     let hasMore: Bool
     let code: Int?
     let msg: String?
+    var maxTime: Int = 0
+    var minTime: Int = 0
+    var total: Int = 0
+}
+
+/// 关注/粉丝列表的翻页游标：offset 给「综合排序」，时间游标给「最近/最早」。
+struct DYRelationCursor: Equatable {
+    var offset = 0
+    var maxTime = 0
+    var minTime = 0
+    /// 游标完全没前进 = 服务端在回同一页，必须停，否则无限请求
+    func stalled(by next: DYRelationCursor) -> Bool {
+        next.offset == offset && next.maxTime == maxTime && next.minTime == minTime
+    }
 }
 
 /// 「我的」页点关注/粉丝数字后打开的目标
@@ -36,14 +50,29 @@ struct DYRelationsTarget: Identifiable {
 // MARK: - 接口
 
 extension DouyinBridge {
-    /// 关注 / 粉丝列表（offset 翻页，每页 20）
-    func relationList(_ kind: DYRelationKind, uid: String, secUid: String, offset: Int) async throws -> (items: [DYRelationUser], cursor: Int, hasMore: Bool) {
+    /// 关注 / 粉丝列表（每页 20）
+    ///
+    /// 翻页游标不能自己编：抖音这两个接口在 source_type=2 时会忽略 offset，只认时间游标。
+    /// 实测口径（F2 官方文档 + 网页版请求）：
+    /// - 关注：source_type=4（综合排序）时 offset 有效；返回的 max_time/min_time 也可继续用
+    /// - 粉丝：source_type=1（最近粉丝）时靠 max_time 翻页，offset 无效
+    /// 所以这里用「服务端回的游标」优先，offset 只作为没有游标时的兜底。
+    func relationList(_ kind: DYRelationKind, uid: String, secUid: String, cursor: DYRelationCursor) async throws -> (items: [DYRelationUser], next: DYRelationCursor, hasMore: Bool, total: Int) {
         let js = kind == .following ? Self.relationFollowingJS : Self.relationFollowerJS
-        let d = try await call(js, args: ["uid": uid, "sec": secUid, "offset": String(offset)])
+        let d = try await call(js, args: ["uid": uid, "sec": secUid,
+                                          "offset": String(cursor.offset),
+                                          "maxTime": String(cursor.maxTime),
+                                          "minTime": String(cursor.minTime)])
         let p = try JSONDecoder().decode(DYRelationPage.self, from: d)
         if p.code == 8 || (p.msg ?? "").contains("未登录") { throw DYError.bad("抖音未登录：右上「我的」→ 登录") }
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
-        return (p.items, offset + 20, p.hasMore)
+        // 翻页游标按接口实测口径（模拟器真机探针，2026-11）：
+        // - 粉丝：服务端把 offset 当只读回显（第二页起就归 0），只有 max_time 递减有效 → 用 max_time 翻
+        // - 关注：max_time/min_time 恒为 0，服务端只认 offset → 用自己累加的 offset 翻
+        var next = cursor
+        next.offset = cursor.offset + p.items.count
+        if kind == .followers, p.maxTime > 0 { next.maxTime = p.maxTime }
+        return (p.items, next, p.hasMore, p.total)
     }
 
     // MARK: JS（requestJS 里有 req / base / parse / first / q）
@@ -54,21 +83,23 @@ extension DouyinBridge {
     """#
 
     static let relationFollowingJS = relationMap + #"""
-    const r = await req('GET', '/aweme/v1/web/user/following/list/?' + q({ user_id: uid, sec_user_id: sec, offset: offset, min_time: '0', max_time: '0', count: '20', source_type: '2', gps_access: '0', address_book_access: '0', is_top: '1' }));
+    const r = await req('GET', '/aweme/v1/web/user/following/list/?' + q({ user_id: uid, sec_user_id: sec, offset: offset, min_time: String(minTime || 0), max_time: String(maxTime || 0), count: '20', source_type: '4', gps_access: '0', address_book_access: '0', is_top: '1' }));
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || (r.s === 200 ? null : (r.t || '').slice(0, 80)),
-      items: (d.followings || []).map(rmap).filter(Boolean), hasMore: !!d.has_more });
+      items: (d.followings || []).map(rmap).filter(Boolean), hasMore: !!d.has_more,
+      maxTime: Number(d.max_time || 0), minTime: Number(d.min_time || 0), total: Number(d.total || 0) });
     """#
 
     static let relationFollowerJS = relationMap + #"""
-    const r = await req('GET', '/aweme/v1/web/user/follower/list/?' + q({ user_id: uid, sec_user_id: sec, offset: offset, min_time: '0', max_time: '0', count: '20', source_type: '2', gps_access: '0', address_book_access: '0' }));
+    const r = await req('GET', '/aweme/v1/web/user/follower/list/?' + q({ user_id: uid, sec_user_id: sec, offset: offset, min_time: String(minTime || 0), max_time: String(maxTime || 0), count: '20', source_type: '3', gps_access: '0', address_book_access: '0' }));
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || (r.s === 200 ? null : (r.t || '').slice(0, 80)),
-      items: (d.followers || []).map(rmap).filter(Boolean), hasMore: !!d.has_more });
+      items: (d.followers || []).map(rmap).filter(Boolean), hasMore: !!d.has_more,
+      maxTime: Number(d.max_time || 0), minTime: Number(d.min_time || 0), total: Number(d.total || 0) });
     """#
 }
 
-// MARK: - 分页模型（offset 翻页，和 DYPagedModel 的 cursor 版分开）
+// MARK: - 分页模型（游标翻页，和 DYPagedModel 的 cursor 版分开）
 
 @MainActor
 final class DYRelationModel: ObservableObject {
@@ -76,14 +107,16 @@ final class DYRelationModel: ObservableObject {
     @Published var loading = false
     @Published var error: String?
     @Published var hasMore = true
-    private var offset = 0
-    private let fetch: (Int) async throws -> (items: [DYRelationUser], cursor: Int, hasMore: Bool)
+    /// 抖音给的列表总数（用来判断「到底了」和排查「只显示 20 个」）
+    @Published var total = 0
+    private var cursor = DYRelationCursor()
+    private let fetch: (DYRelationCursor) async throws -> (items: [DYRelationUser], next: DYRelationCursor, hasMore: Bool, total: Int)
 
-    init(fetch: @escaping (Int) async throws -> (items: [DYRelationUser], cursor: Int, hasMore: Bool)) {
+    init(fetch: @escaping (DYRelationCursor) async throws -> (items: [DYRelationUser], next: DYRelationCursor, hasMore: Bool, total: Int)) {
         self.fetch = fetch
     }
 
-    func reset() { items = []; offset = 0; hasMore = true; error = nil }
+    func reset() { items = []; cursor = DYRelationCursor(); hasMore = true; error = nil; total = 0 }
 
     @discardableResult
     func loadMore() async -> [DYRelationUser] {
@@ -91,12 +124,18 @@ final class DYRelationModel: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            let r = try await fetch(offset)
+            let asked = cursor
+            let r = try await fetch(asked)
             let seen = Set(items.map(\.id))
             let fresh = r.items.filter { !seen.contains($0.id) }
             items.append(contentsOf: fresh)
-            hasMore = r.hasMore && !r.items.isEmpty
-            offset = r.cursor
+            if r.total > 0 { total = r.total }
+            // 停止条件：服务端说没有了 / 这一页空 / 游标没前进（防无限回同一页）
+            // 注意 offset 是客户端累加的，只看它必然前进；真正的判据是「这一页没有新数据」或时间游标没动。
+            let timeStalled = asked.maxTime > 0 && r.next.maxTime == asked.maxTime
+            hasMore = r.hasMore && !r.items.isEmpty && !timeStalled && !fresh.isEmpty
+            DYLiveModel.log("DDREL page n=\(r.items.count) fresh=\(fresh.count) total=\(r.total) more=\(hasMore) next=\(r.next.offset)/\(r.next.maxTime)")
+            cursor = r.next
             error = nil
             return fresh
         } catch {
@@ -120,8 +159,8 @@ struct DYRelationsScreen: View {
 
     init(bridge: DouyinBridge, kind: DYRelationKind, uid: String, secUid: String) {
         self.bridge = bridge; self.kind = kind; self.uid = uid; self.secUid = secUid
-        _model = StateObject(wrappedValue: DYRelationModel { off in
-            try await bridge.relationList(kind, uid: uid, secUid: secUid, offset: off)
+        _model = StateObject(wrappedValue: DYRelationModel { cur in
+            try await bridge.relationList(kind, uid: uid, secUid: secUid, cursor: cur)
         })
     }
 
@@ -133,7 +172,10 @@ struct DYRelationsScreen: View {
                         .frame(width: 40, height: 40)
                 }
                 .accessibilityIdentifier("douyin.relations.back")
-                Text("\(kind.title)（\(model.items.count)）").font(.headline).foregroundStyle(Color.primary).shadow(radius: 3)
+                // 有总数时显示「已加载 / 总数」，否则显示已加载条数
+                Text(model.total > model.items.count ? "\(kind.title)（\(model.items.count)/\(model.total)）"
+                                                     : "\(kind.title)（\(model.items.count)）")
+                    .font(.headline).foregroundStyle(Color.primary).shadow(radius: 3)
                 Spacer()
             }
             .padding(.leading, 22).padding(.top, 10)
@@ -143,6 +185,7 @@ struct DYRelationsScreen: View {
                     ForEach(model.items) { u in
                         Button { open = u } label: { row(u) }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("douyin.relations.row")
                             .onAppear {
                                 // 滑到最后一行就拉下一页
                                 if u.id == model.items.last?.id { Task { await model.loadMore() } }
@@ -189,6 +232,5 @@ struct DYRelationsScreen: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .accessibilityIdentifier("douyin.relations.row")
     }
 }

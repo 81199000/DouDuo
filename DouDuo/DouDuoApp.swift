@@ -107,6 +107,11 @@ struct DouDuoApp: App {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["DOUDUO_SHARE_LAYOUT"] == "1" {
                     DYForwardLayoutProbe()
+                } else if let rel = ProcessInfo.processInfo.environment["DOUDUO_RELATIONS_PROBE"],
+                          rel == "following" || rel == "followers" {
+                    DYRelationsProbe(kind: rel == "following" ? .following : .followers)
+                } else if ProcessInfo.processInfo.environment["DOUDUO_NOTICE_PROBE"] == "1" {
+                    DYNoticeProbe()
                 } else if ProcessInfo.processInfo.environment["DOUDUO_MESSAGE_LAYOUT"] == "1" {
                     DYMessageLayoutProbe()
                 } else if ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_FIXTURE"] == "1" || ProcessInfo.processInfo.environment["DOUDUO_APPEARANCE_WEB_LIVE"] == "1" {
