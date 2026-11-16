@@ -1544,6 +1544,8 @@ struct DYUpstreamFeedScreen: View {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_CPROBE"] == "1" { Task { await DYCommentApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_WEBAPI"] == "1" { Task { await DYWebApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_IMGUP"] == "1" { Task { await DYWebApiProbe.uploadSmoke(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
@@ -2951,6 +2953,8 @@ struct DYClassicFeedScreen: View {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_CPROBE"] == "1" { Task { await DYCommentApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_WEBAPI"] == "1" { Task { await DYWebApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_IMGUP"] == "1" { Task { await DYWebApiProbe.uploadSmoke(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }

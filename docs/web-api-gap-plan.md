@@ -10,7 +10,9 @@
 
 现有 `probe/web-api-validation` 分支的 `DYWebApiProbe.swift` / `DYWebApiProbe2.swift` 参数是猜的，其中 `related/recommend` 试了 `aweme_id` / `item_id` / `group_id`，而网页实际用 `related_aweme_id` + `related_rt`，结论不可用。
 
-做法：把探针搬到本分支，按下表的真实参数重写，开关沿用 `DOUDUO_WEBAPI=1`，只打日志不改界面。每条记录 HTTP 状态、`status_code`、返回的顶层 key、列表长度，**不记录正文、cookie、token**（与 `publishJS` 的 diagnostic 同一规矩）。
+做法：本分支的 `DouDuo/DYWebApiProbe.swift` 按网页 bundle 里的真实参数重写了一遍，开关沿用 `DOUDUO_WEBAPI=1`，只打日志不改界面，结果在 `Documents/ddlog.txt` 里找 `DDGAP` 开头的行。只发读请求；每条记录 HTTP 状态、`status_code`、返回的顶层 key、列表长度和第一项的字段名，**不记录正文、cookie、token**（与 `publishJS` 的 diagnostic 同一规矩）。参数里要用的作品、音乐、合集、话题 ID 从推荐流和热榜现取。
+
+另有 `DOUDUO_IMGUP=1`：取评论图片凭证并往 ImageX 传一张 64×64 的纯色小图，用来单独验证上传链路，不发评论。
 
 通过标准：读接口返回 200 + `status_code == 0` + 列表非空；写接口先在自己的测试号上各做一次并能撤销。
 
@@ -27,23 +29,25 @@
 1. **取上传凭证**：`GET /aweme/v1/web/comment/upload/auth/?content_type=0`
    返回 `access_key`、`secret_key`、`session_token`、`expired_time`、`current_time`、`service_id`。
 2. **传图到 ImageX**（`imagex.bytedanceapi.com`，不走抖音域名，不需要 `a_bogus`）：
-   - `GET /?Action=ApplyImageUpload&Version=2018-08-01&ServiceId=<service_id>`，用上一步的临时密钥做 AWS4 签名。返回 `UploadAddress.UploadHosts`、`StoreInfos[].StoreUri / Auth`、`SessionKey`。
-   - 把文件 `PUT` 到 `https://<UploadHost>/upload/v1/<StoreUri>`，头：`Authorization: <StoreInfos.Auth>`、`Content-CRC32: <crc32 十六进制>`、`X-Storage-U: <用户 uid>`。
-   - `POST /?Action=CommitImageUpload&Version=2018-08-01&SessionKey=<SessionKey>&ServiceId=<service_id>`，同样 AWS4 签名。返回 `Uri`、`ImageWidth`、`ImageHeight`、`ImageFormat`。
+   - `GET /?Action=ApplyImageUpload&Version=2018-08-01&ServiceId=<service_id>&NeedFallback=true&FileSize=<字节数>&s=<随机串>`，用上一步的临时密钥做 AWS4 签名（region `cn-north-1`，service `imagex`，参与签名的头只有 `x-amz-date` 和 `x-amz-security-token`）。返回 `UploadAddress.UploadHosts`、`StoreInfos[].StoreUri / Auth`、`SessionKey`、`UploadHeader`。
+   - 把文件 `POST` 到 `https://<UploadHosts[0]>/upload/v1/<StoreUri>`，头：`Authorization: <StoreInfos.Auth>`、`Content-CRC32: <整个文件的 crc32，8 位小写十六进制>`、`X-Storage-U: <用户 uid>`、`Content-Type: application/octet-stream`，再加上 `UploadHeader` 里给的头。成功时回 `{"code":2000}`。
+   - `POST /?Action=CommitImageUpload&Version=2018-08-01&ServiceId=<service_id>`，JSON body `{"SessionKey":"<SessionKey>"}`，同样 AWS4 签名（多签一个 `x-amz-content-sha256` = body 的 SHA-256）。返回 `Result.Results[0].Uri`，宽高和格式在 `Result.PluginResult[0]` 的 `ImageWidth`、`ImageHeight`、`ImageFormat`。
 3. **发评论**：仍是 `POST /aweme/v1/web/comment/publish`，body 多带四个字段：
    `image_uri_list=<Uri>`、`image_widths=<宽>`、`image_heights=<高>`、`image_formats=<格式>`。
    网页同时还带 `paste_edit_method=non_paste`、`one_level_comment_rank=-1`。
 
 网页端的规则：一次一张图；图片和表情包二选一；有图时文字可以为空；格式 png / webp / jpeg / bmp / jpg；单张不超过 10MB；宽高各不超过 10000。失败码 19 = 评论功能受限，3002575 = 健康分问题。
 
-待验证的点：AWS4 签名里的 region 和 service 名（bundle 里出现过 `cn-north-1`，但没确认它就是这一处用的；service 按 ImageX 惯例应为 `imagex`，没找到明文）；PUT 的地址拼法（bundle 里有 `upload/v1/` 片段，完整拼接没读全）；`upload/auth` 在 WKWebView 签名页里是否正常返回（2026-11-09 无登录 curl 得到的是「用户未登录」，说明路径本身是通的）。
+以上协议细节（region、service、上传地址、提交方式）都是照评论输入框实际用的那版上传器源码写的，签名算法另用 AWS 官方测试向量和一份独立的 Python 实现对过账（`scripts/test_imagex_upload.py`）。
+
+还没验证的只有真实联网行为：`upload/auth` 在 WKWebView 签名页里是否正常返回（2026-11-09 无登录 curl 得到的是「用户未登录」，说明路径本身是通的）；ImageX 网关是否校验 `Origin` / `Referer`（原生请求里已经照网页的样子带上）。用 `DOUDUO_IMGUP=1` 在登录态下跑一次就能确认。
 
 ### 1.2 实现
 
 | 步骤 | 改哪里 | 做什么 |
 | --- | --- | --- |
-| 凭证 | `DouyinExtras.swift` 新增 `commentUploadAuth()` | 走现有 `call(...)`，在签名页里发 `comment/upload/auth` |
-| 上传 | 新文件 `DYImageXUploader.swift` | 原生 `URLSession` 完成 Apply → PUT → Commit；AWS4 签名用 `CryptoKit` 的 HMAC-SHA256，CRC32 用 `zlib` |
+| 凭证（已写） | `DouyinBridge+CommentImage.swift` 的 `commentUploadCredential()` | 走现有 `call(...)`，在签名页里发 `comment/upload/auth` |
+| 上传（已写） | `DYImageXUploader.swift`；入口是 `DouyinBridge.uploadCommentImage(_:fileName:measured:)` | 原生 `URLSession` 完成申请 → 传图 → 提交；AWS4 签名用 `CryptoKit` 的 HMAC-SHA256，CRC32 自己查表算 |
 | 发布 | `DouyinExtras.swift:273` `publishComment` 加可选参数 `image: DYCommentImageRef?`；`publishJS`（`:344`）有图时往 body 追加四个字段 | 不改无图时的请求形状 |
 | 回显 | `DouyinExtras.swift:339` 的 `cmap` | 现在不带图片字段，发出去的图评在本地列表里会是一条空评论；改成复用评论列表那套映射（`ddImages`，`:539-553`） |
 | 核对 | `DouyinExtras.swift:291` `findMySentComment` | 现在 `guard !want.isEmpty` 直接返回 nil，纯图评论拿不到回执时无法核对；加一条「我的昵称 + 带图 + 时间在发送之后」的匹配 |
