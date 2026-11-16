@@ -129,12 +129,22 @@ final class ImageCache {
                 let data: Data
                 var req = URLRequest(url: url)
                 req.cachePolicy = .returnCacheDataElseLoad
-                (data, _) = try await URLSession.shared.data(for: req)
+                let resp: URLResponse
+                (data, resp) = try await URLSession.shared.data(for: req)
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard let img = UIImage(data: data) else {
+                    // 诊断：图片拉回来但解不出来（403 文本 / heic 不支持等）——之前一律静默变空白
+                    DYLiveModel.log("DDIMG fail http=\(code) bytes=\(data.count) head=\(data.prefix(4).map { String(format: "%02x", $0) }.joined()) host=\(url.host ?? "") ext=\(url.pathExtension)")
+                    return nil
+                }
                 // 写磁盘持久化（后台队列，不阻塞）
                 let path = self.diskPath(url)
                 self.io.async { try? data.write(to: path, options: .atomic) }
-                return UIImage(data: data)
-            } catch { return nil }
+                return img
+            } catch {
+                DYLiveModel.log("DDIMG error host=\(url.host ?? "") \((error as NSError).code)")
+                return nil
+            }
         }
     }
 }

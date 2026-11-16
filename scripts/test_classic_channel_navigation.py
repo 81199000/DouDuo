@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""经典频道：关注流按作品 ID 恢复，横向拖动用宽度比例决定邻居和是否松手切页。
+"""经典频道：关注流按作品 ID 恢复，横向拖动用宽度比例跟手，松手切页的距离在宽屏上封顶。
 
 Run: python3 scripts/test_classic_channel_navigation.py -v
 不联网、不开模拟器。
@@ -46,6 +46,12 @@ check(liveEdge.neighbor == nil && !liveEdge.authorEdge && abs(liveEdge.fraction 
 check(!DYClassicChannelDrag.commits(translation: 196, predicted: 196, width: 400), "不到一半松手留在原页")
 check(DYClassicChannelDrag.commits(translation: 200, predicted: 200, width: 400), "拖过一半切页")
 check(DYClassicChannelDrag.commits(translation: 40, predicted: 220, width: 400), "预测落点过半的快扫切页")
+// 折叠屏展开内屏约 950pt 宽：手指要滑的距离不随屏宽翻倍，和外屏/普通手机一样约 220pt
+check(DYClassicChannelDrag.commits(translation: 220, predicted: 220, width: 950), "展开内屏拖 220pt 即切页")
+check(!DYClassicChannelDrag.commits(translation: 200, predicted: 200, width: 950), "展开内屏不到 220pt 留在原页")
+check(DYClassicChannelDrag.commits(translation: 60, predicted: 240, width: 950), "展开内屏快扫按同样距离切页")
+check(DYClassicChannelDrag.commits(translation: 233, predicted: 233, width: 466), "合屏外屏半屏切页")
+check(DYClassicChannelDrag.opensAuthor(authorEdge: true, translation: -220, predicted: -220, width: 950, cancelled: false), "展开内屏左滑 220pt 打开作者")
 
 if failures.isEmpty {
     print("classic channel navigation passed")

@@ -9,8 +9,8 @@ packages:
     path: Vendor/VLCKit
 settings:
   base:
-    MARKETING_VERSION: 1.5.4
-    CURRENT_PROJECT_VERSION: "105"
+    MARKETING_VERSION: 1.5.5
+    CURRENT_PROJECT_VERSION: "106"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
@@ -46,6 +46,8 @@ targets:
           NSAllowsArbitraryLoads: true
         # 后台播放：默认仍是切后台就停声；只有「更多」菜单里打开「后台播放」才会继续响（代码里按开关判断）
         UIBackgroundModes: [audio]
+        # ProMotion：iPhone 默认把 App 限制在 60Hz，必须声明这一项才能跑 120Hz（弹幕滚动、翻页更顺）
+        CADisableMinimumFrameDurationOnPhone: true
   DouDuoUITests:
     type: bundle.ui-testing
     platform: iOS

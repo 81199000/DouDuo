@@ -396,19 +396,34 @@ final class DouDuoUITests: XCTestCase {
     func testMessageRepeatedOpenBack() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": "classic"]
+        app.launchEnvironment = ["DOUDUO_MESSAGE_LAYOUT": "1", "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": ProcessInfo.processInfo.environment["DD_MODE"] ?? "classic"]
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
         addTeardownBlock { app.terminate() }
         app.launch()
+        if ProcessInfo.processInfo.environment["DD_LANDSCAPE"] == "1" {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        }
         let row = app.buttons.matching(identifier: "douyin.conversation.row").matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch
         let editor = app.textViews["douyin.messages.composer.editor"]
         for attempt in 0..<4 {
             XCTAssertTrue(row.waitForExistence(timeout: 15))
             let started = Date()
             row.tap()
+            // 打开中其他会话行不能整列变禁用（禁用 = 整列变暗，老板看到的「整个列表闪一下」）
+            let others = app.buttons.matching(identifier: "douyin.conversation.row").allElementsBoundByIndex
+            print("MESSAGE_ROWS enabled=\(others.filter(\.isEnabled).count)/\(others.count)")
+            // 第二次起进同一条会话：网页切会话期间先铺上次的聊天快照（像微信，点进去立刻有内容，不转圈）
+            let detail = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.detail").firstMatch
+            _ = detail.waitForExistence(timeout: 3)
+            let snap = detail.exists && (detail.value as? String) == "snapshot"
+            print("MESSAGE_SNAPSHOT open[\(attempt)] used=\(snap)")
+            if attempt > 0 { XCTAssertTrue(snap, "re-opening a chat shows the cached snapshot immediately") }
             XCTAssertTrue(editor.waitForExistence(timeout: 3))
             print("MESSAGE_LATENCY open[\(attempt)]=\(Date().timeIntervalSince(started))")
             let returning = Date()
+            let backs = app.buttons.matching(identifier: "douyin.messages.back").allElementsBoundByIndex
+            _ = backs
             app.buttons["douyin.messages.back"].firstMatch.tap()
             XCTAssertTrue(row.waitForExistence(timeout: 2))
             XCTAssertTrue(row.isEnabled)
@@ -754,6 +769,65 @@ final class DouDuoUITests: XCTestCase {
 
     func testLiveHashtagClassicFlow() throws { verifyLiveHashtags(mode: "duoClassic") }
     func testLiveHashtagDefaultFlow() throws { verifyLiveHashtags(mode: "classic") }
+
+    /// 老板 11-16 报：搜索出来的视频点作者头像不跳，要返回关掉播放器才看到作者页。
+    /// 作者页必须直接弹在播放器上面，播放器不能先被关掉。
+    func testSearchResultAvatarOpensAuthorDirectly() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_SEARCH_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE", "DOUDUO_RESET_HASHTAG_FILTER"] {
+            app.launchEnvironment[flag] = "1"
+        }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douduo_dismissed_update_v1", "1.5.0"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let search = app.buttons["douyin.search"].firstMatch
+        if search.waitForExistence(timeout: 15) { search.tap() } else {
+            app.buttons["douyin.module.menu"].firstMatch.tap()
+            app.buttons["douyin.module.search"].firstMatch.tap()
+        }
+        XCTAssertTrue(app.textFields["douyin.search.field"].waitForExistence(timeout: 10))
+        app.buttons["douyin.search.hot.1"].tap()
+        let result = app.buttons["douyin.grid.item.hashtag-travel"].firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 10))
+        result.tap()
+        let back = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10))
+        // 简洁/极简模式：作者是左下的「@名字」（douyin.author）；经典模式：系统栏头像（douyin.author.avatar）
+        let avatar = app.buttons["douyin.author"].firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10))
+        avatar.tap()
+        let panel = app.descendants(matching: .any).matching(identifier: "douyin.author.panel").firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), "tapping the avatar must open the author page immediately")
+        attach(app, "search-result-author-direct")
+    }
+
+    /// 老板 11-16 报：视频快进过就不会自动连播。播到一半拖进度条快进，播完必须照样切下一条。
+    func testAutoNextAfterSeek() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = ProcessInfo.processInfo.environment["DD_MODE"] ?? "classic"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE"] { app.launchEnvironment[flag] = "1" }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "YES", "-douduo_dismissed_update_v1", "1.5.4"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        sleep(3)
+        let w = app.windows.firstMatch
+        if ProcessInfo.processInfo.environment["DD_HOW"] == "boost" {
+            // 长按 2 倍速
+            w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).press(forDuration: 2.5)
+        } else {
+            // 拖底部进度条快进
+            let bar = app.otherElements["douyin.progress"].firstMatch
+            XCTAssertTrue(bar.waitForExistence(timeout: 5), "progress bar")
+            bar.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: bar.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5)))
+        }
+        sleep(14)
+        attach(app, "autonext-after-seek")
+    }
 
     func testSearchPlaybackClassic() throws { verifySearchPlayback(mode: "duoClassic") }
     func testSearchPlaybackDefault() throws { verifySearchPlayback(mode: "classic") }
@@ -1289,23 +1363,29 @@ final class DouDuoUITests: XCTestCase {
 
     func testStandaloneRailWithLiveActivity() throws {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
-        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页", "-douduo_dismissed_update_v1", "1.5.4"]
-        app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
-        app.launchEnvironment["DOUDUO_COMMENT_ENTRY"] = "mine"
-        addTeardownBlock { app.terminate() }
-        app.launch()
-        XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"], timeout: 60))
-        app.buttons["首页"].firstMatch.tap()
-        app.buttons["我的"].firstMatch.tap()
-        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.list.player").firstMatch.waitForExistence(timeout: 30))
+        // Start an ActivityKit activity on the Duo before running this flow.
+        let app = launchOnlineRegression()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        let originalID = current.label
+        app.buttons["douyin.author.avatar"].firstMatch.tap()
+        let authorBack = app.buttons["douyin.author.back"].firstMatch
+        XCTAssertTrue(authorBack.waitForExistence(timeout: 15))
+        let works = app.descendants(matching: .any).matching(identifier: "douyin.author.works").firstMatch
+        let work = works.buttons.firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 35))
+        work.tap()
+        XCTAssertTrue(app.buttons["douyin.list.back"].firstMatch.waitForExistence(timeout: 15))
         let rail = app.descendants(matching: .any).matching(identifier: "douyin.video.actions").firstMatch
         XCTAssertTrue(rail.waitForExistence(timeout: 10))
-        XCTAssertLessThan(rail.frame.height, 320, "作品互动胶囊应紧凑，不占满系统状态列")
-        for id in ["douyin.author.avatar", "douyin.like", "douyin.comments", "douyin.collect", "douyin.share", "douyin.list.back"] {
+        // The upstream boost gesture includes the empty slot above the capsule.
+        // Measure the visible controls rather than that larger gesture container.
+        let capsule = ["douyin.author.avatar", "douyin.like", "douyin.comments", "douyin.collect", "douyin.share"]
+            .map { app.buttons[$0].firstMatch.frame }.reduce(CGRect.null) { $0.union($1) }
+        XCTAssertLessThan(capsule.height, 320, "作品互动胶囊应紧凑，不占满系统状态列")
+        for id in ["douyin.author.avatar", "douyin.like", "douyin.comments", "douyin.collect", "douyin.share", "douyin.list.back", "douyin.cleanScreen"] {
             XCTAssertTrue(app.buttons[id].firstMatch.isHittable, id + " 应直接显示，不进入更多")
         }
+        XCTAssertLessThanOrEqual(app.buttons["douyin.cleanScreen"].firstMatch.frame.maxY, capsule.minY)
         XCTAssertFalse(app.buttons["douyin.more"].exists)
         XCTAssertFalse(app.buttons["更多"].exists)
         pauseRegressionVideo(app)
@@ -1317,6 +1397,93 @@ final class DouDuoUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 0)))
         XCTAssertTrue(app.buttons["douyin.comments.close"].firstMatch.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["douyin.share"].firstMatch.isHittable)
+        app.buttons["douyin.list.back"].firstMatch.tap()
+        XCTAssertTrue(authorBack.waitForExistence(timeout: 12))
+        authorBack.tap()
+        let clean = app.buttons["douyin.cleanScreen"].firstMatch
+        let share = app.buttons["douyin.share"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 10) { clean.isHittable && share.isHittable })
+        XCTAssertEqual(current.label, originalID)
+        pauseRegressionVideo(app)
+        attach(app, "home-rail-after-author-work-with-live-activity")
+        let dockFrames = ["首页", "我的", "消息"].map { app.buttons[$0].firstMatch }
+            .filter(\.isHittable).map(\.frame)
+        for id in ["douyin.author.avatar", "douyin.like", "douyin.comments", "douyin.collect", "douyin.share"] {
+            let action = app.buttons[id].firstMatch
+            XCTAssertTrue(action.isHittable, id + " 返回首页后可点击")
+            XCTAssertFalse(dockFrames.contains { $0.insetBy(dx: 2, dy: 2).intersects(action.frame) }, id + " 应避开系统 Dock")
+        }
+        clean.tap()
+        XCTAssertTrue(waitUntil(timeout: 5) { clean.label == "退出清屏" })
+        clean.tap()
+        XCTAssertTrue(app.buttons["douyin.share"].firstMatch.isHittable)
+        pauseRegressionVideo(app)
+        attach(app, "home-rail-after-work-with-live-activity")
+    }
+
+    func testAuthorWorkContinuesOnDuoOuterDisplay() throws {
+        continueAfterFailure = false
+        let app = launchOnlineRegression()
+        let window = app.windows.firstMatch
+        XCTAssertGreaterThan(window.frame.width, 700, "Start on the open Duo inner display")
+        let feedID = app.staticTexts["douyin.currentID"].firstMatch.label
+        app.buttons["douyin.author.avatar"].firstMatch.tap()
+        let authorBack = app.buttons["douyin.author.back"].firstMatch
+        XCTAssertTrue(authorBack.waitForExistence(timeout: 15))
+        let works = app.descendants(matching: .any).matching(identifier: "douyin.author.works").firstMatch
+        let work = works.buttons.firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 35))
+        work.tap()
+        let workID = app.staticTexts["douyin.list.currentID"].firstMatch
+        XCTAssertTrue(workID.waitForExistence(timeout: 15))
+        let first = workID.label
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.7))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.2)))
+        XCTAssertTrue(waitUntil(timeout: 10) { workID.exists && workID.label != first })
+        let paged = workID.label
+        pauseRegressionVideo(app)
+        print("DUODUO_CLOSE_HINGE")
+        XCTAssertTrue(waitUntil(timeout: 30) { window.frame.width < 700 && window.frame.height > window.frame.width })
+        XCTAssertTrue(workID.waitForExistence(timeout: 10), "Folding must not close the work player")
+        XCTAssertEqual(workID.label, paged, "Folding preserves the paged work")
+        let back = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(back.isHittable, "The work controls must remain usable on the outer display")
+        back.tap()
+        XCTAssertTrue(authorBack.waitForExistence(timeout: 12))
+        authorBack.tap()
+        XCTAssertTrue(waitUntil(timeout: 12) {
+            app.buttons["douyin.cleanScreen"].firstMatch.isHittable && app.buttons["douyin.share"].firstMatch.isHittable
+        })
+        XCTAssertEqual(app.staticTexts["douyin.currentID"].firstMatch.label, feedID)
+    }
+
+    func testSearchResultContinuesOnDuoOuterDisplay() throws {
+        continueAfterFailure = false
+        let app = launchOnlineRegression()
+        let window = app.windows.firstMatch
+        XCTAssertGreaterThan(window.frame.width, 700, "Start on the open Duo inner display")
+        app.buttons["douyin.search"].firstMatch.tap()
+        let field = app.textFields["douyin.search.field"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 15))
+        field.tap()
+        field.typeText("iPhone")
+        app.buttons["douyin.search.submit"].firstMatch.tap()
+        let result = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "douyin.grid.item.")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 35))
+        result.tap()
+        let workID = app.staticTexts["douyin.list.currentID"].firstMatch
+        XCTAssertTrue(workID.waitForExistence(timeout: 15))
+        let openedID = workID.label
+        pauseRegressionVideo(app)
+        print("DUODUO_CLOSE_HINGE")
+        XCTAssertTrue(waitUntil(timeout: 30) { window.frame.width < 700 && window.frame.height > window.frame.width })
+        XCTAssertTrue(workID.waitForExistence(timeout: 10))
+        XCTAssertEqual(workID.label, openedID)
+        let back = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(back.isHittable)
+        back.tap()
+        XCTAssertTrue(result.waitForExistence(timeout: 15), "Returning to search retains the result grid")
+        XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
@@ -1452,6 +1619,11 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["douyin.options.fit"].isHittable)
         XCTAssertTrue(app.buttons["douyin.options.muted"].isHittable)
         XCTAssertTrue(app.buttons["douyin.options.bgplay"].isHittable)
+        let window = app.windows.firstMatch
+        let lastAction = app.buttons["douyin.danmaku.open"].firstMatch
+        XCTAssertTrue(lastAction.isHittable)
+        XCTAssertLessThan(window.frame.maxY - lastAction.frame.maxY, 65,
+                          "The bottom sheet should end shortly below the last button")
         // 2026-11-14：全局偏好只在设置页，长按面板不再重复
         XCTAssertFalse(app.switches["横屏时只放横屏内容"].exists)
         XCTAssertFalse(app.switches["显示弹幕"].exists)
@@ -1476,6 +1648,67 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings.refresh"].waitForExistence(timeout: 5))
         attach(app, "settings-screen")
         app.buttons["settings.done"].tap()
+    }
+
+    /// 经典模式右侧控制区（对齐抖音）：长按任何位置都加速，按在按钮上也一样；
+    /// 加速后松手不触发按钮本身（不开评论、不进作者页、不切清屏），普通点按照常。只读，不点赞不关注。
+    func testClassicActionColumnHoldBoost() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.staticTexts["douyin.currentID"].waitForExistence(timeout: 40))
+        // Duo 的旋转由模拟器/Device Hub 控制；互动胶囊只在竖向（系统栏在右侧）时进系统栏。
+        guard waitUntil(timeout: 30, condition: { app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width }) else {
+            throw XCTSkip("请先把 Duo 旋转为竖向，右侧系统栏才会出现互动胶囊")
+        }
+        let avatar = app.buttons["douyin.author.avatar"].firstMatch
+        let like = app.buttons["douyin.like"].firstMatch
+        let comments = app.buttons["douyin.comments"].firstMatch
+        let share = app.buttons["douyin.share"].firstMatch
+        let clean = app.buttons["douyin.cleanScreen"].firstMatch
+        XCTAssertTrue(avatar.waitForExistence(timeout: 10))
+        XCTAssertTrue(clean.waitForExistence(timeout: 10))
+        let cleanLabel = clean.label
+        attach(app, "classic-column-hold-before")
+        let count = app.staticTexts["douyin.video.boostStarts"].firstMatch
+        let origin = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+        let column = like.frame
+        let window = app.windows.firstMatch.frame
+        let probes: [(String, CGPoint)] = [
+            // 清屏键与互动胶囊之间的整段留白
+            ("gapAboveCapsule", CGPoint(x: column.midX, y: (clean.frame.maxY + avatar.frame.minY) / 2)),
+            // 胶囊右侧到屏幕边缘
+            ("besideCapsule", CGPoint(x: (column.maxX + window.maxX) / 2, y: like.frame.midY)),
+            // 胶囊内边距、按钮间缝
+            ("capsulePaddingBottom", CGPoint(x: column.midX, y: share.frame.maxY + 3)),
+            ("gapBetweenButtons", CGPoint(x: column.midX, y: (like.frame.maxY + comments.frame.minY) / 2)),
+            // 按钮本身
+            ("commentsButton", CGPoint(x: comments.frame.midX, y: comments.frame.midY)),
+            ("avatarButton", CGPoint(x: avatar.frame.midX, y: avatar.frame.midY)),
+            ("cleanScreenButton", CGPoint(x: clean.frame.midX, y: clean.frame.midY)),
+            // 首页选择器由系统 Tab 栏接管，属于系统控件，不在这里测。
+        ]
+        var missed: [String] = []
+        for (name, point) in probes {
+            let before = Int(count.label) ?? -1
+            origin.withOffset(CGVector(dx: point.x, dy: point.y)).press(forDuration: 0.9)
+            let boosted = Int(count.label) == before + 1
+            print("CLASSIC_PROBE \(name) \(point) boosted=\(boosted)")
+            if !boosted { missed.append(name) }
+        }
+        XCTAssertEqual(missed, [], "右侧控制区任何位置长按都应加速")
+        // 长按加速后松手：评论没开、没进作者页、清屏没切换
+        XCTAssertFalse(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 2), "长按评论键加速后不应打开评论")
+        XCTAssertTrue(avatar.exists, "长按头像加速后不应进入作者页")
+        XCTAssertEqual(clean.label, cleanLabel, "长按清屏键加速后不应切换清屏")
+        attach(app, "classic-column-hold-after")
+        // 普通点按不受影响
+        Thread.sleep(forTimeInterval: 1)
+        comments.tap()
+        XCTAssertTrue(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 10), "普通点按评论键应打开评论")
     }
 
     func testCommentsPullDownAndHeaderSpacing() throws {
@@ -4300,6 +4533,10 @@ extension DouDuoUITests {
             let input = any.matching(identifier: "douyin.comment.input").firstMatch
             XCTAssertTrue(input.isHittable)
             XCTAssertGreaterThanOrEqual(input.frame.height, 20)
+            if window.frame.width < 700 && window.frame.height > window.frame.width {
+                let list = app.scrollViews["douyin.comments.list"].firstMatch
+                XCTAssertEqual(list.frame.maxX, window.frame.maxX, accuracy: 2, "窄屏评论不留右侧状态栏空白")
+            }
             let commentClose = app.buttons["douyin.comments.close"].firstMatch
             commentClose.tap()
             XCTAssertTrue(commentClose.waitForNonExistence(timeout: 5))
@@ -4312,16 +4549,42 @@ extension DouDuoUITests {
             XCTAssertTrue(app.buttons["douyin.share"].firstMatch.isHittable)
             Thread.sleep(forTimeInterval: 1)
         }
-        XCTAssertTrue(app.buttons["douyin.search"].firstMatch.isHittable)
         print("CAPTION_COMMENTS_CLEAN_ONLINE window=\(window.frame)")
         pauseRegressionVideo(app)
         attach(app, "regression-comments-restored")
+        let search = app.buttons["douyin.search"].firstMatch
+        XCTAssertTrue(search.exists)
+        search.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.textFields["douyin.search.field"].waitForExistence(timeout: 10))
     }
 
-    private func launchOnlineRegression(pinned: Bool = true) -> XCUIApplication {
+    func testCompactLandscapeVideoHidesChannelBar() throws {
+        continueAfterFailure = false
+        let app = launchOnlineRegression(pinned: false, forceWide: true)
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        let before = current.label
+        let recommend = app.buttons["douyin.channel.recommend"].firstMatch
+        recommend.tap()
+        XCTAssertTrue(waitUntil(timeout: 75) { current.label != before && recommend.value as? String == "已选择" })
+        pauseRegressionVideo(app)
+        app.buttons["douyin.comments"].firstMatch.tap()
+        let header = app.otherElements["douyin.comments.header"].firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 12))
+        XCTAssertLessThanOrEqual(header.frame.minY, app.windows.firstMatch.frame.height * 0.38 + 1)
+        attach(app, "compact-landscape-no-channel")
+        XCTAssertFalse(recommend.isHittable)
+        app.buttons["douyin.comments.close"].firstMatch.tap()
+        XCTAssertTrue(recommend.waitForExistence(timeout: 10))
+    }
+
+    private func launchOnlineRegression(pinned: Bool = true, forceWide: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         addTeardownBlock { app.terminate() }
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        if forceWide {
+            app.launchEnvironment["DOUDUO_FORCEWIDE"] = "1"
+            app.launchArguments += ["-douyin_wide_landscape_v1", "YES"]
+        }
         if pinned { app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406" }
         app.launchArguments += ["-duoduomain_tab_v1", "首页", "-douyin_muted_v1", "YES",
                                 "-douyin_autoplay_v1", "NO", "-douduo_dismissed_update_v1", "1.5.4",

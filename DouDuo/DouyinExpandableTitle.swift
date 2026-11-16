@@ -7,6 +7,7 @@ extension EnvironmentValues {
 }
 
 private enum DYCaptionText {
+    static let basePointSize = 15.0
     static let expandURL = URL(string: "douduo://expand-caption")!
     static let actionURL = URL(string: "douduo://expand-caption?action=toggle")!
     static let expandSuffix = "\u{2060}…\u{00a0}展\u{2060}开"
@@ -82,7 +83,7 @@ struct DYClassicExpandableTitle: View {
     var onExpand: (() -> Void)? = nil
 
     @Environment(\.dySearchHashtag) private var searchHashtag
-    @ScaledMetric(relativeTo: .subheadline) private var pointSize = 15.0
+    @ScaledMetric(relativeTo: .subheadline) private var pointSize = DYCaptionText.basePointSize
     @State private var expanded = false
     @State private var width: CGFloat = 0
     @State private var truncatedText: String?
@@ -152,7 +153,7 @@ struct DYVideoCaptionHeader: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dySearchHashtag) private var searchHashtag
-    @ScaledMetric(relativeTo: .body) private var pointSize = 17.0
+    @ScaledMetric(relativeTo: .subheadline) private var pointSize = DYCaptionText.basePointSize
     @State private var following = false
     @State private var followError: String?
 
@@ -296,7 +297,7 @@ struct DYExpandableTitle: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             Text(caption)
-                .lineLimit(expanded ? nil : 3)
+                .lineLimit(expanded ? nil : 1)   // 老板定：默认只显示一行，点「展开」看全部
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }

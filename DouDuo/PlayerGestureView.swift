@@ -231,7 +231,8 @@ struct PlayerGestureView: UIViewRepresentable {
                 guard g.state == .ended else { return }
                 let dx = g.translation(in: v).x
                 let velocity = g.velocity(in: v).x
-                guard abs(dx) >= max(40, v.bounds.width * 0.12)
+                // 距离门槛按屏宽 12%，但最多 56pt（≈ 合屏外屏的 12%）：展开内屏宽一倍，手指不该多滑一倍
+                guard abs(dx) >= min(max(40, v.bounds.width * 0.12), 56)
                     || (abs(dx) > 20 && abs(velocity) > 650) else { return }
                 navigate(dx < 0)
                 return

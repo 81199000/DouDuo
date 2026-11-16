@@ -945,7 +945,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
         // origin_cover = 原比例首帧（竖屏就是竖的）；cover 是网页推荐用的 4:3 横版裁切，会让竖屏视频先显示成横的
-        cover: first(v.origin_cover) || first(v.cover) || (a.images && a.images[0] && first(a.images[0])) || null,
+        // ⚠️ 2026-11-16 实测：「我的·作品」接口给的 origin_cover 是全黑占位 JPEG（360×721 全 0）→ 那里改用 cover（postJS 打标记）
+        cover: (a.__ddSelfList ? (first(v.cover) || first(v.origin_cover)) : (first(v.origin_cover) || first(v.cover)))
+          || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,
@@ -1340,6 +1342,7 @@ extension EnvironmentValues {
     @Entry var duoCleanScreen = false
 }
 
+
 struct DYUpstreamFeedScreen: View {
     @State private var followCommentItem: DYAweme?
     @Environment(\.appTheme) private var theme
@@ -1383,8 +1386,12 @@ struct DYUpstreamFeedScreen: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
+    /// 信息页「已盖上」：比 showMessages 晚一点置位。
+    /// 点信息时如果同一帧就把所有视频页标成 inactive，整列视频页重建 + 播放器拆停都挤在弹出前（实测 ~550ms 才开始弹）。
+    /// 先弹页面、动画走完再让视频页退场；弹出时外层视频已经由 pauseAll(.cover) 暂停，不会漏声。
+    @State private var messagesCovering = false
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
-    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || showMessages || authorTarget != nil }
+    private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
@@ -1655,7 +1662,13 @@ struct DYUpstreamFeedScreen: View {
             DouyinWebScreen(start: t.url)
         }
         .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover() }) {
-            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false }, onWeb: { u in
+            // 信息 + 我的融合：点右侧栏「我的」在信息页里原地切换，返回键回到信息（不再跳到另一个全屏页）
+            DYMessagesScreen(bridge: bridge, onClose: { showMessages = false },
+                             mineContent: AnyView(DYMineScreen(bridge: bridge,
+                                 onLogin: { showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
+                                 onAuthor: { a in showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { authorTarget = a.author } },
+                                 embedded: true)),
+                             onWeb: { u in
                 showMessages = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
             })
@@ -1681,7 +1694,17 @@ struct DYUpstreamFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
-            if !open { Task { await refreshNoticeUnread() } }
+            if open {
+                DYMessageOpenProbe.tapped()
+                DDPlayback.shared.pauseAll(reason: .cover)   // 立即停声，不等视频页退场
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))   // 弹出动画走完再让视频页退场
+                    if showMessages { messagesCovering = true }
+                }
+            } else {
+                messagesCovering = false
+                Task { await refreshNoticeUnread() }
+            }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
         .task {
@@ -1867,15 +1890,20 @@ struct DYUpstreamFeedScreen: View {
     private func playNext(after id: String) {
         guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
         if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
+            advance(from: id, to: feed.items[i + 1].id)
         } else {
             Task {
                 await feed.loadMore(bridge)
                 if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
+                    advance(from: id, to: feed.items[j + 1].id)
                 }
             }
         }
+    }
+
+    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    private func advance(from: String, to: String) {
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
 
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
@@ -2270,8 +2298,8 @@ struct DYUpstreamFeedScreen: View {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
-                    minimalMenuRow("消息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") { showMessages = true }
-                    minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
+                    // 信息与我的已合成一页：只留一个入口「我的」，未读红点挂在这里
+                    minimalMenuRow("我的", "person.crop.circle", badge: noticeUnread > 0, id: "douyin.module.mine") { showMessages = true }
                 }
                 .padding(.vertical, 8)
                 .frame(minWidth: 170)
@@ -2290,8 +2318,13 @@ struct DYUpstreamFeedScreen: View {
 
     private func minimalMenuRow(_ title: String, _ symbol: String, selected: Bool = false, badge: Bool = false, id: String, action: @escaping () -> Void) -> some View {
         Button {
-            minimalMenuOpen = false
-            action()
+            // 实测点「消息」到信息页开始弹出要 ~600ms，且主线程不卡（无 DDLONGFRAME）：
+            // 是系统要等这个弹出菜单的收起动画放完，才肯弹下一个全屏页。
+            // 菜单直接无动画收起，下一轮再打开目标页（目标页自己的弹出动画照常）。
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) { minimalMenuOpen = false }
+            DispatchQueue.main.async { action() }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 22)
@@ -2591,13 +2624,18 @@ struct DYClassicChannelDrag: Equatable {
         return nil
     }
 
-    /// 位移或预测落点过半才切页。预测落点用来接快速轻扫。
+    /// 松手切页要拖动的最远距离（pt）。手指要滑多远是手的尺度，不该跟着屏幕变宽：
+    /// 以前按半屏算，折叠屏外屏（约 466pt 宽）要 233pt，展开内屏（约 950pt 宽）就要 475pt，翻了一倍。
+    /// 220pt ≈ 外屏 / Pro Max 竖屏的半屏，窄屏仍按半屏。
+    static let maxCommitDistance: CGFloat = 220
+
+    /// 位移或预测落点过半屏（宽屏上限 maxCommitDistance）才切页。预测落点用来接快速轻扫。
     static func commits(translation: CGFloat, predicted: CGFloat, width: CGFloat) -> Bool {
-        let width = max(width, 1)
-        return abs(translation) / width >= 0.5 || abs(predicted) / width >= 0.5
+        let threshold = min(max(width, 1) * 0.5, maxCommitDistance)
+        return abs(translation) >= threshold || abs(predicted) >= threshold
     }
 
-    /// 推荐页右缘的左滑过半才打开作者。没过半或被取消时保持原页。
+    /// 推荐页右缘的左滑达到切页距离（同 commits）才打开作者。没达到或被取消时保持原页。
     static func opensAuthor(authorEdge: Bool, translation: CGFloat, predicted: CGFloat, width: CGFloat, cancelled: Bool) -> Bool {
         !cancelled && authorEdge && translation < 0 && commits(translation: translation, predicted: predicted, width: width)
     }
@@ -2792,7 +2830,11 @@ struct DYClassicFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
+    /// Duo 横置（合屏外屏或完全展开内屏；半折不算）。
+    @State private var duoLandscape = false
+    private var titleCentersOnScreen: Bool { duoLandscape && !sidePanelOpen }
     @State private var supportsSidePanel = false
+    @State private var measuredSidePanel = false
     @State private var residentComments = false
     @State private var bookFoldComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
@@ -2801,9 +2843,11 @@ struct DYClassicFeedScreen: View {
     }
     private var hidesVideoChrome: Bool { (!showSearch && (showComments || residentComments || authorTarget != nil)) || liveRoomOpen }
     private var innerPortrait: Bool { stacksLandscapeComments && !hingeClosed }
-    private var anchorsHeaderToWindow: Bool { horizontalCommentStatus || innerPortrait }
+    private var compactDuoHeader: Bool { hingeClosed || innerPortrait }
+    private var anchorsHeaderToWindow: Bool { horizontalCommentStatus || compactDuoHeader }
 
     @State private var contentTopInset: CGFloat = 0
+    @State private var compactHeaderInsets = EdgeInsets()
     private var headerTopInset: CGFloat {
         max(DYDuoMetrics.windowSafeTop, DYDuoMetrics.isDuoHardware ? 0 : contentTopInset, 8)
     }
@@ -2817,7 +2861,8 @@ struct DYClassicFeedScreen: View {
     }
 
     private var hidesCommentStatus: Bool {
-        hingeClosed && showComments && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
+        (hingeClosed || stacksLandscapeComments) && showComments && !showSearch
+            && authorTarget == nil && tab != .live && commentAweme != nil
     }
 
     private var presentsLandscapeComments: Bool {
@@ -3004,6 +3049,7 @@ struct DYClassicFeedScreen: View {
             await live.load(bridge, reset: true)
         }
         .onChange(of: showMessages) { _, open in
+            if open { DYMessageOpenProbe.tapped() }
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
@@ -3038,7 +3084,7 @@ struct DYClassicFeedScreen: View {
                     .tint(nil)
             }
             Tab("消息", systemImage: "bubble.left.and.bubble.right", value: DYMainTab.messages) {
-                DYMessagesScreen(bridge: bridge, onWeb: { url in
+                DYMessagesScreen(bridge: bridge, onMine: { mainTab = .mine }, onWeb: { url in
                     mainTab = .home
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: url) }
                 }, forwardedShare: forwardedChat)
@@ -3108,14 +3154,29 @@ struct DYClassicFeedScreen: View {
         GeometryReader { geo in
             let wide = Self.playAreaIsWide(geo)
             flatArrangement(geo)
-                .onAppear { feed.screenWide = wide; insets = geo.safeAreaInsets }
-                .onChange(of: geo.safeAreaInsets) { _, value in insets = value }
+                .onAppear { feed.screenWide = wide }
+                .onChange(of: geo.safeAreaInsets, initial: true) { _, value in
+                    insets = value
+                    if !showComments { compactHeaderInsets = value }
+                }
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     max(proxy.frame(in: .global).minY, proxy.safeAreaInsets.top)
                 } action: { contentTopInset = $0 }
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width >= DYDuoMetrics.legacyWideMin || (DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height)
-                } action: { supportsSidePanel = $0 }
+                } action: { measuredSidePanel = $0 }
+                // The author page owns the work's full-screen cover. Keep that
+                // exact presenter mounted during a fold, then move the author
+                // page only after the user dismisses the work.
+                .onChange(of: measuredSidePanel, initial: true) { _, measured in
+                    if !authorWorkOpen { supportsSidePanel = measured }
+                }
+                .onChange(of: authorWorkOpen) { _, open in
+                    if !open { supportsSidePanel = measuredSidePanel }
+                }
+                .onGeometryChange(for: Bool.self) { proxy in
+                    DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
+                } action: { duoLandscape = $0 }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
                     let token = UUID(); wideToken = token
@@ -3128,11 +3189,9 @@ struct DYClassicFeedScreen: View {
         }
         .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : commentAweme?.id)
         .environment(\.dyExpandVideoCaption, { item in
-            withAnimation(.snappy) {
-                authorTarget = nil
-                captionItem = item
-                showComments = true
-            }
+            authorTarget = nil
+            captionItem = item
+            showComments = true
         })
     }
 
@@ -3164,10 +3223,13 @@ struct DYClassicFeedScreen: View {
     private func flatArrangement(_ geo: GeometryProxy) -> some View {
         let placement = showComments && !showSearch && authorTarget == nil && tab != .live
             ? DYInlineCommentPlacement(geo, aweme: commentAweme, enabled: stacksLandscapeComments,
-                                       showsCaption: captionItem != nil)
+                                       showsCaption: captionItem != nil, usesCompactPanel: stacksLandscapeComments)
             : nil
-        let layout = DYCommentPaneMetrics(geo, isPresented: !showSearch && (authorTarget != nil || (showComments && placement == nil)),
-                                          allowsResident: !showSearch && tab != .live, paneFraction: authorTarget == nil ? nil : 0.5)
+        let showsAuthorPane = supportsSidePanel && authorTarget != nil
+        let layout = DYCommentPaneMetrics(geo, isPresented: !showSearch && (showsAuthorPane || (showComments && placement == nil)),
+                                          allowsResident: !showSearch && tab != .live,
+                                          paneFraction: showsAuthorPane ? 0.5 : nil,
+                                          keepsSideBySide: showsAuthorPane && authorWorkOpen)
         let w = geo.size.width, h = geo.size.height
 
         return ZStack(alignment: .topLeading) {
@@ -3175,7 +3237,7 @@ struct DYClassicFeedScreen: View {
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
             if layout.showsPane {
                 Group {
-                    if let author = authorTarget {
+                    if showsAuthorPane, let author = authorTarget {
                         DYAuthorScreen(bridge: bridge, author: author,
                                        onWeb: { web = DYWebTarget(url: $0) },
                                        onClose: { withAnimation(.snappy) { authorTarget = nil } },
@@ -3209,7 +3271,7 @@ struct DYClassicFeedScreen: View {
         }
         .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
-        .animation(showSearch ? nil : .snappy, value: showComments)
+        .animation(!showSearch && layout.sideBySide ? .snappy : nil, value: showComments)
         .animation(showSearch ? nil : .snappy, value: authorTarget?.id)
         .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentAweme,
                                                   onClose: { showComments = false }))
@@ -3257,12 +3319,12 @@ struct DYClassicFeedScreen: View {
     private func playNext(after id: String) {
         guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
         if i + 1 < feed.items.count {
-            withAnimation { currentID = feed.items[i + 1].id }
+            advance(from: id, to: feed.items[i + 1].id)
         } else {
             Task {
                 await feed.loadMore(bridge)
                 if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
-                    withAnimation { currentID = feed.items[j + 1].id }
+                    advance(from: id, to: feed.items[j + 1].id)
                 }
             }
         }
@@ -3277,6 +3339,11 @@ struct DYClassicFeedScreen: View {
         } else {
             selectTab(target)
         }
+    }
+
+    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    private func advance(from: String, to: String) {
+        if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
 
     private func selectTab(_ target: DYTab) {
@@ -3500,6 +3567,7 @@ struct DYClassicFeedScreen: View {
         }
         .overlay(alignment: .top) {
             GeometryReader { header in
+                let headerInsets = compactDuoHeader && showComments ? compactHeaderInsets : insets
                 // This is a sibling of the pager, never a child of a video page.
                 ZStack {
                     HStack {
@@ -3515,13 +3583,15 @@ struct DYClassicFeedScreen: View {
                             headerSearch
                         }
                     } else {
-                        topBar
+                        topBar.offset(x: titleCentersOnScreen ? (headerInsets.trailing - headerInsets.leading) / 2 : 0)
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(.leading, 8 + (sidePanelOpen ? 0 : insets.leading))
-                .padding(.trailing, 8 + (sidePanelOpen ? 0 : insets.trailing))
+                .padding(.leading, 8 + (sidePanelOpen && !compactDuoHeader ? 0 : headerInsets.leading))
+                .padding(.trailing, 8 + (sidePanelOpen && !compactDuoHeader ? 0 : max(headerInsets.trailing,
+                    hingeClosed && !showComments ? DYDuoMetrics.trailingOcclusionInset(header,
+                        pane: CGRect(x: 0, y: 0, width: header.size.width, height: 96)) : 0)))
                 // The adjacent pane owns the horizontal status bar in landscape.
                 .padding(.top, anchorsHeaderToWindow ? 8 : headerTopInset)
                 .background {
@@ -3532,7 +3602,7 @@ struct DYClassicFeedScreen: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("douyin.feed.header")
                 .opacity(cleanScreen || liveRoomOpen || presentsLandscapeComments ? 0 : 1)
-                .allowsHitTesting(!cleanScreen && !liveRoomOpen && !presentsLandscapeComments)
+                .allowsHitTesting(!cleanScreen && !liveRoomOpen && !(compactDuoHeader && showComments))
                 .accessibilityHidden(cleanScreen || liveRoomOpen || presentsLandscapeComments)
             }
             .ignoresSafeArea(.container, edges: anchorsHeaderToWindow ? .top : [])
@@ -3545,7 +3615,8 @@ struct DYClassicFeedScreen: View {
             if t != .live { live.stop() }
         }
         .navigationDestination(item: Binding(get: { supportsSidePanel ? nil : authorTarget }, set: { if !supportsSidePanel { authorTarget = $0 } })) { a in
-            DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) })
+            DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) },
+                           onWorkPresentationChange: { authorWorkOpen = $0 })
                 .navigationBarBackButtonHidden()
         }
 
@@ -3673,7 +3744,7 @@ struct DYClassicFeedScreen: View {
                            onLike: { toggleLike(item.id, force: nil) },
                            onCollect: { toggleCollect(item.id) },
                            onDoubleTap: { toggleLike(item.id, force: true) },
-                           onComments: { withAnimation(.snappy) { authorTarget = nil; showComments.toggle() } },
+                           onComments: { authorTarget = nil; showComments.toggle() },
                            onAuthor: { showComments = false; authorTarget = item.author },
                            onSavePosition: { resume[item.id] = $0; saveSession() },
                            preloader: preloader,
@@ -3865,7 +3936,12 @@ struct DYUpstreamVideoPage: View {
                 DYImageGallery(images: item.images,
                                musicURL: item.musicURL.flatMap(URL.init(string:)),
                                isActive: isCurrent,
-                               muted: muted)
+                               muted: muted,
+                               onDoubleTap: {
+                                   onDoubleTap()
+                                   heart = true
+                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
+                               })
             }
 
             if heart {
@@ -4142,7 +4218,7 @@ struct DYUpstreamVideoPage: View {
             VStack(spacing: 2) {
                 Group {
                     if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: !autoFit)
+                        DYFitCornerGlyph(inward: !autoFit)   // 11-14 老板定：图标按「点了会怎样」显示（PR #47 的反向改动不采纳）
                             .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
                             .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
                     } else {
@@ -4296,7 +4372,7 @@ struct DYClassicVideoPage: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dyExpandVideoCaption) private var expandVideoCaption
-    @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
+    @Environment(\.dyInlineCommentVisible) private var inlineCommentVisible
     let item: DYAweme
     let isCurrent: Bool
     let insets: EdgeInsets
@@ -4341,6 +4417,8 @@ struct DYClassicVideoPage: View {
     @FocusState private var danmakuFocused: Bool
     @AppStorage(DYVideoFit.preferenceKey) private var autoFit = true
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
+    /// 右侧控制区按住任何位置都加速（对齐抖音）：它们盖在手势层之上或在系统栏里，由这个对象转给播放器。
+    @StateObject private var boost = DYBoostControl()
 
     init(item: DYAweme, isCurrent: Bool, insets: EdgeInsets, resume: Double?, liked: Bool, collected: Bool,
          onLike: @escaping () -> Void, onCollect: @escaping () -> Void, onDoubleTap: @escaping () -> Void,
@@ -4397,6 +4475,7 @@ struct DYClassicVideoPage: View {
                                     onSwipeLeft: onChannelDrag == nil && !cleanScreen ? { (onNavigateLeft ?? onAuthor)() } : nil,
                                     onSwipeRight: onChannelDrag == nil && !cleanScreen ? { onShowFollowing?() } : nil,
                                     onContextMenu: { if !cleanScreen { showOptions = true } },
+                                    boost: boost,
                                     onHorizontalDrag: cleanScreen ? nil : onChannelDrag,
                                     onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
@@ -4407,7 +4486,12 @@ struct DYClassicVideoPage: View {
                                musicURL: item.musicURL.flatMap(URL.init(string:)),
                                isActive: isCurrent,
                                muted: DYGalleryAudio.globalMuted,
-                               hidesIndex: cleanScreen)
+                               hidesIndex: cleanScreen,
+                               onDoubleTap: {
+                                   onDoubleTap()
+                                   heart = true
+                                   DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { heart = false }
+                               })
             }
 
             if heart && !cleanScreen {
@@ -4420,7 +4504,7 @@ struct DYClassicVideoPage: View {
                     .allowsHitTesting(false)
             }
 
-            if !cleanScreen && commentVideoFrame == nil {
+            if !cleanScreen && !inlineCommentVisible {
                 info(fg)
                     .padding(.horizontal, chromeSidePadding)
                     .padding(contentInsets)
@@ -4428,7 +4512,7 @@ struct DYClassicVideoPage: View {
             }
         }
         .overlay(alignment: .trailing) {
-            if !cleanScreen && commentVideoFrame == nil && !inlineNavigation && (!systemBars || verticalBarEdge == nil) {
+            if !cleanScreen && !inlineCommentVisible && !inlineNavigation && (!systemBars || verticalBarEdge == nil) {
                 let rail = actionCapsule(fg)
                     .modifier(DYRailReservedNudge())
                     .padding(.trailing, actionRailTrailingPadding)
@@ -4580,7 +4664,7 @@ struct DYClassicVideoPage: View {
 
     private var authorButton: some View {
         DYAuthorAvatarControl(image: authorImage, name: item.author.name,
-                              onAuthor: onAuthor, follow: followBadge)
+                              onAuthor: guardedAuthor, follow: followBadge)
             .frame(width: railWidth)
     }
 
@@ -4588,6 +4672,7 @@ struct DYClassicVideoPage: View {
         guard bridge != nil, !authorFollowed,
               item.author.uid?.isEmpty == false || item.author.secUid?.isEmpty == false else { return nil }
         return AnyView(Button {
+            guard !boost.blocksTap else { return }
             Task { await followAuthor() }
         } label: {
             DYAuthorFollowMark(followed: false, busy: followBusy)
@@ -4613,18 +4698,20 @@ struct DYClassicVideoPage: View {
             .padding(.vertical, 7)
             .glassEffect(.regular, in: .capsule)
             .environment(\.colorScheme, .dark)
+            .modifier(DYHoldBoostArea(control: item.images.isEmpty ? boost : nil))
     }
 
     private func toolbarActions(_ fg: Color) -> DYVideoToolbarActions {
         DYVideoToolbarActions(
             avatarImage: authorImage, authorName: item.author.name,
-            onAuthor: onAuthor, follow: followBadge,
+            onAuthor: guardedAuthor, follow: followBadge,
             like: AnyView(railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
                                   tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)),
             comments: AnyView(railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)),
             collect: AnyView(railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
                                      tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)),
-            share: AnyView(railItem("arrowshape.turn.up.right", DYFormat.count(item.stats.share), tint: fg, "douyin.share") { showShare = true })
+            share: AnyView(railItem("arrowshape.turn.up.right", DYFormat.count(item.stats.share), tint: fg, "douyin.share") { showShare = true }),
+            boost: item.images.isEmpty ? boost : nil
         )
     }
 
@@ -4659,8 +4746,11 @@ struct DYClassicVideoPage: View {
         .accessibilityIdentifier("douyin.video.actions")
     }
 
+    /// 长按加速后松手不进作者页。
+    private func guardedAuthor() { if !boost.blocksTap { onAuthor() } }
+
     private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
+        Button(action: { if !boost.blocksTap { act() } }) {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .resizable().scaledToFit()
