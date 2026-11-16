@@ -1365,6 +1365,24 @@ extension EnvironmentValues {
     @Entry var duoCleanScreen = false
 }
 
+private struct DYImmersiveStatusBar: ViewModifier {
+    let hidden: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 27.0, *) {
+            content.toolbarVisibility(hidden ? .hidden : .automatic, for: .statusBar)
+        } else {
+            content.statusBarHidden(hidden)
+        }
+    }
+}
+
+private struct DYActiveFeedPageKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
 struct DYUpstreamFeedScreen: View {
     @State private var followCommentItem: DYAweme?
     @Environment(\.appTheme) private var theme
@@ -1415,7 +1433,14 @@ struct DYUpstreamFeedScreen: View {
     /// 盖在视频上的页面（我的/信息/搜索/作者）打开时，所有视频和直播都停
     private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
+    @AppStorage("douyin_immersive_playback_v1") private var immersivePlayback = false
+    @State private var activeFeedPage = false
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    private var showImmersivePlayback: Bool {
+        immersivePlayback && (tab == .recommend || tab == .follow)
+            && activeFeedPage && !overlayOpen && !showSearch && !showComments
+            && !showSettings && web == nil
+    }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
     @State private var topNudge: CGFloat = 0
     /// 默认模式顶栏的垂直位置：
@@ -1660,6 +1685,9 @@ struct DYUpstreamFeedScreen: View {
 
     var body: some View {
         loadedFeed
+        .modifier(DYImmersiveStatusBar(hidden: showImmersivePlayback))
+        .persistentSystemOverlays(showImmersivePlayback ? .hidden : .automatic)
+        .onPreferenceChange(DYActiveFeedPageKey.self) { activeFeedPage = $0 }
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
@@ -2782,6 +2810,7 @@ struct DYVideoPage: View {
             }
         }
         .modifier(DYForwardFeedbackPresentation(bottomInset: insets.bottom, isCurrent: isCurrent))
+        .preference(key: DYActiveFeedPageKey.self, value: isCurrent)
     }
 }
 
@@ -3832,6 +3861,7 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_autoplay_v1") private var autoNext = false
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
+    @AppStorage("douyin_immersive_playback_v1") private var immersivePlayback = false
     @State private var heart = false
     @State private var danmaku: [DYDanmaku] = []
     @State private var danmakuLoaded = false
@@ -4157,7 +4187,7 @@ struct DYUpstreamVideoPage: View {
                 }
                 if item.images.isEmpty {
                     // 有些视频铺满后会裁掉边缘，随手切回完整画面
-                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
+                    // 铺满时显示收拢图标，完整画面时显示展开图标。
                     railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
                              "douyin.fit") {
                         autoFit.toggle()
@@ -4179,7 +4209,7 @@ struct DYUpstreamVideoPage: View {
             VStack(spacing: 2) {
                 Group {
                     if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: !autoFit)
+                        DYFitCornerGlyph(inward: autoFit)
                             .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
                             .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
                     } else {
@@ -4249,6 +4279,10 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.bgplay")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
+                Toggle(isOn: $immersivePlayback) {
+                    Label("沉浸模式（隐藏系统栏）", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .accessibilityIdentifier("douyin.quick.immersive")
             }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
