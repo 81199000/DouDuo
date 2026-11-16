@@ -804,6 +804,31 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "search-result-author-direct")
     }
 
+    /// 老板 11-16 报：视频快进过就不会自动连播。播到一半拖进度条快进，播完必须照样切下一条。
+    func testAutoNextAfterSeek() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = ProcessInfo.processInfo.environment["DD_MODE"] ?? "classic"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE"] { app.launchEnvironment[flag] = "1" }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "YES", "-douduo_dismissed_update_v1", "1.5.4"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        sleep(3)
+        let w = app.windows.firstMatch
+        if ProcessInfo.processInfo.environment["DD_HOW"] == "boost" {
+            // 长按 2 倍速
+            w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).press(forDuration: 2.5)
+        } else {
+            // 拖底部进度条快进
+            let bar = app.otherElements["douyin.progress"].firstMatch
+            XCTAssertTrue(bar.waitForExistence(timeout: 5), "progress bar")
+            bar.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: bar.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5)))
+        }
+        sleep(14)
+        attach(app, "autonext-after-seek")
+    }
+
     func testSearchPlaybackClassic() throws { verifySearchPlayback(mode: "duoClassic") }
     func testSearchPlaybackDefault() throws { verifySearchPlayback(mode: "classic") }
 
