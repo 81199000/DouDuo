@@ -139,6 +139,14 @@ struct DouDuoApp: App {
             #if DEBUG
             LocalVideoLaunch.log("DDSCENE phase=\(String(describing: phase))")
             #endif
+            if phase == .active {
+                // 信息页（fullScreenCover）切后台回来，系统会把状态栏（时间/信号）判成隐藏，
+                // 而所有页面都要求显示（真机日志 prefersStatusBarHidden=false）。回前台后让各层重新上报一次。
+                // 真机对照：不刷新时切回 2/2 次时间消失，刷新后 0/2。
+                for delay in [0.3, 1.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { DDStatusBarRefresh.run() }
+                }
+            }
             let signal: DYLiveSceneSignal
             switch phase {
             case .active: signal = .active
@@ -247,3 +255,21 @@ struct LocalVideoPlaybackView: View {
     }
 }
 #endif
+
+/// 让窗口里从根到最上层的每个控制器重新上报状态栏外观（修信息页切后台回来时间/信号消失）。
+enum DDStatusBarRefresh {
+    @MainActor static func run() {
+        var hidden = false
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows {
+                var vc = window.rootViewController
+                while let current = vc {
+                    current.setNeedsStatusBarAppearanceUpdate()
+                    vc = current.presentedViewController
+                }
+            }
+            hidden = hidden || (scene.statusBarManager?.isStatusBarHidden ?? false)
+        }
+        DYLiveModel.log("DDSTATUSBAR refresh hidden=\(hidden)")
+    }
+}
