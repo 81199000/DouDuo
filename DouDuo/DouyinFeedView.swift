@@ -1378,10 +1378,6 @@ private struct DYImmersiveStatusBar: ViewModifier {
     }
 }
 
-private struct DYActiveFeedPageKey: PreferenceKey {
-    static let defaultValue = false
-    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
-}
 
 struct DYUpstreamFeedScreen: View {
     @State private var followCommentItem: DYAweme?
@@ -1434,11 +1430,12 @@ struct DYUpstreamFeedScreen: View {
     private var overlayOpen: Bool { hashtagFilterPresented || (showSearch && (!searchIsSplit || searchSession?.presentsVideo == true)) || showMine || messagesCovering || authorTarget != nil }
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     @AppStorage("douyin_immersive_playback_v1") private var immersivePlayback = false
-    @State private var activeFeedPage = false
     private var chromeMode: DDChromeMode { DDChromeMode(rawValue: chromeModeRaw) ?? .classic }
+    /// PR #47 原来靠视频页往外发 preference 判断「当前在作品页」——视频页在 ScrollView/LazyVStack 里，
+    /// preference 传不出来（老板实测「沉浸模式没效果」）。推荐/关注 Tab 本身就是作品页，直接用页面状态判断。
     private var showImmersivePlayback: Bool {
         immersivePlayback && (tab == .recommend || tab == .follow)
-            && activeFeedPage && !overlayOpen && !showSearch && !showComments
+            && !overlayOpen && !showSearch && !showComments
             && !showSettings && web == nil
     }
     /// 半折叠/合屏：顶栏要整体左移躲开前摄挖孔，间距也收紧（默认模式用）
@@ -1687,7 +1684,7 @@ struct DYUpstreamFeedScreen: View {
         loadedFeed
         .modifier(DYImmersiveStatusBar(hidden: showImmersivePlayback))
         .persistentSystemOverlays(showImmersivePlayback ? .hidden : .automatic)
-        .onPreferenceChange(DYActiveFeedPageKey.self) { activeFeedPage = $0 }
+        .onChange(of: showImmersivePlayback, initial: true) { _, on in DYLiveModel.log("DDIMMERSIVE hidden=\(on) pref=\(immersivePlayback) tab=\(tab)") }
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
@@ -2289,8 +2286,8 @@ struct DYUpstreamFeedScreen: View {
         Section {
             Button("搜索", systemImage: "magnifyingglass") { openSearch() }
                 .accessibilityIdentifier("douyin.module.search")
-            Button("消息", systemImage: "bubble.left.and.bubble.right") { showMessages = true }
-            Button("我的", systemImage: "person.crop.circle") { showMine = true }
+            // 信息与我的已合成一页（右侧栏切换）：菜单只留一个入口「我的」
+            Button("我的", systemImage: "person.crop.circle") { showMessages = true }
         }
     }
 
@@ -2391,8 +2388,8 @@ struct DYUpstreamFeedScreen: View {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
-                    minimalMenuRow("消息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") { showMessages = true }
-                    minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") { showMine = true }
+                    // 信息与我的已合成一页：只留一个入口「我的」，未读红点挂在这里
+                    minimalMenuRow("我的", "person.crop.circle", badge: noticeUnread > 0, id: "douyin.module.mine") { showMessages = true }
                 }
                 .padding(.vertical, 8)
                 .frame(minWidth: 170)
@@ -2810,7 +2807,6 @@ struct DYVideoPage: View {
             }
         }
         .modifier(DYForwardFeedbackPresentation(bottomInset: insets.bottom, isCurrent: isCurrent))
-        .preference(key: DYActiveFeedPageKey.self, value: isCurrent)
     }
 }
 
