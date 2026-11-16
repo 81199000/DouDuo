@@ -2883,6 +2883,9 @@ struct DYClassicFeedScreen: View {
     @State private var noticeUnread = 0
     @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
+    /// Duo 横置（合屏外屏或完全展开内屏；半折不算）。
+    @State private var duoLandscape = false
+    private var titleCentersOnScreen: Bool { duoLandscape && !sidePanelOpen }
     @State private var supportsSidePanel = false
     @State private var residentComments = false
     private var liveRoomOpen: Bool { tab == .live && live.entered }
@@ -3177,6 +3180,9 @@ struct DYClassicFeedScreen: View {
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width >= DYDuoMetrics.legacyWideMin || (DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height)
                 } action: { supportsSidePanel = $0 }
+                .onGeometryChange(for: Bool.self) { proxy in
+                    DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
+                } action: { duoLandscape = $0 }
                 .onChange(of: wide) { _, w in
                     // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
                     let token = UUID(); wideToken = token
@@ -3562,7 +3568,9 @@ struct DYClassicFeedScreen: View {
                     .allowsHitTesting(!(showSearch && searchIsSplit))
                     .accessibilityHidden(showSearch && searchIsSplit)
                 }
-                topBar
+                // Duo 横置（合屏或展开）：视频铺满屏幕，但一侧的竖排状态栏/导航栏让左右安全区不对称；
+                // 标题抵消这份不对称，按整屏居中。竖置和普通 iPhone 仍在安全区内居中。
+                topBar.offset(x: titleCentersOnScreen ? (insets.trailing - insets.leading) / 2 : 0)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
