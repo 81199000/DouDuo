@@ -2794,6 +2794,60 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 切换界面模式（默认 ⇄ 经典 ⇄ 简洁 ⇄ 极简）必须留在同一条视频上：两套根视图共用同一份推荐流。
+    /// 真实推荐流，只读；不点赞不发帖。
+    func testChromeModeSwitchKeepsCurrentVideo() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", "-"), evaluatedWith: current)], timeout: 60), .completed)
+        // 先往后翻两条：停在第一条时「重新加载恰好还是第一条」会掩盖问题
+        sleep(8)   // 启动先用本地缓存起播（可能只有 1 条），等推荐拉回来再翻
+        for _ in 0..<2 {
+            let before = current.label
+            app.swipeUp(velocity: .fast)
+            XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "label != %@", before), evaluatedWith: current)], timeout: 20), .completed)
+            sleep(2)
+        }
+        sleep(4)
+        let pinned = current.label
+        print("DDMODE_KEEP start " + pinned)
+        for title in ["经典", "简洁", "经典", "极简", "默认"] {
+            // 经典布局的「更多」在系统顶栏里，isHittable 报 false 但坐标可点：按元素中心点
+            let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+                ?? app.buttons["douyin.more"].firstMatch
+            if !more.waitForExistence(timeout: 8) {
+                print("DDMODE_KEEP TREE " + app.debugDescription.split(separator: "\n").filter { $0.contains("identifier: 'douyin.") }.map { String($0).trimmingCharacters(in: .whitespaces) }.joined(separator: " | "))
+            }
+            XCTAssertTrue(more.exists, "找不到「更多」: " + title)
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let settings = app.buttons["设置"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 5), app.debugDescription)
+            settings.tap()
+            let picker = app.descendants(matching: .any).matching(identifier: "settings.chrome").firstMatch
+            if !picker.waitForExistence(timeout: 8) { attach(app, "mode-keep-nopicker-" + title) }
+            XCTAssertTrue(picker.exists, "设置页没有界面模式: " + title)
+            picker.tap()
+            XCTAssertTrue(app.buttons[title].waitForExistence(timeout: 5))
+            app.buttons[title].tap()
+            let done = app.buttons["settings.done"].firstMatch
+            if done.waitForExistence(timeout: 2) { done.tap() }
+            let now = app.staticTexts["douyin.currentID"].firstMatch
+            XCTAssertTrue(now.waitForExistence(timeout: 20))
+            sleep(4)
+            print("DDMODE_KEEP \(title) " + now.label)
+            XCTAssertEqual(now.label, pinned, "切到「\(title)」后换了视频")
+            XCTAssertTrue(app.staticTexts.matching(identifier: "douyin.video.playback").firstMatch.waitForExistence(timeout: 10),
+                          "切到「\(title)」后当前条没有挂上播放器（画面停在别的条目）")
+            attach(app, "mode-keep-" + title)
+        }
+    }
+
     func testChromeModeSwitchFromMoreMenu() throws {
         let app = launchChrome("classic")
         let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.filter { $0.isHittable }
