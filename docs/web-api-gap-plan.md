@@ -18,6 +18,24 @@
 
 受安全 SDK 策略名单监管、需要重点看是否被拦的：`mix/aweme`、`mix/list`、`mix/detail`、`music/aweme`、`music/detail`、`collects/list`、`collects/video/list`。
 
+### 0.1 首轮实测（2026-11-17，模拟器，**未登录**）
+
+| 接口 | 结果 |
+| --- | --- |
+| `aweme/related` | 通，10 条 |
+| `related/recommend`（`related_aweme_id` + `related_rt`） | 通，6 条 |
+| `music/detail` | 通 |
+| `challenge/detail` | 通 |
+| `hot/search/video/list` | 通，要 6 条只回 1 条 |
+| `social/count`、`danmaku/conf/get` | 通 |
+| `music/aweme` | HTTP 200 但 body 为空（带了签名），和搜索翻页被拦时一个样 |
+| `challenge/aweme` | 14 秒硬超时，请求被压着没放出来 |
+| `multi/aweme/detail` | `status_code` 0 但 `aweme_details` 为 null，body 的写法可能不对，待查 |
+| `mix/list` | 通，但取到的那位作者没有合集，`mix/detail`、`mix/aweme` 因此没测到 |
+| `collects/list`、`familiar/feed`、`view/user/visited/list`、`comment/upload/auth` | `status_code` 8，要登录 |
+
+`music/aweme` 和 `challenge/aweme` 没通：要在登录态下再跑一次，确认是没登录的缘故还是被风控拦。同款音乐页和话题页能不能做取决于这两条。
+
 ---
 
 ## 1. 评论发图（优先做）

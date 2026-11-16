@@ -66,10 +66,18 @@ enum DYWebApiProbe {
         func log(_ s: String) { DYLiveModel.log("DDGAP " + s) }
         func text(_ d: Data?) -> String { d.flatMap { String(data: $0, encoding: .utf8) } ?? "nil" }
 
+        // 刚启动那几秒签名页还没挂好，请求会直接断（http=-1）；等它就绪，种子没取到就隔几秒再取
+        await bridge.ensureWriteReady()
         var seeds: [String: String] = [:]
-        if let d = try? await bridge.call(seedJS, args: [:], attempts: 1),
-           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-            for (k, v) in o { if let s = v as? String, !s.isEmpty { seeds[k] = s } }
+        for round in 1...4 where seeds["aweme"] == nil {
+            if let d = try? await bridge.call(seedJS, args: [:], attempts: 1),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                for (k, v) in o { if let s = v as? String, !s.isEmpty { seeds[k] = s } }
+            }
+            if seeds["aweme"] == nil {
+                log("seeds round=\(round) 没取到作品，3 秒后再试")
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
         }
         if let me = try? await bridge.selfProfile() { seeds["uid"] = me.uid }
         log("seeds have=" + seeds.keys.sorted().joined(separator: ","))
@@ -136,6 +144,7 @@ enum DYWebApiProbe {
     /// 从推荐流和热榜里捞几个真实 ID 当参数用
     private static let seedJS = #"""
     try {
+      await sdkReady(6000);
       const P = Object.assign({}, base, { count: '10', refresh_index: '1', video_type_select: '1',
         aweme_pc_rec_raw_data: JSON.stringify({ is_client: false, ff_danmaku_status: 0, danmaku_switch_status: 0 }),
         globalwid: '', pull_type: '0', min_window: '0', free_right: '0', ug_source: '', creative_id: '' });
