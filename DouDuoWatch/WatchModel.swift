@@ -145,6 +145,8 @@ final class WatchLink: NSObject, WCSessionDelegate {
             m.reachable = r
             // 刚连上 iPhone 而手表上视频不够：自动请求（启动时往往还没连上，请求会被丢掉）
             if r, m.videos.count < 2 { await m.requestVideos() }
+            // 消息同理：启动时没连上就失败了，连上后补刷
+            if r, m.inboxError != nil || (m.inbox.notices.isEmpty && m.inbox.chats.isEmpty) { await m.refreshInbox() }
         }
     }
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
