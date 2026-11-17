@@ -16,14 +16,12 @@ struct WatchVideoSurface: View {
     }
 }
 
-/// 竖向翻页看视频：自己做上下滑动（数码表冠也能翻），不用系统 TabView / 系统播放器。
+/// 竖向翻页看视频：自己做上下滑动，不用系统 TabView / 系统播放器。表冠不接管（留给系统调音量）。
 /// 点一下暂停/播放，双击点赞（由 iPhone 代发）。
 struct VideoPagerView: View {
     @EnvironmentObject var model: WatchModel
     @State private var index = 0
     @State private var drag: CGFloat = 0
-    @State private var crown: Double = 0
-    @FocusState private var crownFocus: Bool
 
     var body: some View {
         GeometryReader { geo in
@@ -60,18 +58,9 @@ struct VideoPagerView: View {
                         go(to: next)
                     }
             )
-            // 数码表冠：转一格翻一条。必须抢到焦点，否则 watchOS 把表冠给了音量
-            .focusable(true)
-            .focused($crownFocus)
-            .digitalCrownRotation($crown, from: -1000, through: 1000, by: 1, sensitivity: .low, isContinuous: false, isHapticFeedbackEnabled: true)
-            .onChange(of: crown) { old, new in
-                if new > old, index < model.videos.count - 1 { go(to: index + 1) }
-                else if new < old, index > 0 { go(to: index - 1) }
-            }
         }
         .ignoresSafeArea()
         .onAppear {
-            crownFocus = true
             model.prefetchAhead(from: model.videos.first?.id)
         }
         .onChange(of: model.videos.count) { _, _ in
@@ -134,13 +123,16 @@ private struct VideoPage: View {
     @State private var paused = false
     @State private var burst = false
     @State private var failed = false
+    @State private var failText = ""
+    @State private var ready = false
+    @State private var attempt = 0
     @State private var buffering = true
     @State private var observers: [NSKeyValueObservation] = []
 
     var body: some View {
         ZStack {
             Color.black
-            if let player { WatchVideoSurface(player: player, size: size) }
+            if let player, ready { WatchVideoSurface(player: player, size: size) }
 
             // 底部信息：一行标题 + 作者，避开圆角
             VStack(spacing: 0) {
@@ -166,10 +158,12 @@ private struct VideoPage: View {
 
             if buffering && active && !failed { ProgressView().tint(.white) }
             if failed {
-                VStack(spacing: 4) {
+                VStack(spacing: 3) {
                     Image(systemName: "wifi.exclamationmark").font(.system(size: 22))
                     Text("加载失败，已跳过").font(.system(size: 10))
-                }
+                    // 失败原因：错误域/码 + 服务器返回的 HTTP 状态
+                    Text(failText).font(.system(size: 8)).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center).lineLimit(3)
+                }.padding(.horizontal, 14)
             }
             if paused { Image(systemName: "pause.fill").font(.system(size: 28)).foregroundStyle(.white.opacity(0.85)) }
             if burst { Image(systemName: "heart.fill").font(.system(size: 46)).foregroundStyle(.red).transition(.scale.combined(with: .opacity)) }
@@ -206,9 +200,12 @@ private struct VideoPage: View {
         observers = [
             item.observe(\.status, options: [.new]) { it, _ in
                 DispatchQueue.main.async {
-                    if it.status == .failed {
-                        failed = true; buffering = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { model.drop(meta.id) }
+                    switch it.status {
+                    case .readyToPlay:
+                        ready = true          // 加载成功才挂系统播放器，失败时不会冒出系统自带的 Done 界面
+                    case .failed:
+                        handleFailure(it)
+                    default: break
                     }
                 }
             },
@@ -221,6 +218,37 @@ private struct VideoPage: View {
         }
         player = p
         if active { paused = false; p.play() } else { p.isMuted = true; p.pause() }
+    }
+
+    /// 失败：先把原因抓出来；本地缓存坏了就删缓存改流播；流播失败重试一次（链接刚过期/网络抖动很常见），再失败才丢掉这条
+    private func handleFailure(_ it: AVPlayerItem) {
+        let err = it.error as NSError?
+        var parts: [String] = []
+        if let err { parts.append("\(err.domain.replacingOccurrences(of: "AVFoundationErrorDomain", with: "AVF")) \(err.code)") }
+        if let under = err?.userInfo[NSUnderlyingErrorKey] as? NSError { parts.append("↳\(under.domain.replacingOccurrences(of: "NSURLErrorDomain", with: "URL")) \(under.code)") }
+        if let ev = it.errorLog()?.events.last { parts.append("HTTP \(ev.errorStatusCode) \(ev.errorComment ?? "")") }
+        let local = WatchCache.localURL(meta.id) != nil
+        let reason = (local ? "[本地] " : "[流播] ") + parts.joined(separator: " ")
+        failText = reason
+        model.lastFailure = reason
+        buffering = false
+
+        if local {                                   // 本地文件有问题：删掉，改流播重来
+            Task { await WatchCache.shared.remove(meta.id) }
+            retry()
+        } else if attempt < 1 {                      // 流播：重试一次
+            retry()
+        } else {
+            failed = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { model.drop(meta.id) }
+        }
+    }
+
+    private func retry() {
+        attempt += 1
+        stop()
+        ready = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { if active || preload { prepare() } }
     }
 
     /// 滑到这一条：已经预热好的播放器直接从头播

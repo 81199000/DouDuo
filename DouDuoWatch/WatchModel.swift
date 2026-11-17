@@ -13,6 +13,8 @@ final class WatchModel: NSObject, ObservableObject {
     @Published var activated = false
     @Published var requestingVideos = false
     @Published var notice: String?
+    /// 最近一次播放失败的原因（界面上显示，方便定位）
+    @Published var lastFailure = ""
 
     /// 链接放多久算可能过期（与手机端 maxAge 一致）
     static let maxAge: TimeInterval = 6 * 3600
