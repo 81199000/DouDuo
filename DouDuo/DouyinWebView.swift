@@ -493,6 +493,9 @@ struct DouyinWebContainer: UIViewRepresentable {
             cfg.setURLSchemeHandler(DYChatImageSchemeHandler(), forURLScheme: DYChatImageCache.scheme)
             cfg.userContentController.addUserScript(
                 WKUserScript(source: DYChatImageRewrite.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            // 长按消息气泡 → 通知 App 弹「删除这条消息」
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: DYChatMessageMenu.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")

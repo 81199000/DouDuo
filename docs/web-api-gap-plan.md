@@ -106,19 +106,45 @@
 
 ## 2. 小改动：已有界面，只缺接口
 
-这些功能 App 里已有入口或列表，补一个动作即可。全部是写接口，统一先 `ensureWriteReady()`。
+全部是写接口：统一先 `ensureWriteReady()`，只发一次不重试，抖音回执确认了才改界面。
+被拦时抖音常回 HTTP 200 + 空内容，所以**没有 `status_code` 一律判失败**（`DouyinBridge.manageResult`）。
 
-| 功能 | 接口（`/aweme/v1/web/`） | 参数 | 落点 |
+### 2.1 已写（2026-11-17；本地测试通过，**还没在真机上点过**）
+
+| 功能 | 接口（`/aweme/v1/web/`） | 请求 | 入口 |
 | --- | --- | --- | --- |
-| 加入 / 移出稍后再看 | `POST watchlater/upsert`、`POST watchlater/remove` | JSON body：`{item_to_playinfo, action_type}` / `{remove_item_ids, remove_type}` | 视频长按菜单；稍后再看列表左滑 |
-| 清空观看历史 | `POST history/clear` | 空 body | 历史页右上角 |
-| 拉黑 / 取消拉黑 | `POST user/block` | `user_id`, `sec_user_id`, `block_type`（1 / 0）, `source` | 作者页菜单 |
-| 移除粉丝 | `POST remove/follower` | `sec_user_id`（query） | 粉丝列表左滑 |
+| 加入稍后再看 | `POST watchlater/upsert/` | JSON body：`{item_to_playinfo: {<id>: {play_duration: 0, loop_status: 0}}, action_type: 1}`；`status_code` 4 = 已达上限 | 视频「更多」菜单；经典模式长按面板 |
+| 移出稍后再看 | `POST watchlater/remove/` | JSON body：`{remove_item_ids: [<id>], remove_type: 0}` | 「我的 → 稍后再看」长按格子 |
+| 清空观看历史 | `POST history/clear/` | 空 body | 「我的 → 历史」标签下的「清空历史」，要确认 |
+| 拉黑 / 解除拉黑 | `POST user/block/` | 表单 body：`user_id`、`sec_user_id`、`block_type`（1 / 0）、`source=0`；回执 `block_status` 要和想要的一致才算成 | 作者页右上角「…」，要确认；自己的主页和未登录时不显示 |
+| 移除粉丝 | `POST remove/follower/` | `sec_user_id` 放地址里，没有 body | 「我的 → 粉丝」长按某一行，要确认 |
+| 删除评论 | `POST comment/delete` | `cid`、`channel_id=0`、`app_name=aweme` 放地址里 | 评论面板长按，要确认；只有自己发的评论、或自己作品下的评论才有这一项 |
+| 删除聊天里的一条消息 | 不直连接口 | 让抖音网页自己的操作条去删（见下） | 聊天里长按消息气泡，要确认 |
+
+JSON body 不需要改 `req`：网页版自己也是把 `JSON.stringify(...)` 的字符串放在表单类型的请求里发的，现有 `req` 原样发 body 就对得上。
+
+删除聊天消息的做法和会话的置顶 / 删除一致（`DYChatWebBridge`）：长按气泡时页面脚本给它打记号并通知 App；
+确认后在这条气泡上触发网页的右键菜单，点菜单里新出现的「删除」，再等这条消息从页面上消失。
+找不到「删除」、或点完消息还在，都报失败，不当成功。
+
+代码：`DouDuo/DouyinBridge+Manage.swift`、`DouDuo/DYChatMessageBridge.swift`；测试 `scripts/test_manage_actions.js`。
+
+### 2.2 还没验证的地方
+
+- 七项都只跑过本地假环境的测试，**没有对抖音真发过请求**（清空历史、拉黑、移除粉丝不可逆或影响别人，要本人在手机上点）。
+- 删除聊天消息依赖网页聊天页的结构（气泡 `data-e2e="msg-item-content"`、右键出操作条、条上有文字正好是「删除」的按钮），
+  这些是从网页脚本里读出来的，没在登录后的真实页面上看过。长按会不会和网页自带的长按 / 选字冲突也没试。
+- 删除的是「我这边」的消息还是双方的，取决于网页版那个「删除」本身；撤回（网页版有时限，对方那边也会消失）没有做。
+- 评论的 `sec_uid` 字段若某些评论里缺失，那条评论就不会出现「删除」。
+
+### 2.3 还没做
+
+| 功能 | 接口 | 参数 | 落点 |
+| --- | --- | --- | --- |
 | 通过关注请求 | `POST commit/follow/request/approve` | `from_user_id` | 通知页 |
 | 删除通知 | `POST notice/del` | `{action_type, notice_id_str}` | 通知页左滑 |
 | 弹幕点赞 | `GET danmaku/digg` | `danmaku_id`, `aweme_id`, `action_type` | 弹幕长按 |
-
-注意 `watchlater/*` 的 body 是 JSON，而现有 `req` 固定发 `application/x-www-form-urlencoded`，需要给 `req` 加可选的 headers 参数（与 1.3 是同一处改动）。
+| 撤回聊天消息 | 网页操作条的「撤回」 | — | 聊天长按菜单 |
 
 ---
 
