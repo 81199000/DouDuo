@@ -27,7 +27,7 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
         let listChanged = view.ids != ids
         view.ids = ids
         view.currentID = currentID
-        if listChanged { view.reconcileAfterLayout() }
+        if listChanged { view.listChanged() }
         view.didSettle = { id in
             guard ids.contains(id), currentID != id else { return }
             currentID = id
@@ -95,6 +95,7 @@ final class DYPagingSpeedHost: UIView {
         #endif
     }
     func reconcileAfterLayout() { proxy?.reconcileAfterLayout() }
+    func listChanged() { proxy?.listChanged() }
     func detach() { proxy?.detach(); proxy = nil }
 }
 
@@ -354,6 +355,16 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         link = next; next.add(to: .main, forMode: .common)
         DYLiveModel.log("DDAUTONEXT slide \(from.suffix(4))→\(to.suffix(4))")
         return true
+    }
+    /// 列表内容变了（后台又拉回来一批推荐）。正在往下一条滑的收尾动画不能被它打断：
+    /// 以前一律停掉动画、把列表拽回当前条，手已经滑上去了又被弹回来（真机日志里有 DDSWIPEDECIDE 之后没下文的）。
+    /// 目标页还在列表里就继续滑——tick 每帧按 id 重新定位，列表变了也落得准。
+    func listChanged() {
+        if link != nil, let targetID, ids().contains(targetID) {
+            DYLiveModel.log("DDLISTKEEP 收尾中列表更新，继续滑到 \(targetID.suffix(4))")
+            return
+        }
+        reconcileAfterLayout()
     }
     func reconcileAfterLayout() {
         stop()
