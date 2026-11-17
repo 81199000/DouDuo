@@ -152,6 +152,7 @@ extension PlayerPage {
                          topInset: CGFloat, bottomInset: CGFloat, resumePosition: Double?,
                          compactChrome: Bool,
                          preparedPlayer: (() -> AVPlayer?)? = nil,
+                         returnPlayer: ((AVPlayer) -> Bool)? = nil,
                          onEnded: (() -> Void)?, onDoubleTap: (() -> Void)?,
                          onSavePosition: @escaping (Double) -> Void, onClose: @escaping () -> Void,
                          fillWidth: Bool = true, onFillWidthChange: ((Bool) -> Void)? = nil,
@@ -164,7 +165,7 @@ extension PlayerPage {
                          onHorizontalDrag: ((CGFloat, CGFloat) -> Void)? = nil,
                          onHorizontalDragEnd: ((CGFloat, CGFloat, CGFloat, Bool) -> Void)? = nil) -> PlayerPage {
         PlayerPage(id: id, url: url, knownDuration: durationSec, isActive: isActive, bottomInset: bottomInset,
-                   resumePosition: resumePosition, preparedPlayer: preparedPlayer, onEnded: onEnded,
+                   resumePosition: resumePosition, preparedPlayer: preparedPlayer, returnPlayer: returnPlayer, onEnded: onEnded,
                    onDoubleTap: onDoubleTap, onSavePosition: onSavePosition, fillWidth: fillWidth,
                    onFillWidthChange: onFillWidthChange,
                    topInset: topInset, danmaku: danmaku, altURL: altURL, quality: quality, fastURL: fastURL,
@@ -175,6 +176,12 @@ extension PlayerPage {
                    onContextMenu: onContextMenu, boost: boost,
                    onHorizontalDrag: onHorizontalDrag, onHorizontalDragEnd: onHorizontalDragEnd)
     }
+}
+
+/// 视频页的存活标记（引用类型：延后执行的闭包拿到的是同一个对象）
+final class PageLife {
+    var alive = false
+    var generation = 0
 }
 
 /// 极简模式：长按圆形模块入口时，让当前视频页把左下角的作者和标题临时显示出来（松手消失）。
@@ -295,6 +302,8 @@ struct PlayerPage: View {
     let bottomInset: CGFloat
     let resumePosition: Double?
     let preparedPlayer: (() -> AVPlayer?)?
+    /// 还没轮到播就被回收时，把播放器还给预热池（返回 true = 池子收下了，这里不销毁）
+    var returnPlayer: ((AVPlayer) -> Bool)? = nil
     let onEnded: (() -> Void)?
     let onDoubleTap: (() -> Void)?
     let onSavePosition: (Double) -> Void
@@ -401,13 +410,17 @@ struct PlayerPage: View {
     @State private var fastT0 = Date()
     @State private var seamAudio = DDSeamlessController()
     @State private var playbackID = UUID()
+    /// 页面是否还挂着：延后执行的建播放器要先看它（页面被回收后不能再领预热池的播放器）
+    @State private var pageLife = PageLife()
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @State private var videoScale: CGFloat = 1
     @Environment(\.dyUsesClassicVideoLayout) private var usesClassicVideoLayout
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
     @Environment(\.accessibilityReduceMotion) private var commentReduceMotion
 
-    private var showsVideoAboveComments: Bool { usesClassicVideoLayout && isActive && commentVideoFrame != nil }
+    /// 评论打开且外屏要把横屏视频移到评论上方：四种界面都一样（评论统一用经典几何，老板 2026-11-17 定）
+    private var showsVideoAboveComments: Bool { isActive && commentVideoFrame != nil }
+
     private var fillsVideoPlane: Bool { fillWidth && !showsVideoAboveComments }
     /// 实际播放速度（含按住的临时 2 倍）：播放器、音频引擎、弹幕时钟和倍速角标都认这一个值
     private var actualRate: Double { rateBoost ? 2 : effectiveRate }
@@ -456,20 +469,30 @@ struct PlayerPage: View {
                 }
             } else {
                 GeometryReader { outer in
+                    // 评论打开、外屏把横屏视频移到评论上方：与经典同一套位移（DYVideoFit.commentPlacement），
+                    // 不切换渲染分支，避免重建画面层闪黑。
+                    let lift = showsVideoAboveComments
+                        ? DYVideoFit.commentPlacement(viewport: outer.frame(in: .global),
+                                                      fitted: DYVideoFit.contentSize(container: outer.size, videoAspect: videoAspect, fillWidth: false),
+                                                      target: commentVideoFrame)
+                        : (scale: CGFloat(1), offset: CGSize.zero)
                     videoPlane
                     .mask {
                     GeometryReader { geometry in
-                        let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillWidth)
+                        let fitted = DYVideoFit.contentSize(container: geometry.size, videoAspect: videoAspect, fillWidth: fillsVideoPlane)
                         Rectangle()
                             .frame(width: fitted.width, height: fitted.height)
                             .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     }
                     }
-                    .scaleEffect(videoScale)
+                    .scaleEffect(showsVideoAboveComments ? 1 : videoScale)
                     .allowsHitTesting(false)
                         // 仅系统铰链 closed 时左贴边；展开、半折、分屏均保持原来的居中。
                         .modifier(DYClosedPortraitAlignment(viewport: outer.size,
-                                                           videoAspect: videoAspect, fills: fillWidth))
+                                                           videoAspect: videoAspect, fills: fillsVideoPlane))
+                    .scaleEffect(lift.scale)
+                    .offset(x: lift.offset.width, y: lift.offset.height)
+                    .animation(commentReduceMotion ? nil : .snappy, value: showsVideoAboveComments)
                 }
             }
             if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
@@ -488,6 +511,9 @@ struct PlayerPage: View {
                 .accessibilityIdentifier("douyin.video.boostStarts")
                 .allowsHitTesting(false)
             if isActive {
+                // 评论打开时视频是否已移到评论上方（外屏横屏视频）
+                Text((showsVideoAboveComments ? "lifted" : "inPlace") + String(format: " a=%.2f", videoAspect)).font(.caption2).opacity(0.01)
+                    .accessibilityIdentifier("douyin.video.lift").allowsHitTesting(false)
                 Text(isPlaying ? "playing" : "paused").font(.caption2).opacity(0.01)
                     .accessibilityIdentifier("douyin.video.playback").allowsHitTesting(false)
                 Text(!pictureInPicture.supported ? "unsupported" : pictureInPicture.active ? "active" : (pictureInPicture.canStart ? "ready" : "waiting"))
@@ -536,6 +562,10 @@ struct PlayerPage: View {
         .clipped()
         .sensoryFeedback(.impact(weight: .light), trigger: rateBoost) { old, new in !old && new }
         .onAppear {
+            let life = pageLife
+            life.alive = true
+            life.generation += 1
+            let generation = life.generation
             if player == nil {
                 // 动画帧里不建播放器：非当前页延迟到滑动结束后再建（抖音也是提前预渲染，不在滑动那一帧做）
                 if isActive { DYSwipeProbe.mark("setup-active(\(id.suffix(4)))"); setup() }
@@ -545,6 +575,10 @@ struct PlayerPage: View {
                     setup(prepared: pre)
                 } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + DYPlaybackTelemetry.setupDelay) { [self] in
+                        // 这 0.35 秒里页面可能已经被回收（惰性分页只留屏幕上那一两页）。以前照样建：
+                        // 把预热池里备好的播放器领进一个已经不在的页面，池子记成「已交出」不再重备，
+                        // 这条就永远等不到「可播」，上滑被拦 3 次才放行（真机日志：刚启动时最常见）。
+                        guard life.alive, life.generation == generation else { return }
                         if player == nil { DYSwipeProbe.mark("setup-deferred(\(id.suffix(4)))"); setup() }
                     }
                 }
@@ -568,6 +602,7 @@ struct PlayerPage: View {
             #endif
             DDPlayback.shared.unregister(playbackID)
             telemetry.end()
+            pageLife.alive = false
             teardown()
         }
         // 切后台 / 来电 / 下拉控制中心立刻停声（否则退出 App 声音还在响）
@@ -1519,6 +1554,8 @@ struct PlayerPage: View {
     private func teardown() {
         primeObs?.invalidate(); primeObs = nil
         pictureInPicture.invalidate()
+        // 秒开陪跑中 / 走 VLC / 头部接续的不归还：手里的不是一份干净的原始播放器
+        let returnable = !isActive && hdPlayer == nil && vlc == nil && nextPlayer == nil && headEndSeconds == nil
         cancelUpgrade()
         if let v = vlc { onSavePosition(v.current); v.onEnd = nil; v.onProgress = nil; v.stop(); vlc = nil }
         if let p = player { onSavePosition(seamAudio.currentMediaTime ?? p.currentTime().seconds) }
@@ -1527,7 +1564,12 @@ struct PlayerPage: View {
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
         if let np = nextPlayer { np.pause(); np.replaceCurrentItem(with: nil); nextPlayer = nil }
         player?.pause()
-        player?.replaceCurrentItem(with: nil)
+        // 还没轮到播就被回收的相邻页：播放器还给预热池接着缓冲，下次滑过来直接用
+        if let p = player, returnable, returnPlayer?(p) == true {
+            DYLiveModel.log("DDGIVEBACK \(id.suffix(6)) status=\(p.currentItem?.status.rawValue ?? -1)")
+        } else {
+            player?.replaceCurrentItem(with: nil)
+        }
         player = nil
         imgGen?.cancelAllCGImageGeneration(); imgGen = nil
         isPlaying = false

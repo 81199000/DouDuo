@@ -37,6 +37,8 @@ extension DYRecommendFeedHost {
             #if DEBUG
             DYRefreshProbe.shared.count += 1
             #endif
+            // 点下去同一帧就出提示：不等 Task 排到下一轮，也不等正在进行的预取
+            feed.showRefreshingToast()
             Task { await refreshRecommendations() }
         } else {
             switchTab(target)
@@ -100,6 +102,22 @@ extension DYRecommendFeedHost {
         if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
     }
 
+    /// 推荐是一页页拉回来、一条条排进列表的。以前要等首批 6 条全部凑齐才定「当前条」、才给后面的备播放器
+    /// （真机日志：中位 6 秒，慢的 15 秒以上）——这段时间第一条不开播，后面的也滑不过去。
+    /// 现在到一条算一条：第一条到了立刻开播，后面每到一条马上备好播放器。
+    func feedGrew() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        guard initialized, !refreshing, tab == .recommend, let first = feed.items.first else { return }
+        if currentID == nil {
+            currentID = first.id   // 两个推荐页的 onChange(currentID) 会接着调 focusCurrent
+            scrollID = first.id
+        } else if let i = currentIndex {
+            preloader.update(feed.items, current: i)
+        }
+    }
+
     func focusCurrent() {
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
@@ -120,7 +138,8 @@ extension DYRecommendFeedHost {
         }
         // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
         let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
+        // 正在拉的时候不重复发起，也不占用节流窗口（否则这一批拉完后要白等 4 秒才接着拉）
+        if feed.items.count - i - 1 < want, !feed.loading, Date().timeIntervalSince(lastFeedPull) > 4 {
             lastFeedPull = Date()
             Task {
                 await feed.loadMore(bridge)
@@ -159,10 +178,11 @@ extension DYRecommendFeedHost {
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
     @MainActor func refreshRecommendations() async {
+        // 刷新中再点：提示照样亮着（以前直接返回，提示 2.2 秒后消失，后面要干等到刷新结果）
+        feed.showRefreshingToast()
         guard !refreshing else { return }
         refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
+        defer { refreshing = false; feed.endRefreshingToast(); focusCurrent() }
         guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
         guard !replacement.items.isEmpty else {
             showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
@@ -178,7 +198,7 @@ extension DYRecommendFeedHost {
         scrollID = currentID
         lastFeedPull = Date()
         saveSession()
-        showToast("推荐已刷新")
+        showToast("视频已刷新")
         DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
     }
 
@@ -246,3 +266,18 @@ struct DYRefreshProbeAnchor: View {
     }
 }
 #endif
+
+/// 推荐流按横 / 竖选片的口径，四种界面共用（「横屏时只放横屏内容」开关据此生效）。
+/// 老板 2026-11-17 定：半折叠时横竖反过来——
+/// - 竖着拿半折（桌面姿态，上面放视频、下面评论）→ 视频区是横的，按**横屏**规则放
+/// - 横着拿半折（书本姿态，左边视频、右边评论）→ 视频区是竖的，按**竖屏**规则放
+/// - 没半折：看整个窗口宽 > 高
+/// （1.3.14 曾按视频块判断后又撤回，那次是「短视频变少」；这次是老板明确要求半折按反向选片。）
+enum DYFeedOrientation {
+    static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_FORCEWIDE"] == "1" { return true }
+        #endif
+        return DYVideoFit.feedPlaysLandscape(window: geo.size, halfFolded: DYDuoMetrics.foldIsActive(geo))
+    }
+}

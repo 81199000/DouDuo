@@ -1468,6 +1468,16 @@ struct DYMineScreen: View {
     @State private var manageMsg: String?
     @State private var confirmClearHistory = false
     @State private var clearingHistory = false
+    /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
+    @State private var showLogin = false
+    @State private var showAccounts = false
+    /// 这次打开期间已经自动弹过登录：放在静态里——简洁 / 极简模式在信息 ⇄ 我的之间切换会重建「我的」，
+    /// @State 会被重置，导致每切回来一次就再弹一次登录
+    private static var autoLoginShownAt: Date?
+    private var autoLoginShown: Bool {
+        get { Self.autoLoginShownAt.map { Date().timeIntervalSince($0) < 120 } ?? false }
+        nonmutating set { Self.autoLoginShownAt = newValue ? Date() : nil }
+    }
 
     var body: some View {
         NavigationStack {
@@ -1482,9 +1492,49 @@ struct DYMineScreen: View {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
                     // 「网页版 / 登录」按钮已按老板要求去掉：未登录时页内仍有「去登录」入口，功能不受影响
+                    // 嵌在信息页（简洁 / 极简）时「账号」在右侧栏，顶栏不放，免得跟返回键挤在一起
+                    if !embedded {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("账号", systemImage: "person.2.circle") { showAccounts = true }
+                                .accessibilityIdentifier("douyin.mine.accounts")
+                        }
+                    }
                 }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dyOpenAccounts)) { _ in if embedded { showAccounts = true } }
+        .sheet(isPresented: $showAccounts) {
+            DYAccountsScreen(onChanged: { Task { await accountChanged() } },
+                             onAddAccount: {
+                                 // 添加账号：先把当前账号存好并退出本机登录态，再弹登录页
+                                 Task {
+                                     await DYAccountStore.shared.signOut()
+                                     await accountChanged(showLoginAfter: true)
+                                 }
+                             })
+        }
 
+    }
+
+    /// 切换 / 退出 / 添加账号后：签名页重载，清空当前页面数据，重新读资料
+    private func accountChanged(showLoginAfter: Bool = false) async {
+        user = nil; userErr = nil; models = [:]
+        bridge.reload()
+        onLogin()   // 外层刷新推荐流
+        try? await Task.sleep(for: .seconds(2))
+        await loadSelf()
+        if showLoginAfter { try? await Task.sleep(for: .milliseconds(400)); showLogin = true }
+    }
+
+    private func loadSelf() async {
+        do {
+            let u = try await bridge.selfProfile()
+            user = u; userErr = nil
+            await DYAccountStore.shared.remember(u)   // 登录过的账号存起来，之后可直接切换
+        } catch {
+            userErr = error.localizedDescription
+            DYLiveModel.log("DDMINE self err " + error.localizedDescription)
+        }
+        if user != nil { models = [:]; ensure(kind) }
     }
 
     private var content: some View {
@@ -1545,7 +1595,28 @@ struct DYMineScreen: View {
                 return
             }
             #endif
-            do { user = try await bridge.selfProfile() } catch { userErr = error.localizedDescription }
+            // 未登录：进「我的」先弹登录。看共享 cookie 有没有 sessionid，不等资料接口——
+            // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹（老板 11-17）
+            if !autoLoginShown, !(await DYLoginState.hasSession()) {
+                autoLoginShown = true
+                DYLiveModel.log("DDAPPLOGIN auto-show (no sessionid)")
+                showLogin = true
+            }
+            await loadSelf()
+            // cookie 还在但会话已失效（抖音侧退出 / 过期）：资料接口说未登录，也弹
+            if user == nil, !autoLoginShown, userErr?.contains("未登录") == true {
+                autoLoginShown = true
+                DYLiveModel.log("DDAPPLOGIN auto-show (profile 未登录)")
+                showLogin = true
+            }
+        }
+        .sheet(isPresented: $showLogin, onDismiss: {
+            // 网页登录组件把登录态写进共享 cookie：签名页重载后再读一次资料
+            bridge.reload()
+            Task { try? await Task.sleep(for: .seconds(2)); await loadSelf() }
+            onLogin()
+        }) {
+            DYAppLoginScreen()
         }
         .onAppear { ensure(kind) }
         .onChange(of: kind) { _, k in manageMsg = nil; ensure(k) }
@@ -1622,7 +1693,8 @@ struct DYMineScreen: View {
         } else if let e = userErr {
             VStack(spacing: 10) {
                 Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(Color.primary.opacity(0.8)).font(.subheadline)
-                Button("去登录") { onLogin() }.buttonStyle(.borderedProminent).tint(.pink)
+                Button("去登录") { showLogin = true }.buttonStyle(.borderedProminent).tint(.pink)
+                    .accessibilityIdentifier("douyin.mine.login")
             }
             .frame(maxWidth: .infinity).padding(.vertical, 12)
         } else {
