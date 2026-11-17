@@ -1468,6 +1468,9 @@ struct DYMineScreen: View {
     @State private var manageMsg: String?
     @State private var confirmClearHistory = false
     @State private var clearingHistory = false
+    /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
+    @State private var showLogin = false
+    @State private var autoLoginShown = false
 
     var body: some View {
         NavigationStack {
@@ -1485,6 +1488,11 @@ struct DYMineScreen: View {
                 }
         }
 
+    }
+
+    private func loadSelf() async {
+        do { user = try await bridge.selfProfile(); userErr = nil } catch { userErr = error.localizedDescription }
+        if user != nil { models = [:]; ensure(kind) }
     }
 
     private var content: some View {
@@ -1545,7 +1553,20 @@ struct DYMineScreen: View {
                 return
             }
             #endif
-            do { user = try await bridge.selfProfile() } catch { userErr = error.localizedDescription }
+            await loadSelf()
+            // 未登录：进「我的」先弹登录（每次打开「我的」只自动弹一次，关掉后页内仍有「去登录」）
+            if userErr?.contains("未登录") == true, !autoLoginShown {
+                autoLoginShown = true
+                showLogin = true
+            }
+        }
+        .sheet(isPresented: $showLogin, onDismiss: {
+            // 网页登录组件把登录态写进共享 cookie：签名页重载后再读一次资料
+            bridge.reload()
+            Task { try? await Task.sleep(for: .seconds(2)); await loadSelf() }
+            onLogin()
+        }) {
+            DYAppLoginScreen()
         }
         .onAppear { ensure(kind) }
         .onChange(of: kind) { _, k in manageMsg = nil; ensure(k) }
@@ -1622,7 +1643,8 @@ struct DYMineScreen: View {
         } else if let e = userErr {
             VStack(spacing: 10) {
                 Text(e.contains("未登录") ? "还没登录抖音" : e).foregroundStyle(Color.primary.opacity(0.8)).font(.subheadline)
-                Button("去登录") { onLogin() }.buttonStyle(.borderedProminent).tint(.pink)
+                Button("去登录") { showLogin = true }.buttonStyle(.borderedProminent).tint(.pink)
+                    .accessibilityIdentifier("douyin.mine.login")
             }
             .frame(maxWidth: .infinity).padding(.vertical, 12)
         } else {
