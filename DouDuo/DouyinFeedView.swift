@@ -2664,12 +2664,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         get { DYMainTab(rawValue: mainTabRaw) ?? .home }
         nonmutating set { mainTabRaw = newValue.rawValue }
     }
-    private var mainTabSelection: Binding<DYMainTab> {
-        Binding(get: { mainTab }, set: { selected in
-            guard selected != mainTab else { return }
-            mainTab = selected
-        })
-    }
     @State private var forwardedChat: DYForwardReceipt?
     @State private var visibleVideo: DYAweme?
     @State private var cleanScreen = false
@@ -2951,7 +2945,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     }
 
     private var systemTabs: some View {
-        TabView(selection: mainTabSelection) {
+        TabView(selection: Binding(get: { mainTab }, set: { mainTab = $0 })) {
             Tab("我的", systemImage: "person.crop.circle", value: DYMainTab.mine) {
                 DYMineScreen(bridge: bridge,
                              onLogin: { mainTab = .home; web = DYWebTarget(url: DouyinWeb.home) },
@@ -2973,6 +2967,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Tab("首页", systemImage: "house", value: DYMainTab.home) {
                 NavigationStack {
                     layoutRoot
+                        .background { DYHomeReselectionGuard().allowsHitTesting(false) }
                         .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal]
                                          : hidesCommentStatus ? .horizontal : [])
                         .coordinateSpace(.named("douduo.feed"))
