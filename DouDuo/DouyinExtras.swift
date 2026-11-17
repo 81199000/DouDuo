@@ -1751,24 +1751,32 @@ private struct DYSelfProfileBackdrop: View {
 
     var body: some View {
         if let url {
-            CachedAsyncImage(url: url, thumbnailMaxPixel: 1600) { image in
-                image.resizable().scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 240)
-                    .clipped()
-                    .overlay {
-                        LinearGradient(
-                            colors: [.ddBackground.opacity(0.88), .ddBackground.opacity(0.72), .ddBackground],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                    .ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            } placeholder: {
-                Color.clear
+            // 宽度写死为容器宽度：以前 scaledToFill 后接 .frame(maxWidth: .infinity)，
+            // 封面比例比容器宽时这个框会按图片自身宽度撑开（居中），clipped 只裁到撑开后的框，
+            // 右边就画出容器、盖到右侧栏那一列（合屏时最明显）。顶部仍延伸到状态栏。
+            GeometryReader { geo in
+                let inset = geo.safeAreaInsets
+                let width = max(0, geo.size.width - inset.leading - inset.trailing)
+                CachedAsyncImage(url: url, thumbnailMaxPixel: 1600) { image in
+                    image.resizable().scaledToFill()
+                        .frame(width: width, height: 240)
+                        .clipped()
+                        .overlay {
+                            LinearGradient(
+                                colors: [.ddBackground.opacity(0.88), .ddBackground.opacity(0.72), .ddBackground],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                } placeholder: {
+                    Color.clear
+                }
+                .frame(width: width, height: 240)
+                .padding(.leading, inset.leading)
             }
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 }
