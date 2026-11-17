@@ -890,7 +890,9 @@ struct DYMessagesScreen: View {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railItem(.interactive, icon: "heart", title: "互动",
                              badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
-                    railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
+                    if keyboardFrame == nil {
+                        railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
+                    }
                     // 键盘占掉下半屏时放不下整列（返回键会被顶出去）：把系统 / 陌生人收进「更多」，
                     // 想找它们先收起键盘，或者点「更多」。
                     if keyboardFrame == nil {
@@ -1429,6 +1431,12 @@ struct DYMessagesScreen: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chatPaneFrame = $0 }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { noteKeyboard($0) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { noteKeyboard($0, hidden: true) }
+        // 键盘已经被系统收掉（切 App / 来电 / 其他程序占用输入）时，状态也要归零
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { noteKeyboard($0, hidden: true) }
+        // 离开这个 App（切到别的程序）就收起键盘，回来不会只剩半截输入状态挡着内容
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
         .accessibilityElement(children: .contain)
     }
 
