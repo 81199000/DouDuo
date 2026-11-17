@@ -22,6 +22,28 @@ enum DDAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+extension DDAppearance {
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: .unspecified
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    /// 外观只设在窗口上：窗口下的所有界面（包括已经弹出的设置页）一起变。
+    /// 以前用 SwiftUI 的 preferredColorScheme：从「暗色」改回「跟随系统」（传 nil）时，
+    /// 已弹出的设置页会停在暗色，不跟系统实时变化；.unspecified 才会把外观真正交还给系统。
+    @MainActor static func applyToWindows(_ raw: String) {
+        let style = (DDAppearance(rawValue: raw) ?? .dark).interfaceStyle
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows where window.overrideUserInterfaceStyle != style {
+                window.overrideUserInterfaceStyle = style
+            }
+        }
+    }
+}
+
 extension Color {
     static let ddBackground = Color("AppBackground")
     static let ddSecondaryBackground = Color("AppSecondaryBackground")
