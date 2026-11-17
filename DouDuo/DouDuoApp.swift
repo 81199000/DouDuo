@@ -129,7 +129,8 @@ struct DouDuoApp: App {
                 DouyinFeedScreen()
                 #endif
             }
-            .preferredColorScheme(DDAppearance(rawValue: appearance)?.colorScheme)
+            .onAppear { DDAppearance.applyToWindows(appearance) }
+            .onChange(of: appearance) { _, value in DDAppearance.applyToWindows(value) }
             #if DEBUG
             .overlay(alignment: .topLeading) { DDAppearanceStateProbe() }
             #endif

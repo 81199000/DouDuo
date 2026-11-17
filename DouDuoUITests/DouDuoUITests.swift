@@ -90,6 +90,33 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 设置里从「暗色」改成「跟随系统」：系统为亮色时界面变亮（运行前把模拟器系统外观设为亮色）
+    func testSettingsFollowSystemTakesEffect() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE":"rail", "DOUDUO_HASHTAG_FIXTURE":"1", "DOUDUO_APPEARANCE_TEST":"1", "DOUDUO_APPEARANCE":"dark"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                               "-douduo_dismissed_update_v1", "9.9.9"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let resolved = app.staticTexts["appearance.resolved"]
+        XCTAssertTrue(resolved.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitUntil(timeout: 5) { resolved.label == "dark" }, "起始应为暗色")
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+            ?? app.buttons["douyin.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 20)); more.tap()
+        let entry = app.buttons["设置"]; XCTAssertTrue(entry.waitForExistence(timeout: 5)); entry.tap()
+        let picker = app.segmentedControls["settings.appearance"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.buttons["跟随系统"].tap()
+        sleep(1)
+        attach(app, "follow-system-in-settings")
+        app.buttons["settings.done"].tap()
+        sleep(1)
+        attach(app, "follow-system-home")
+        XCTAssertTrue(waitUntil(timeout: 5) { resolved.label == "light" }, "跟随系统后应随系统变亮，实际 \(resolved.label)")
+    }
+
     func testAppearanceFollowsSystem() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

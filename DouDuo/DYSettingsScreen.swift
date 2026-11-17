@@ -185,7 +185,6 @@ struct DYSettingsScreen: View {
                 }
             }
         }
-        .preferredColorScheme(DDAppearance(rawValue: appearance)?.colorScheme)
     }
 }
 
