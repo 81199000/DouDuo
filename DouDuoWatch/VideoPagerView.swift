@@ -41,20 +41,25 @@ struct VideoPagerView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 12)
+            // 用 simultaneousGesture：不和子视图里的「点一下 / 双击」互相抢；
+            // 最小位移放到 8，且不再要求「纵向明显大于横向」——拇指在小屏上滑常常是斜的，旧判定会把斜滑直接丢掉，表现为「经常滑不动」
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 8)
                     .onChanged { v in
-                        guard abs(v.translation.height) > abs(v.translation.width) else { return }
+                        guard abs(v.translation.height) >= abs(v.translation.width) * 0.6 else { return }
                         let atTop = index == 0 && v.translation.height > 0
                         let atEnd = index >= model.videos.count - 1 && v.translation.height < 0
                         drag = (atTop || atEnd) ? v.translation.height * 0.25 : v.translation.height
                     }
                     .onEnded { v in
+                        defer { if drag != 0, drag == drag { withAnimation(.easeOut(duration: 0.2)) { drag = 0 } } }
+                        guard abs(v.translation.height) >= abs(v.translation.width) * 0.6 else { return }
                         let h = geo.size.height
                         let t = v.predictedEndTranslation.height
                         var next = index
-                        if (v.translation.height < -h * 0.2 || t < -h * 0.5) && index < model.videos.count - 1 { next += 1 }
-                        else if (v.translation.height > h * 0.2 || t > h * 0.5) && index > 0 { next -= 1 }
+                        // 门槛从 20% 降到 12%（约 30 点），轻划也能翻
+                        if (v.translation.height < -h * 0.12 || t < -h * 0.35) && index < model.videos.count - 1 { next += 1 }
+                        else if (v.translation.height > h * 0.12 || t > h * 0.35) && index > 0 { next -= 1 }
                         go(to: next)
                     }
             )
