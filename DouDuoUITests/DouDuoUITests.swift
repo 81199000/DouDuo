@@ -5765,3 +5765,63 @@ extension DouDuoUITests {
         }
     }
 }
+
+extension DouDuoUITests {
+    /// 老板 11-18 报：私信聊天里键盘弹出来把输入框和最后几条消息盖住，而且键盘收不回去。
+    /// 离线聊天样张，不联网、不发送。
+    func testChatKeyboardLiftsComposerAndCanDismiss() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_MESSAGE_LAYOUT"] = "1"
+        app.launchEnvironment["DOUDUO_MESSAGE_FIXTURE"] = "1"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = ProcessInfo.processInfo.environment["DD_MODE"] ?? "classic"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let rows = app.buttons.matching(identifier: "douyin.conversation.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 20), app.debugDescription)
+        rows.matching(NSPredicate(format: "label CONTAINS %@", "青禾")).firstMatch.tap()
+        let editor = app.textViews["douyin.messages.composer.editor"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), app.debugDescription)
+        let restY = editor.frame.midY
+        let webProbe = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.detail").firstMatch
+        let headerProbe = app.descendants(matching: .any).matching(identifier: "douyin.messages.chat.header").firstMatch
+        func frameOf(_ e: XCUIElement) -> String { e.exists ? "\(e.frame)" : "none" }
+        print("CHATKB rest web=\(frameOf(webProbe)) header=\(frameOf(headerProbe)) editor=\(editor.frame)")
+        // 跟真实聊天一样先停在最新一条（样张打开时停在最上面）
+        let last = app.staticTexts["最后一条消息"].firstMatch
+        XCTAssertTrue(last.waitForExistence(timeout: 5), "样张里找不到最后一条消息")
+        for _ in 0..<4 where last.frame.maxY > editor.frame.minY {
+            webProbe.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.6))
+                .press(forDuration: 0.05, thenDragTo: webProbe.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.2)))
+            Thread.sleep(forTimeInterval: 0.8)
+        }
+        print("CHATKB rest last=\(last.frame)")
+        XCTAssertLessThanOrEqual(last.frame.maxY, editor.frame.minY + 1, "键盘没弹出时最后一条消息就应该看得见")
+        attach(app, "chat-keyboard-rest")
+        editor.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 8), "键盘没弹出来")
+        Thread.sleep(forTimeInterval: 1.5)
+        let top = keyboard.frame.minY
+        print("CHATKB editor=\(editor.frame) keyboardTop=\(top) rest=\(restY) window=\(app.windows.firstMatch.frame)")
+        print("CHATKB up web=\(frameOf(webProbe)) header=\(frameOf(headerProbe))")
+        attach(app, "chat-keyboard-up")
+        XCTAssertLessThanOrEqual(editor.frame.maxY, top + 1, "输入框被键盘盖住了")
+        // 键盘元素的上沿是按键区，不含上面那条候选栏（约 45pt）；输入框贴在候选栏上方
+        XCTAssertLessThan(top - editor.frame.maxY, 110, "输入框要紧贴键盘上方，不能被抬到半空")
+        // 最后一条消息必须还看得见：在输入框上方，没被键盘或输入框盖住
+        print("CHATKB last=\(last.frame)")
+        XCTAssertLessThanOrEqual(last.frame.maxY, editor.frame.minY + 1, "最后一条消息被输入框 / 键盘盖住了")
+        XCTAssertGreaterThan(last.frame.minY, 60, "最后一条消息被顶出屏幕了")
+        let hide = app.buttons["douyin.messages.composer.hideKeyboard"].firstMatch
+        XCTAssertTrue(hide.waitForExistence(timeout: 3), "没有收起键盘的按钮")
+        XCTAssertTrue(hide.isHittable, "收起键盘的按钮被挡住了")
+        hide.tap()
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5), "点了收起，键盘没下去")
+        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertEqual(editor.frame.midY, restY, accuracy: 3, "键盘收起后输入框要回到原位")
+        XCTAssertFalse(hide.exists, "键盘收起后不再显示收起按钮")
+        attach(app, "chat-keyboard-down")
+    }
+}

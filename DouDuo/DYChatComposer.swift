@@ -18,6 +18,19 @@ struct DYChatComposer: View {
                     .accessibilityIdentifier("douyin.messages.composer.error")
             }
             HStack(spacing: 0) {
+                if focused {
+                    // 系统键盘和多数第三方键盘没有「收起」键：输入时给一个收起键盘的按钮
+                    Button { focused = false } label: {
+                        Image(systemName: "keyboard.chevron.compact.down").font(.body)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, height: 44).contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 6)
+                    .accessibilityLabel("收起键盘")
+                    .accessibilityIdentifier("douyin.messages.composer.hideKeyboard")
+                    .transition(.opacity)
+                }
                 DYChatTextEditor(text: model.text, active: active, editable: !model.working, focused: $focused, onEdit: model.edit)
                     .padding(.vertical, 8)
                     .overlay(alignment: .topLeading) {
@@ -27,7 +40,7 @@ struct DYChatComposer: View {
                                 .accessibilityHidden(true)
                         }
                     }
-                    .padding(.leading, 20).padding(.trailing, 6)
+                    .padding(.leading, focused ? 2 : 20).padding(.trailing, 6)
                 action(.attachment, label: "附件", image: "MessageAttachment", size: 28)
                 action(.emoji, label: "表情", image: "MessageEmoji", size: 28)
                 action(.send, label: "发送", image: "MessageSend", size: 32)
@@ -41,6 +54,7 @@ struct DYChatComposer: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("douyin.messages.composer")
         }
+        .animation(.easeOut(duration: 0.15), value: focused)
         .onChange(of: active) { _, active in if !active { focused = false } }
         .onChange(of: focused) { _, focused in model.isEditing = focused }
         .onDisappear { model.isEditing = false }

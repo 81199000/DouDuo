@@ -16,6 +16,40 @@ enum DYChatWebBridge {
         return try? JSONDecoder().decode(DYChatChromeSnapshot.self, from: data)
     }
 
+    /// 键盘弹出 / 收起时聊天网页会变矮 / 变高。浏览器默认按顶部对齐，变矮后最新几条消息就掉到输入框后面去了。
+    /// 这里给消息列表挂一个尺寸监听：高度一变，就滚回「离底部同样远」的位置（停在最底就还在最底）。
+    /// 只动滚动位置，不改消息内容；每个列表元素只挂一次。
+    static func keepBottomAnchored(_ web: WKWebView) async {
+        let status = (try? await web.callAsyncJavaScript(bottomAnchorJS, arguments: [:], contentWorld: .page)) as? String ?? "failed"
+        // 真实网页的列表结构只能在真机上见到：状态变了记一笔（已挂上 / 找不到列表 / 网页自己会贴底）
+        if status != "on", status != lastAnchorStatus {
+            lastAnchorStatus = status
+            DYLiveModel.log("DDCHATKB anchor " + status)
+        }
+    }
+    private static var lastAnchorStatus = ""
+
+    static let bottomAnchorJS = #"""
+    const wrap = document.querySelector('[class*="messageMessageListwrapper"]');
+    const list = wrap && [wrap, ...wrap.querySelectorAll('div')].find(e => /auto|scroll/.test(getComputedStyle(e).overflowY));
+    if (!list) return 'no-list';
+    if (list.__ddBottomAnchor) return 'on';
+    // 倒序排列的列表浏览器自己就贴着底，不用管（它的滚动位置是反的，按下面的算法会算错）
+    if (getComputedStyle(list).flexDirection === 'column-reverse') return 'reverse';
+    list.__ddBottomAnchor = true;
+    let height = list.clientHeight, gap = list.scrollHeight - list.scrollTop - height;
+    list.addEventListener('scroll', () => {
+      // 高度正在变的那一下（浏览器自己夹了一次滚动位置）不记，等尺寸监听处理完
+      if (list.clientHeight === height) gap = list.scrollHeight - list.scrollTop - height;
+    }, {passive: true});
+    new ResizeObserver(() => {
+      if (list.clientHeight === height) return;
+      height = list.clientHeight;
+      list.scrollTop = Math.max(0, list.scrollHeight - height - gap);
+    }).observe(list);
+    return 'installed';
+    """#
+
     static func options(_ web: WKWebView, id: String) async throws -> [DYChatOption] {
         let text = try await web.callAsyncJavaScript(helpersJS + optionsJS, arguments: ["id": id], contentWorld: .page)
         guard let text = text as? String, let data = text.data(using: .utf8) else { throw BridgeError.unavailable }
