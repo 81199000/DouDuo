@@ -2656,10 +2656,6 @@ struct DYVideoPage: View {
 final class DYFeedShared: ObservableObject {
     let bridge = DouyinBridge()
     let feed = DYFeedModel()
-    init() {
-        // Apple Watch 伴侣：手表不登录，向这里（持有登录态的 iPhone）要数据
-        DDWatchBridge.shared.attach(bridge: bridge, feed: feed)
-    }
 }
 
 struct DouyinFeedScreen: View {
