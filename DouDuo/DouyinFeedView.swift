@@ -3019,7 +3019,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Tab("首页", systemImage: "house", value: DYMainTab.home) {
                 NavigationStack {
                     layoutRoot
-                        .background { DYHomeReselectionGuard().allowsHitTesting(false) }
+                        .background { DYHomeReselectionGuard(onDoubleTap: { tapChannel(.recommend) }).allowsHitTesting(false) }
                         .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal]
                                          : hidesCommentStatus ? .horizontal : [])
                         .coordinateSpace(.named("douduo.feed"))
@@ -5678,6 +5678,16 @@ extension DYFeedModel {
             guard let self else { return }
             if self.toast == s { self.toast = nil }
         }
+    }
+
+    static let refreshingToast = "正在刷新视频…"
+    /// 刷新推荐期间常亮的提示：不自动消失，由刷新结果（已刷新 / 没有新推荐 / 失败）替换，或刷新结束时收起。
+    func showRefreshingToast() {
+        if toast != Self.refreshingToast { toast = Self.refreshingToast }
+    }
+    /// 刷新结束还停在「正在刷新」（被取消、请求出错）时收起；已换成结果提示的不动。
+    func endRefreshingToast() {
+        if toast == Self.refreshingToast { toast = nil }
     }
 }
 
