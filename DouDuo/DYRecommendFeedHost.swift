@@ -1,6 +1,22 @@
 import SwiftUI
 import AVFoundation
 
+struct DYOfflinePlaybackContext {
+    let id: String
+    let localOnly: Bool
+    let position: Int?
+    let total: Int
+    let onFailure: () -> Void
+    var inLibrary = false
+    var onFinished: (() -> Bool)? = nil
+    var onPositionUpdate: ((Double) -> Void)? = nil
+    var onlineActionsAllowed = true
+
+    func localURL() -> URL? {
+        inLibrary ? DYOfflineVideoStore.localURL(id) : DYVideoCache.localURL(id)
+    }
+}
+
 /// 推荐流的共用操作（默认 / 简洁 / 极简 / 经典四种界面同一份）。
 ///
 /// 维护规矩：推荐流「数据怎么动」只写在这里——刷新、连播、不感兴趣、话题屏蔽、存档会话、上报观看、
@@ -38,7 +54,7 @@ extension DYRecommendFeedHost {
             DYRefreshProbe.shared.count += 1
             #endif
             // 点下去同一帧就出提示：不等 Task 排到下一轮，也不等正在进行的预取
-            feed.showRefreshingToast()
+            if !feed.offlinePlayback { feed.showRefreshingToast() }
             Task { await refreshRecommendations() }
         } else {
             switchTab(target)
@@ -109,7 +125,8 @@ extension DYRecommendFeedHost {
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
         #endif
-        guard initialized, !refreshing, tab == .recommend, let first = feed.items.first else { return }
+        guard initialized, !refreshing, !feed.offlinePlayback, tab == .recommend,
+              let first = feed.items.first else { return }
         if currentID == nil {
             currentID = first.id   // 两个推荐页的 onChange(currentID) 会接着调 focusCurrent
             scrollID = first.id
@@ -118,12 +135,215 @@ extension DYRecommendFeedHost {
         }
     }
 
+    func offlineCandidates(_ requestedCount: Int) async throws -> [DYAweme] {
+        let count = min(max(0, requestedCount), DYOfflineDownloads.maximumCount)
+        guard count > 0 else { return [] }
+        let saved = await DYVideoCache.shared.offlineItems()
+        var seen = Set(saved.map(\.id))
+        var result: [DYAweme] = []
+        func add(_ candidates: [DYAweme]) {
+            for item in feed.allowedRecommendations(candidates) where result.count < count {
+                guard item.images.isEmpty, item.duration.isFinite, item.duration > 0,
+                      let playback = item.play.flatMap(URL.init(string:)),
+                      let scheme = playback.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https",
+                      seen.insert(item.id).inserted else { continue }
+                result.append(item)
+            }
+        }
+        add(Array(feed.items.dropFirst((currentIndex ?? -1) + 1)) + feed.pool)
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return result }
+        #endif
+        var pagesWithoutCandidates = 0
+        for _ in 0..<max(4, (count + 4) / 5) {
+            guard result.count < count else { break }
+            try Task.checkCancellation()
+            do {
+                let page = try await bridge.fetchFeed()
+                try Task.checkCancellation()
+                let previousCount = result.count
+                add(page.items)
+                pagesWithoutCandidates = result.count == previousCount ? pagesWithoutCandidates + 1 : 0
+                if !page.hasMore || page.items.isEmpty || pagesWithoutCandidates >= 3 { break }
+            } catch {
+                try Task.checkCancellation()
+                if result.isEmpty { throw error }
+                break
+            }
+        }
+        return result
+    }
+
+    func refreshOfflineQueueIfNeeded() async {
+        guard feed.offlinePlayback, DYOfflineDownloads.shared.isOffline else { return }
+        await updateOfflineFeed(true, refresh: true)
+    }
+
+    func offlinePlaybackContext(for item: DYAweme) -> DYOfflinePlaybackContext {
+        let ids: [String]
+        if feed.offlinePlayback || feed.onlineContinuationID == item.id {
+            ids = feed.savedOfflineIDs.contains(item.id) ? feed.savedOfflineIDs : feed.automaticOfflineIDs
+        } else {
+            ids = []
+        }
+        return DYOfflinePlaybackContext(id: item.id, localOnly: feed.offlinePlayback,
+            position: ids.firstIndex(of: item.id).map { $0 + 1 }, total: ids.count,
+            onFailure: { Task { await recommendationPlaybackFailed(item.id) } },
+            onFinished: { offlineVideoFinished(item.id) })
+    }
+
+    func updateOfflineFeed(_ offline: Bool, refresh: Bool = false) async {
+        let connectivity = DYOfflineDownloads.shared
+        guard offline == connectivity.isOffline else { return }
+        let pathChanged = feed.pathIsOffline != offline
+        feed.pathIsOffline = offline
+        if !offline {
+            guard feed.offlinePlayback, pathChanged || refresh else { return }
+            await resumeOnlineRecommendations()
+            if feed.offlinePlayback { scheduleOnlineRecovery() }
+            return
+        }
+
+        if pathChanged {
+            feed.onlineRecoveryTask?.cancel()
+            feed.onlineRecoveryTask = nil
+            feed.offlineEpoch += 1
+        }
+        if feed.offlinePlayback, !refresh { return }
+        let epoch = feed.offlineEpoch
+        let local = await DYVideoCache.shared.offlinePlaybackItems()
+        guard !Task.isCancelled, connectivity.isOffline, epoch == feed.offlineEpoch else { return }
+        setOfflineFeed(saved: local.saved, automatic: local.automatic, fallback: false)
+    }
+
+    private func recommendationPlaybackFailed(_ id: String) async {
+        guard tab == .recommend, currentID == id, DDPlayback.shared.appIsActive,
+              !DDPlayback.shared.coverHold, !feed.failedRecommendationIDs.contains(id) else { return }
+        if continueOnlineAfterOfflineVideo(id) { return }
+        let local = await DYVideoCache.shared.offlinePlaybackItems()
+        guard !Task.isCancelled, tab == .recommend, currentID == id, DDPlayback.shared.appIsActive,
+              !DDPlayback.shared.coverHold, feed.failedRecommendationIDs.insert(id).inserted else { return }
+        feed.finishedOfflineID = id
+        // If a local queue is in use, skip to its next playable video without replaying its earlier entries.
+        if feed.offlinePlayback, let index = currentIndex {
+            if let next = nextOfflineRecommendation(after: index) {
+                advance(from: id, to: next.id)
+                return
+            }
+        } else if setOfflineFeed(saved: local.saved, automatic: local.automatic, fallback: true) {
+            DYLiveModel.log("DDOFFLINE fallback failed=\(id) next=\(currentID ?? "-")")
+            if !DYOfflineDownloads.shared.isOffline { scheduleOnlineRecovery() }
+            return
+        }
+        showToast("视频加载失败，暂无其他可播放的离线视频")
+    }
+
+    private func nextOfflineRecommendation(after index: Int) -> DYAweme? {
+        feed.items.dropFirst(index + 1).first {
+            !feed.failedRecommendationIDs.contains($0.id) && DYVideoCache.localURL($0.id) != nil
+        }
+    }
+
+    @discardableResult
+    private func setOfflineFeed(saved: [DYAweme], automatic: [DYAweme], fallback: Bool) -> Bool {
+        let previous = currentID
+        var ids = Set<String>()
+        let videos = feed.allowedRecommendations(fallback ? automatic + saved : saved + automatic)
+            .filter {
+                $0.images.isEmpty && !feed.failedRecommendationIDs.contains($0.id) &&
+                    DYVideoCache.localURL($0.id) != nil && ids.insert($0.id).inserted
+            }
+        if fallback, videos.isEmpty { return false }
+
+        let savedIDs = Set(saved.map(\.id))
+        feed.savedOfflineIDs = saved.map(\.id)
+        feed.automaticOfflineIDs = videos.map(\.id).filter { !savedIDs.contains($0) }
+        scrollEndTask?.cancel()
+        preloader.clear()
+        userScrolling = false
+        if previous.map({ ids.contains($0) }) != true { showComments = false }
+        if !feed.offlinePlayback { feed.offlineEpoch += 1 }
+        feed.offlinePlayback = true
+        feed.error = videos.isEmpty ? "没有可播放的离线视频" : nil
+        feed.pool = []
+        feed.items = videos
+        currentID = previous.flatMap { ids.contains($0) ? $0 : nil } ?? videos.first?.id
+        scrollID = currentID
+        focusCurrent()
+        return true
+    }
+
+    private func scheduleOnlineRecovery() {
+        guard feed.onlineRecoveryTask == nil else { return }
+        feed.onlineRecoveryTask = Task {
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            await resumeOnlineRecommendations()
+            if !Task.isCancelled { feed.onlineRecoveryTask = nil }
+        }
+    }
+
+    private func resumeOnlineRecommendations() async {
+        let epoch = feed.offlineEpoch
+        guard !DYOfflineDownloads.shared.isOffline, feed.offlinePlayback,
+              feed.recoveringOnlineEpoch != epoch else { return }
+        feed.recoveringOnlineEpoch = epoch
+        defer {
+            if feed.recoveringOnlineEpoch == epoch { feed.recoveringOnlineEpoch = nil }
+        }
+        guard let replacement = try? await feed.prepareRefresh(bridge, excludingCurrentItems: false),
+              epoch == feed.offlineEpoch, !DYOfflineDownloads.shared.isOffline,
+              feed.offlinePlayback else { return }
+        let currentLocalVideo = current.flatMap { item in
+            feed.finishedOfflineID != item.id && DYVideoCache.localURL(item.id) != nil ? item : nil
+        }
+        let consumed = Set(feed.items.prefix((currentIndex ?? -1) + 1).map(\.id))
+        guard let first = feed.recoverOnline(with: replacement, keeping: currentLocalVideo, excluding: consumed) else { return }
+        preloader.clear()
+        if currentID != first.id {
+            scrollEndTask?.cancel()
+            userScrolling = false
+            showComments = false
+        }
+        currentID = first.id
+        if currentLocalVideo == nil { scrollID = currentID }
+        feed.finishedOfflineID = nil
+        feed.onlineContinuationID = currentLocalVideo?.id
+        lastFeedPull = Date()
+        focusCurrent()
+        saveSession()
+        DYLiveModel.log("DDOFFLINE online kept=\(currentLocalVideo?.id ?? "-") current=\(first.id)")
+    }
+
+    private func offlineVideoFinished(_ id: String) -> Bool {
+        guard tab == .recommend, currentID == id else { return false }
+        if feed.offlinePlayback {
+            feed.finishedOfflineID = id
+            return false
+        }
+        return continueOnlineAfterOfflineVideo(id)
+    }
+
+    private func continueOnlineAfterOfflineVideo(_ id: String) -> Bool {
+        guard !feed.offlinePlayback, feed.onlineContinuationID == id,
+              currentID == id, let index = currentIndex, index + 1 < feed.items.count else { return false }
+        feed.onlineContinuationID = nil
+        advance(from: id, to: feed.items[index + 1].id)
+        return true
+    }
+
     func focusCurrent() {
         #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1", !feed.offlinePlayback {
+            if ProcessInfo.processInfo.environment["DOUDUO_OFFLINE_FIXTURE_URL"] != nil, let i = currentIndex {
+                preloader.update(feed.items, current: i)
+            }
+            return
+        }
         #endif
         guard !refreshing, let i = currentIndex else { return }
-        preloader.update(feed.items, current: i)
+        preloader.update(feed.items, current: i, localOnly: feed.offlinePlayback)
+        guard !feed.offlinePlayback else { return }
         // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
@@ -143,7 +363,7 @@ extension DYRecommendFeedHost {
             lastFeedPull = Date()
             Task {
                 await feed.loadMore(bridge)
-                if let j = currentIndex {
+                if !feed.offlinePlayback, let j = currentIndex {
                     preloader.update(feed.items, current: j)
                     await DYVideoCache.shared.focus(current: feed.items[j], ahead: Array(feed.items.dropFirst(j + 1)))
                     if feed.items.count - j - 1 < want { focusCurrent() }
@@ -158,13 +378,20 @@ extension DYRecommendFeedHost {
 
     /// 自动连播：播完滑到下一条；快到底时先补一页
     func playNext(after id: String) {
-        guard let i = feed.items.firstIndex(where: { $0.id == id }) else { return }
-        if i + 1 < feed.items.count {
+        guard currentID == id, let i = currentIndex else { return }
+        if feed.offlinePlayback {
+            if let next = nextOfflineRecommendation(after: i) {
+                advance(from: id, to: next.id)
+            } else {
+                feed.finishedOfflineID = id
+                showToast("离线视频已播完")
+            }
+        } else if i + 1 < feed.items.count {
             advance(from: id, to: feed.items[i + 1].id)
         } else {
             Task {
                 await feed.loadMore(bridge)
-                if let j = feed.items.firstIndex(where: { $0.id == id }), j + 1 < feed.items.count {
+                if currentID == id, let j = currentIndex, j + 1 < feed.items.count {
                     advance(from: id, to: feed.items[j + 1].id)
                 }
             }
@@ -176,14 +403,38 @@ extension DYRecommendFeedHost {
         noticeUnread = DYMessagesScreen.badge(groups)
     }
 
+    func reloadRecommendationsAfterLogin() {
+        if !feed.offlinePlayback {
+            preloader.clear()
+            feed.reset()
+            currentID = nil
+        }
+        bridge.reload()
+        Task {
+            if feed.offlinePlayback {
+                await updateOfflineFeed(DYOfflineDownloads.shared.isOffline, refresh: true)
+                return
+            }
+            await feed.loadMore(bridge)
+            guard !feed.offlinePlayback, currentID == nil else { return }
+            currentID = feed.items.first?.id
+            focusCurrent()
+        }
+    }
+
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
     @MainActor func refreshRecommendations() async {
+        if feed.offlinePlayback {
+            feed.endRefreshingToast()
+            await updateOfflineFeed(DYOfflineDownloads.shared.isOffline, refresh: true)
+            return
+        }
         // 刷新中再点：提示照样亮着（以前直接返回，提示 2.2 秒后消失，后面要干等到刷新结果）
         feed.showRefreshingToast()
         guard !refreshing else { return }
         refreshing = true
         defer { refreshing = false; feed.endRefreshingToast(); focusCurrent() }
-        guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
+        guard let replacement = try? await feed.prepareRefresh(bridge), !feed.offlinePlayback else { return }
         guard !replacement.items.isEmpty else {
             showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
             DYLiveModel.log("DDREFRESH failed kept=\(currentID ?? "-")")
@@ -204,8 +455,15 @@ extension DYRecommendFeedHost {
 
     /// 当前条之后按新的方向/比例重排；不够就接着拉
     func remixUpcoming() {
-        guard tab == .recommend || !feed.items.isEmpty else { return }
-        feed.remix(after: currentIndex)
+        guard !feed.offlinePlayback, tab == .recommend || !feed.items.isEmpty else { return }
+        let keepAll: Bool
+        #if DEBUG
+        // 固定播放样本不会补拉推荐，布局切换时要保留后续测试视频。
+        keepAll = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+        #else
+        keepAll = false
+        #endif
+        feed.remix(after: currentIndex, keepAll: keepAll)
         DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
         if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
         lastFeedPull = .distantPast
@@ -214,13 +472,15 @@ extension DYRecommendFeedHost {
 
     /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
     func reportWatch(old: String?, new: String?) {
-        guard let new, let item = feed.items.first(where: { $0.id == new }) else { return }
+        if feed.finishedOfflineID == old { feed.finishedOfflineID = nil }
+        if feed.onlineContinuationID == old { feed.onlineContinuationID = nil }
+        guard !feed.offlinePlayback, let new, let item = feed.items.first(where: { $0.id == new }) else { return }
         var seen = false
         if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
            DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard currentID == new else { return }
+            guard !feed.offlinePlayback, currentID == new else { return }
             await bridge.reportWatch(item, preID: old, preSeen: seen)
         }
     }
@@ -246,6 +506,66 @@ extension DYRecommendFeedHost {
     /// 点赞：先本地乐观更新，再调抖音网页接口，按服务端返回决定成败
     /// （不用 cookie 判断登录态：sessionid 是 HttpOnly，document.cookie 读不到，会误判成未登录）
     func toggleLike(_ id: String, force: Bool?) { feed.toggleLike(id, force: force, bridge: bridge) }
+}
+
+/// The settings entry uses the standalone player; the recommendation feed owns a separate session.
+struct DYOfflineLibraryScreen: View {
+    let interactionBridge: DouyinBridge?
+    let presentation: UUID
+    @Environment(\.dismiss) private var dismiss
+    @State private var fallbackBridge: DouyinBridge?
+    @State private var playback: DYListPlayback?
+    @State private var initialized = false
+    @State private var reloadRevision = 0
+
+    var body: some View {
+        Group {
+            if let bridge = interactionBridge ?? fallbackBridge, let playback, !playback.items.isEmpty {
+                DYListPlayer(bridge: bridge, title: "离线视频", playback: playback,
+                             onAuthor: { _ in }, presentsAuthor: true, offlineLibrary: true)
+            } else {
+                Group {
+                    if initialized {
+                        ContentUnavailableView("暂无可播放的离线视频", systemImage: "airplane")
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Color.black.ignoresSafeArea() }
+                .overlay(alignment: .topLeading) {
+                    Button("关闭离线视频", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.plain)
+                        .frame(width: 44, height: 44)
+                        .accessibilityIdentifier("offline.library.close")
+                        .padding(8)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onReceive(DYOfflineDownloads.shared.$storageRevision) { reloadRevision = $0 }
+        .task(id: reloadRevision) { await reload() }
+    }
+
+    private func reload() async {
+        let saved = await DYVideoCache.shared.offlineItems()
+        guard !Task.isCancelled else { return }
+        if let playback {
+            playback.updateOfflineItems(saved)
+        } else if !saved.isEmpty {
+            if interactionBridge == nil { fallbackBridge = DouyinBridge() }
+            let checkpoint = DYOfflineVideoStore.loadCheckpoint()
+            let start = saved.firstIndex { $0.id == checkpoint?.id } ?? 0
+            let state = DYListPlayback(items: saved, start: start)
+            if let checkpoint, checkpoint.id == state.currentID {
+                state.restoreOfflineCheckpoint(checkpoint)
+            }
+            DDPlayback.shared.beginOfflineLibrary(presentation)
+            playback = state
+        }
+        initialized = true
+    }
 }
 
 #if DEBUG

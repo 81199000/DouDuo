@@ -347,6 +347,7 @@ struct DYDMBannerModifier: ViewModifier {
     var messagesVisible: Bool
     var openMessages: () -> Void
     @ObservedObject private var center = DYDMBannerCenter.shared
+    @ObservedObject private var offlineDownloads = DYOfflineDownloads.shared
     @ObservedObject private var cache = DYMessageCache.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -355,7 +356,16 @@ struct DYDMBannerModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
-            if DYDMBannerGate.enabled, center.visible, !messagesVisible {
+            if let banner = offlineDownloads.banner {
+                DYDMBannerCard(title: banner.title, message: banner.message, reduceMotion: reduceMotion,
+                               symbolName: banner.success ? "arrow.down.circle.fill" : "exclamationmark.circle.fill",
+                               identifier: "douyin.offline.banner", hint: "关闭提示") {
+                    offlineDownloads.dismissBanner()
+                }
+                .padding(.top, 8)
+                .padding(.horizontal, 16)
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+            } else if DYDMBannerGate.enabled, center.visible, !messagesVisible {
                 DYDMBannerCard(
                     title: center.display?.title ?? DYDMBannerPresentation.genericTitle,
                     message: center.display?.message ?? "你有新的私信活动",
@@ -371,6 +381,7 @@ struct DYDMBannerModifier: ViewModifier {
             }
         }
         .animation(DYDMBannerPolicy.animates(reduceMotion: reduceMotion) ? .easeOut(duration: 0.25) : nil, value: center.visible)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: offlineDownloads.banner?.id)
         .onChange(of: messagesVisible) { _, open in
             if open { center.dismiss() }
         }
@@ -508,6 +519,9 @@ struct DYDMBannerCard: View {
     var message: String = "你有新的私信活动"
     var avatar: UIImage? = nil
     var reduceMotion: Bool
+    var symbolName = "bubble.left.and.bubble.right.fill"
+    var identifier = "douyin.dm.banner"
+    var hint = "打开消息"
     var action: () -> Void
 
     var body: some View {
@@ -521,7 +535,7 @@ struct DYDMBannerCard: View {
                         .clipShape(Circle())
                         .accessibilityHidden(true)
                 } else {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                    Image(systemName: symbolName)
                         .font(.body.weight(.semibold))
                         .accessibilityHidden(true)
                 }
@@ -545,10 +559,10 @@ struct DYDMBannerCard: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.white)
-        .accessibilityIdentifier("douyin.dm.banner")
+        .accessibilityIdentifier(identifier)
         .accessibilityLabel(title)
         .accessibilityValue(message)
-        .accessibilityHint("打开消息")
+        .accessibilityHint(hint)
         .accessibilityAddTraits(.isButton)
     }
 }

@@ -10,6 +10,8 @@ struct DYSettingsScreen: View {
     var onRefresh: () -> Void = {}
     /// 清缓存后让宿主把当前视频重新挂回播放器
     var onCacheCleared: () -> Void = {}
+    var offlineCandidateSource: ((Int) async throws -> [DYAweme])?
+    var offlineInteractionBridge: DouyinBridge?
 
     @Environment(\.dismiss) private var dismiss
     // 界面
@@ -110,6 +112,18 @@ struct DYSettingsScreen: View {
                         ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .accessibilityIdentifier("settings.cache.count")
+                    NavigationLink {
+                        DYOfflineDownloadScreen(candidateSource: offlineCandidateSource, interactionBridge: offlineInteractionBridge)
+                    } label: {
+                        Label("离线视频", systemImage: "tray.and.arrow.down")
+                    }
+                    .accessibilityIdentifier("settings.cache.offline")
+                    NavigationLink {
+                        DYStorageScreen()
+                    } label: {
+                        Label("储存空间", systemImage: "internaldrive")
+                    }
+                    .accessibilityIdentifier("settings.storage")
                     Button(role: .destructive) {
                         clearing = true
                         Task {
@@ -125,12 +139,6 @@ struct DYSettingsScreen: View {
                     }
                     .disabled(clearing)
                     .accessibilityIdentifier("settings.cache.clear")
-                    NavigationLink {
-                        DYStorageScreen()
-                    } label: {
-                        Label("储存空间", systemImage: "internaldrive")
-                    }
-                    .accessibilityIdentifier("settings.storage")
                 } header: {
                     Text("缓存")
                 }

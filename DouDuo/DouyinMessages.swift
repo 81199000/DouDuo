@@ -2777,6 +2777,8 @@ struct DYForwardScreen: View {
         return false
     }
     let item: DYAweme
+    var fromOfflineLibrary = false
+    var onlineActionsAllowed = true
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -2797,6 +2799,14 @@ struct DYForwardScreen: View {
 
     private var actions: [DYForwardPanelAction] {
         var result: [DYForwardPanelAction] = []
+        if !onlineActionsAllowed {
+            result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
+            if usesClassicLayout {
+                result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line"))
+            }
+            result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
+            return result
+        }
         if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信好友", symbol: "paperplane.fill")) }
         if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
         result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
@@ -2810,8 +2820,12 @@ struct DYForwardScreen: View {
         model.contacts.filter { (!groupsOnly || $0.kind == 2) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
     }
     private var classicPanel: some View {
-        DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
-                             status: accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : saveMessage ?? (copiedLink ? "链接已复制" : model.message))) : "正在加载朋友…", actions: actions,
+        DYNativeForwardPanel(contacts: accountPrepared && onlineActionsAllowed ? model.contacts : [],
+                             loading: onlineActionsAllowed && (!accountPrepared || model.loading || model.sending),
+                             status: onlineActionsAllowed
+                                 ? (accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : saveMessage ?? (copiedLink ? "链接已复制" : model.message))) : "正在加载朋友…")
+                                 : (saveMessage ?? (copiedLink ? "链接已复制" : "联网后可私信分享")),
+                             actions: actions,
                              onContact: selectRecipient,
                              onAction: perform, onClose: { dismiss() },
                              selectedID: selected?.id, composer: shareComposer)
@@ -2819,7 +2833,7 @@ struct DYForwardScreen: View {
             .background {
                 // Only the system sheet draws glass. Keep the signing/sending
                 // bridge hidden and preserve its real official account context.
-                if accountPrepared && !model.layoutFixture {
+                if onlineActionsAllowed && accountPrepared && !model.layoutFixture {
                     DYForwardWebContainer(model: model, url: item.webURL)
                         .id(model.accountScope)
                         .frame(width: 760, height: 640)
@@ -2840,7 +2854,7 @@ struct DYForwardScreen: View {
                                      selectedID: selected?.id, composer: shareComposer)
                     .frame(width: max(0, min(560, geo.size.width - 32)))
                 // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
-                if accountPrepared && !model.layoutFixture {
+                if onlineActionsAllowed && accountPrepared && !model.layoutFixture {
                     DYForwardWebContainer(model: model, url: item.webURL)
                         .id(model.accountScope)
                         .frame(width: 760, height: 640)
@@ -2882,12 +2896,15 @@ struct DYForwardScreen: View {
         }
         .sheet(isPresented: $showLogin, onDismiss: { Task { await restorePeople() } }) { DYForwardOfficialScreen(item: item) }
         .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
-        .task { await restorePeople() }
-        .onAppear { panelVisible = true; if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) } }
+        .task(id: onlineActionsAllowed) { if onlineActionsAllowed { await restorePeople() } }
+        .onAppear {
+            panelVisible = true
+            if !usesClassicLayout && !fromOfflineLibrary { DDPlayback.shared.pauseAll(reason: .cover) }
+        }
         .onDisappear {
             panelVisible = false
-            model.cancelPreparation()
-            if !usesClassicLayout { DDPlayback.shared.releaseCover() }
+            if onlineActionsAllowed { model.cancelPreparation() }
+            if !usesClassicLayout && !fromOfflineLibrary { DDPlayback.shared.releaseCover() }
         }
     }
     private var shareComposer: AnyView? {
@@ -2916,7 +2933,7 @@ struct DYForwardScreen: View {
         accountPrepared = true
     }
     private func perform(_ action: String) {
-        guard !model.sending else { return }
+        guard !onlineActionsAllowed || !model.sending else { return }
         switch action {
         case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
         case "copy": UIPasteboard.general.url = item.webURL; saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
@@ -2927,7 +2944,7 @@ struct DYForwardScreen: View {
             Task {
                 defer { saving = false }
                 do {
-                    try await DYSaver.save(item)
+                    try await DYSaver.save(item, fromOfflineLibrary: fromOfflineLibrary)
                     saveMessage = item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册"
                 } catch { saveMessage = "保存失败：\(error.localizedDescription)" }
             }
@@ -3524,11 +3541,14 @@ private extension EnvironmentValues {
 /// 状态挂在稳定的菜单外层，而不是会随原生菜单关闭而销毁的条目里。
 struct DYForwardPresentation: ViewModifier {
     let item: DYAweme
+    var fromOfflineLibrary = false
+    var onVisibilityChanged: ((Bool) -> Void)? = nil
     @State private var showing = false
     func body(content: Content) -> some View {
         content.environment(\.dyForwardAction, { showing = true })
+            .onChange(of: showing) { _, visible in onVisibilityChanged?(visible) }
             .fullScreenCover(isPresented: $showing) {
-                DYForwardScreen(item: item).presentationBackground(.clear)
+                DYForwardScreen(item: item, fromOfflineLibrary: fromOfflineLibrary).presentationBackground(.clear)
             }
     }
 }
