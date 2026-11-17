@@ -7,7 +7,14 @@ struct InboxView: View {
         NavigationStack {
             List {
                 if let e = model.inboxError {
-                    Label(e, systemImage: "iphone.slash").font(.footnote).foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(e, systemImage: "iphone.slash").font(.footnote).foregroundStyle(.orange)
+                        if let t = model.inboxUpdated {
+                            Text("显示的是 ").font(.system(size: 10)).foregroundStyle(.secondary)
+                            + Text(t, style: .relative).font(.system(size: 10)).foregroundStyle(.secondary)
+                            + Text("前的内容").font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 if !model.status.loggedIn && model.status.updated > 0 {
                     Text("请在 iPhone 上登录 DouDuo").font(.footnote)
