@@ -1960,6 +1960,76 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 在展开的 Duo 内屏横屏或 iPad 横屏运行，验证右侧评论开关不会重建左侧播放器。
+    func testSideCommentsKeepPlayingInEveryMode() throws {
+        let videoID = "7707707401935336335"
+        for mode in ["duoClassic", "rail", "classic", "minimal"] {
+            let app = XCUIApplication()
+            app.launchEnvironment = ["DOUDUO_CHROME_MODE": mode, "DOUDUO_VIDEO_ID": videoID,
+                                     "DOUDUO_PLAYBACK_FIXTURE": "1"]
+            app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                   "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            defer { app.terminate() }
+            let window = app.windows.firstMatch.frame
+            guard window.width >= 700 && window.width > window.height else {
+                throw XCTSkip("需要 Duo 内屏横屏或 iPad 横屏")
+            }
+            guard wait(label: videoID, on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 60) else {
+                XCTFail("\(mode): 在线测试视频未加载")
+                continue
+            }
+
+            let probe = app.staticTexts["douyin.search.playbackProbe"].firstMatch
+            func playback() -> (instance: String, time: Double, playing: Bool)? {
+                guard probe.exists,
+                      let snapshot = (try? JSONSerialization.jsonObject(with: Data(probe.label.utf8))) as? [String: Any],
+                      let players = snapshot["players"] as? [[String: Any]],
+                      let player = players.first(where: { $0["id"] as? String == videoID && $0["active"] as? Bool == true }),
+                      let instance = player["instance"] as? String,
+                      let time = player["time"] as? Double,
+                      let playing = player["playing"] as? Bool,
+                      player["ready"] as? Bool == true else { return nil }
+                return (instance, time, playing)
+            }
+
+            // 每次切换后重新采样，允许视频在验证窗口内自然循环。
+            func assertContinues(instance: String, after operation: String) throws {
+                let first = try XCTUnwrap(playback(), "\(mode): \(operation)后没有当前播放器")
+                XCTAssertEqual(first.instance, instance, "\(mode): \(operation)时重建了播放器")
+                XCTAssertTrue(waitUntil(timeout: 8) {
+                    guard let sample = playback() else { return false }
+                    return sample.instance == instance && sample.playing && abs(sample.time - first.time) > 0.5
+                }, "\(mode): \(operation)后视频进度未继续变化")
+            }
+
+            XCTAssertTrue(waitUntil(timeout: 25) {
+                guard let sample = playback() else { return false }
+                return sample.playing && sample.time > 2
+            }, "\(mode): 视频应先起播")
+            let before = try XCTUnwrap(playback())
+            let button = try XCTUnwrap(
+                app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first(where: \.isHittable),
+                "\(mode): 找不到评论按钮")
+            button.tap()
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            guard list.waitForExistence(timeout: 15) else {
+                XCTFail("\(mode): 评论列表未出现")
+                continue
+            }
+            XCTAssertGreaterThan(list.frame.minX, window.width * 0.4, "\(mode): 评论应在右侧")
+            XCTAssertTrue(list.isHittable, "\(mode): 评论区应可交互")
+            XCTAssertTrue(app.staticTexts["douyin.comments.title"].firstMatch.exists, mode)
+            XCTAssertTrue(app.buttons["douyin.comments.close"].firstMatch.isHittable, mode)
+            XCTAssertTrue(app.buttons["douyin.comment.send"].firstMatch.exists, mode)
+            try assertContinues(instance: before.instance, after: "打开评论")
+
+            app.buttons["douyin.comments.close"].firstMatch.tap()
+            XCTAssertTrue(list.waitForNonExistence(timeout: 8), mode)
+            try assertContinues(instance: before.instance, after: "关闭评论")
+        }
+    }
+
     /// 半折评论常驻：四种界面同一套（评论统一，老板 2026-11-17）
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
         continueAfterFailure = false
