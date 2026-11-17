@@ -61,8 +61,6 @@ final class DYClipboardLinkWatcher: ObservableObject {
     private func handle(_ text: String) {
         guard text != handledText, let target = DYShareLink.target(in: text) else { return }
         handledText = text
-        // 我们自己复制出去的链接不再拦回来
-        if let mine = DYShareLinkCopy.lastCopied, mine.contains(text) { return }
         switch target {
         case .video(let id):
             DYLiveModel.log("DDSHARELINK open id=\(id)")
@@ -79,24 +77,20 @@ final class DYClipboardLinkWatcher: ObservableObject {
     }
 }
 
-/// 复制链接统一走这里：写抖音口令格式，并记下来避免回到 App 时被自己识别
+/// 复制链接统一走这里：写抖音口令格式。App 里自己复制的链接回到 App 时同样会打开
 enum DYShareLinkCopy {
-    @MainActor static var lastCopied: String?
     @MainActor static func copy(_ item: DYAweme) {
-        let text = DYShareLink.shareText(for: item)
-        lastCopied = text
-        UIPasteboard.general.string = text
+        UIPasteboard.general.string = DYShareLink.shareText(for: item)
     }
 }
 
-/// 推荐页（四种界面共用）：剪贴板里认出抖音视频后，用单条播放页打开
+/// 剪贴板里认出抖音视频后，用单条播放页打开。
+/// 从当前最上层的页面弹出：回到 App 时上面可能盖着信息 / 我的等全屏页，挂在推荐页上的 fullScreenCover 会被吞掉
 struct DYSharedLinkOpener: ViewModifier {
     let bridge: DouyinBridge
     @ObservedObject private var watcher = DYClipboardLinkWatcher.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var target: DYListTarget?
-    @State private var failed: String?
-    @State private var author: DYAweme.Author?
+    @Environment(\.appTheme) private var theme
 
     func body(content: Content) -> some View {
         content
@@ -107,21 +101,50 @@ struct DYSharedLinkOpener: ViewModifier {
                 watcher.pendingVideoID = nil
                 Task { await open(id) }
             }
-            .fullScreenCover(item: $target) { t in
-                DYListPlayer(bridge: bridge, title: t.title, playback: t.playback,
-                             onAuthor: { a in author = a.author }, presentsAuthor: true)
-            }
-            .alert("打不开这条链接", isPresented: Binding(get: { failed != nil }, set: { if !$0 { failed = nil } })) {
-                Button("好", role: .cancel) {}
-            } message: { Text(failed ?? "") }
     }
 
     private func open(_ id: String) async {
         do {
             let item = try await bridge.awemeDetail(id)
-            target = DYListTarget(title: item.desc.isEmpty ? "分享的视频" : item.desc, items: [item], start: 0, model: nil)
+            let title = item.desc.isEmpty ? "分享的视频" : item.desc
+            let playback = DYListTarget(title: title, items: [item], start: 0, model: nil).playback
+            present { _ in
+                DYListPlayer(bridge: bridge, title: title, playback: playback,
+                             onAuthor: { _ in }, presentsAuthor: true)
+            }
+            DYLiveModel.log("DDSHARELINK presented id=\(id)")
         } catch {
-            failed = error.localizedDescription
+            DYLiveModel.log("DDSHARELINK detail err \(error.localizedDescription)")
+            presentAlert(error.localizedDescription)
         }
+    }
+
+    private func topController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        var top = scene?.windows.first { $0.isKeyWindow }?.rootViewController
+        while let next = top?.presentedViewController, !next.isBeingDismissed { top = next }
+        return top
+    }
+
+    private func present<V: View>(_ make: (@escaping () -> Void) -> V) {
+        guard let top = topController() else { return }
+        weak var host: UIViewController?
+        // 只带主题，合页状态由 DYHingeStateRoot 自己算；不整份复制环境（会把推荐页的 dismiss 带进来，返回键失效）
+        let view = make { host?.dismiss(animated: true) }
+            .environment(\.appTheme, theme)
+            .modifier(DYHingeStateRoot())
+        let controller = UIHostingController(rootView: AnyView(view))
+        controller.modalPresentationStyle = .fullScreen
+        host = controller
+        top.present(controller, animated: true)
+    }
+
+    private func presentAlert(_ message: String) {
+        guard let top = topController() else { return }
+        let alert = UIAlertController(title: "打不开这条链接", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .cancel))
+        top.present(alert, animated: true)
     }
 }
