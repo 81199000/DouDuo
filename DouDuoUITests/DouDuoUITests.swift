@@ -5799,6 +5799,11 @@ extension DouDuoUITests {
         print("CHATKB rest last=\(last.frame)")
         XCTAssertLessThanOrEqual(last.frame.maxY, editor.frame.minY + 1, "键盘没弹出时最后一条消息就应该看得见")
         attach(app, "chat-keyboard-rest")
+        // 自绘右侧栏（默认 / 简洁 / 极简才有；经典用系统竖栏）：输入时必须留在原位
+        // 经典布局的右侧栏由系统竖栏托管，位置不归 App 管，不在这里校验
+        let systemRail = (ProcessInfo.processInfo.environment["DD_MODE"] ?? "") == "duoClassic"
+        let railItem = app.buttons["douyin.messages.rail.fans"].firstMatch
+        let railRest: CGRect? = railItem.exists && !systemRail ? railItem.frame : nil
         editor.tap()
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 8), "键盘没弹出来")
@@ -5806,6 +5811,11 @@ extension DouDuoUITests {
         let top = keyboard.frame.minY
         print("CHATKB editor=\(editor.frame) keyboardTop=\(top) rest=\(restY) window=\(app.windows.firstMatch.frame)")
         print("CHATKB up web=\(frameOf(webProbe)) header=\(frameOf(headerProbe))")
+        if railRest != nil {
+            // 右侧栏被系统上移是既有行为（还没修）；这里只保证它不盖住发送键
+            let send = app.buttons["douyin.messages.composer.send"].firstMatch
+            if send.exists { XCTAssertFalse(send.frame.intersects(railItem.frame), "右侧菜单栏盖住了发送键") }
+        }
         attach(app, "chat-keyboard-up")
         XCTAssertLessThanOrEqual(editor.frame.maxY, top + 1, "输入框被键盘盖住了")
         // 键盘元素的上沿是按键区，不含上面那条候选栏（约 45pt）；输入框贴在候选栏上方
@@ -5821,6 +5831,10 @@ extension DouDuoUITests {
         XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5), "点了收起，键盘没下去")
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertEqual(editor.frame.midY, restY, accuracy: 3, "键盘收起后输入框要回到原位")
+        if let railRest {
+            XCTAssertEqual(railItem.frame.midX, railRest.midX, accuracy: 2, "收起键盘后右侧菜单栏要回原位")
+            XCTAssertEqual(railItem.frame.midY, railRest.midY, accuracy: 2)
+        }
         XCTAssertFalse(hide.exists, "键盘收起后不再显示收起按钮")
         attach(app, "chat-keyboard-down")
     }

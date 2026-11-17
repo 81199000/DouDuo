@@ -258,6 +258,11 @@ struct DYRailInputLock: ViewModifier {
     }
 }
 
+/// 键盘弹出时把这一列钉回原位。
+/// 键盘会让信息页的容器变矮（也会被系统当成「遮挡区」），贴底排的右侧栏就整列往上、往左跑。
+/// 这里在键盘没弹时记下这一列的位置，弹出后按位置差把它推回去——offset 不改变布局尺寸，
+/// 所以测量不会自己追自己。
+
 /// Read the system bar edge beside the controls; older systems keep the trailing rail.
 struct DYAdaptiveActionRail<Content: View>: View {
     @ViewBuilder var content: (HorizontalEdge) -> Content

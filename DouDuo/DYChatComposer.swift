@@ -19,14 +19,19 @@ struct DYChatComposer: View {
             }
             HStack(spacing: 0) {
                 if focused {
-                    // 系统键盘和多数第三方键盘没有「收起」键：输入时给一个收起键盘的按钮
+                    // 系统键盘和多数第三方键盘没有「收起」键：输入时给一个写明「收起」的按钮
                     Button { focused = false } label: {
-                        Image(systemName: "keyboard.chevron.compact.down").font(.body)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, height: 44).contentShape(.rect)
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.down").font(.caption2.weight(.bold))
+                            Text("收起").font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 9).frame(height: 32)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                        .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .padding(.leading, 6)
+                    .padding(.leading, 8)
                     .accessibilityLabel("收起键盘")
                     .accessibilityIdentifier("douyin.messages.composer.hideKeyboard")
                     .transition(.opacity)
