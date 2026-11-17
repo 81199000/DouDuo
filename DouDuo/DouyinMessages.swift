@@ -465,6 +465,9 @@ struct DYMessagesScreen: View {
     /// 所以按键盘的真实位置把没让够的部分补上。
     @State private var keyboardFrame: CGRect?
     @State private var chatPaneFrame = CGRect.zero
+    /// 右侧栏能用多高（由 GeometryReader 实测）。按这个高度算能放几项，
+    /// 放不下的分类收进「更多」——键位不再写死。
+    @State private var railSpace: CGFloat = 2000
     private var chatKeyboardOverlap: CGFloat {
         guard navigation.isChat, let keyboardFrame else { return 0 }
         return DYLiveKeyboardLayout.overlap(viewportMinY: chatPaneFrame.minY, viewportMaxY: chatPaneFrame.maxY,
@@ -863,6 +866,27 @@ struct DYMessagesScreen: View {
 
     private static let railWidth: CGFloat = 54
 
+    /// 键盘弹出时底部让出的高度（贴着键盘放）
+    private var railBottomPadding: CGFloat { keyboardFrame == nil ? 92 : chatKeyboardOverlap + 8 }
+
+    /// 右侧栏能放几个分类 + 底部「信息 / 我的」要不要显示。
+    /// 每项 48pt，项间距 9pt，胶囊上下留白各 8pt，返回键 50pt + 组间距 12pt。
+    private var railCapacity: (categories: Int, dock: Bool) {
+        // 顶部给状态栏/时间那一圈留位（Duo 外屏的状态是竖排的，占得比普通手机高）
+        let topLimit: CGFloat = 150
+        let item: CGFloat = 48, gap = theme.media.actionItemSpacing, capsulePad: CGFloat = 16
+        let back = 50 + theme.media.actionGroupSpacing
+        let usable = railSpace - railBottomPadding - topLimit
+        let capsuleFit = usable - back
+        let fit = max(0, Int(((capsuleFit - capsulePad + gap) / (item + gap)).rounded(.down)))
+        var categories = min(4, fit)
+        // 有分类放不下时，「更多」要占一格去容纳它们
+        if 4 - categories > 0 || navigation.isChat { categories = max(0, min(categories, fit - 1)) }
+        let used = back + capsulePad + CGFloat(max(1, categories)) * item + CGFloat(max(0, categories - 1)) * gap
+        let dockNeeded: CGFloat = item * 2 + gap + 12 + theme.media.actionGroupSpacing
+        return (categories, usable - used >= dockNeeded)
+    }
+
     private var messageRail: some View {
         VStack(spacing: theme.media.actionGroupSpacing) {
             // 返回：单独一颗圆（跟视频页从搜索进入时的返回圆钮一致）
@@ -888,15 +912,19 @@ struct DYMessagesScreen: View {
             // 两页栏高一样，返回键不会上下跳
             if !showingMine {
                 VStack(spacing: theme.media.actionItemSpacing) {
-                    railItem(.interactive, icon: "heart", title: "互动",
-                             badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
-                    if keyboardFrame == nil {
+                    // 按剩余高度显示：放不下的分类自动收进「更多」
+                    let capacity = railCapacity.categories
+                    if capacity > 0 {
+                        railItem(.interactive, icon: "heart", title: "互动",
+                                 badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
+                    }
+                    if capacity > 1 {
                         railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
                     }
-                    // 键盘占掉下半屏时放不下整列（返回键会被顶出去）：把系统 / 陌生人收进「更多」，
-                    // 想找它们先收起键盘，或者点「更多」。
-                    if keyboardFrame == nil {
+                    if capacity > 2 {
                         railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
+                    }
+                    if capacity > 3 {
                         railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
                     }
                     if navigation.isChat { chatMoreRailButton }
@@ -917,7 +945,7 @@ struct DYMessagesScreen: View {
                 .frame(width: Self.railWidth, height: 48 * 4 + theme.media.actionItemSpacing * 3 + 16)
             }
             // 我的：直接进「我的」。键盘弹出时这一组也收起来，给上面的按键留高度
-            if keyboardFrame == nil, mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
+            if railCapacity.dock, mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "bubble.left.and.bubble.right", title: "信息", selected: !showingMine, badge: 0,
                                dot: showingMine && unreadTotal > 0,
@@ -940,11 +968,12 @@ struct DYMessagesScreen: View {
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
         .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
-        // 底部位置跟视频页一致：离底 92pt。
-        // 键盘弹出时整页已经不再变矮（几何尺寸还是全屏高），贴底排就会整列落到键盘后面 ——
-        // 要按键盘盖住的高度把这一列抬到键盘上方。
-        .padding(.bottom, keyboardFrame == nil ? 92 : chatKeyboardOverlap + 8)
+        // 底部位置跟视频页一致：离底 92pt；键盘弹出时抬到键盘上方。
+        .padding(.bottom, railBottomPadding)
         .frame(maxHeight: .infinity, alignment: .bottom)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+            if abs(h - railSpace) > 0.5 { railSpace = h }
+        }
         .themeShadow(.floatingPanel)
         .ignoresSafeArea(.keyboard)
         .accessibilityElement(children: .contain)
@@ -1153,12 +1182,31 @@ struct DYMessagesScreen: View {
             .tint(.primary)
             .accessibilityIdentifier("douyin.messages.more")
             .popover(isPresented: $showChatOptions) {
-                if let web = chatModel.web, let id = navigation.chatID {
-                    DYChatOptionsPopover(web: web, conversationID: id) {
-                        Task { await readConversations() }
+                VStack(alignment: .leading, spacing: 0) {
+                    // 右侧栏放不下的分类收在这里，点一下直接切过去
+                    ForEach(overflowRoutes, id: \.0) { route, icon, title in
+                        Button {
+                            showChatOptions = false
+                            selectCategory(route)
+                        } label: {
+                            Label(title, systemImage: icon)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 18).padding(.vertical, 12)
+                                .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.messages.more.rail.\(route)")
                     }
-                    .presentationCompactAdaptation(.popover)
+                    if !overflowRoutes.isEmpty { Divider().padding(.horizontal, 18) }
+                    if let web = chatModel.web, let id = navigation.chatID {
+                        DYChatOptionsPopover(web: web, conversationID: id) {
+                            Task { await readConversations() }
+                        }
+                        .presentationCompactAdaptation(.popover)
+                    }
                 }
+                .frame(minWidth: 240)
+                .presentationCompactAdaptation(.popover)
             }
             .onChange(of: showChatOptions) { _, showing in
                 if !showing, let web = chatModel.web, let id = navigation.chatID {
@@ -1650,16 +1698,44 @@ struct DYMessagesScreen: View {
         .accessibilityIdentifier("douyin.messages.rail")
     }
 
+    /// 因为高度不够被收进「更多」的分类
+    private var overflowRoutes: [(DYMsgRoute, String, String)] {
+        let all: [(DYMsgRoute, String, String)] = [
+            (.interactive, "heart", "互动"), (.fans, "person", "粉丝"),
+            (.system, "bell", "系统"), (.stranger, "person.crop.circle.badge.questionmark", "陌生人"),
+        ]
+        return Array(all.enumerated()).filter { $0.offset >= railCapacity.categories }.map(\.element)
+    }
+
     private var chatMoreRailButton: some View {
         railButton(icon: "ellipsis", title: "更多", selected: showChatOptions, badge: 0,
                    id: "douyin.messages.more") { showChatOptions = true }
             .popover(isPresented: $showChatOptions) {
-                if let web = chatModel.web, let id = navigation.chatID {
-                    DYChatOptionsPopover(web: web, conversationID: id) {
-                        Task { await readConversations() }
+                VStack(alignment: .leading, spacing: 0) {
+                    // 右侧栏放不下的分类收在这里，点一下直接切过去
+                    ForEach(overflowRoutes, id: \.0) { route, icon, title in
+                        Button {
+                            showChatOptions = false
+                            selectCategory(route)
+                        } label: {
+                            Label(title, systemImage: icon)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 18).padding(.vertical, 12)
+                                .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.messages.more.rail.\(route)")
                     }
-                    .presentationCompactAdaptation(.popover)
+                    if !overflowRoutes.isEmpty { Divider().padding(.horizontal, 18) }
+                    if let web = chatModel.web, let id = navigation.chatID {
+                        DYChatOptionsPopover(web: web, conversationID: id) {
+                            Task { await readConversations() }
+                        }
+                        .presentationCompactAdaptation(.popover)
+                    }
                 }
+                .frame(minWidth: 240)
+                .presentationCompactAdaptation(.popover)
             }
             .onChange(of: showChatOptions) { _, showing in
                 if !showing, let web = chatModel.web, let id = navigation.chatID {
