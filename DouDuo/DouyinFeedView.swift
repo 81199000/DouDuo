@@ -2974,7 +2974,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Tab("首页", systemImage: "house", value: DYMainTab.home) {
                 NavigationStack {
                     layoutRoot
-                        .background { DYHomeReselectionGuard().allowsHitTesting(false) }
+                        .background { DYHomeReselectionGuard(onDoubleTap: { tapChannel(.recommend) }).allowsHitTesting(false) }
                         .ignoresSafeArea(.container, edges: presentsLandscapeComments ? [.top, .horizontal]
                                          : hidesCommentStatus ? .horizontal : [])
                         .coordinateSpace(.named("douduo.feed"))
