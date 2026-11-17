@@ -5629,6 +5629,16 @@ extension DYFeedModel {
             if self.toast == s { self.toast = nil }
         }
     }
+
+    static let refreshingToast = "正在刷新视频…"
+    /// 刷新推荐期间常亮的提示：不自动消失，由刷新结果（已刷新 / 没有新推荐 / 失败）替换，或刷新结束时收起。
+    func showRefreshingToast() {
+        if toast != Self.refreshingToast { toast = Self.refreshingToast }
+    }
+    /// 刷新结束还停在「正在刷新」（被取消、请求出错）时收起；已换成结果提示的不动。
+    func endRefreshingToast() {
+        if toast == Self.refreshingToast { toast = nil }
+    }
 }
 
 /// 铺满/还原：两枚对角框，统一圆头笔画，不使用粗箭头。

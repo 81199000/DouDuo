@@ -37,6 +37,8 @@ extension DYRecommendFeedHost {
             #if DEBUG
             DYRefreshProbe.shared.count += 1
             #endif
+            // 点下去同一帧就出提示：不等 Task 排到下一轮，也不等正在进行的预取
+            feed.showRefreshingToast()
             Task { await refreshRecommendations() }
         } else {
             switchTab(target)
@@ -159,10 +161,11 @@ extension DYRecommendFeedHost {
 
     /// 先拉到新一批再替换，失败不清空当前画面；与预取互斥，避免旧请求覆盖刷新结果。
     @MainActor func refreshRecommendations() async {
+        // 刷新中再点：提示照样亮着（以前直接返回，提示 2.2 秒后消失，后面要干等到刷新结果）
+        feed.showRefreshingToast()
         guard !refreshing else { return }
         refreshing = true
-        defer { refreshing = false; focusCurrent() }
-        showToast("正在刷新推荐…")
+        defer { refreshing = false; feed.endRefreshingToast(); focusCurrent() }
         guard let replacement = try? await feed.prepareRefresh(bridge) else { return }
         guard !replacement.items.isEmpty else {
             showToast(replacement.error ?? "暂时没有新的推荐，已保留当前视频")
@@ -178,7 +181,7 @@ extension DYRecommendFeedHost {
         scrollID = currentID
         lastFeedPull = Date()
         saveSession()
-        showToast("推荐已刷新")
+        showToast("视频已刷新")
         DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
     }
 
