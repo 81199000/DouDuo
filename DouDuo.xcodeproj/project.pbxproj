@@ -56,6 +56,7 @@
 		6279D68970644B3297B72542 /* DDAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = E049F77CC7B7331FD0750ECD /* DDAppearance.swift */; };
 		632B32A26293F1A7708B8ED0 /* DYNavigationDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C40201AD365787526792119 /* DYNavigationDock.swift */; };
 		64760847CD94FEE469039F33 /* DouyinFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */; };
+		64AD7552F04277DBF69EBB15 /* WatchCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC08129F3C42A4F721FFF7D /* WatchCache.swift */; };
 		64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7F33EB1CF5B949489AA77586 /* Assets.xcassets */; };
 		6A8C37030B53130CE582E686 /* DYChatOptionsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595FE5CE5D6D10A299C8E468 /* DYChatOptionsPopover.swift */; };
 		6C096CD738BD6FA36EFCB93E /* DYChatChromeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A48E6D30B51CE56B7F7E7B8 /* DYChatChromeSnapshot.swift */; };
@@ -212,6 +213,7 @@
 		67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
+		6DC08129F3C42A4F721FFF7D /* WatchCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchCache.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
 		6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardFeedback.swift; sourceTree = "<group>"; };
 		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
@@ -302,6 +304,7 @@
 				E212A9BEA30ED23266E79516 /* DouDuoWatchApp.swift */,
 				444FA0B3719841590A0FA1AA /* InboxView.swift */,
 				EF453C6E736BA8E9EAA6B3CD /* VideoPagerView.swift */,
+				6DC08129F3C42A4F721FFF7D /* WatchCache.swift */,
 				56CD15E9E8EB923A619DF9E1 /* WatchModel.swift */,
 				5C8880A4024E0489B9049D07 /* WatchRootView.swift */,
 			);
@@ -765,6 +768,7 @@
 				51D471AEB674B831F47262B5 /* DouDuoWatchApp.swift in Sources */,
 				94F678CAA7E710E284F14F66 /* InboxView.swift in Sources */,
 				AEC80DB4FD8673C14A2C37C2 /* VideoPagerView.swift in Sources */,
+				64AD7552F04277DBF69EBB15 /* WatchCache.swift in Sources */,
 				081C663156336EB28D898536 /* WatchModel.swift in Sources */,
 				F67FBF85F6FEA8E6C1098557 /* WatchRootView.swift in Sources */,
 			);
