@@ -4530,6 +4530,7 @@ struct DYCommentPanel: View {
     @State private var atError: String?
     @State private var sending = false
     @State private var sendErr: String?
+    @State private var showRelogin = false
     /// 我自己的 sec_uid，用来认出哪些评论能删
     @State private var mySec: String?
     @State private var deletingComment: DYComment?
@@ -4668,6 +4669,9 @@ struct DYCommentPanel: View {
             if usesClassicComments { classicBody } else { upstreamBody }
         }
         .accessibilityValue(usesClassicComments ? "经典评论" : "上游评论")
+        .dyReloginSheet(isPresented: $showRelogin, bridge: bridge) { ok in
+            sendErr = ok ? "已重新登录，再点一次发送" : "还没登录，登录后才能发评论"
+        }
     }
 
     private var upstreamBody: some View {
@@ -5179,6 +5183,11 @@ struct DYCommentPanel: View {
             draft = ""; replyTo = nil; replyParent = nil; sendErr = nil
             clearCommentImage()
             inputFocused = false
+        } catch is DYLoginExpired {
+            // 草稿留着：重新登录后再点一次发送
+            sendErr = "登录已失效（能浏览但发不了评论），正在打开登录…"
+            inputFocused = false
+            DYRelogin.start { showRelogin = true }
         } catch {
             sendErr = "发送失败：\(error.localizedDescription)"
         }
