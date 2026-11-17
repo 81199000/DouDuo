@@ -10,6 +10,8 @@ struct DYSettingsScreen: View {
     var onRefresh: () -> Void = {}
     /// 清缓存后让宿主把当前视频重新挂回播放器
     var onCacheCleared: () -> Void = {}
+    var offlineCandidateSource: ((Int) async throws -> [DYAweme])?
+    var offlineInteractionBridge: DouyinBridge?
 
     @Environment(\.dismiss) private var dismiss
     // 界面
@@ -46,6 +48,42 @@ struct DYSettingsScreen: View {
                     .accessibilityIdentifier("settings.refresh")
                 } footer: {
                     Text("换一批推荐，当前在看的这条保留。")
+                }
+
+                Section {
+                    Picker("预缓存数量", selection: $cacheCount) {
+                        ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    .accessibilityIdentifier("settings.cache.count")
+                    NavigationLink {
+                        DYOfflineDownloadScreen(candidateSource: offlineCandidateSource, interactionBridge: offlineInteractionBridge)
+                    } label: {
+                        Label("离线视频", systemImage: "tray.and.arrow.down")
+                    }
+                    .accessibilityIdentifier("settings.cache.offline")
+                    NavigationLink {
+                        DYStorageScreen()
+                    } label: {
+                        Label("储存空间", systemImage: "internaldrive")
+                    }
+                    .accessibilityIdentifier("settings.storage")
+                    Button(role: .destructive) {
+                        clearing = true
+                        Task {
+                            let b = await DYVideoCache.shared.clear()
+                            cacheNote = "已清除 \(b / 1024 / 1024) MB"
+                            clearing = false
+                            onCacheCleared()
+                        }
+                    } label: {
+                        LabeledContent(clearing ? "清除中…" : "清除视频缓存") {
+                            if let cacheNote { Text(cacheNote) }
+                        }
+                    }
+                    .disabled(clearing)
+                    .accessibilityIdentifier("settings.cache.clear")
+                } header: {
+                    Text("缓存")
                 }
 
                 Section("界面") {
@@ -103,36 +141,6 @@ struct DYSettingsScreen: View {
                     Text("弹幕")
                 } footer: {
                     Text("显示区域：屏幕上方 1/3。发弹幕在「更多」里。")
-                }
-
-                Section {
-                    Picker("预缓存数量", selection: $cacheCount) {
-                        ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
-                    }
-                    .accessibilityIdentifier("settings.cache.count")
-                    Button(role: .destructive) {
-                        clearing = true
-                        Task {
-                            let b = await DYVideoCache.shared.clear()
-                            cacheNote = "已清除 \(b / 1024 / 1024) MB"
-                            clearing = false
-                            onCacheCleared()
-                        }
-                    } label: {
-                        LabeledContent(clearing ? "清除中…" : "清除视频缓存") {
-                            if let cacheNote { Text(cacheNote) }
-                        }
-                    }
-                    .disabled(clearing)
-                    .accessibilityIdentifier("settings.cache.clear")
-                    NavigationLink {
-                        DYStorageScreen()
-                    } label: {
-                        Label("储存空间", systemImage: "internaldrive")
-                    }
-                    .accessibilityIdentifier("settings.storage")
-                } header: {
-                    Text("缓存")
                 }
 
                 Section {

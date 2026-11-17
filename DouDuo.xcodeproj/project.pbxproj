@@ -57,6 +57,7 @@
 		632B32A26293F1A7708B8ED0 /* DYNavigationDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C40201AD365787526792119 /* DYNavigationDock.swift */; };
 		64760847CD94FEE469039F33 /* DouyinFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */; };
 		64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7F33EB1CF5B949489AA77586 /* Assets.xcassets */; };
+		D43F3D0684E87DD325967904 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 55176CECF05CF23A338245D4 /* PrivacyInfo.xcprivacy */; };
 		6A8C37030B53130CE582E686 /* DYChatOptionsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595FE5CE5D6D10A299C8E468 /* DYChatOptionsPopover.swift */; };
 		6C096CD738BD6FA36EFCB93E /* DYChatChromeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A48E6D30B51CE56B7F7E7B8 /* DYChatChromeSnapshot.swift */; };
 		6CA4FD8AB3BD43A66B414368 /* DYSearchPlaybackProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B844AA364484EFD9B61F609E /* DYSearchPlaybackProbe.swift */; };
@@ -73,6 +74,10 @@
 		808D2150FABD5DB6A6149A47 /* DYDMBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B2F8179B60788D6D462F8E /* DYDMBanner.swift */; };
 		844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */; };
 		8527AFFAA0970036C2B5C61F /* DYSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */; };
+		D43F3D0684E87DD325967905 /* DYOfflineVideoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55176CECF05CF23A338245D5 /* DYOfflineVideoStore.swift */; };
+		D43F3D0684E87DD325967906 /* DYOfflineDownloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55176CECF05CF23A338245D6 /* DYOfflineDownloads.swift */; };
+		D43F3D0684E87DD325967907 /* DYOfflineDownloadScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55176CECF05CF23A338245D7 /* DYOfflineDownloadScreen.swift */; };
+		D43F3D0684E87DD325967908 /* DYOfflinePlaybackIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55176CECF05CF23A338245D8 /* DYOfflinePlaybackIndicator.swift */; };
 		85C30C1C9411C32D14761E7A /* DouyinExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66F335DE5A601EA019AD61E /* DouyinExtras.swift */; };
 		872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */ = {isa = PBXBuildFile; fileRef = 25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */; };
 		896AEDFA28BCF82C5E68E9DE /* DYForwardReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D3A302578F63723DC624C1 /* DYForwardReceipt.swift */; };
@@ -181,6 +186,10 @@
 		67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
+		55176CECF05CF23A338245D5 /* DYOfflineVideoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineVideoStore.swift; sourceTree = "<group>"; };
+		55176CECF05CF23A338245D6 /* DYOfflineDownloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloads.swift; sourceTree = "<group>"; };
+		55176CECF05CF23A338245D7 /* DYOfflineDownloadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloadScreen.swift; sourceTree = "<group>"; };
+		55176CECF05CF23A338245D8 /* DYOfflinePlaybackIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflinePlaybackIndicator.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
 		6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardFeedback.swift; sourceTree = "<group>"; };
 		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
@@ -194,6 +203,7 @@
 		7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoApp.swift; sourceTree = "<group>"; };
 		7E94F5DC60348878CF2B226E /* DYImageXUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYImageXUploader.swift; sourceTree = "<group>"; };
 		7F33EB1CF5B949489AA77586 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		55176CECF05CF23A338245D4 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		8692ACA58496924A8020F3F1 /* DYMessageNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageNavigation.swift; sourceTree = "<group>"; };
 		883B76D790E10A3E7DDFCE0D /* DouyinRelations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinRelations.swift; sourceTree = "<group>"; };
 		89F1634658060342668FEECA /* DYMessageSidebarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageSidebarLayout.swift; sourceTree = "<group>"; };
@@ -265,6 +275,7 @@
 			isa = PBXGroup;
 			children = (
 				7F33EB1CF5B949489AA77586 /* Assets.xcassets */,
+				55176CECF05CF23A338245D4 /* PrivacyInfo.xcprivacy */,
 				3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */,
 				E049F77CC7B7331FD0750ECD /* DDAppearance.swift */,
 				110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */,
@@ -354,6 +365,10 @@
 				269E2F79C09E0E2552CAA797 /* DYStorageFiles.swift */,
 				A4EB949397190E39BDFDD1D0 /* DYStorageRing.swift */,
 				357FC289432690E166D569FA /* DYStorageScreen.swift */,
+				55176CECF05CF23A338245D5 /* DYOfflineVideoStore.swift */,
+				55176CECF05CF23A338245D6 /* DYOfflineDownloads.swift */,
+				55176CECF05CF23A338245D7 /* DYOfflineDownloadScreen.swift */,
+				55176CECF05CF23A338245D8 /* DYOfflinePlaybackIndicator.swift */,
 				E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */,
 				730650A08AE183BAB384340D /* DYSwipeProbe.swift */,
 				631BD772CFA6D0746CEFAF94 /* DYVideoAmbient.swift */,
@@ -534,6 +549,7 @@
 				64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */,
 				57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */,
 				872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */,
+				D43F3D0684E87DD325967904 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -618,6 +634,10 @@
 				5CE4582A2CFCF1A6926C368B /* DYStorageFiles.swift in Sources */,
 				0AF6EA39F458FD381966460A /* DYStorageRing.swift in Sources */,
 				319FF5DEE2FDC04B9E0D9A90 /* DYStorageScreen.swift in Sources */,
+				D43F3D0684E87DD325967905 /* DYOfflineVideoStore.swift in Sources */,
+				D43F3D0684E87DD325967906 /* DYOfflineDownloads.swift in Sources */,
+				D43F3D0684E87DD325967907 /* DYOfflineDownloadScreen.swift in Sources */,
+				D43F3D0684E87DD325967908 /* DYOfflinePlaybackIndicator.swift in Sources */,
 				1710FB16E0B12F7246B4ADDE /* DYStreakBadge.swift in Sources */,
 				196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */,
 				76E23E9018E12443F48468FA /* DYVideoAmbient.swift in Sources */,

@@ -140,6 +140,7 @@ struct DYNativeVideoActions: View {
     let isClean: Bool
     let onToggleClean: () -> Void
     var onBack: (() -> Void)? = nil
+    var backIdentifier = "douyin.list.back"
     var inlineTopInset: CGFloat? = nil
     @State private var anchorFrame: CGRect = .zero
     @State private var windowHeight: CGFloat = 0
@@ -183,7 +184,7 @@ struct DYNativeVideoActions: View {
             .foregroundStyle(.white)
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
-            .accessibilityIdentifier("douyin.list.back")
+            .accessibilityIdentifier(backIdentifier)
             .modifier(DYHoldBoostArea(control: actions?.boost))
     }
 
