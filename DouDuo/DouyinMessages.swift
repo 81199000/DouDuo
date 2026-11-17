@@ -2952,7 +2952,7 @@ struct DYForwardScreen: View {
         guard !onlineActionsAllowed || !model.sending else { return }
         switch action {
         case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
-        case "copy": UIPasteboard.general.url = item.webURL; saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
+        case "copy": DYShareLinkCopy.copy(item); saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
         case "download":
             guard !saving else { return }
             saving = true

@@ -88,6 +88,7 @@ targets:
     platform: iOS
     sources:
       - path: DouDuo/DYVideoFit.swift
+      - path: DouDuo/DYShareLinkParse.swift
       - path: DouDuoTests
     settings:
       base:
