@@ -53,7 +53,7 @@ fi
 
 # ---------- 3. 编译 ----------
 step "模拟器编译"
-# 同真机包：不加 -sdk，否则内嵌的手表 App 也按 iPhone 模拟器 SDK 编，手表图标报错
+# 同真机包：不加 -sdk，由 destination 决定平台
 xcodebuild -project DouDuo.xcodeproj -scheme DouDuo \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$TMPDIR/dd-publish-sim" \
   build CODE_SIGNING_ALLOWED=NO > "$TMPDIR/dd-publish-sim.log" 2>&1 \
@@ -61,8 +61,7 @@ xcodebuild -project DouDuo.xcodeproj -scheme DouDuo \
 
 step "真机未签名包"
 DD=$TMPDIR/dd-publish-rel
-# 不加 -sdk iphoneos：会让内嵌的手表 App 也按 iPhone SDK 编，手表图标（只有 watchOS 档）报「AppIcon 没有可用内容」。
-# 只给 destination，各 target 按自己的平台选 SDK。
+# 不加 -sdk iphoneos：只给 destination，各 target 按自己的平台选 SDK。
 xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release \
   -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO > "$TMPDIR/dd-publish-rel.log" 2>&1 \

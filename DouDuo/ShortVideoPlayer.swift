@@ -66,14 +66,7 @@ final class DDPlayback {
         stoppers[id] = stop; starters[id] = start
         if let retainsAudioSession { sessionRetainers[id] = retainsAudioSession }
         else { sessionRetainers[id] = nil }
-        // appIsActive 初值是 true，只有经过「切后台」回调才会变 false。系统因 Apple Watch 连接把 App 在后台拉起时
-        // 不会经过那个回调，推荐流的播放器就会以为在前台直接出声。这里再看系统真实状态：真在后台就不放。
-        // （UIApplication.applicationState 必须在主线程读；register 本身总在主线程被调用，不在则退回旧判断。）
-        let reallyBackground = Thread.isMainThread
-            && MainActor.assumeIsolated { UIApplication.shared.applicationState == .background }
-        // 离线库覆盖层里的播放器（playsInsideCover）只在前台才会创建，不受上面「真在后台」判断影响
-        let shouldStop = (!appIsActive && !playsInsideCover) || reallyBackground
-        DYLiveModel.log("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive) sysBackground=\(reallyBackground)")
+        let shouldStop = !appIsActive && !playsInsideCover
         #if DEBUG
         ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive)")
         #endif
