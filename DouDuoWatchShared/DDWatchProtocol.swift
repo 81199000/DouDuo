@@ -17,6 +17,12 @@ enum DDWatchCmd {
     static let videos = "videos"      // 请 iPhone 再推几条视频文件过来 → reply[count]
     static let like = "like"          // 点赞/取消赞（iPhone 代发）→ reply[ok]
     static let status = "status"      // 登录态/未读数 → reply[json]=DDWatchStatus
+    /// iPhone → 手表：视频分块（手表在前台且连通时用；比 transferFile 即时，且收到每块都有回执）
+    static let chunk = "chunk"
+}
+
+enum DDWatchChunk {
+    static let size = 48 * 1024
 }
 
 struct DDWatchStatus: Codable, Equatable {

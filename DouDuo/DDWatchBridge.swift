@@ -32,7 +32,30 @@ final class DDWatchBridge: NSObject {
 
     // MARK: 状态 / 消息
 
+    #if DEBUG
+    /// 模拟器没有抖音登录态：DOUDUO_WATCH_FIXTURE=<mp4 绝对路径> 时用假数据走完整的 手表⇄手机 链路（转码、传文件、点赞回执都是真的）
+    static var fixtureVideo: String? { ProcessInfo.processInfo.environment["DOUDUO_WATCH_FIXTURE"] }
+    private static let fixtureInbox: DDWatchInbox = {
+        var i = DDWatchInbox()
+        i.status = DDWatchStatus(loggedIn: true, comment: 3, digg: 12, fans: 1, system: 0, chat: 2, updated: Date().timeIntervalSince1970)
+        i.fresh = true
+        i.notices = [
+            DDWatchNotice(id: "n1", name: "小鹿", action: "评论了你的作品", detail: "这个转场太丝滑了", time: Date().timeIntervalSince1970 - 300, unread: true),
+            DDWatchNotice(id: "n2", name: "阿远", action: "赞了你的作品", detail: "", time: Date().timeIntervalSince1970 - 3600, unread: true),
+            DDWatchNotice(id: "n3", name: "木木", action: "关注了你", detail: "", time: Date().timeIntervalSince1970 - 86400, unread: false),
+        ]
+        i.chats = [
+            DDWatchChat(id: "c1", name: "小鹿", preview: "晚上要不要一起吃饭？", time: "刚刚", badge: 2),
+            DDWatchChat(id: "c2", name: "阿远", preview: "[视频] 看看这个", time: "昨天", badge: 0),
+        ]
+        return i
+    }()
+    #endif
+
     private func currentStatus() async -> DDWatchStatus {
+        #if DEBUG
+        if Self.fixtureVideo != nil { return Self.fixtureInbox.status }
+        #endif
         let cache = DYMessageCache.shared
         await cache.prepare()
         var st = DDWatchStatus()
@@ -52,6 +75,9 @@ final class DDWatchBridge: NSObject {
     }
 
     private func buildInbox() async -> DDWatchInbox {
+        #if DEBUG
+        if Self.fixtureVideo != nil { return Self.fixtureInbox }
+        #endif
         var out = DDWatchInbox()
         out.status = await currentStatus()
         guard out.status.loggedIn else { return out }
@@ -93,6 +119,7 @@ final class DDWatchBridge: NSObject {
         var seen = Set<String>()
         for _ in 0..<4 where picked.count < limit {
             guard let page = try? await bridge.fetchFeed() else { break }
+            DYLiveModel.log("DDWATCH feed n=\(page.items.count) dur=\(page.items.map { Int($0.duration) }) img=\(page.items.filter { !$0.images.isEmpty }.count) play=\(page.items.filter { $0.play != nil }.count)")
             for a in feed.allowedRecommendations(page.items) {
                 guard picked.count < limit, !skip.contains(a.id), seen.insert(a.id).inserted,
                       a.images.isEmpty, a.play != nil,
@@ -130,8 +157,11 @@ final class DDWatchBridge: NSObject {
             src = keep
         }
         defer { if src != local { try? FileManager.default.removeItem(at: src) } }
+        return try await transcode(src, id: a.id)
+    }
 
-        let dst = Self.outDir.appendingPathComponent("\(a.id).mp4")
+    private func transcode(_ src: URL, id: String) async throws -> URL {
+        let dst = Self.outDir.appendingPathComponent("\(id).mp4")
         try? FileManager.default.removeItem(at: dst)
         let asset = AVURLAsset(url: src)
         guard let ex = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset640x480) else {
@@ -141,8 +171,59 @@ final class DDWatchBridge: NSObject {
         return dst
     }
 
+    /// 手表在前台、连通时：分块发（每块等回执）；失败返回 false，调用方退回 transferFile 排队
+    private func sendChunks(_ url: URL, meta: DDWatchVideoMeta) async -> Bool {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty,
+              let metaJSON = try? JSONEncoder().encode(meta) else { return false }
+        let n = (data.count + DDWatchChunk.size - 1) / DDWatchChunk.size
+        for i in 0..<n {
+            var waited = 0
+            while !WCSession.default.isReachable && waited < 10 { try? await Task.sleep(nanoseconds: 1_000_000_000); waited += 1 }
+            guard WCSession.default.isReachable else { DYLiveModel.log("DDWATCH chunk \(i)/\(n) 不可达"); return false }
+            let part = data.subdata(in: (i * DDWatchChunk.size)..<min(data.count, (i + 1) * DDWatchChunk.size))
+            let msg: [String: Any] = [DDWatchKey.cmd: DDWatchCmd.chunk, DDWatchKey.id: meta.id,
+                                      "i": i, "n": n, DDWatchKey.json: metaJSON, "data": part]
+            let ok: Bool = await withCheckedContinuation { cont in
+                var done = false
+                let finish: (Bool) -> Void = { v in DispatchQueue.main.async { if !done { done = true; cont.resume(returning: v) } } }
+                WCSession.default.sendMessage(msg, replyHandler: { _ in finish(true) }, errorHandler: { e in DYLiveModel.log("DDWATCH chunk \(i)/\(n) 失败 \(e.localizedDescription)"); finish(false) })
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) { finish(false) }
+            }
+            if !ok { return false }
+        }
+        DYLiveModel.log("DDWATCH chunks 发完 id=\(meta.id) bytes=\(data.count) n=\(n)")
+        return true
+    }
+
+    private func deliver(_ url: URL, meta: DDWatchVideoMeta) async {
+        // 真机一律走 transferFile（系统后台排队，不占手表前台）。分块发送只给模拟器用：
+        // 模拟器里 transferFile 的文件会落到手表 tmp，但不触发 didReceive，没法验证。
+        #if targetEnvironment(simulator)
+        if await sendChunks(url, meta: meta) { try? FileManager.default.removeItem(at: url); return }
+        #endif
+        let dict = (try? JSONEncoder().encode(meta)).map { [DDWatchKey.json: $0] } ?? [:]
+        WCSession.default.transferFile(url, metadata: dict)   // 手表没在前台：排队，系统择机送达
+        DYLiveModel.log("DDWATCH 改走 transferFile id=\(meta.id)")
+    }
+
     /// 给手表推新视频。`have` 是手表已存的 id，不重复推。
     func pushVideos(have: [String]) async -> Int {
+        #if DEBUG
+        if let f = Self.fixtureVideo {
+            guard !pushing, WCSession.default.activationState == .activated else { return 0 }
+            pushing = true; defer { pushing = false }
+            var n = 0
+            for k in 1...3 {
+                let id = "fixture\(k)"
+                guard !have.contains(id), let url = try? await transcode(URL(fileURLWithPath: f), id: id) else { continue }
+                let meta = DDWatchVideoMeta(id: id, desc: "测试视频 \(k) #手表", author: "douduo", duration: 8, liked: false, width: 1080, height: 1920)
+                await deliver(url, meta: meta)
+                DYLiveModel.log("DDWATCH fixture push \(id) bytes=\((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)")
+                n += 1
+            }
+            return n
+        }
+        #endif
         guard !pushing, WCSession.default.activationState == .activated, WCSession.default.isWatchAppInstalled else { return 0 }
         pushing = true
         defer { pushing = false }
@@ -155,8 +236,7 @@ final class DDWatchBridge: NSObject {
                 let url = try await makeWatchFile(for: a)
                 let meta = DDWatchVideoMeta(id: a.id, desc: a.desc, author: a.author.name, duration: a.duration,
                                             liked: a.userDigged == 1, width: a.width, height: a.height)
-                let dict = (try? JSONEncoder().encode(meta)).map { [DDWatchKey.json: $0] } ?? [:]
-                WCSession.default.transferFile(url, metadata: dict)
+                await deliver(url, meta: meta)
                 markSent(a.id)
                 sent += 1
                 DYLiveModel.log("DDWATCH push id=\(a.id) dur=\(Int(a.duration))s")
@@ -168,6 +248,9 @@ final class DDWatchBridge: NSObject {
     }
 
     private func like(_ id: String, on: Bool) async -> Bool {
+        #if DEBUG
+        if Self.fixtureVideo != nil { DYLiveModel.log("DDWATCH like id=\(id) on=\(on)"); return true }
+        #endif
         guard let bridge else { return false }
         if case .ok? = try? await bridge.digg(id, like: on) { return true }
         return false
