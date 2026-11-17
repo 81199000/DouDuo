@@ -22,6 +22,7 @@ struct VideoPagerView: View {
     @EnvironmentObject var model: WatchModel
     @State private var index = 0
     @State private var drag: CGFloat = 0
+    @State private var lastSeenID: String?
 
     var body: some View {
         GeometryReader { geo in
@@ -68,6 +69,22 @@ struct VideoPagerView: View {
         .ignoresSafeArea()
         .onAppear {
             model.prefetchAhead(from: model.videos.first?.id)
+            #if DEBUG
+            // 模拟器没法做滑动手势：DEBUG 下自动连翻 N 条，用来验证「已看」上报链路
+            if let n = Int(UserDefaults.standard.string(forKey: "dd_debug_autoflip") ?? ""), n > 0 {
+                Task { @MainActor in
+                    // 等清单里至少有 n+1 条再开始（启动时清单可能还是空的）
+                    var waited = 0
+                    while model.videos.count < n + 1 && waited < 60 { try? await Task.sleep(nanoseconds: 1_000_000_000); waited += 1 }
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    for _ in 0..<n {
+                        guard index < model.videos.count - 1 else { break }
+                        go(to: index + 1)
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    }
+                }
+            }
+            #endif
         }
         .onChange(of: model.videos.count) { _, _ in
             if index >= model.videos.count { index = max(0, model.videos.count - 1) }
@@ -96,7 +113,12 @@ struct VideoPagerView: View {
         let old = current?.id
         withAnimation(.easeOut(duration: 0.22)) { index = next; drag = 0 }
         let cur = model.videos.indices.contains(next) ? model.videos[next].id : nil
-        if let old, old != cur { model.markWatched(old) }   // 看过的移出清单并删缓存
+        if let old, old != cur {
+            // 看完判定和手机一致：播放进度 ≥95% 算看完。手表只有当前条一个播放器，进度由页面写入 DDWatchProgress
+            let full = DDWatchProgress.fraction(for: old) >= 0.95
+            model.markWatched(old, previous: lastSeenID, fullyWatched: full)   // 记入已看、上报手机、移出清单并删缓存
+            lastSeenID = old
+        }
         // markWatched 会把当前条之前的都移除，列表前缘变了，重新对齐下标
         DispatchQueue.main.async {
             if let cur, let i = model.videos.firstIndex(where: { $0.id == cur }) { index = i }
@@ -117,6 +139,13 @@ struct VideoPagerView: View {
     }
 }
 
+/// 当前条的播放进度（0~1），翻页时用来判断「看完没有」
+enum DDWatchProgress {
+    private static var table: [String: Double] = [:]
+    static func set(_ id: String, _ f: Double) { table[id] = f }
+    static func fraction(for id: String) -> Double { table[id] ?? 0 }
+}
+
 private struct VideoPage: View {
     @EnvironmentObject var model: WatchModel
     let meta: DDWatchVideoMeta
@@ -134,6 +163,7 @@ private struct VideoPage: View {
     @State private var observers: [NSKeyValueObservation] = []
     /// 播放到结尾的通知观察者：必须在 stop() 里摘掉，否则闭包强引用播放器，滑过的视频一个都不会释放
     @State private var endToken: NSObjectProtocol?
+    @State private var timeToken: Any?
     @State private var generation = 0
 
     var body: some View {
@@ -222,6 +252,11 @@ private struct VideoPage: View {
             guard let p else { return }
             p.seek(to: .zero); if active && !paused { p.play() }
         }
+        // 每 0.5 秒记一次进度（只有当前条一个播放器，开销很小）
+        let id = meta.id, dur = max(meta.duration, 0.1)
+        timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { t in
+            DDWatchProgress.set(id, min(1, t.seconds / dur))
+        }
         player = p
         paused = false
         p.play()
@@ -259,6 +294,7 @@ private struct VideoPage: View {
     /// 彻底释放：暂停、摘掉所有观察者、让正在飞的旧回调失效
     private func stop() {
         generation += 1
+        if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil

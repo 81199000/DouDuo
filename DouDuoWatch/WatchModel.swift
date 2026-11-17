@@ -22,6 +22,12 @@ final class WatchModel: NSObject, ObservableObject {
     private let lowWater = 8
     /// 已看过的 id，换清单时不再重复出现
     private var watched = Set<String>()
+    /// 还没成功告诉手机的「已看」记录：手机没连上时先存着，连上后补发（手机据此向抖音上报观看，并不再推给手表）
+    private var pendingSeen: [[String: Any]] = []
+    private var pendingSeenSaved: [[String: String]] {
+        get { (UserDefaults.standard.array(forKey: "dd_watch_pending_seen") as? [[String: String]]) ?? [] }
+        set { UserDefaults.standard.set(Array(newValue.suffix(200)), forKey: "dd_watch_pending_seen") }
+    }
 
     nonisolated static let dir: URL = {
         let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -65,12 +71,13 @@ final class WatchModel: NSObject, ObservableObject {
         videos.append(contentsOf: list.filter { !known.contains($0.id) && !watched.contains($0.id) })
         // 手机给了更新的链接就替换（链接新鲜度以手机为准）
         for n in list { if let i = videos.firstIndex(where: { $0.id == n.id }), n.fetched > videos[i].fetched { var m = n; m.liked = videos[i].liked || n.liked; videos[i] = m } }
-        dropExpired()
+        dropExpired()   // 同时剔除已看过的、过期的
         save()
     }
 
     /// 看完/划走一条：记为已看过，列表快见底就向手机要新的
-    func markWatched(_ id: String) {
+    func markWatched(_ id: String, previous: String? = nil, fullyWatched: Bool = false) {
+        if let m = videos.first(where: { $0.id == id }) { queueSeen(m, previous: previous, full: fullyWatched) }
         watched.insert(id)
         Task { await WatchCache.shared.remove(id) }   // 看过的不留
         if let i = videos.firstIndex(where: { $0.id == id }) {
@@ -79,6 +86,30 @@ final class WatchModel: NSObject, ObservableObject {
         }
         save()
         if videos.count <= lowWater { Task { await requestVideos() } }
+    }
+
+    // MARK: 已看上报
+
+    private func queueSeen(_ m: DDWatchVideoMeta, previous: String?, full: Bool) {
+        var q = pendingSeenSaved
+        guard !q.contains(where: { $0["id"] == m.id }) else { return }
+        q.append(["id": m.id, "uid": m.authorUID, "type": String(m.awemeType), "dur": String(m.duration),
+                  "pre": previous ?? "", "full": full ? "1" : "0"])
+        pendingSeenSaved = q
+        Task { await flushSeen() }
+    }
+
+    /// 把没发出去的「已看」逐条发给手机。发成功才从队列移除；手机没连上就留着
+    func flushSeen() async {
+        guard WCSession.default.isReachable else { return }
+        for item in pendingSeenSaved {
+            let msg: [String: Any] = [DDWatchKey.cmd: DDWatchCmd.seen, DDWatchKey.id: item["id"] ?? "",
+                                      "uid": item["uid"] ?? "", "type": Int(item["type"] ?? "0") ?? 0,
+                                      "dur": Double(item["dur"] ?? "0") ?? 0, "pre": item["pre"] ?? "",
+                                      "full": item["full"] == "1"]
+            guard let r = await send(msg, timeout: 15), (r["ok"] as? Bool) == true else { return }
+            pendingSeenSaved = pendingSeenSaved.filter { $0["id"] != item["id"] }
+        }
     }
 
     /// 链接失效（播放失败）：丢掉这条
@@ -165,7 +196,7 @@ final class WatchLink: NSObject, WCSessionDelegate {
             let m = WatchModel.shared
             m.reachable = r
             // 刚连上手机：补刷清单
-            if r { await m.requestVideos() }
+            if r { await m.requestVideos(); await m.flushSeen() }
         }
     }
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
