@@ -3195,7 +3195,9 @@ final class DouDuoUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
-        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9", "-douyin_autoplay_v1", "NO"]
+        // 固定从首页起：上一个用例停在「我的」会被记住，切到经典就落在「我的」，未登录还会弹登录页盖住视频
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9", "-douyin_autoplay_v1", "NO",
+                                "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let current = app.staticTexts["douyin.currentID"].firstMatch
