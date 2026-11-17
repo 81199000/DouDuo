@@ -10,9 +10,14 @@ enum DYMainTab: String, CaseIterable, Hashable {
 
 /// Reject Home reselection at the native tab controller, before the system
 /// can scroll the feed to the top. Keep SwiftUI's delegate for other events.
+/// 单击已选中的「首页」什么都不做（不让系统把推荐流拉回首条）；**双击**（0.4 秒内连点两下）= 刷新视频。
 struct DYHomeReselectionGuard: UIViewControllerRepresentable {
+    var onDoubleTap: () -> Void = {}
     func makeUIViewController(context: Context) -> Controller { Controller() }
-    func updateUIViewController(_ controller: Controller, context: Context) { controller.install() }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.onDoubleTap = onDoubleTap
+        controller.install()
+    }
 
     static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
         controller.uninstall()
@@ -20,6 +25,9 @@ struct DYHomeReselectionGuard: UIViewControllerRepresentable {
 
     final class Controller: UIViewController, UITabBarControllerDelegate {
         private weak var installedOn: UITabBarController?
+        var onDoubleTap: () -> Void = {}
+        private var lastReselect: CFTimeInterval = 0
+        static let doubleTapWindow: CFTimeInterval = 0.4
         private nonisolated(unsafe) weak var previousDelegate: (any UITabBarControllerDelegate)?
 
         override func viewDidAppear(_ animated: Bool) {
@@ -62,9 +70,15 @@ struct DYHomeReselectionGuard: UIViewControllerRepresentable {
         }
 
         private func rejectHomeReselection() -> Bool {
-            #if DEBUG
-            DYLiveModel.log("DDDOCK ignored Home reselection")
-            #endif
+            let now = CACurrentMediaTime()
+            if now - lastReselect <= Self.doubleTapWindow {
+                lastReselect = 0
+                DYLiveModel.log("DDDOCK Home double tap → refresh")
+                onDoubleTap()
+            } else {
+                lastReselect = now
+                DYLiveModel.log("DDDOCK ignored Home reselection")
+            }
             return false
         }
 
