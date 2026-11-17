@@ -13,7 +13,7 @@ actor WatchCache {
     static let maxFile = 30 * 1024 * 1024
     static let maxDuration: Double = 120
     /// 往后预存几条
-    static let ahead = 2
+    static let ahead = 5
 
     nonisolated static let dir: URL = {
         let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("dd-watch-cache", isDirectory: true)
