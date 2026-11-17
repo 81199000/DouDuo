@@ -1382,6 +1382,8 @@ struct DYMessagesScreen: View {
             Color.ddMessageChatBackground
             DYChatWebSurface(model: chatModel, active: chatSurfaceActive)
                 .padding(.bottom, chatKeyboardOverlap)
+                // 网页是 UIView，跟着键盘动画逐帧改高度会逐帧重排（输入/收起发卡）。这里直接改，不参与动画。
+                .animation(nil, value: chatKeyboardOverlap)
                 .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
                 .accessibilityValue(lastOpenUsedSnapshot ? "snapshot" : "fresh")
