@@ -1548,9 +1548,9 @@ final class DouDuoUITests: XCTestCase {
             case "duoClassic":
                 // 底部 Tab「我的」：只点看得见的那个（firstMatch 可能匹配到屏外的同名按钮，点不上）
                 XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30))
-                let tab = app.tabBars.buttons["我的"].firstMatch
-                if tab.exists && tab.isHittable { tab.tap() }
-                else { app.buttons.matching(identifier: "我的").allElementsBoundByIndex.first { $0.isHittable }?.tap() }
+                // 播放时系统 Tab 栏会缩起来，「我的」点不到：先点「首页」把 Tab 栏叫出来（同 testStandaloneCommentsRespectLayout）
+                app.buttons["首页"].firstMatch.tap()
+                app.buttons["我的"].firstMatch.tap()
             case "classic":
                 XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
             default:   // 简洁 / 极简：模块菜单 →「我的」
@@ -1628,6 +1628,30 @@ final class DouDuoUITests: XCTestCase {
         let mine = app.buttons["douyin.module.mine"].firstMatch
         XCTAssertTrue(mine.waitForExistence(timeout: 5)); mine.tap()
         XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 15), "启动后马上进「我的」没弹登录")
+    }
+
+    /// cookie 里有过期的旧 sessionid、账号其实未登录：登录页要停住让人输入，不能一打开就自己关掉（老板 11-17）
+    func testLoginSheetStaysOpenWithStaleSession() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launchEnvironment["DOUDUO_STALE_SESSION"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let login = app.buttons["douyin.mine.login"].firstMatch
+        let send = app.buttons["douyin.login.sendcode"].firstMatch
+        if !send.waitForExistence(timeout: 25) {   // 有旧 cookie 时可能不自动弹，就点「去登录」
+            XCTAssertTrue(login.waitForExistence(timeout: 20), "既没弹登录也没有「去登录」"); login.tap()
+            XCTAssertTrue(send.waitForExistence(timeout: 10), "点「去登录」没出登录页")
+        }
+        sleep(8)   // 旧版这几秒内会自己关掉
+        XCTAssertTrue(send.exists, "登录页自己收回去了")
+        let phone = app.textFields["douyin.login.phone"].firstMatch
+        phone.tap(); phone.typeText("138")
+        XCTAssertTrue((phone.value as? String ?? "").contains("138"), "手机号输不进去")
+        attach(app, "login-stale-session")
     }
 
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）

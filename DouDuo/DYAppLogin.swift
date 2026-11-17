@@ -144,10 +144,11 @@ struct DYAppLoginScreen: View {
 
 /// 登录态只看共享 cookie 里有没有 sessionid：不依赖签名页有没有加载好
 enum DYLoginState {
-    @MainActor static func hasSession() async -> Bool {
+    @MainActor static func sessionValue() async -> String? {
         let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
-        return cookies.contains { $0.name == "sessionid" && $0.domain.hasSuffix("douyin.com") && !$0.value.isEmpty }
+        return cookies.first { $0.name == "sessionid" && $0.domain.hasSuffix("douyin.com") && !$0.value.isEmpty }?.value
     }
+    @MainActor static func hasSession() async -> Bool { await sessionValue() != nil }
 }
 
 /// 抖音登录页的驱动：只做「替用户点网页上的按钮」，不自己调登录接口
@@ -166,6 +167,10 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     /// 点了「登录」后网页要求扫码确认（新设备第一次登录常见）：界面切到扫码页
     @Published var askScan = false
     private var loginClickedAt: Date?
+    /// 打开登录页时已有的 sessionid。抖音那边过期的旧 cookie 不会自己消失——
+    /// 只看「有没有」会把它当成已登录、登录页一打开就自己关掉（老板 11-17 实测：点登录框缩回去）。
+    /// 所以只认「换了一个新的 sessionid」才是这次登录成功。
+    private var baseline: String??
 
     let web: WKWebView
     private var poll: Timer?
@@ -210,6 +215,19 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
             """#, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         }
         #endif
+        Task { @MainActor in
+            #if DEBUG
+            // 测试：造一个过期的旧 sessionid（老板真机就是这种状态：cookie 在、账号未登录）
+            if ProcessInfo.processInfo.environment["DOUDUO_STALE_SESSION"] == "1", await DYLoginState.sessionValue() == nil,
+               let c = HTTPCookie(properties: [.domain: ".douyin.com", .path: "/", .name: "sessionid", .value: "stale0000",
+                                               .expires: Date().addingTimeInterval(86400)]) {
+                await WKWebsiteDataStore.default().httpCookieStore.setCookie(c)
+            }
+            #endif
+            let v = await DYLoginState.sessionValue()
+            self.baseline = .some(v)
+            DYLiveModel.log("DDAPPLOGIN baseline sessionid=\(v == nil ? "none" : "old")")
+        }
         web.load(URLRequest(url: Self.url))
         poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -269,8 +287,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     /// 每秒读一次：登录态、二维码、倒计时、网页提示、有没有弹验证
     private func tick() {
         guard !loggedIn else { return }
-        // 不管网页在哪一页，cookie 里有 sessionid 就是登录成功
-        Task { if await DYLoginState.hasSession() { await self.confirmLogin() } }
+        // 不管网页在哪一页，出现了新的 sessionid 就是登录成功
+        Task { if await self.hasNewSession() { await self.confirmLogin() } }
         guard ready else { return }
         web.callAsyncJavaScript(Self.base + #"""
         const qrs = [...document.querySelectorAll('img')].filter(i => String(i.src).startsWith('data:image/png') && i.naturalWidth >= 100);
@@ -283,7 +301,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         const scanAsk = leaf.find(t => /扫码验证|扫码确认|请使用抖音.*扫|抖音App扫码|扫一扫验证/.test(t)) || null;
         const verify = !scanAsk && (frames > 0 || leaf.some(t => /安全验证|身份验证|拖动|滑块|请完成验证/.test(t)));
         return JSON.stringify({
-          path: location.pathname, session: (document.cookie || '').includes('sessionid') || (document.cookie || '').includes('passport_auth_status=1'),
+          path: location.pathname,
           qr: qrImg ? qrImg.src : null, cd: cd ? Number(cd) : 0, tip: tip || null, qrTip: qrTip || null, verify,
           dry: window.__ddDry || [], scanAsk
         });
@@ -296,8 +314,9 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
 
     private func apply(_ j: [String: Any]) {
         let path = j["path"] as? String ?? ""
-        // 登录成功：网页会跳走登录页（回 service），或 cookie 里出现 sessionid
-        if (j["session"] as? Bool) == true || (!path.isEmpty && !path.hasPrefix("/login_page")) {
+        // 网页跳走了登录页（登录成功会回 service）：去核对是不是换了新 sessionid。
+        // 不再看网页里 document.cookie 有没有 sessionid——过期的旧 cookie 也在，会误判成功、把登录页关掉
+        if !path.isEmpty && !path.hasPrefix("/login_page") {
             Task { await self.confirmLogin() }
             return
         }
@@ -307,7 +326,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         countdown = j["cd"] as? Int ?? 0
         if let t = j["tip"] as? String, t != message {
             Task {
-                if await DYLoginState.hasSession() { await self.confirmLogin() }
+                if await self.hasNewSession() { await self.confirmLogin() }
                 else { self.message = t; self.busy = false; DYLiveModel.log("DDAPPLOGIN tip " + t) }
             }
         }
@@ -331,13 +350,13 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
     private func confirmLogin() async {
         guard !loggedIn else { return }
-        var ok = await DYLoginState.hasSession()
-        // 网页跳走时 cookie 可能晚一点才写进来：再等两轮
+        var ok = await hasNewSession()
+        // 网页跳走时 cookie 可能晚一点才写进来：再等几轮
         if !ok, web.url?.path.hasPrefix("/login_page") != true {
-            for _ in 0..<3 where !ok { try? await Task.sleep(for: .seconds(1)); ok = await DYLoginState.hasSession() }
+            for _ in 0..<3 where !ok { try? await Task.sleep(for: .seconds(1)); ok = await hasNewSession() }
         }
         guard !loggedIn else { return }
-        DYLiveModel.log("DDAPPLOGIN confirm sessionid=\(ok) path=\(web.url?.path ?? "-")")
+        DYLiveModel.log("DDAPPLOGIN confirm newSession=\(ok) path=\(web.url?.path ?? "-")")
         if ok { message = nil; busy = false; loggedIn = true; poll?.invalidate() }
         else if web.url?.path.hasPrefix("/login_page") != true {
             // 跳走了但没登录上：回登录页，告诉用户再试
@@ -345,6 +364,12 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
             message = "没登录上，请重新获取验证码再试"
             web.load(URLRequest(url: Self.url))
         }
+    }
+
+    private func hasNewSession() async -> Bool {
+        let now = await DYLoginState.sessionValue()
+        guard case .some(let base) = baseline else { return false }   // 还没记下打开时的值
+        return now != nil && now != base
     }
 
     private func run(_ js: String, tag: String = "") {
