@@ -1065,6 +1065,9 @@ final class DYPreloader {
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
+    /// 当前预热窗口里的条目（页面归还播放器时用来判断还要不要留着）
+    private var window: [String: DYAweme] = [:]
+    private var last: (items: [DYAweme], index: Int)?
     #if DEBUG
     var disabled = ProcessInfo.processInfo.environment["WUWEI_DEBUG_DOUYIN_NOPRELOAD"] == "1"
     #else
@@ -1078,6 +1081,8 @@ final class DYPreloader {
         let lo = index + 1, hi = min(items.count - 1, index + ahead)
         let window = lo <= hi ? Array(items[lo...hi]) : []
         let ids = Set(window.map(\.id))
+        self.window = Dictionary(window.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        last = (items, index)
         // 离开窗口的：释放没被领走的；已领走的只要离当前 ≥2 条就不再记账（页面已经销毁）
         for (id, p) in players where !ids.contains(id) { release(id, p) }
         let near = Set(items[max(0, index - 1)...min(items.count - 1, index + 1)].map(\.id))
@@ -1133,10 +1138,45 @@ final class DYPreloader {
         return p
     }
 
+    /// 页面还没轮到播就被回收（惰性分页只留屏幕上那一两页）：把领走的播放器还回来，不销毁。
+    /// 以前页面一回收播放器就跟着销毁，而这里还记着「已交给页面」不再重建 →
+    /// 这条永远等不到「可播」，上滑被拦 3 次才放行（真机日志：刚启动时最常见）。
+    /// 返回 false = 不收（已经不在预热窗口 / 播放器坏了），由页面自己销毁。
+    func giveBack(_ id: String, _ p: AVPlayer) -> Bool {
+        let wasOut = handedOut.remove(id) != nil
+        guard !disabled, window[id] != nil, players[id] == nil,
+              let item = p.currentItem, item.status != .failed else {
+            // 页面那份没了、这里也没有：窗口内的重新备一份
+            if wasOut, window[id] != nil, players[id] == nil, let last {
+                DispatchQueue.main.async { [weak self] in self?.update(last.items, current: last.index) }
+            }
+            return false
+        }
+        p.pause()
+        p.isMuted = true
+        players[id] = p
+        if item.status == .readyToPlay {
+            DYReadiness.mark(id)
+        } else {
+            obs[id] = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+                if it.status == .readyToPlay { DYReadiness.mark(id) }
+                else if it.status == .failed { DispatchQueue.main.async { self?.retryReturned(id) } }
+            }
+        }
+        return true
+    }
+
+    private func retryReturned(_ id: String) {
+        guard let a = window[id], let s = a.play, let url = URL(string: s), let p = players[id] else { return }
+        retry(a, remote: url, wasLocal: (p.currentItem?.asset as? AVURLAsset)?.url.isFileURL ?? false)
+    }
+
     func clear() {
         for (id, p) in players { release(id, p) }
         DDAudioPreloadPool.shared.clear()
         handedOut.removeAll()
+        window = [:]
+        last = nil
     }
 
     /// 预热失败只重试一次：本地文件坏了就改用在线地址，在线失败就再建一次
@@ -1268,14 +1308,17 @@ final class DYFeedModel: ObservableObject {
     }
 
     /// 横屏限定开关 / 方向变了：当前条之后的重新排（当前这条不动，不打断播放）
-    func remix(after index: Int?) {
+    /// keepAll = 原来排在后面的不能因为竖横比例凑不齐就被拿掉（启动时用：那几条是本地缓存好的，
+    /// 推荐还没拉回来之前只有它们能播；横屏限定时仍然只留横屏）。
+    func remix(after index: Int?, keepAll: Bool = false) {
         let keep = (index ?? -1) + 1
         guard keep <= items.count else { return }
         let upcoming = Array(items[keep...])
         items.removeSubrange(keep...)
         pool = upcoming + pool
         mixCredit = 1 - Self.portraitTarget
-        fill(max(upcoming.count, 6))
+        let placed = fill(max(upcoming.count, 6))
+        if keepAll, placed < upcoming.count { fill(upcoming.count - placed, relaxed: true) }
         trimPool()
     }
 
@@ -1579,7 +1622,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     scrollID = currentID
                 }
                 // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-                if currentIndex != nil { feed.remix(after: currentIndex) }
+                if currentIndex != nil { feed.remix(after: currentIndex, keepAll: true) }
                 await feed.loadMore(bridge)
                 if currentID == nil { currentID = feed.items.first?.id }
                 focusCurrent()
@@ -1660,6 +1703,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
+        .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
@@ -2803,7 +2847,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                     scrollID = currentID
                 }
                 // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-                if currentIndex != nil { feed.remix(after: currentIndex) }
+                if currentIndex != nil { feed.remix(after: currentIndex, keepAll: true) }
                 await feed.loadMore(bridge)
                 if currentID == nil { currentID = feed.items.first?.id }
                 focusCurrent()
@@ -2881,6 +2925,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if DDPlayback.shared.appIsActive { saveSession() }
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
+        .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
@@ -3613,6 +3658,7 @@ struct DYUpstreamVideoPage: View {
                                     isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
                                     resumePosition: resume, compactChrome: true,
                                     preparedPlayer: { preloader.take(item.id) },
+                                    returnPlayer: { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
                                     onDoubleTap: {
                                         onDoubleTap()
@@ -4108,6 +4154,7 @@ struct DYClassicVideoPage: View {
                                     isActive: isCurrent, topInset: insets.top, bottomInset: mediaBottomInset,
                                     resumePosition: resume, compactChrome: true,
                                     preparedPlayer: { preloader.take(item.id) },
+                                    returnPlayer: { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
                                     onDoubleTap: {
                                         onDoubleTap()
@@ -5605,7 +5652,10 @@ extension DYFeedModel {
             let cached = DYVideoCache.pendingSnapshot()
             if !cached.isEmpty {
                 seedPool(cached)
-                if fill(6) == 0 { fill(6, relaxed: true) }
+                // 先按竖横比例排；比例凑不齐也照原顺序补满——推荐还没拉回来之前，只有这些本地缓存的能播。
+                // 以前凑不齐就停（真机日志：本地有 4 条却只排进 1 条），上滑没有下一条可去，像卡住。
+                let strict = fill(6)
+                if strict < 6 { fill(6 - strict, relaxed: true) }
                 markAccountState(cached)
                 result = (items.first?.id, [:])
                 DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(items.count)/\(cached.count)")

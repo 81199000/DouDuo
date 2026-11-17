@@ -100,6 +100,22 @@ extension DYRecommendFeedHost {
         if next == nil { Task { await feed.loadMore(bridge); currentID = feed.items.first?.id; scrollID = currentID } }
     }
 
+    /// 推荐是一页页拉回来、一条条排进列表的。以前要等首批 6 条全部凑齐才定「当前条」、才给后面的备播放器
+    /// （真机日志：中位 6 秒，慢的 15 秒以上）——这段时间第一条不开播，后面的也滑不过去。
+    /// 现在到一条算一条：第一条到了立刻开播，后面每到一条马上备好播放器。
+    func feedGrew() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        guard initialized, !refreshing, tab == .recommend, let first = feed.items.first else { return }
+        if currentID == nil {
+            currentID = first.id   // 两个推荐页的 onChange(currentID) 会接着调 focusCurrent
+            scrollID = first.id
+        } else if let i = currentIndex {
+            preloader.update(feed.items, current: i)
+        }
+    }
+
     func focusCurrent() {
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
@@ -120,7 +136,8 @@ extension DYRecommendFeedHost {
         }
         // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
         let want = max(6, min(DYVideoCache.limit, 60))
-        if feed.items.count - i - 1 < want, Date().timeIntervalSince(lastFeedPull) > 4 {
+        // 正在拉的时候不重复发起，也不占用节流窗口（否则这一批拉完后要白等 4 秒才接着拉）
+        if feed.items.count - i - 1 < want, !feed.loading, Date().timeIntervalSince(lastFeedPull) > 4 {
             lastFeedPull = Date()
             Task {
                 await feed.loadMore(bridge)

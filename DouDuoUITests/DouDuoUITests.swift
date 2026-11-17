@@ -4802,3 +4802,41 @@ extension DouDuoUITests {
         }
     }
 }
+
+extension DouDuoUITests {
+    /// 老板 11-17 报：冷启动（没有缓存）时卡在第一条，看了一半再上滑也翻不过去，要滑好几次。
+    /// 第一条播了一阵之后，第一下上滑就必须翻到下一条。只读，不点赞不发帖。
+    func testColdStartFirstSwipeAdvances() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        if let mode = ProcessInfo.processInfo.environment["DD_MODE"] { app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9"]
+        if let n = ProcessInfo.processInfo.environment["DD_CACHE_COUNT"] { app.launchArguments += ["-douyin_cache_count_v2", n] }
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertTrue(waitUntil(timeout: 60) { current.label != "-" }, "推荐流没有加载出来")
+        if ProcessInfo.processInfo.environment["DD_WARM"] == "1" {
+            // 真机上最常见的进法：上次留下了缓存好没看的视频，这次启动先播它
+            Thread.sleep(forTimeInterval: 25)
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(current.waitForExistence(timeout: 30))
+            XCTAssertTrue(waitUntil(timeout: 60) { current.label != "-" }, "二次启动推荐流没有加载出来")
+        }
+        // 先看一阵再滑（老板报的是「看到一半还滑不动」）。刚启动头几秒推荐还没拉回来时滑不动是既定规则，不在这里测。
+        let wait = Double(ProcessInfo.processInfo.environment["DD_WATCH_SECONDS"] ?? "") ?? 12
+        Thread.sleep(forTimeInterval: wait)
+        let window = app.windows.firstMatch
+        for round in 1...3 {
+            let before = current.label
+            // 跟真人一样快甩一小段（约 1/4 屏），不是慢慢拖过去
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.7))
+                .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.45)),
+                       withVelocity: .fast, thenHoldForDuration: 0)
+            XCTAssertTrue(waitUntil(timeout: 3) { current.label != before }, "第 \(round) 条：上滑一次没有翻到下一条")
+            Thread.sleep(forTimeInterval: 2)
+        }
+    }
+}
