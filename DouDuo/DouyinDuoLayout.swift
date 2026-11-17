@@ -744,10 +744,18 @@ struct DYCommentPlayerLayout<Video: View>: View {
 
     private var commentItem: DYAweme? { aweme ?? captionItem }
 
+    /// 评论四种界面统一用经典那套（老板 2026-11-17）：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板。
+    /// 只有菜单（经典的系统导航栏 / 原生按钮）和简介面板按模式分，见 docs/ui-modes.md「必须分开」。
     var body: some View {
         Group {
-            if usesClassicLayout { classicBody } else { upstreamBody }
+            if usesClassicLayout { classicBody } else { sharedBody }
         }
+    }
+
+    /// 默认 / 简洁 / 极简：同一套评论几何，没有系统导航栏；简介照旧原地展开
+    private var sharedBody: some View {
+        playerLayout
+            .onChange(of: showComments) { _, shown in if shown { openedCommentsManually = true } }
     }
 
     private var horizontalCommentStatus: Bool {
@@ -761,48 +769,6 @@ struct DYCommentPlayerLayout<Video: View>: View {
     private var presentsLandscapeComments: Bool {
         showComments && !searchPresented && (focus == nil || openedCommentsManually || captionItem != nil)
             && DYInlineCommentPlacement.applies(to: commentItem, enabled: stacksLandscapeComments)
-    }
-
-    /// 默认 / 简洁 / 极简：与推荐页同一套评论几何——横屏（宽 ≥700）评论从右侧滑出、视频缩窄；
-    /// 半折叠按折痕常驻分屏（书本左右、桌面上下）；窄屏才走底部半屏 sheet。
-    private var upstreamBody: some View {
-        GeometryReader { geo in
-            let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented,
-                                              allowsResident: !searchPresented)
-            let paneWidth = layout.sideBySide ? max(0, layout.paneSize.width - layout.trailingInset) : layout.paneSize.width
-            ZStack(alignment: .topLeading) {
-                video(geo.safeAreaInsets)
-                    .environment(\.dyStandaloneBack, onBack)
-                    .frame(width: layout.videoSize.width, height: layout.videoSize.height)
-                if layout.showsPane, let aweme {
-                    DYCommentPanel(bridge: bridge, aweme: aweme,
-                                   onClose: layout.resident ? nil : { withAnimation(.snappy) { showComments = false } },
-                                   focus: focus)
-                        .id(aweme.id)
-                        .frame(width: paneWidth, height: layout.paneSize.height)
-                        .dyDeskLight(layout.resident && !layout.sideBySide)
-                        .environment(\.dyCommentTrailingCleared, layout.sideBySide && layout.trailingInset > 0)
-                        .offset(x: layout.paneOrigin.x, y: layout.paneOrigin.y)
-                        .accessibilityIdentifier("douyin.list.commentPane")
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .background(Color.black.ignoresSafeArea())
-            .animation(searchPresented ? nil : .snappy, value: showComments)
-            .animation(searchPresented ? nil : .snappy, value: layout.resident)
-            .sheet(isPresented: Binding(
-                get: { showComments && !searchPresented && !layout.sideBySide && !layout.resident && aweme != nil },
-                set: { if !layout.sideBySide && !layout.resident { showComments = $0 } }
-            )) {
-                if let aweme {
-                    DYCommentPanel(bridge: bridge, aweme: aweme,
-                                   onClose: { showComments = false }, focus: focus)
-                        // 与推荐页一致：竖屏锁死半屏，上滑不撑满
-                        .presentationDetents([.fraction(0.62)])
-                        .presentationDragIndicator(.visible)
-                }
-            }
-        }
     }
 
     private var classicBody: some View {
@@ -833,7 +799,10 @@ struct DYCommentPlayerLayout<Video: View>: View {
                     .environment(\.dyStandaloneBack, onBack)
                     .environment(\.duoInlineVideoNavigation, layout.showsPane || showComments)
                     .environment(\.duoCleanScreen, cleanScreen)
+                    .environment(\.dyCommentsOpen, !searchPresented && (showComments || layout.showsPane))
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
+                    // 侧栏评论时裁边：播放器环境光底铺满整屏，会盖住右侧评论栏（同推荐页 DYCommentStage）
+                    .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
@@ -860,7 +829,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
                         .id(horizontalCommentStatus || hidesCommentStatus)
                 }
             }
-            .modifier(DYStandaloneBarPolicy(classic: true))
+            .modifier(DYStandaloneBarPolicy(classic: usesClassicLayout))
             .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
                 bookFoldComments = bookFold
             }

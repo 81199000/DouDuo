@@ -121,7 +121,7 @@ extension EnvironmentValues {
     @Entry var dyCommentsOpen = false
 }
 
-private struct DDClipIf: ViewModifier {
+struct DDClipIf: ViewModifier {
     let on: Bool
     func body(content: Content) -> some View { if on { content.clipped() } else { content } }
 }
