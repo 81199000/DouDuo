@@ -2,7 +2,8 @@ import SwiftUI
 import AVFoundation
 import AVKit
 
-/// 竖向翻页看 iPhone 推过来的视频。点一下暂停/播放，双击点赞（由 iPhone 代发）。
+/// 竖向翻页看视频。视频不存手表：每条用链接直接拉流（手表自己的 WiFi）。
+/// 点一下暂停/播放，双击点赞（由 iPhone 代发）。
 struct VideoPagerView: View {
     @EnvironmentObject var model: WatchModel
     @State private var currentID: String?
@@ -18,11 +19,8 @@ struct VideoPagerView: View {
                     }
                 }
                 .tabViewStyle(.verticalPage)
-                .onChange(of: currentID) { _, id in
-                    model.prune(keepingFrom: id)
-                    if let id, let i = model.videos.firstIndex(where: { $0.id == id }), model.videos.count - i <= 2 {
-                        Task { await model.requestVideos() }
-                    }
+                .onChange(of: currentID) { old, _ in
+                    if let old, old != currentID { model.markWatched(old) }
                 }
             }
         }
@@ -30,7 +28,7 @@ struct VideoPagerView: View {
         .onChange(of: model.videos.count) { _, _ in
             if currentID == nil || !model.videos.contains(where: { $0.id == currentID }) { currentID = model.videos.first?.id }
         }
-        .task { if model.videos.count < 2 { await model.requestVideos() } }
+        .task { if model.videos.count < 8 { await model.requestVideos() } }
     }
 
     private var emptyState: some View {
@@ -38,10 +36,8 @@ struct VideoPagerView: View {
             if model.requestingVideos { ProgressView() } else {
                 Image(systemName: model.reachable ? "play.rectangle" : "iphone.slash").font(.system(size: 28))
             }
-            Text(model.reachable ? (model.requestingVideos ? "iPhone 正在准备视频…" : "还没有视频") : "未连接 iPhone")
+            Text(model.reachable ? (model.requestingVideos ? "正在向 iPhone 取视频链接…" : "还没有视频") : "没有可看的视频，连上 iPhone 后会自动获取")
                 .font(.footnote).multilineTextAlignment(.center)
-            Text("视频由 iPhone 转码后传来，需要 DouDuo 在 iPhone 上保持运行")
-                .font(.system(size: 10)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("获取视频") { Task { await model.requestVideos() } }.disabled(!model.reachable || model.requestingVideos)
         }.padding(.horizontal, 6)
     }
@@ -54,6 +50,9 @@ private struct VideoPage: View {
     @State private var player: AVPlayer?
     @State private var paused = false
     @State private var burst = false
+    @State private var failed = false
+    @State private var buffering = true
+    @State private var observers: [NSKeyValueObservation] = []
 
     var body: some View {
         ZStack {
@@ -75,6 +74,13 @@ private struct VideoPage: View {
                 }
                 .padding(.horizontal, 8).padding(.bottom, 4)
             }
+            if buffering && active && !failed { ProgressView() }
+            if failed {
+                VStack(spacing: 4) {
+                    Image(systemName: "wifi.exclamationmark").font(.system(size: 24))
+                    Text("加载失败，已跳过").font(.system(size: 10))
+                }
+            }
             if paused { Image(systemName: "pause.fill").font(.system(size: 30)).foregroundStyle(.white.opacity(0.8)) }
             if burst { Image(systemName: "heart.fill").font(.system(size: 50)).foregroundStyle(.red).transition(.scale.combined(with: .opacity)) }
         }
@@ -82,27 +88,51 @@ private struct VideoPage: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { like() }
         .onTapGesture { togglePause() }
-        .onAppear { setup() }
-        .onDisappear { player?.pause() }
-        .onChange(of: active) { _, on in on ? play() : stop() }
+        // 只给当前条创建播放器，邻近页不预拉流（省电省流量）
+        .onChange(of: active) { _, on in on ? start() : stop() }
+        .onAppear { if active { start() } }
+        .onDisappear { stop() }
     }
 
-    private func setup() {
-        guard player == nil else { return }
-        let p = AVPlayer(url: WatchModel.fileURL(meta.id))
+    private func start() {
+        guard player == nil, let url = URL(string: meta.url) else { return }
+        // 抖音 CDN 实测只带 Referer/UA 或什么都不带都能 206，这里仍带上浏览器头以防风控收紧
+        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": [
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            "Referer": "https://www.douyin.com/",
+        ]])
+        let item = AVPlayerItem(asset: asset)
+        let p = AVPlayer(playerItem: item)
         p.actionAtItemEnd = .none
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: p.currentItem, queue: .main) { _ in
+        observers = [
+            item.observe(\.status, options: [.new]) { it, _ in
+                DispatchQueue.main.async {
+                    if it.status == .failed { failed = true; buffering = false; DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { model.drop(meta.id) } }
+                }
+            },
+            p.observe(\.timeControlStatus, options: [.new]) { pl, _ in
+                DispatchQueue.main.async { buffering = pl.timeControlStatus == .waitingToPlayAtSpecifiedRate }
+            },
+        ]
+        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { _ in
             p.seek(to: .zero); if active && !paused { p.play() }
         }
         player = p
-        if active { play() }
+        paused = false
+        p.play()
     }
-    private func play() { paused = false; player?.play() }
-    private func stop() { player?.pause(); player?.seek(to: .zero) }
+
+    private func stop() {
+        player?.pause()
+        player = nil          // 离开就释放，下次进来重新拉流
+        observers = []
+    }
+
     private func togglePause() {
         guard let player else { return }
-        if player.timeControlStatus == .paused { play() } else { player.pause(); paused = true }
+        if player.timeControlStatus == .paused { player.play(); paused = false } else { player.pause(); paused = true }
     }
+
     private func like() {
         if !meta.liked { Task { await model.toggleLike(meta.id) } }
         withAnimation(.spring(duration: 0.25)) { burst = true }

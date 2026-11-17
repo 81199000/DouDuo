@@ -1,6 +1,8 @@
 import Foundation
 import WatchConnectivity
 
+/// 手表端数据：不存视频文件，只存「链接清单」，播放时用手表自己的 WiFi 直接拉流。
+/// 清单和未读数/消息都落盘，手机 App 没运行、手表没连上手机时也能用上次的内容。
 @MainActor
 final class WatchModel: NSObject, ObservableObject {
     static let shared = WatchModel()
@@ -13,40 +15,77 @@ final class WatchModel: NSObject, ObservableObject {
     @Published var loadingInbox = false
     @Published var requestingVideos = false
     @Published var inboxError: String?
+    @Published var inboxUpdated: Date?
 
-    /// 手表上最多留这么多条，播过的先删
-    private let keep = 8
+    /// 链接放多久算可能过期（与手机端 maxAge 一致）
+    static let maxAge: TimeInterval = 6 * 3600
+    /// 看到只剩几条时向手机要新的
+    private let lowWater = 8
+    /// 已看过的 id，换清单时不再重复出现
+    private var watched = Set<String>()
 
     nonisolated static let dir: URL = {
-        let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("videos", isDirectory: true)
+        let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }()
-    nonisolated static func fileURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).mp4") }
-    nonisolated private static var indexURL: URL { dir.appendingPathComponent("index.json") }
+    nonisolated private static var listURL: URL { dir.appendingPathComponent("watch-list.json") }
+    nonisolated private static var inboxURL: URL { dir.appendingPathComponent("watch-inbox.json") }
+    nonisolated private static var watchedURL: URL { dir.appendingPathComponent("watch-seen.json") }
 
     override init() {
         super.init()
-        if let d = try? Data(contentsOf: Self.indexURL),
-           let list = try? JSONDecoder().decode([DDWatchVideoMeta].self, from: d) {
-            videos = list.filter { FileManager.default.fileExists(atPath: Self.fileURL($0.id).path) }
+        if let d = try? Data(contentsOf: Self.listURL), let l = try? JSONDecoder().decode([DDWatchVideoMeta].self, from: d) { videos = l }
+        if let d = try? Data(contentsOf: Self.inboxURL), let i = try? JSONDecoder().decode(DDWatchInbox.self, from: d) {
+            inbox = i; status = i.status
+            inboxUpdated = Date(timeIntervalSince1970: i.status.updated)
         }
+        if let d = try? Data(contentsOf: Self.watchedURL), let w = try? JSONDecoder().decode([String].self, from: d) { watched = Set(w) }
+        dropExpired()
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = WatchLink.shared
         WCSession.default.activate()
     }
 
-    private func saveIndex() {
-        if let d = try? JSONEncoder().encode(videos) { try? d.write(to: Self.indexURL, options: .atomic) }
+    private func save() {
+        if let d = try? JSONEncoder().encode(videos) { try? d.write(to: Self.listURL, options: .atomic) }
+        if let d = try? JSONEncoder().encode(Array(watched.suffix(500))) { try? d.write(to: Self.watchedURL, options: .atomic) }
+    }
+    private func saveInbox() {
+        if let d = try? JSONEncoder().encode(inbox) { try? d.write(to: Self.inboxURL, options: .atomic) }
     }
 
-    func added(_ meta: DDWatchVideoMeta) {
-        if !videos.contains(where: { $0.id == meta.id }) { videos.append(meta) }
-        while videos.count > keep {   // 超出上限从最早的删
-            let old = videos.removeFirst()
-            try? FileManager.default.removeItem(at: Self.fileURL(old.id))
+    private func dropExpired() {
+        let now = Date().timeIntervalSince1970
+        videos.removeAll { now - $0.fetched > Self.maxAge || watched.contains($0.id) || !$0.url.contains("/aweme/v1/play/") }
+    }
+
+    /// 手机推来的最新清单：保留手表上已有的顺序，补上新的，去掉看过和过期的
+    func apply(list: [DDWatchVideoMeta]) {
+        let known = Set(videos.map(\.id))
+        videos.append(contentsOf: list.filter { !known.contains($0.id) && !watched.contains($0.id) })
+        // 手机给了更新的链接就替换（链接新鲜度以手机为准）
+        for n in list { if let i = videos.firstIndex(where: { $0.id == n.id }), n.fetched > videos[i].fetched { var m = n; m.liked = videos[i].liked || n.liked; videos[i] = m } }
+        dropExpired()
+        save()
+    }
+
+    /// 看完/划走一条：记为已看过，列表快见底就向手机要新的
+    func markWatched(_ id: String) {
+        watched.insert(id)
+        if let i = videos.firstIndex(where: { $0.id == id }) {
+            // 只丢掉当前条之前的，当前条留着以免翻页跳动
+            if i > 0 { videos.removeFirst(i) }
         }
-        saveIndex()
+        save()
+        if videos.count <= lowWater { Task { await requestVideos() } }
+    }
+
+    /// 链接失效（播放失败）：丢掉这条
+    func drop(_ id: String) {
+        videos.removeAll { $0.id == id }
+        save()
+        if videos.count <= lowWater { Task { await requestVideos() } }
     }
 
     // MARK: 向 iPhone 要数据
@@ -69,12 +108,15 @@ final class WatchModel: NSObject, ObservableObject {
         defer { loadingInbox = false }
         guard let r = await send([DDWatchKey.cmd: DDWatchCmd.inbox], timeout: 30),
               let box = DDWatchCodec.unpack(DDWatchInbox.self, from: r) else {
+            // 没连上手机：保留上次的内容，只提示更新时间
             inboxError = reachable ? "iPhone 没有响应" : "未连接 iPhone"
             return
         }
         inboxError = nil
         inbox = box
         status = box.status
+        inboxUpdated = Date()
+        saveInbox()
     }
 
     func refreshStatus() async {
@@ -83,15 +125,14 @@ final class WatchModel: NSObject, ObservableObject {
         status = st
     }
 
-    /// 播放列表快见底时，请 iPhone 再推几条
+    /// 向手机要新链接。手机没连上也无妨：手表用已有清单继续播
     func requestVideos() async {
-        // 没连上 iPhone 就别占着「请求中」状态，连上后 sessionReachabilityDidChange 会再来一次
         guard !requestingVideos, WCSession.default.isReachable else { return }
         requestingVideos = true
-        _ = await send([DDWatchKey.cmd: DDWatchCmd.videos, "have": videos.map(\.id)])
-        // 文件传输是异步的，iPhone 转码 + 蓝牙传输需要一阵，到了会自动出现在列表里；这里只保持转圈提示
-        try? await Task.sleep(nanoseconds: 8_000_000_000)
-        requestingVideos = false
+        defer { requestingVideos = false }
+        guard let r = await send([DDWatchKey.cmd: DDWatchCmd.videos], timeout: 40),
+              let l = DDWatchCodec.unpack(DDWatchList.self, from: r) else { return }
+        apply(list: l.videos)
     }
 
     func toggleLike(_ id: String) async {
@@ -100,97 +141,43 @@ final class WatchModel: NSObject, ObservableObject {
         videos[i].liked = want
         let r = await send([DDWatchKey.cmd: DDWatchCmd.like, DDWatchKey.id: id, DDWatchKey.on: want])
         if (r?["ok"] as? Bool) != true, let j = videos.firstIndex(where: { $0.id == id }) {
-            videos[j].liked = !want   // 没成功就回滚
+            videos[j].liked = !want   // 手机没响应就回滚，并提示
+            inboxError = "点赞需要连接 iPhone"
         }
-        saveIndex()
+        save()
     }
 
-    /// 播过的视频删掉，腾出手表空间
-    func prune(keepingFrom id: String?) {
-        guard let id, let idx = videos.firstIndex(where: { $0.id == id }) else { return }
-        let drop = max(0, idx - 1)
-        if drop > 0 {
-            for m in videos.prefix(drop) { try? FileManager.default.removeItem(at: Self.fileURL(m.id)) }
-            videos.removeFirst(drop)
-            saveIndex()
-        }
+    func applyContext(_ ctx: [String: Any]) {
+        if let d = ctx[DDWatchKey.status] as? Data, let st = try? JSONDecoder().decode(DDWatchStatus.self, from: d) { status = st }
+        if let d = ctx[DDWatchKey.list] as? Data, let l = try? JSONDecoder().decode(DDWatchList.self, from: d) { apply(list: l.videos) }
     }
 }
 
-/// WatchConnectivity 回调放在独立的非 actor 类里：文件回调必须在回调内同步搬走临时文件，不能经过主线程隔离
+/// WatchConnectivity 回调
 final class WatchLink: NSObject, WCSessionDelegate {
     static let shared = WatchLink()
-    private static func dbg(_ s: String) {
-        #if DEBUG
-        try? (s + "\n").appendLine(to: WatchModel.dir.deletingLastPathComponent().appendingPathComponent("wlog.txt"))
-        #endif
-    }
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        Self.dbg("activated \(activationState.rawValue)")
         let r = session.isReachable
-        let ctx = session.receivedApplicationContext
+        let ctx = session.receivedApplicationContext   // 系统替手表保存的最后一份：手机没运行也读得到
         Task { @MainActor in
             let m = WatchModel.shared
             m.activated = activationState == .activated
             m.reachable = r
-            if let d = ctx[DDWatchKey.status] as? Data, let st = try? JSONDecoder().decode(DDWatchStatus.self, from: d) { m.status = st }
+            m.applyContext(ctx)
         }
     }
     func sessionReachabilityDidChange(_ session: WCSession) {
         let r = session.isReachable
-        Self.dbg("reach \(r)")
         Task { @MainActor in
             let m = WatchModel.shared
             m.reachable = r
-            // 刚连上 iPhone 而手表上视频不够：自动请求（启动时往往还没连上，请求会被丢掉）
-            if r, m.videos.count < 2 { await m.requestVideos() }
-            // 消息同理：启动时没连上就失败了，连上后补刷
+            // 刚连上手机：补刷清单和消息
+            if r { await m.requestVideos() }
             if r, m.inboxError != nil || (m.inbox.notices.isEmpty && m.inbox.chats.isEmpty) { await m.refreshInbox() }
         }
     }
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        guard let d = applicationContext[DDWatchKey.status] as? Data, let st = try? JSONDecoder().decode(DDWatchStatus.self, from: d) else { return }
-        Task { @MainActor in WatchModel.shared.status = st }
-    }
-    /// iPhone 分块发来的视频：第 0 块建文件，之后追加，最后一块搬到正式位置
-    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        defer { replyHandler([:]) }
-        guard message[DDWatchKey.cmd] as? String == DDWatchCmd.chunk,
-              let id = message[DDWatchKey.id] as? String, let i = message["i"] as? Int, let n = message["n"] as? Int,
-              let part = message["data"] as? Data else { return }
-        let tmp = WatchModel.dir.appendingPathComponent("\(id).part")
-        if i == 0 { try? FileManager.default.removeItem(at: tmp); FileManager.default.createFile(atPath: tmp.path, contents: nil) }
-        guard let h = try? FileHandle(forWritingTo: tmp) else { return }
-        h.seekToEndOfFile(); h.write(part); try? h.close()
-        guard i == n - 1,
-              let d = message[DDWatchKey.json] as? Data,
-              let meta = try? JSONDecoder().decode(DDWatchVideoMeta.self, from: d) else { return }
-        let dst = WatchModel.fileURL(id)
-        try? FileManager.default.removeItem(at: dst)
-        do { try FileManager.default.moveItem(at: tmp, to: dst) } catch { Self.dbg("chunk move 失败 \(error)"); return }
-        Self.dbg("chunks saved \(id)")
-        Task { @MainActor in WatchModel.shared.added(meta) }
-    }
-
-    func session(_ session: WCSession, didReceive file: WCSessionFile) {
-        Self.dbg("didReceive \(file.fileURL.lastPathComponent)")
-        // 回调返回后系统会删临时文件，必须在这里同步搬走
-        guard let d = file.metadata?[DDWatchKey.json] as? Data,
-              let meta = try? JSONDecoder().decode(DDWatchVideoMeta.self, from: d) else { Self.dbg("meta 解析失败"); return }
-        let dst = WatchModel.fileURL(meta.id)
-        try? FileManager.default.removeItem(at: dst)
-        do { try FileManager.default.moveItem(at: file.fileURL, to: dst) } catch { Self.dbg("move 失败 \(error)"); return }
-        Self.dbg("saved \(meta.id)")
-        Task { @MainActor in WatchModel.shared.added(meta) }
+        Task { @MainActor in WatchModel.shared.applyContext(applicationContext) }
     }
 }
-
-#if DEBUG
-extension String {
-    func appendLine(to url: URL) throws {
-        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(utf8)); try h.close() }
-        else { try write(to: url, atomically: true, encoding: .utf8) }
-    }
-}
-#endif
