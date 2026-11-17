@@ -15,6 +15,7 @@
 		10144843E364788B2D3A07C6 /* DouyinEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */; };
 		115E503A4451900455784A66 /* DDAppearanceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */; };
 		12375DB2C6C43FB20E0988F8 /* DYHashtag.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D6E2B9C1A0A5380FFAFD7B /* DYHashtag.swift */; };
+		16EFC0E221EF2286EABD7381 /* DYTrustLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53D74D77792434EAD3EB1AF /* DYTrustLogin.swift */; };
 		1710FB16E0B12F7246B4ADDE /* DYStreakBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */; };
 		18EC4F1B223F415D3E4CB8F7 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33BFCEEAF50CAF105B25611 /* UpdateChecker.swift */; };
 		196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 730650A08AE183BAB384340D /* DYSwipeProbe.swift */; };
@@ -274,6 +275,7 @@
 		BE7F74B5B2FF22F2F5AEFC10 /* DYHashtagFilterPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtagFilterPresentation.swift; sourceTree = "<group>"; };
 		C3A40470F20A49FE6787F16E /* DYHashtagFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtagFilter.swift; sourceTree = "<group>"; };
 		C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLoginProbe.swift; sourceTree = "<group>"; };
+		C53D74D77792434EAD3EB1AF /* DYTrustLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYTrustLogin.swift; sourceTree = "<group>"; };
 		C554EAEA45B5D350721D26D6 /* DYHashtagFilterScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtagFilterScreen.swift; sourceTree = "<group>"; };
 		CCE7B8B057E03F9F0103866B /* DYNoticeProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYNoticeProbe.swift; sourceTree = "<group>"; };
 		CE510B8A54EF604B236B9FF8 /* DouyinLiveRoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveRoom.swift; sourceTree = "<group>"; };
@@ -436,6 +438,7 @@
 				357FC289432690E166D569FA /* DYStorageScreen.swift */,
 				E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */,
 				730650A08AE183BAB384340D /* DYSwipeProbe.swift */,
+				C53D74D77792434EAD3EB1AF /* DYTrustLogin.swift */,
 				631BD772CFA6D0746CEFAF94 /* DYVideoAmbient.swift */,
 				DCC4748DC1421B4B7A0885D8 /* DYVideoFit.swift */,
 				5053C76DAFCB7CD6A7418C7E /* DYVideoMoreMenu.swift */,
@@ -756,6 +759,7 @@
 				319FF5DEE2FDC04B9E0D9A90 /* DYStorageScreen.swift in Sources */,
 				1710FB16E0B12F7246B4ADDE /* DYStreakBadge.swift in Sources */,
 				196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */,
+				16EFC0E221EF2286EABD7381 /* DYTrustLogin.swift in Sources */,
 				76E23E9018E12443F48468FA /* DYVideoAmbient.swift in Sources */,
 				3480CE84AD330E7BF31FD448 /* DYVideoFit.swift in Sources */,
 				727FF399B8CF3C46700F5D15 /* DYVideoMoreMenu.swift in Sources */,
