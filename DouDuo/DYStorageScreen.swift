@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 struct DYStorageScreen: View {
+    @ObservedObject private var downloads = DYOfflineDownloads.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var usage: DYStorageFiles.Usage?
@@ -22,8 +23,7 @@ struct DYStorageScreen: View {
             if let usage {
                 Section {
                     storageRow("App 大小", bytes: usage.app, total: usage.total, color: DYStorageRing.appColor)
-                    // 暂不提供离线视频，不显示这一行
-                    ForEach(DYStorageFiles.Category.allCases.filter { $0 != .offline }, id: \.self) { category in
+                    ForEach(DYStorageFiles.Category.allCases, id: \.self) { category in
                         let row = storageRow(title(category), bytes: usage.categories[category, default: 0],
                                              total: usage.total, color: DYStorageRing.color(for: category))
                         if category == .other, !usage.otherAreas.isEmpty {
@@ -64,6 +64,9 @@ struct DYStorageScreen: View {
         .navigationTitle("储存空间")
         .navigationBarTitleDisplayMode(.inline)
         .task { await refresh() }
+        .onChange(of: downloads.storageRevision) { _, _ in
+            Task { await refresh() }
+        }
         .refreshable { await refresh() }
         .alert("清理缓存？", isPresented: $confirming) {
             Button("清理缓存", role: .destructive) {
@@ -71,7 +74,7 @@ struct DYStorageScreen: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("清除缓存和诊断日志，保留登录、消息和设置。")
+            Text("清除缓存和诊断日志，保留离线视频。")
         }
     }
 
@@ -174,13 +177,17 @@ struct DYStorageScreen: View {
     }
 
     private func updateUsage() async {
-        do {
-            usage = try await DYStorageFiles.shared.scan()
-            scanFailed = false
-        } catch is CancellationError {
-            return
-        } catch {
-            scanFailed = true
+        while !Task.isCancelled {
+            let revision = downloads.storageRevision
+            do {
+                usage = try await DYStorageFiles.shared.scan()
+                scanFailed = false
+            } catch is CancellationError {
+                return
+            } catch {
+                scanFailed = true
+            }
+            if revision == downloads.storageRevision { return }
         }
     }
 

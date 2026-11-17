@@ -1,9 +1,6 @@
-// 本地视频缓存：
-// - 正在播的这条：立刻开始缓存（长视频只缓存头部），划走就停
-// - 后面 1–2 条：只预取头部，刷到时能本地起播
-// - 完整缓存的条目下次刷到/重开 App 直接播本地
+import AVFoundation
 import Foundation
-import UIKit
+import Synchronization
 
 /// 浏览会话保存在 Application Support，不随视频缓存清理或系统回收而丢失。
 struct DYFeedSession: Codable {
@@ -36,9 +33,7 @@ actor DYVideoCache {
     static let defaultCount = 5
     /// 超过这个时长不缓存（整条太大），直接在线播。30 分钟以内整条下，长视频切换也能秒开
     static let maxDuration: Double = 1800
-    /// 长视频（>10 分钟）预存的体积：文件第一段（1/4 或这个下限，取大者），够起播和看几分钟
-    static let longHeadBytes = 32 * 1024 * 1024
-    /// 超过这个时长算长视频：只预存第一段，播起来 10 秒后再并发补后面几段（老板定的策略）
+    /// 播放中的长视频避免同时整条下载，给起播和缓冲留出带宽。
     static let longThreshold: Double = 600
     /// 「已看过」的缓存最多留几条：看过的没必要占盘，重启也不该再刷到
     static let watchedKeep = 3
@@ -46,11 +41,8 @@ actor DYVideoCache {
     static let sizeCap: Double = 400 * 1024 * 1024
     /// 不超过这个时长的算短视频：整条几秒内下完，优先下；更长的排在后面，不堵下一条
     static let blockingDuration: Double = 90
-    /// 头部缓存字节数：约 6–20 秒（抖音码率 0.5–3 Mbps），够起播
-    static let headBytes = 4_000_000
-    /// 后面几条做头部预取（刷过来不卡的关键）
+    /// 给下一、下下条准备完整缓存。
     static let headPrefetch = 2
-    /// 保守按 3.2 Mbps 折算，宁可早一点切在线流，也不要播到没数据的尾部
     static let assumeBitsPerSecond: Double = 2_500_000
     static let maxBytes = 2 * 1024 * 1024 * 1024
 
@@ -60,22 +52,16 @@ actor DYVideoCache {
         var added: Double
         var bytes: Int
     }
-    /// 头部缓存索引
-    struct Head: Codable {
-        var id: String
-        var bytes: Int
-        var added: Double
-    }
-
-    nonisolated static let dir: URL = {
-        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("dd-videos", isDirectory: true)
-        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-        return d
-    }()
+    nonisolated static let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("dd-videos", isDirectory: true)
     nonisolated static var indexURL: URL { dir.appendingPathComponent("index.json") }
-    nonisolated static var headIndexURL: URL { dir.appendingPathComponent("heads.json") }
     nonisolated static func fileURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).mp4") }
-    nonisolated static func headURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).head") }
+    private nonisolated static var headIndexURL: URL { dir.appendingPathComponent("heads.json") }
+    private nonisolated static func headURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).head") }
+    private nonisolated static func headFiles() -> [URL] {
+        let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
+        return (files ?? []).filter { $0.pathExtension == "head" }
+    }
 
     nonisolated static var limit: Int {
         (UserDefaults.standard.object(forKey: countKey) as? Int) ?? defaultCount
@@ -83,43 +69,39 @@ actor DYVideoCache {
 
     /// 已经整条下完的本地文件
     nonisolated static func localURL(_ id: String) -> URL? {
+        DYOfflineVideoStore.localURL(id) ?? automaticURL(id)
+    }
+
+    private nonisolated static func automaticURL(_ id: String) -> URL? {
         let f = fileURL(id)
         return FileManager.default.fileExists(atPath: f.path) ? f : nil
     }
 
-    /// 头部缓存（够起播即可）
-    nonisolated static func headFile(_ id: String) -> URL? {
-        let f = headURL(id)
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: f.path)[.size]) as? Int, size > 120_000 else { return nil }
-        return f
-    }
-
-    /// 头部缓存能安全播到的秒数（保守折算，留 1.5 秒余量）
-    nonisolated static func headPlayableSeconds(_ id: String) -> Double? {
-        guard let f = headFile(id),
-              let size = (try? FileManager.default.attributesOfItem(atPath: f.path)[.size]) as? Int else { return nil }
-        // 估算能播到第几秒：按平均码率算，再留 20% 余量（宁可早一点交接，也别播到没数据卡住）
-        let s = Double(size) * 8 / assumeBitsPerSecond * 0.8 - 1.5
-        return s > 1 ? s : nil
+    private nonisolated static func readIndex() -> [Entry]? {
+        guard let data = try? Data(contentsOf: indexURL) else { return nil }
+        return try? JSONDecoder().decode([Entry].self, from: data)
     }
 
     /// 启动时用：缓存好、还没看过的，按加入顺序
     nonisolated static func pendingSnapshot() -> [DYAweme] {
-        guard let d = try? Data(contentsOf: indexURL),
-              let list = try? JSONDecoder().decode([Entry].self, from: d) else { return [] }
-        return list.filter { !$0.watched && localURL($0.aweme.id) != nil }.map(\.aweme)
+        (readIndex() ?? []).filter { !$0.watched && automaticURL($0.aweme.id) != nil }.map(\.aweme)
     }
 
     /// 调试日志用（不要求精确）
-    nonisolated(unsafe) static var activeDownloads = 0
+    private static let downloadCount = Mutex(0)
+    nonisolated static var activeDownloads: Int { downloadCount.withLock { $0 } }
 
     private var entries: [Entry]
-    private var heads: [Head]
     private var job: Task<Void, Never>?
     private var jobID: String?
+    private var focusedItems: [DYAweme] = []
+    private var longCompletion: Task<Void, Never>?
     private var failed: Set<String> = []
-    /// async 方法里不直接引用 DYAweme 作为参数类型（该编译器在此处解析失败），改用它中转
-    private var pending: [String: DYAweme] = [:]
+    private var prepared = false
+    private var clearing = false
+    private var manualBatch = false
+    private var offlineLibraryRevision = 0
+    private var playbackWaiting = false
     private let session: URLSession
 
     init() {
@@ -128,38 +110,10 @@ actor DYVideoCache {
         cfg.timeoutIntervalForRequest = 30
         cfg.timeoutIntervalForResource = 600
         cfg.waitsForConnectivity = false
+        cfg.urlCache = nil
         session = URLSession(configuration: cfg)
-        if let d = try? Data(contentsOf: Self.indexURL), let list = try? JSONDecoder().decode([Entry].self, from: d) {
-            entries = list.filter { Self.localURL($0.aweme.id) != nil }
-        } else {
-            entries = []
-        }
-        if let d = try? Data(contentsOf: Self.headIndexURL), let list = try? JSONDecoder().decode([Head].self, from: d) {
-            heads = list.filter { Self.headFile($0.id) != nil }
-        } else {
-            heads = []
-        }
+        entries = (Self.readIndex() ?? []).filter { Self.automaticURL($0.aweme.id) != nil }
     }
-
-    /// 播放焦点变了：下一条最优先（刷过去就要播），然后当前这条。
-    /// 1.5.1 以前是「当前 → 下下条 → 第 4 条」：紧挨着的下一条被漏掉；当前是长视频时要整条下完才轮到后面，
-    /// 下载还和下一条的预加载抢带宽，一划走整条作废。现在 ≤90 秒的先下（几秒完成），
-    /// 长一些的（≤10 分钟）排在后面补；超过 10 分钟不缓存，起播靠预加载器提前读好的开头。
-    /// 长视频只预存「第一段」的顺序（当前正在播的那条不抢带宽）
-    nonisolated static func longHeadPlan(current: DYAweme, ahead: [DYAweme]) -> [String] {
-        func long(_ a: DYAweme) -> Bool { a.images.isEmpty && a.play != nil && a.duration > longThreshold }
-        var out: [String] = []
-        for a in ahead where long(a) && !out.contains(a.id) { out.append(a.id) }
-        return out
-    }
-
-    /// 长视频「第一段」预存队列：**不跟随 focus 取消**——老板实测滑动一快就被取消，
-    /// 长视频永远拿不到预存段，只能联网慢等（日志里一排 DDHEAD fail cancelled）。
-    /// 播放卡在等待数据时，下载自动让路（busy 门闸），把带宽留给播放器。
-    private var headQueue: [String] = []
-    private var headTask: Task<Void, Never>?
-    /// 播放器正在等数据（起播/卡顿）时为 true，缓存下载暂停让路
-    private var playbackWaiting = false
 
     func setPlaybackWaiting(_ v: Bool) { playbackWaiting = v }
 
@@ -169,57 +123,41 @@ actor DYVideoCache {
     }
 
     private func waitWhilePlaybackWaiting() async {
-        var n = 0
-        while playbackWaiting && n < 40 {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            n += 1
+        for _ in 0..<40 where playbackWaiting && !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(200))
         }
-    }
-
-    private func enqueueHeads(_ ids: [String]) {
-        for id in ids where !headQueue.contains(id) && Self.headFile(id) == nil {
-            headQueue.append(id)
-        }
-        guard headTask == nil, !headQueue.isEmpty else { return }
-        headTask = Task { [weak self] in
-            guard let self else { return }
-            await self.drainHeads()
-        }
-    }
-
-    /// 逐个把长视频第一段存好；不会因为切视频被取消
-    private func drainHeads() async {
-        while !headQueue.isEmpty {
-            let id = headQueue.removeFirst()
-            if Self.headFile(id) != nil || Self.localURL(id) != nil { continue }
-            await waitWhilePlaybackWaiting()
-            await storeLongHead(id: id)
-        }
-        headTask = nil
     }
 
     func focus(current: DYAweme?, ahead: [DYAweme]) {
-        guard Self.limit > 0 else { job?.cancel(); job = nil; jobID = nil; return }
-        let target = current ?? ahead.first
-        guard let target else { return }
-        if jobID == target.id, job != nil { return }
-        if job != nil { DYLiveModel.log("DDCACHE refocus \(jobID ?? "-") -> \(target.id)") }
-        job?.cancel()
-        job = nil
-        jobID = target.id
+        guard !clearing, !manualBatch else { return }
+        prepare()
+        let previous = job
+        guard Self.limit > 0 else {
+            previous?.cancel()
+            longCompletion?.cancel()
+            jobID = nil
+            focusedItems = []
+            evict()
+            save()
+            return
+        }
+        guard let target = current ?? ahead.first else { return }
         let rest = current == nil ? Array(ahead.dropFirst()) : ahead
         let follow = Array(rest.prefix(Self.headPrefetch))
+        let candidates = [target] + follow
+        focusedItems = candidates
+        if jobID == target.id { return }
+        previous?.cancel()
+        jobID = target.id
         let plan = Self.plan(current: target, ahead: follow)
-        let longIDs = Self.longHeadPlan(current: target, ahead: follow)
-        for a in [target] + follow { pending[a.id] = a }
-        // 半截文件播不了（-11828），预存第一段已经没有意义：长视频改为整条后台缓存。
-        // 这里不再入队，避免白占 30MB 带宽和磁盘；已有头段文件启动时清掉。
-        _ = longIDs
         job = Task { [weak self] in
+            await previous?.value
             guard let self else { return }
             for id in plan {
-                if Task.isCancelled { return }
-                await self.store(id: id)
+                guard !Task.isCancelled else { return }
+                if let item = candidates.first(where: { $0.id == id }) {
+                    await self.store(item)
+                }
             }
         }
     }
@@ -245,290 +183,241 @@ actor DYVideoCache {
         return out
     }
 
-    /// 划走 / 离开：立刻停止缓存
-    func stopCaching() {
-        job?.cancel(); job = nil; jobID = nil
-    }
-
-    /// 只缓存整条视频：不再存「头部」，也就没有「头部播完接在线流」那一下切换
-    /// （切换必然有一瞬闪烁/缓冲，长痛不如短痛）
-    private func store(id: String) async {
-        guard let a = pending[id], a.images.isEmpty, a.play != nil else { return }
-        if Self.localURL(a.id) != nil { return }
-        if failed.contains(a.id) { return }
+    private func store(_ item: DYAweme) async {
+        guard Self.localURL(item.id) == nil, !failed.contains(item.id) else { return }
         await waitWhilePlaybackWaiting()
-        // 超长的视频整条太大，干脆不缓存，直接走在线流（不会闪，只是首帧慢一点）
-        guard a.duration <= Self.maxDuration else { return }
-        if Task.isCancelled { return }
-        await storeFull(id: id)
+        guard !Task.isCancelled, Self.limit > 0 else { return }
+        await storeFull(item)
     }
 
-    /// 头部缓存：Range 请求前 2.5MB（服务端忽略 Range 返回整条时截取前段）
-    /// 抖音直连 CDN 的 play 地址对 App 自己的请求会 403（播放器能播）；
-    /// 实测 `/aweme/v1/play/`（带 sign，302 跳 CDN）和 playFast 可以正常下载。
-    private func downloadURLs(_ a: DYAweme) -> [URL] {
-        // 重定向地址优先（直连 CDN 现在 403），失败再试直连和低清
-        [a.play, a.playAlt, a.playFast].compactMap { $0 }.compactMap { URL(string: $0) }
+    private func downloadURLs(_ item: DYAweme) -> [URL] {
+        [item.play, item.playAlt, item.playFast].compactMap { $0 }.compactMap { URL(string: $0) }
     }
 
-    private func storeHead(id: String) async {
-        guard let a = pending[id] else { return }
-        let t0 = Date()
-        Self.activeDownloads = 1
-        defer { Self.activeDownloads = 0 }
-        for u in downloadURLs(a) {
-            if Task.isCancelled { return }
-            var r = URLRequest(url: u)
-            DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-            r.setValue("bytes=0-\(Self.headBytes - 1)", forHTTPHeaderField: "Range")
-            do {
-                let (data, resp) = try await session.data(for: r)
-                guard let h = resp as? HTTPURLResponse else { continue }
-                guard h.statusCode == 200 || h.statusCode == 206 else {
-                    DYLiveModel.log("DDHEAD status=\(h.statusCode) host=\(u.host ?? "-") id=\(a.id)")
-                    continue
-                }
-                let slice = data.count > Self.headBytes ? data.prefix(Self.headBytes) : data
-                guard slice.count > 120_000 else { continue }
-                try slice.write(to: Self.headURL(a.id))
-                heads.removeAll { $0.id == a.id }
-                heads.append(Head(id: a.id, bytes: slice.count, added: Date().timeIntervalSince1970))
-                let cap = max(Self.limit * 2, 40)
-                if heads.count > cap { heads.removeFirst(heads.count - cap) }
-                saveHeads()
-                DYLiveModel.log("DDHEAD ok \(a.id) \(slice.count / 1024)KB host=\(u.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
-                return
-            } catch {
-                DYLiveModel.log("DDHEAD fail host=\(u.host ?? "-") \(error.localizedDescription)")
-            }
-        }
-        if !Task.isCancelled { failed.insert(a.id) }
-    }
-
-    /// 长视频预存第一段：探测总长后取 1/4（不少于 32MB），存成 .head 文件。
-    /// MP4 的 moov 在文件开头（实测），所以这半截可以直接播；播过 10 秒后再补后面几段。
-    private func storeLongHead(id: String) async {
-        guard let a = pending[id], Self.headFile(a.id) == nil else { return }
-        let t0 = Date()
-        await waitWhilePlaybackWaiting()
-        for u in downloadURLs(a) {
-            if Task.isCancelled { return }
-            var probe = URLRequest(url: u)
-            DYMedia.headers.forEach { probe.setValue($1, forHTTPHeaderField: $0) }
-            probe.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-            do {
-                let (first, resp) = try await session.download(for: probe)
-                defer { try? FileManager.default.removeItem(at: first) }
-                guard let h = resp as? HTTPURLResponse, h.statusCode == 206 || h.statusCode == 200 else { continue }
-                var total = 0
-                if let cr = h.value(forHTTPHeaderField: "Content-Range"),
-                   let n = Int(cr.split(separator: "/").last ?? "") { total = n }
-                let want = max(Self.longHeadBytes, total / 4)
-                var r = URLRequest(url: u)
-                DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-                r.setValue("bytes=0-\(want - 1)", forHTTPHeaderField: "Range")
-                let (tmp, resp2) = try await session.download(for: r)
-                guard let h2 = resp2 as? HTTPURLResponse, h2.statusCode == 206 || h2.statusCode == 200 else { continue }
-                let dst = Self.headURL(a.id)
-                try? FileManager.default.removeItem(at: dst)
-                try FileManager.default.moveItem(at: tmp, to: dst)
-                let bytes = ((try? FileManager.default.attributesOfItem(atPath: dst.path)[.size]) as? Int) ?? 0
-                guard bytes > 200_000 else { try? FileManager.default.removeItem(at: dst); continue }
-                heads.removeAll { $0.id == a.id }
-                heads.append(Head(id: a.id, bytes: bytes, added: Date().timeIntervalSince1970))
-                let cap = max(Self.limit * 2, 40)
-                if heads.count > cap { heads.removeFirst(heads.count - cap) }
-                saveHeads()
-                DYLiveModel.log("DDHEAD ok \(a.id) \(bytes / 1024)KB/\(total / 1024)KB host=\(u.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
-                return
-            } catch {
-                DYLiveModel.log("DDHEAD fail host=\(u.host ?? "-") \(error.localizedDescription)")
-            }
-        }
-    }
-
-    /// 长视频播起来 10 秒后，把剩下的部分并发补齐，拼成完整文件（下次直接本地起播）
-    func completeLong(id: String) async {
-        guard Self.localURL(id) == nil, let head = Self.headFile(id) else { return }
-        await waitWhilePlaybackWaiting()
-        guard let a = pending[id] ?? entries.first(where: { $0.aweme.id == id })?.aweme else { return }
-        guard let u = downloadURLs(a).first else { return }
-        let have = ((try? FileManager.default.attributesOfItem(atPath: head.path)[.size]) as? Int) ?? 0
-        let t0 = Date()
-        var probe = URLRequest(url: u)
-        DYMedia.headers.forEach { probe.setValue($1, forHTTPHeaderField: $0) }
-        probe.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        guard let (first, resp) = try? await session.download(for: probe), let h = resp as? HTTPURLResponse else { return }
-        try? FileManager.default.removeItem(at: first)
-        guard let cr = h.value(forHTTPHeaderField: "Content-Range"), let total = Int(cr.split(separator: "/").last ?? ""),
-              total > have else { return }
-        let rest = total - have
-        let parts = min(4, max(1, rest / (4 * 1024 * 1024)))
-        let size = rest / parts
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ddrest-\(id)-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        do {
-            let files = try await withThrowingTaskGroup(of: (Int, URL).self) { group -> [URL] in
-                for i in 0..<parts {
-                    let lo = have + i * size
-                    let hi = i == parts - 1 ? total - 1 : (lo + size - 1)
-                    group.addTask {
-                        var r = URLRequest(url: u)
-                        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-                        r.setValue("bytes=\(lo)-\(hi)", forHTTPHeaderField: "Range")
-                        let (tmp, resp) = try await self.session.download(for: r)
-                        guard let sh = resp as? HTTPURLResponse, sh.statusCode == 206 || sh.statusCode == 200 else { throw URLError(.badServerResponse) }
-                        let named = dir.appendingPathComponent(String(format: "%03d", i))
-                        try? FileManager.default.removeItem(at: named)
-                        try FileManager.default.moveItem(at: tmp, to: named)
-                        return (i, named)
-                    }
-                }
-                var out = [URL](repeating: dir, count: parts)
-                for try await (i, f) in group { out[i] = f }
-                return out
-            }
-            let dst = Self.fileURL(id)
-            try? FileManager.default.removeItem(at: dst)
-            try FileManager.default.copyItem(at: head, to: dst)
-            let out = try FileHandle(forWritingTo: dst)
-            out.seekToEndOfFile()
-            for f in files {
-                let fh = try FileHandle(forReadingFrom: f)
-                while let chunk = try fh.read(upToCount: 4 << 20), !chunk.isEmpty { try out.write(chunk) }
-                try fh.close()
-                try? FileManager.default.removeItem(at: f)
-            }
-            try out.close()
-            let bytes = ((try? FileManager.default.attributesOfItem(atPath: dst.path)[.size]) as? Int) ?? 0
-            guard bytes >= total - 1024 else { try? FileManager.default.removeItem(at: dst); return }
-            try? FileManager.default.removeItem(at: head)
-            heads.removeAll { $0.id == id }
-            saveHeads()
-            entries.removeAll { $0.aweme.id == id }
-            entries.append(Entry(aweme: a, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
-            evict(); save()
-            DYLiveModel.log("DDCACHE 长视频补齐 \(id) \(bytes / 1024)KB \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
-        } catch {
-            DYLiveModel.log("DDCACHE 长视频补齐失败 \(id) \(error.localizedDescription)")
-        }
-    }
-
-    /// 整条缓存（≤300 秒的视频才做；划走会取消，头部缓存已留下）
-    /// 分段并发下载：4 条 Range 连接同时拉，再按顺序拼成一个文件。
-    /// 单连接对长视频太慢（实测 100MB 用 3.7s，20 分钟的大片要几十秒），分段后基本能跑满带宽。
+    /// 较大的视频用四条 Range 请求并行下载。
     private static let segments = 4
     /// 小于这个体积就单连接，分段反而多几次握手
     private static let segmentMinBytes = 6 * 1024 * 1024
 
-    private func storeFull(id: String) async {
-        guard let a = pending[id] else { return }
-        let t0 = Date()
-        for u in downloadURLs(a) {
-            if Task.isCancelled { return }
-            do {
-                if let h = try await downloadParallel(u, id: a.id) {
-                    let dst = Self.fileURL(a.id)
-                    let bytes = ((try? FileManager.default.attributesOfItem(atPath: h.path)[.size]) as? Int) ?? 0
-                    guard bytes > 50_000 else {
-                        try? FileManager.default.removeItem(at: h)
-                        if h.deletingLastPathComponent().lastPathComponent.hasPrefix("ddseg-") {
-                            try? FileManager.default.removeItem(at: h.deletingLastPathComponent())
-                        }
-                        continue
-                    }
-                    try? FileManager.default.removeItem(at: dst)
-                    try FileManager.default.moveItem(at: h, to: dst)
-                    if h.deletingLastPathComponent().lastPathComponent.hasPrefix("ddseg-") {
-                        try? FileManager.default.removeItem(at: h.deletingLastPathComponent())
-                    }
-                    entries.removeAll { $0.aweme.id == a.id }
-                    entries.append(Entry(aweme: a, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
-                    evict()
-                    save()
-                    DYLiveModel.log("DDCACHE ok \(a.id) \(bytes / 1024)KB host=\(u.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
-                    return
-                }
-            } catch {
-                DYLiveModel.log("DDCACHE fail host=\(u.host ?? "-") \(error.localizedDescription)")
-            }
+    /// 播过 10 秒后补齐已经有头段的长视频。常规预缓存仍使用完整文件，
+    /// 避免用只有部分数据的 MP4 起播时的 AVFoundation 解码错误。
+    func completeLong(id: String) async {
+        guard !clearing, !manualBatch, Self.limit > 0, longCompletion == nil,
+              Self.localURL(id) == nil,
+              let item = focusedItems.first(where: { $0.id == id }) else { return }
+        let head = Self.headURL(id)
+        guard let bytes = try? head.resourceValues(forKeys: [.fileSizeKey]).fileSize, bytes > 120_000 else { return }
+        let completion = Task {
+            await waitWhilePlaybackWaiting()
+            await storeFull(item, fromHead: head)
         }
-        if !Task.isCancelled { failed.insert(a.id) }
+        longCompletion = completion
+        await completion.value
+        longCompletion = nil
     }
 
-    /// 返回下载到临时文件（未移动、未登记）；不支持 Range 或体积未知时退回单连接
-    private func downloadParallel(_ url: URL, id: String) async throws -> URL? {
-        var probe = URLRequest(url: url)
-        DYMedia.headers.forEach { probe.setValue($1, forHTTPHeaderField: $0) }
-        probe.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        let (first, resp) = try await session.download(for: probe)
-        guard let h = resp as? HTTPURLResponse else { return nil }
-        guard h.statusCode == 200 || h.statusCode == 206 else {
-            DYLiveModel.log("DDCACHE status=\(h.statusCode) host=\(url.host ?? "-") id=\(id)")
-            return nil
+    private func storeFull(_ item: DYAweme, fromHead head: URL? = nil) async {
+        let fm = FileManager.default
+        let t0 = Date()
+        Self.downloadCount.withLock { $0 += 1 }
+        defer { Self.downloadCount.withLock { $0 -= 1 } }
+
+        let urls = downloadURLs(item)
+        for url in head == nil ? urls[...] : urls.prefix(1) {
+            guard !Task.isCancelled else { return }
+            let staging = DYStorageFiles.videoWorkDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(at: staging) }
+                let file = try await downloadParallel(url, staging: staging, maximumBytes: Int(Self.sizeCap), fromHead: head)
+                defer { try? fm.removeItem(at: file) }
+                try Task.checkCancellation()
+                guard Self.limit > 0 else { return }
+                let bytes = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard bytes > 50_000, bytes <= Int(Self.sizeCap) else { continue }
+                try fm.createDirectory(at: Self.dir, withIntermediateDirectories: true)
+                let destination = Self.fileURL(item.id)
+                guard Self.localURL(item.id) == nil else { return }
+                try fm.moveItem(at: file, to: destination)
+                if let head { try? fm.removeItem(at: head) }
+                entries.removeAll { $0.aweme.id == item.id }
+                entries.append(Entry(aweme: item, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
+                evict()
+                save()
+                DYLiveModel.log("DDCACHE ok \(item.id) \(bytes / 1024)KB host=\(url.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
+                return
+            } catch {
+                if Task.isCancelled { return }
+                DYLiveModel.log("DDCACHE fail host=\(url.host ?? "-") \(error.localizedDescription)")
+            }
         }
-        // Content-Range: bytes 0-0/12345 → 总长；200 表示服务端忽略了 Range（整包就是这个文件）
-        var total = 0
-        if let cr = h.value(forHTTPHeaderField: "Content-Range"),
-           let slash = cr.split(separator: "/").last, let n = Int(slash) { total = n }
-        if h.statusCode == 200 { return first }
-        guard total > Self.segmentMinBytes else {
-            // 体积小或未知：把探测到的那一小段换成完整文件（重新整包下）
-            try? FileManager.default.removeItem(at: first)
-            var r = URLRequest(url: url)
-            DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-            let (whole, _) = try await session.download(for: r)
-            return whole
+        if head == nil, !Task.isCancelled { failed.insert(item.id) }
+    }
+
+    func beginOfflineBatch() async {
+        manualBatch = true
+        await stopAutomaticWork()
+        _ = DYStorageFiles.removeIfPresent(DYOfflineVideoStore.stagingDirectory)
+    }
+
+    func endOfflineBatch() {
+        manualBatch = false
+    }
+
+    func offlinePlaybackItems() -> (saved: [DYAweme], automatic: [DYAweme]) {
+        // This also works before the actor has restored its in-memory index on launch.
+        let list = Self.readIndex() ?? entries
+        let available = list.filter { Self.automaticURL($0.aweme.id) != nil }
+        return (DYOfflineVideoStore.snapshot(),
+                available.filter { !$0.watched }.map(\.aweme) + available.filter(\.watched).map(\.aweme))
+    }
+
+    func offlineItems() -> [DYAweme] { DYOfflineVideoStore.snapshot() }
+    func removeOfflineItems() -> Bool { DYOfflineVideoStore.removeAll() }
+
+    func refreshOfflineRetention() -> (revision: Int, library: DYOfflineVideoStore.Library) {
+        offlineLibraryRevision += 1
+        return (offlineLibraryRevision, DYOfflineVideoStore.refreshRetention())
+    }
+
+    func recordOfflinePlayback(_ id: String, completed: Bool) -> (revision: Int, library: DYOfflineVideoStore.Library)? {
+        guard let library = DYOfflineVideoStore.recordPlayback(id: id, completed: completed) else { return nil }
+        offlineLibraryRevision += 1
+        return (offlineLibraryRevision, library)
+    }
+
+    func saveOffline(_ video: DYAweme, wifiOnly: Bool = false) async throws {
+        if DYOfflineVideoStore.localURL(video.id) != nil { return }
+        try Task.checkCancellation()
+        let fm = FileManager.default
+        let available = DYOfflineVideoStore.availableBytes() ?? Int.max
+        guard available > 0 else { throw CocoaError(.fileWriteOutOfSpace) }
+        if let file = Self.automaticURL(video.id),
+           (try? await offlinePlayable(file)) == true,
+           Self.automaticURL(video.id) != nil {
+            try Task.checkCancellation()
+            let staging = DYOfflineVideoStore.stagingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: staging) }
+            try DYOfflineVideoStore.save(video, file: file, copying: true, staging: staging)
+            return
         }
 
-        let parts = Self.segments
-        let size = total / parts
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ddseg-\(id)-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var urls: [URL] = []
-        do {
-            let tmpFiles = try await withThrowingTaskGroup(of: (Int, URL).self) { group -> [URL] in
-                for i in 0..<parts {
-                    let lo = i * size
-                    let hi = i == parts - 1 ? total - 1 : (lo + size - 1)
-                    group.addTask {
-                        var r = URLRequest(url: url)
-                        DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
-                        r.setValue("bytes=\(lo)-\(hi)", forHTTPHeaderField: "Range")
-                        let (tmp, resp) = try await self.session.download(for: r)
-                        guard let h = resp as? HTTPURLResponse, h.statusCode == 206 || h.statusCode == 200 else {
-                            throw URLError(.badServerResponse)
-                        }
-                        let named = dir.appendingPathComponent(String(format: "%03d", i))
-                        try? FileManager.default.removeItem(at: named)
-                        try FileManager.default.moveItem(at: tmp, to: named)
-                        return (i, named)
-                    }
+        await waitWhilePlaybackWaiting()
+        for url in downloadURLs(video) {
+            try Task.checkCancellation()
+            let staging = DYOfflineVideoStore.stagingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: staging) }
+            do {
+                let file = try await downloadParallel(url, staging: staging, maximumBytes: available, wifiOnly: wifiOnly)
+                defer { try? fm.removeItem(at: file) }
+                try Task.checkCancellation()
+                let bytes = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard bytes > 50_000 else { continue }
+                guard bytes <= available else { throw CocoaError(.fileWriteOutOfSpace) }
+                let stagedVideo = staging.appendingPathComponent("source.mp4")
+                try fm.moveItem(at: file, to: stagedVideo)
+                // 检查下载结果能否独立播放，避免把 CDN 的错误正文当成离线视频。
+                guard try await offlinePlayable(stagedVideo) else { continue }
+                try DYOfflineVideoStore.save(video, file: stagedVideo, copying: false, staging: staging)
+                return
+            } catch {
+                try Task.checkCancellation()
+                if (error as? URLError)?.code == .dataLengthExceedsMaximum
+                    || (error as? CocoaError)?.code == .fileWriteOutOfSpace {
+                    throw CocoaError(.fileWriteOutOfSpace)
                 }
-                var out = [URL](repeating: dir, count: parts)
-                for try await (i, f) in group { out[i] = f }
-                return out
             }
-            urls = tmpFiles
-            let joined = dir.appendingPathComponent("full")
-            FileManager.default.createFile(atPath: joined.path, contents: nil)
-            let out = try FileHandle(forWritingTo: joined)
-            for f in urls {
-                let h = try FileHandle(forReadingFrom: f)
-                while let chunk = try h.read(upToCount: 4 << 20), !chunk.isEmpty { try out.write(chunk) }
-                try h.close()
-            }
-            try out.close()
-            try? FileManager.default.removeItem(at: first)
-            // 分段已经拼进 full，删掉分段，只留 full 等调用方挪走
-            for f in urls where f != joined { try? FileManager.default.removeItem(at: f) }
-            return joined
-        } catch {
-            try? FileManager.default.removeItem(at: first)
-            // 失败时删掉整个分段目录
-            try? FileManager.default.removeItem(at: dir)
-            throw error
         }
+        throw URLError(.cannotDecodeContentData)
+    }
+
+    private func offlinePlayable(_ file: URL) async throws -> Bool {
+        let asset = AVURLAsset(url: file)
+        guard try await asset.load(.isPlayable) else { return false }
+        return try await !asset.loadTracks(withMediaType: .video).isEmpty
+    }
+
+    /// 返回的临时文件由调用方持有。探测文件和每一段下载也各自有清理路径。
+    private func downloadParallel(_ url: URL, staging: URL, maximumBytes: Int, wifiOnly: Bool = false,
+                                  fromHead head: URL? = nil) async throws -> URL {
+        var request = URLRequest(url: url)
+        request.allowsCellularAccess = !wifiOnly
+        DYMedia.headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        var probe = request
+        probe.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+
+        let (first, response) = try await session.download(for: probe)
+        let http = response as? HTTPURLResponse
+        if http?.statusCode == 200 { return first }
+        try? FileManager.default.removeItem(at: first)
+        guard http?.statusCode == 206 else { throw URLError(.badServerResponse) }
+        let range = http?.value(forHTTPHeaderField: "Content-Range")
+        let total = range?.split(separator: "/").last.flatMap { Int($0) } ?? 0
+        guard total <= maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
+
+        let headBytes = try head?.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        if headBytes == 0, total <= Self.segmentMinBytes {
+            let (file, response) = try await session.download(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                try? FileManager.default.removeItem(at: file)
+                throw URLError(.badServerResponse)
+            }
+            return file
+        }
+
+        guard total > headBytes else { throw URLError(.badServerResponse) }
+        let session = session
+        let remaining = total - headBytes
+        let count = headBytes == 0 ? Self.segments : min(Self.segments, max(1, remaining / (4 << 20)))
+        let partSize = remaining / count
+        let parts = try await withThrowingTaskGroup(of: (Int, URL).self) { group in
+            for index in 0..<count {
+                let low = headBytes + index * partSize
+                let high = index == count - 1 ? total - 1 : low + partSize - 1
+                var partRequest = request
+                partRequest.setValue("bytes=\(low)-\(high)", forHTTPHeaderField: "Range")
+                let rangedRequest = partRequest
+                group.addTask {
+                    let (file, response) = try await session.download(for: rangedRequest)
+                    defer { try? FileManager.default.removeItem(at: file) }
+                    try Task.checkCancellation()
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 206,
+                          http.value(forHTTPHeaderField: "Content-Range")?.lowercased() == "bytes \(low)-\(high)/\(total)",
+                          try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == high - low + 1 else {
+                        throw URLError(.badServerResponse)
+                    }
+                    let part = staging.appendingPathComponent(String(index))
+                    try FileManager.default.moveItem(at: file, to: part)
+                    return (index, part)
+                }
+            }
+            var parts: [(Int, URL)] = []
+            for try await part in group { parts.append(part) }
+            return parts.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+
+        let joined = staging.appendingPathComponent("full")
+        if let head {
+            try FileManager.default.copyItem(at: head, to: joined)
+        } else {
+            FileManager.default.createFile(atPath: joined.path, contents: nil)
+        }
+        let output = try FileHandle(forWritingTo: joined)
+        defer { try? output.close() }
+        if head != nil { _ = try output.seekToEnd() }
+        for part in parts {
+            let input = try FileHandle(forReadingFrom: part)
+            defer { try? input.close() }
+            while let chunk = try input.read(upToCount: 4 << 20), !chunk.isEmpty {
+                try Task.checkCancellation()
+                try output.write(contentsOf: chunk)
+            }
+            try FileManager.default.removeItem(at: part)
+        }
+        guard try output.offset() == UInt64(total) else { throw URLError(.badServerResponse) }
+        return joined
     }
 
     func markWatched(_ id: String) {
@@ -537,24 +426,53 @@ actor DYVideoCache {
         save()
     }
 
-    func usage() -> (count: Int, bytes: Int) {
-        (entries.count + heads.count, entries.reduce(0) { $0 + $1.bytes } + heads.reduce(0) { $0 + $1.bytes })
+    private func stopAutomaticWork() async {
+        let pendingJob = job
+        let pendingCompletion = longCompletion
+        pendingJob?.cancel()
+        pendingCompletion?.cancel()
+        await pendingJob?.value
+        await pendingCompletion?.value
+        job = nil
+        jobID = nil
     }
 
-    /// 储存空间页「清理缓存」：清视频缓存 + 分段下载留在 tmp 的临时目录
-    func clearForStorage() -> Bool {
-        _ = clear()
-        return DYStorageFiles.removeVideoWork()
+    func clear() async -> Int {
+        await clearAutomaticCache().bytes
     }
 
-    func clear() -> Int {
-        let bytes = entries.reduce(0) { $0 + $1.bytes } + heads.reduce(0) { $0 + $1.bytes }
-        job?.cancel(); job = nil; jobID = nil
-        entries = []; heads = []
+    func clearForStorage() async -> Bool {
+        await clearAutomaticCache().removed
+    }
+
+    private func clearAutomaticCache() async -> (bytes: Int, removed: Bool) {
+        guard !clearing else { return (0, false) }
+        clearing = true
+        defer { clearing = false }
+        await stopAutomaticWork()
+        failed.removeAll()
+        let heads = Self.headFiles()
+        let headBytes = heads.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        let bytes = entries.reduce(headBytes) { $0 + $1.bytes }
+        let removed = DYStorageFiles.removeIfPresent(Self.dir)
+        entries.removeAll { Self.automaticURL($0.aweme.id) == nil }
+        let removedTemporary = DYStorageFiles.removeVideoWork()
+        return (removed ? bytes : 0, removed && removedTemporary)
+    }
+
+    private func prepare() {
+        guard !prepared else { return }
+        prepared = true
+        _ = DYStorageFiles.removeIfPresent(DYStorageFiles.videoWorkDirectory)
+        if !manualBatch { _ = DYStorageFiles.removeIfPresent(DYOfflineVideoStore.stagingDirectory) }
+        // 丢失索引或被中断的写入可能留下未登记的视频。保留可由索引恢复的完整文件。
+        let retained = Set(entries.map { Self.fileURL($0.aweme.id).lastPathComponent }
+                           + [Self.indexURL.lastPathComponent, Self.headIndexURL.lastPathComponent])
         if let files = try? FileManager.default.contentsOfDirectory(at: Self.dir, includingPropertiesForKeys: nil) {
-            for f in files { try? FileManager.default.removeItem(at: f) }
+            for file in files where file.pathExtension != "head" && !retained.contains(file.lastPathComponent) {
+                _ = DYStorageFiles.removeIfPresent(file)
+            }
         }
-        return bytes
     }
 
     /// 超上限：先删看过的（最早的先删），还超就删最早加进来的
@@ -567,36 +485,30 @@ actor DYVideoCache {
             watched -= 1
         }
         let lim = max(Self.limit, 0)
-        while entries.count > lim || (entries.count > 1 && entries.reduce(0, { $0 + $1.bytes }) > Self.maxBytes) {
+        while entries.count > lim || entries.reduce(0, { $0 + $1.bytes }) > Self.maxBytes {
             let idx = entries.firstIndex(where: \.watched) ?? 0
             let e = entries.remove(at: idx)
             try? FileManager.default.removeItem(at: Self.fileURL(e.aweme.id))
         }
     }
 
-    /// 启动时清一次：上次看过的缓存全部删掉（老板要求「看过的清理掉，重启别再刷到旧的」）
-    /// 清掉历史遗留的「第一段」文件（新策略不再使用）
-    func purgeHeads() {
-        guard !heads.isEmpty else { return }
-        for h in heads { try? FileManager.default.removeItem(at: Self.headURL(h.id)) }
-        heads.removeAll()
-        saveHeads()
-        DYLiveModel.log("DDCACHE 清理历史头段 \(heads.count)")
+    /// 启动时回收旧版分段、索引之外的文件和已看过的视频。
+    func purgeWatched() {
+        prepare()
+        let stale = entries.filter(\.watched)
+        for entry in stale { _ = DYStorageFiles.removeIfPresent(Self.fileURL(entry.aweme.id)) }
+        entries.removeAll(where: \.watched)
+        evict()
+        save()
     }
 
-    func purgeWatched() {
-        let stale = entries.filter(\.watched)
-        guard !stale.isEmpty else { return }
-        for e in stale { try? FileManager.default.removeItem(at: Self.fileURL(e.aweme.id)) }
-        entries.removeAll(where: \.watched)
-        save()
-        DYLiveModel.log("DDCACHE 清理已看过 \(stale.count) 条，剩 \(entries.count)")
+    /// 清理之前版本留下的头段文件；目前的常规预缓存不再生成这些文件。
+    func purgeHeads() {
+        for head in Self.headFiles() { _ = DYStorageFiles.removeIfPresent(head) }
+        _ = DYStorageFiles.removeIfPresent(Self.headIndexURL)
     }
 
     private func save() {
         if let d = try? JSONEncoder().encode(entries) { try? d.write(to: Self.indexURL, options: .atomic) }
-    }
-    private func saveHeads() {
-        if let d = try? JSONEncoder().encode(heads) { try? d.write(to: Self.headIndexURL, options: .atomic) }
     }
 }
