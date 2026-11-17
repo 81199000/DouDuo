@@ -50,6 +50,12 @@ enum DYPagerAdvance {
     }
     /// 返回 false = 没有分页代理接手（系统「减少动态效果」等），调用方自己直接切
     static func request(from: String, to: String) -> Bool {
+        // App 在后台（后台播放 / 锁屏听）时屏幕不刷新，滑动动画靠 CADisplayLink 驱动、一帧都不走，
+        // 动画「接手」了却永远停不下来 → 后台自动连播卡在播完的那条（议题 #52-3）。后台直接切，不放动画。
+        if UIApplication.shared.applicationState != .active {
+            DYLiveModel.log("DDAUTONEXT background → direct \(from.suffix(4))→\(to.suffix(4))")
+            return false
+        }
         delegates.removeAll { $0.value == nil }
         for d in delegates.reversed() {
             if let d = d.value, d.animateAdvance(from: from, to: to) { return true }
