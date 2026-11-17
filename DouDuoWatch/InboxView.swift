@@ -4,8 +4,7 @@ struct InboxView: View {
     @EnvironmentObject var model: WatchModel
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 if let e = model.inboxError {
                     VStack(alignment: .leading, spacing: 2) {
                         Label(e, systemImage: "iphone.slash").font(.footnote).foregroundStyle(.orange)
@@ -44,13 +43,15 @@ struct InboxView: View {
                 }
             }
             .navigationTitle("消息")
+            .safeAreaInset(edge: .bottom) {
+                Text("表端 " + WatchBuild.stamp).font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
             .overlay { if model.loadingInbox && model.inbox.notices.isEmpty && model.inbox.chats.isEmpty { ProgressView() } }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { await model.refreshInbox() } } label: { Image(systemName: "arrow.clockwise") }
                 }
             }
-        }
         .task { await model.refreshInbox() }
     }
 
