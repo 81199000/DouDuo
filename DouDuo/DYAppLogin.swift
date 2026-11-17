@@ -64,6 +64,13 @@ struct DYAppLoginScreen: View {
 
                 if mode == .code { codeForm } else { qrForm }
 
+                if page.savingTrust {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("登录成功，正在保存登录信息…").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .accessibilityIdentifier("douyin.login.savingTrust")
+                }
                 if let msg = page.message {
                     Text(msg).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
                         .accessibilityIdentifier("douyin.login.message")
@@ -162,6 +169,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var busy = false
     @Published var countdown = 0
     @Published var loggedIn = false
+    /// 已登录、正在等网页的「保存登录信息」弹框
+    @Published var savingTrust = false
     /// 网页弹了人机验证 / 二次验证：把网页那层露出来
     @Published var needsWeb = false
     /// 点了「登录」后网页要求扫码确认（新设备第一次登录常见）：界面切到扫码页
@@ -180,6 +189,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     override init() {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()   // 跟签名页 / 网页版共用登录态
+        DYTrustLogin.install(in: cfg)       // 登录成功后的「是否保存登录信息？」默认点「保存」
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 420, height: 760), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
@@ -357,8 +367,12 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     private var lastSeen = ""
 
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
+    /// 轮询和网页跳转会同时触发确认：同一时间只跑一份（以前两份并发，日志里确认/保存各记两遍）
+    private var confirming = false
     private func confirmLogin() async {
-        guard !loggedIn else { return }
+        guard !loggedIn, !savingTrust, !confirming else { return }
+        confirming = true
+        defer { confirming = false }
         var ok = await hasNewSession()
         // 网页跳走时 cookie 可能晚一点才写进来：再等几轮
         if !ok, web.url?.path.hasPrefix("/login_page") != true {
@@ -366,7 +380,15 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         }
         guard !loggedIn else { return }
         DYLiveModel.log("DDAPPLOGIN confirm newSession=\(ok) path=\(web.url?.path ?? "-")")
-        if ok { message = nil; busy = false; loggedIn = true; poll?.invalidate(); DYAccountStore.sessionDidChange() }
+        if ok {
+            poll?.invalidate()
+            // 别马上关：登录成功后网页会弹「是否保存登录信息？（5）」，等脚本点完「保存」再关（最多 7 秒）
+            message = nil; busy = true; savingTrust = true
+            let clicked = await DYTrustLogin.waitClicked(in: web, seconds: 7)
+            DYLiveModel.log("DDTRUST login-page clicked=\(clicked) path=\(web.url?.path ?? "-")")
+            savingTrust = false; busy = false; loggedIn = true
+            DYAccountStore.sessionDidChange()
+        }
         else if web.url?.path.hasPrefix("/login_page") != true {
             // 跳走了但没登录上：回登录页，告诉用户再试
             busy = false
