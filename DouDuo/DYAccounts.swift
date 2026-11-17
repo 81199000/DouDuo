@@ -33,9 +33,12 @@ final class DYAccountStore: ObservableObject {
     }
 
     #if DEBUG
+    private var seeded = false
     /// UI 测试：DOUDUO_FAKE_ACCOUNTS=1 放两个假账号（假 cookie，只验证切换/退出/移除流程）
     func seedFakeAccountsIfNeeded() {
-        guard ProcessInfo.processInfo.environment["DOUDUO_FAKE_ACCOUNTS"] == "1", accounts.isEmpty else { return }
+        guard ProcessInfo.processInfo.environment["DOUDUO_FAKE_ACCOUNTS"] == "1", !seeded else { return }
+        seeded = true
+        accounts.removeAll { $0.id == "1001" || $0.id == "1002" }   // 每次启动都放回两个干净的假账号
         for (uid, name) in [("1001", "测试账号甲"), ("1002", "测试账号乙")] {
             let c: [[String: Any]] = [["name": "sessionid", "value": "fake-\(uid)", "domain": ".douyin.com", "path": "/",
                                        "secure": true, "httpOnly": true, "expires": Date().addingTimeInterval(86400).timeIntervalSince1970]]
@@ -148,7 +151,18 @@ final class DYAccountStore: ObservableObject {
     /// 换账号时清掉跟账号绑定的本地画面缓存（消息/联系人缓存按 uid 分目录，会自己换）
     static func clearAccountCaches() {
         DYChatSnapshotCache.shared.clearAll()
+        sessionDidChange()
+    }
+
+    /// 登录态变了（App 内登录成功 / 切换 / 退出）：立刻重新核对账号。
+    /// 信息页的账号核对有 5 分钟缓存，以前登录后还拿着「未登录时打开的聊天网页」，信息一直加载不出来（老板 11-17）。
+    /// prepare() 发现账号变了会丢掉旧聊天网页，后台下一轮按新账号重开 /chat。
+    static func sessionDidChange() {
         DYMessageCache.shared.invalidateScope()
+        Task { @MainActor in
+            await DYMessageCache.shared.prepare()
+            DYLiveModel.log("DDACCOUNT session changed → message scope rechecked")
+        }
     }
 
     private static func encode(_ cookies: [HTTPCookie]) -> Data? {
@@ -205,7 +219,12 @@ final class DYAccountStore: ObservableObject {
     }
 }
 
-/// 「我的」右上角 → 账号：列出存着的账号，切换 / 添加 / 退出 / 移除
+extension Notification.Name {
+    /// 信息页右侧栏「账号」→ 让嵌在里面的「我的」弹账号页
+    static let dyOpenAccounts = Notification.Name("douduo.openAccounts")
+}
+
+/// 「我的」→ 账号：列出存着的账号，切换 / 添加 / 退出 / 移除
 struct DYAccountsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var store = DYAccountStore.shared

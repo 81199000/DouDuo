@@ -185,6 +185,7 @@ final class DYMessageCache: ObservableObject {
             chatModel.web = nil
             retainedChatWeb = nil
             if DYDMProbe.enabled { DYChatWebSession.shared.noteAccountReset() }
+            DYLiveModel.log("DDMSGSCOPE account changed → chat web reset")
         }
     }
     func retainChat() { retainedChatWeb = chatModel.web }
@@ -859,18 +860,29 @@ struct DYMessagesScreen: View {
                 .accessibilityLabel("返回")
                 .accessibilityIdentifier(!showingMine && navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
             }
-            // 四个分类 + 聊天时的「更多」：一条玻璃胶囊
-            VStack(spacing: theme.media.actionItemSpacing) {
-                railItem(.interactive, icon: "heart", title: "互动",
-                         badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
-                railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
-                railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
-                railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
-                if navigation.isChat && !showingMine { chatMoreRailButton }
+            // 四个分类 + 聊天时的「更多」：只属于信息页，「我的」页不显示（老板 11-17）
+            if !showingMine {
+                VStack(spacing: theme.media.actionItemSpacing) {
+                    railItem(.interactive, icon: "heart", title: "互动",
+                             badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
+                    railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
+                    railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
+                    railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
+                    if navigation.isChat { chatMoreRailButton }
+                }
+                .padding(.vertical, 8)
+                .frame(width: Self.railWidth)
+                .glassEffect(.regular, in: .capsule)
+            } else {
+                // 「我的」页：右侧栏放「账号」（多账号切换 / 退出），不再放左上角跟返回键重叠
+                VStack(spacing: theme.media.actionItemSpacing) {
+                    railButton(icon: "person.2.circle", title: "账号", selected: false, badge: 0,
+                               id: "douyin.mine.accounts") { NotificationCenter.default.post(name: .dyOpenAccounts, object: nil) }
+                }
+                .padding(.vertical, 8)
+                .frame(width: Self.railWidth)
+                .glassEffect(.regular, in: .capsule)
             }
-            .padding(.vertical, 8)
-            .frame(width: Self.railWidth)
-            .glassEffect(.regular, in: .capsule)
             // 我的：直接进「我的」
             if mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
                 VStack(spacing: theme.media.actionItemSpacing) {
