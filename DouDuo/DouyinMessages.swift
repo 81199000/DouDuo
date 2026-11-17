@@ -938,8 +938,10 @@ struct DYMessagesScreen: View {
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
         .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
-        // 底部位置跟视频页一致：离底 92pt；键盘弹出时贴着键盘放，省下的高度给上面的按键
-        .padding(.bottom, keyboardFrame == nil ? 92 : 8)
+        // 底部位置跟视频页一致：离底 92pt。
+        // 键盘弹出时整页已经不再变矮（几何尺寸还是全屏高），贴底排就会整列落到键盘后面 ——
+        // 要按键盘盖住的高度把这一列抬到键盘上方。
+        .padding(.bottom, keyboardFrame == nil ? 92 : chatKeyboardOverlap + 8)
         .frame(maxHeight: .infinity, alignment: .bottom)
         .themeShadow(.floatingPanel)
         .ignoresSafeArea(.keyboard)
