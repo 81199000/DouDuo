@@ -77,6 +77,15 @@ final class DYChatSnapshotCache {
         DYLiveModel.log("DDCHAT_SNAP save id=\(key.chatID.suffix(6)) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
     }
 
+    /// 储存空间页「清理缓存」
+    func clear() async -> Bool {
+        memory.removeAllObjects()
+        let directory = dir
+        return await withCheckedContinuation { continuation in
+            io.async { continuation.resume(returning: DYStorageFiles.resetCacheDirectory(directory)) }
+        }
+    }
+
     /// 切账号/退出登录时清掉，别让上一个账号的聊天画面露出来
     func clearAll() {
         memory.removeAllObjects()

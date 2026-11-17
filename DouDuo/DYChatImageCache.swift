@@ -19,6 +19,14 @@ final class DYChatImageCache {
 
     private let dir: URL
     private let io = DispatchQueue(label: "chat-image-cache", qos: .utility)
+
+    /// 储存空间页「清理缓存」
+    func clear() async -> Bool {
+        let directory = dir
+        return await withCheckedContinuation { continuation in
+            io.async { continuation.resume(returning: DYStorageFiles.resetCacheDirectory(directory)) }
+        }
+    }
     private lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.httpMaximumConnectionsPerHost = 4

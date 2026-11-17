@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		081C663156336EB28D898536 /* WatchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56CD15E9E8EB923A619DF9E1 /* WatchModel.swift */; };
 		0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */; };
+		0AF6EA39F458FD381966460A /* DYStorageRing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4EB949397190E39BDFDD1D0 /* DYStorageRing.swift */; };
 		0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */; };
 		10144843E364788B2D3A07C6 /* DouyinEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */; };
 		115E503A4451900455784A66 /* DDAppearanceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */; };
@@ -27,11 +28,15 @@
 		28289ABD1DCF4363BEB6CB68 /* DouyinApiScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF797925E3FB7C48C8F83594 /* DouyinApiScanner.swift */; };
 		2D5E21709C22466A5A6AF6EA /* DYFeedPager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93E1C4B6340A84BAFB38739F /* DYFeedPager.swift */; };
 		2ECF269C61C88FFF8EFD2169 /* VLCKitSPM in Frameworks */ = {isa = PBXBuildFile; productRef = 0ABFD1885FF4C1B4325A07D2 /* VLCKitSPM */; };
+		2F93C9BAEB91B51961C8502F /* DYOfflineVideoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F91812B67F0D3FB927E45A53 /* DYOfflineVideoStore.swift */; };
+		303B35F6E9BA5C2FC47B3168 /* DYOfflineDownloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D9B729D9559C66E7A1800C0 /* DYOfflineDownloads.swift */; };
+		319FF5DEE2FDC04B9E0D9A90 /* DYStorageScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 357FC289432690E166D569FA /* DYStorageScreen.swift */; };
 		34174BA431CEA2F8477FE80C /* DYMessageRowBoundsKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4079BB937127E423770BACE /* DYMessageRowBoundsKey.swift */; };
 		3480CE84AD330E7BF31FD448 /* DYVideoFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC4748DC1421B4B7A0885D8 /* DYVideoFit.swift */; };
 		388B807146DBDAC1A23CE692 /* DYDeskLight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08398432E4FEF76AED7714BB /* DYDeskLight.swift */; };
 		39BE12046979C591BDEC27A3 /* DYEdgeBack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90ADAC650921F8A5BCDB381F /* DYEdgeBack.swift */; };
 		3B13F9FF35F86C692E05E251 /* DouyinForwardPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 247A523C254CDEF946BEA5A1 /* DouyinForwardPanel.swift */; };
+		3BE8DA4A6E07F0B8416BF876 /* DYOfflinePlaybackIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 248FD41A9E79A4955789001E /* DYOfflinePlaybackIndicator.swift */; };
 		3E4101ECFA267C2049E839AF /* DYChatComposerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6718C6E9D659B4A5F22A9A /* DYChatComposerModel.swift */; };
 		3FC7160DDA82B007C6AEFE84 /* DYImageXUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E94F5DC60348878CF2B226E /* DYImageXUploader.swift */; };
 		40C86E94DC009C7F6F08DF03 /* DouDuoWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 42C0E6796BA2CD0B5C05314F /* DouDuoWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -50,6 +55,7 @@
 		55147881C1BCC59CF2277E64 /* DYGalleryMusic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AFC4408149F67A953BE7CC5 /* DYGalleryMusic.swift */; };
 		5751001D3873E34BD6392BEF /* DYPlaybackTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */; };
 		57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */ = {isa = PBXBuildFile; fileRef = 6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */; };
+		5CE4582A2CFCF1A6926C368B /* DYStorageFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 269E2F79C09E0E2552CAA797 /* DYStorageFiles.swift */; };
 		5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */; };
 		5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */; };
 		6273092DE9964219DDA74C50 /* DYMessageDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9929F2A3F9E6C999A67F565 /* DYMessageDivider.swift */; };
@@ -80,12 +86,14 @@
 		8EB9B00BA15FC48C75B49677 /* DYChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641CB2690B07BD7100280B09 /* DYChatComposer.swift */; };
 		958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */; };
 		9F40E63A14141175377E9040 /* DYChatHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4522BBA2C9DA5257C7ADCC /* DYChatHeader.swift */; };
+		A13FD438ECA5B6D6C5C2D9EE /* DYOfflineDownloadScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68F4E1542F53FF3D9DF55FEF /* DYOfflineDownloadScreen.swift */; };
 		A6977B290150EFD0B47768E4 /* DYRecommendFeedHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66460DEF146A3933D0480329 /* DYRecommendFeedHost.swift */; };
 		AAF87B9A920594ED30D856E2 /* DouyinCommentApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */; };
 		ABB3FB8972E51EC26F6CFCE0 /* DYReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21E706CE2EE957B9C81B44D2 /* DYReadiness.swift */; };
 		AEC80DB4FD8673C14A2C37C2 /* VideoPagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF453C6E736BA8E9EAA6B3CD /* VideoPagerView.swift */; };
 		AF2F0EB751A5DBBC824C6357 /* DouyinPeopleCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */; };
 		B072D11672770FB4836781C5 /* PlayerGestureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67D760242AE376C515972D58 /* PlayerGestureView.swift */; };
+		B08CBE12D52FDFA54AB6347A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC7988669B7B20EB2EB040BE /* PrivacyInfo.xcprivacy */; };
 		B68211E3E80797D1FA1E1C10 /* DouyinLoginProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */; };
 		B6C12A97D054814FFFCCE8A0 /* DouyinVideoCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */; };
 		C1166D7EF9108A4F07FDFA35 /* DYPagerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D70EC03370C3E82A74E8D1 /* DYPagerWindow.swift */; };
@@ -176,8 +184,10 @@
 		1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYRelationsPagingTests.swift; sourceTree = "<group>"; };
 		21E706CE2EE957B9C81B44D2 /* DYReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYReadiness.swift; sourceTree = "<group>"; };
 		247A523C254CDEF946BEA5A1 /* DouyinForwardPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinForwardPanel.swift; sourceTree = "<group>"; };
+		248FD41A9E79A4955789001E /* DYOfflinePlaybackIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflinePlaybackIndicator.swift; sourceTree = "<group>"; };
 		25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "ProvinceCityChina-MIT.txt"; sourceTree = "<group>"; };
 		26628003EB3A42ADD3566C56 /* DYMessageRailProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageRailProbeTests.swift; sourceTree = "<group>"; };
+		269E2F79C09E0E2552CAA797 /* DYStorageFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStorageFiles.swift; sourceTree = "<group>"; };
 		29DE92BCB223AA37A12275DA /* DYChatImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatImageCache.swift; sourceTree = "<group>"; };
 		2A26A5E0649453C171341984 /* DYVideoOptionsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoOptionsPanel.swift; sourceTree = "<group>"; };
 		2C43FA3C5D8DB75D2826682B /* DYConversationSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYConversationSync.swift; sourceTree = "<group>"; };
@@ -187,6 +197,7 @@
 		31F598AF42AF0B8D27D56A05 /* DDWatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDWatchBridge.swift; sourceTree = "<group>"; };
 		3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedAsyncImage.swift; sourceTree = "<group>"; };
 		33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPlaybackTelemetry.swift; sourceTree = "<group>"; };
+		357FC289432690E166D569FA /* DYStorageScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStorageScreen.swift; sourceTree = "<group>"; };
 		35D6E2B9C1A0A5380FFAFD7B /* DYHashtag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtag.swift; sourceTree = "<group>"; };
 		366286F958759FA9BE49695E /* DouyinRelatedSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinRelatedSearch.swift; sourceTree = "<group>"; };
 		36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinCommentApiProbe.swift; sourceTree = "<group>"; };
@@ -210,6 +221,7 @@
 		66460DEF146A3933D0480329 /* DYRecommendFeedHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYRecommendFeedHost.swift; sourceTree = "<group>"; };
 		67255D497584391EEC6C07A2 /* DouDuoUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
+		68F4E1542F53FF3D9DF55FEF /* DYOfflineDownloadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloadScreen.swift; sourceTree = "<group>"; };
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
 		6DC08129F3C42A4F721FFF7D /* WatchCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchCache.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
@@ -222,6 +234,7 @@
 		79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeedView.swift; sourceTree = "<group>"; };
 		7A48E6D30B51CE56B7F7E7B8 /* DYChatChromeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatChromeSnapshot.swift; sourceTree = "<group>"; };
 		7A8BAE91B96A90EB92AC6A7F /* DYRelationsProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYRelationsProbe.swift; sourceTree = "<group>"; };
+		7D9B729D9559C66E7A1800C0 /* DYOfflineDownloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloads.swift; sourceTree = "<group>"; };
 		7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoApp.swift; sourceTree = "<group>"; };
 		7E94F5DC60348878CF2B226E /* DYImageXUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYImageXUploader.swift; sourceTree = "<group>"; };
 		7F33EB1CF5B949489AA77586 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -237,10 +250,12 @@
 		9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPublicationRegion.swift; sourceTree = "<group>"; };
 		9D2BB0980791BF4DC6C86072 /* DDWatchProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDWatchProtocol.swift; sourceTree = "<group>"; };
 		9E79B1B7855114828E14FCBA /* DouyinDuoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinDuoLayout.swift; sourceTree = "<group>"; };
+		A4EB949397190E39BDFDD1D0 /* DYStorageRing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStorageRing.swift; sourceTree = "<group>"; };
 		A4F1DFA94B73649EE84FAC2B /* DYDanmakuEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDanmakuEngine.swift; sourceTree = "<group>"; };
 		A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoUITests.swift; sourceTree = "<group>"; };
 		A94155DE2FCE85290C6491D7 /* DYFirstFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFirstFrame.swift; sourceTree = "<group>"; };
 		A98C6CBE4EB4A9999CFB3D03 /* DYDanmakuInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDanmakuInput.swift; sourceTree = "<group>"; };
+		AC7988669B7B20EB2EB040BE /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AD6718C6E9D659B4A5F22A9A /* DYChatComposerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatComposerModel.swift; sourceTree = "<group>"; };
 		AFC1D9BDEA8CFD52E90C4CD6 /* DYCommentStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYCommentStage.swift; sourceTree = "<group>"; };
 		B0D3A302578F63723DC624C1 /* DYForwardReceipt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardReceipt.swift; sourceTree = "<group>"; };
@@ -277,6 +292,7 @@
 		EF453C6E736BA8E9EAA6B3CD /* VideoPagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPagerView.swift; sourceTree = "<group>"; };
 		F08DC47FE80818A237A7BDE3 /* DouyinFeatureProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeatureProbe.swift; sourceTree = "<group>"; };
 		F395C40849A6DD16F64AD3E5 /* DouyinBridge+CommentImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DouyinBridge+CommentImage.swift"; sourceTree = "<group>"; };
+		F91812B67F0D3FB927E45A53 /* DYOfflineVideoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineVideoStore.swift; sourceTree = "<group>"; };
 		F9929F2A3F9E6C999A67F565 /* DYMessageDivider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageDivider.swift; sourceTree = "<group>"; };
 		FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowLiveLogic.swift; sourceTree = "<group>"; };
 		FD34350433D4912F2B0CC499 /* DYAppLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYAppLogin.swift; sourceTree = "<group>"; };
@@ -387,6 +403,10 @@
 				89F1634658060342668FEECA /* DYMessageSidebarLayout.swift */,
 				0C40201AD365787526792119 /* DYNavigationDock.swift */,
 				CCE7B8B057E03F9F0103866B /* DYNoticeProbe.swift */,
+				7D9B729D9559C66E7A1800C0 /* DYOfflineDownloads.swift */,
+				68F4E1542F53FF3D9DF55FEF /* DYOfflineDownloadScreen.swift */,
+				248FD41A9E79A4955789001E /* DYOfflinePlaybackIndicator.swift */,
+				F91812B67F0D3FB927E45A53 /* DYOfflineVideoStore.swift */,
 				B6D70EC03370C3E82A74E8D1 /* DYPagerWindow.swift */,
 				D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */,
 				79B6E29A6530FCADAE181F08 /* DYPictureInPicture.swift */,
@@ -399,6 +419,9 @@
 				B844AA364484EFD9B61F609E /* DYSearchPlaybackProbe.swift */,
 				DFA82DC2A7F234948CEC0BB9 /* DYSearchPresentation.swift */,
 				699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */,
+				269E2F79C09E0E2552CAA797 /* DYStorageFiles.swift */,
+				A4EB949397190E39BDFDD1D0 /* DYStorageRing.swift */,
+				357FC289432690E166D569FA /* DYStorageScreen.swift */,
 				E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */,
 				730650A08AE183BAB384340D /* DYSwipeProbe.swift */,
 				631BD772CFA6D0746CEFAF94 /* DYVideoAmbient.swift */,
@@ -410,6 +433,7 @@
 				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
+				AC7988669B7B20EB2EB040BE /* PrivacyInfo.xcprivacy */,
 				25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */,
 				D7CD74B4F7A62B69D376114F /* SeamlessAudioPlayer.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
@@ -614,6 +638,7 @@
 			files = (
 				64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */,
 				57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */,
+				B08CBE12D52FDFA54AB6347A /* PrivacyInfo.xcprivacy in Resources */,
 				872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -694,6 +719,10 @@
 				484546814115D225D1C43224 /* DYMessageSidebarLayout.swift in Sources */,
 				632B32A26293F1A7708B8ED0 /* DYNavigationDock.swift in Sources */,
 				7DC08852457400601AE93BF0 /* DYNoticeProbe.swift in Sources */,
+				A13FD438ECA5B6D6C5C2D9EE /* DYOfflineDownloadScreen.swift in Sources */,
+				303B35F6E9BA5C2FC47B3168 /* DYOfflineDownloads.swift in Sources */,
+				3BE8DA4A6E07F0B8416BF876 /* DYOfflinePlaybackIndicator.swift in Sources */,
+				2F93C9BAEB91B51961C8502F /* DYOfflineVideoStore.swift in Sources */,
 				C1166D7EF9108A4F07FDFA35 /* DYPagerWindow.swift in Sources */,
 				5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */,
 				C2897DBD3C7E64EE0B0B7009 /* DYPictureInPicture.swift in Sources */,
@@ -706,6 +735,9 @@
 				6CA4FD8AB3BD43A66B414368 /* DYSearchPlaybackProbe.swift in Sources */,
 				F15B6677718D7B73EBBD7C15 /* DYSearchPresentation.swift in Sources */,
 				8527AFFAA0970036C2B5C61F /* DYSettingsScreen.swift in Sources */,
+				5CE4582A2CFCF1A6926C368B /* DYStorageFiles.swift in Sources */,
+				0AF6EA39F458FD381966460A /* DYStorageRing.swift in Sources */,
+				319FF5DEE2FDC04B9E0D9A90 /* DYStorageScreen.swift in Sources */,
 				1710FB16E0B12F7246B4ADDE /* DYStreakBadge.swift in Sources */,
 				196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */,
 				76E23E9018E12443F48468FA /* DYVideoAmbient.swift in Sources */,
@@ -941,7 +973,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 106;
+				CURRENT_PROJECT_VERSION = 107;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -955,7 +987,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.5.5;
+				MARKETING_VERSION = 1.6;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1033,7 +1065,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 106;
+				CURRENT_PROJECT_VERSION = 107;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1053,7 +1085,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.5.5;
+				MARKETING_VERSION = 1.6;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

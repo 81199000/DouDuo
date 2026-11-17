@@ -16,6 +16,15 @@ final class ImageCache {
     private let diskDir: URL
     private let io = DispatchQueue(label: "imagecache.disk", qos: .utility)
 
+    /// 储存空间页「清理缓存」
+    func clear() async -> Bool {
+        cache.removeAllObjects()
+        let directory = diskDir
+        return await withCheckedContinuation { continuation in
+            io.async { continuation.resume(returning: DYStorageFiles.resetCacheDirectory(directory)) }
+        }
+    }
+
     init() {
         cache.countLimit = 300
         cache.totalCostLimit = 200 * 1024 * 1024 // 200MB

@@ -860,7 +860,8 @@ struct DYMessagesScreen: View {
                 .accessibilityLabel("返回")
                 .accessibilityIdentifier(!showingMine && navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
             }
-            // 四个分类 + 聊天时的「更多」：只属于信息页，「我的」页不显示（老板 11-17）
+            // 四个分类 + 聊天时的「更多」只属于信息页；「我的」页把这组隐藏着占位、「账号」放在同一位置，
+            // 两页栏高一样，返回键不会上下跳
             if !showingMine {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railItem(.interactive, icon: "heart", title: "互动",
@@ -874,19 +875,22 @@ struct DYMessagesScreen: View {
                 .frame(width: Self.railWidth)
                 .glassEffect(.regular, in: .capsule)
             } else {
-                // 「我的」页：右侧栏放「账号」（多账号切换 / 退出），不再放左上角跟返回键重叠
+                // 「我的」页：「账号」放在分类组的位置，整组高度跟信息页四个分类一样（空着占位），
+                // 两页栏高一致，返回键不上下跳
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "person.2.circle", title: "账号", selected: false, badge: 0,
                                id: "douyin.mine.accounts") { NotificationCenter.default.post(name: .dyOpenAccounts, object: nil) }
+                    .glassEffect(.regular, in: .capsule)
+                    Spacer(minLength: 0)
                 }
                 .padding(.vertical, 8)
-                .frame(width: Self.railWidth)
-                .glassEffect(.regular, in: .capsule)
+                .frame(width: Self.railWidth, height: 48 * 4 + theme.media.actionItemSpacing * 3 + 16)
             }
             // 我的：直接进「我的」
             if mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "bubble.left.and.bubble.right", title: "信息", selected: !showingMine, badge: 0,
+                               dot: showingMine && unreadTotal > 0,
                                id: "douyin.messages.tab.messages") {
                         if showingMine { withAnimation(.easeOut(duration: 0.18)) { showingMine = false } }
                     }
@@ -923,7 +927,14 @@ struct DYMessagesScreen: View {
         }
     }
 
-    private func railButton(icon: String, title: String, selected: Bool, badge: Int, id: String,
+    /// 信息页所有未读：互动 + 粉丝 + 系统 + 陌生人 + 聊天会话
+    private var unreadTotal: Int {
+        let notices = [DYNoticeGroup.comment, .digg, .fans, .system].reduce(0) { $0 + (counts[$1.rawValue] ?? 0) }
+        let chats = conversations.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+        return notices + chats + strangerBadge
+    }
+
+    private func railButton(icon: String, title: String, selected: Bool, badge: Int, dot: Bool = false, id: String,
                             action: @escaping () -> Void) -> some View {
         let tint = selected ? theme.accent.color(for: scheme) : Color.primary
         return Button(action: action) {
@@ -940,6 +951,11 @@ struct DYMessagesScreen: View {
                                 .padding(.horizontal, 4).padding(.vertical, 1.5)
                                 .background(theme.status.danger.color(for: scheme), in: .capsule)
                                 .offset(x: 8, y: -3)
+                        } else if dot {
+                            Circle().fill(theme.status.danger.color(for: scheme))
+                                .frame(width: 8, height: 8)
+                                .offset(x: 2, y: 1)
+                                .accessibilityIdentifier(id + ".dot")
                         }
                     }
                 Text(title).font(.caption2.weight(.medium))
@@ -951,7 +967,7 @@ struct DYMessagesScreen: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : "")
+        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : (dot ? "有未读" : ""))
         .accessibilityIdentifier(id)
     }
 
@@ -2777,6 +2793,8 @@ struct DYForwardScreen: View {
         return false
     }
     let item: DYAweme
+    var fromOfflineLibrary = false
+    var onlineActionsAllowed = true
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -2797,6 +2815,14 @@ struct DYForwardScreen: View {
 
     private var actions: [DYForwardPanelAction] {
         var result: [DYForwardPanelAction] = []
+        if !onlineActionsAllowed {
+            result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
+            if usesClassicLayout {
+                result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line"))
+            }
+            result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
+            return result
+        }
         if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信好友", symbol: "paperplane.fill")) }
         if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
         result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
@@ -2810,8 +2836,12 @@ struct DYForwardScreen: View {
         model.contacts.filter { (!groupsOnly || $0.kind == 2) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
     }
     private var classicPanel: some View {
-        DYNativeForwardPanel(contacts: accountPrepared ? model.contacts : [], loading: !accountPrepared || model.loading || model.sending,
-                             status: accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : saveMessage ?? (copiedLink ? "链接已复制" : model.message))) : "正在加载朋友…", actions: actions,
+        DYNativeForwardPanel(contacts: accountPrepared && onlineActionsAllowed ? model.contacts : [],
+                             loading: onlineActionsAllowed && (!accountPrepared || model.loading || model.sending),
+                             status: onlineActionsAllowed
+                                 ? (accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : saveMessage ?? (copiedLink ? "链接已复制" : model.message))) : "正在加载朋友…")
+                                 : (saveMessage ?? (copiedLink ? "链接已复制" : "联网后可私信分享")),
+                             actions: actions,
                              onContact: selectRecipient,
                              onAction: perform, onClose: { dismiss() },
                              selectedID: selected?.id, composer: shareComposer)
@@ -2819,7 +2849,7 @@ struct DYForwardScreen: View {
             .background {
                 // Only the system sheet draws glass. Keep the signing/sending
                 // bridge hidden and preserve its real official account context.
-                if accountPrepared && !model.layoutFixture {
+                if onlineActionsAllowed && accountPrepared && !model.layoutFixture {
                     DYForwardWebContainer(model: model, url: item.webURL)
                         .id(model.accountScope)
                         .frame(width: 760, height: 640)
@@ -2840,7 +2870,7 @@ struct DYForwardScreen: View {
                                      selectedID: selected?.id, composer: shareComposer)
                     .frame(width: max(0, min(560, geo.size.width - 32)))
                 // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
-                if accountPrepared && !model.layoutFixture {
+                if onlineActionsAllowed && accountPrepared && !model.layoutFixture {
                     DYForwardWebContainer(model: model, url: item.webURL)
                         .id(model.accountScope)
                         .frame(width: 760, height: 640)
@@ -2882,12 +2912,15 @@ struct DYForwardScreen: View {
         }
         .sheet(isPresented: $showLogin, onDismiss: { Task { await restorePeople() } }) { DYForwardOfficialScreen(item: item) }
         .sheet(isPresented: $showOtherApps) { DYForwardSystemShare(url: item.webURL) }
-        .task { await restorePeople() }
-        .onAppear { panelVisible = true; if !usesClassicLayout { DDPlayback.shared.pauseAll(reason: .cover) } }
+        .task(id: onlineActionsAllowed) { if onlineActionsAllowed { await restorePeople() } }
+        .onAppear {
+            panelVisible = true
+            if !usesClassicLayout && !fromOfflineLibrary { DDPlayback.shared.pauseAll(reason: .cover) }
+        }
         .onDisappear {
             panelVisible = false
-            model.cancelPreparation()
-            if !usesClassicLayout { DDPlayback.shared.releaseCover() }
+            if onlineActionsAllowed { model.cancelPreparation() }
+            if !usesClassicLayout && !fromOfflineLibrary { DDPlayback.shared.releaseCover() }
         }
     }
     private var shareComposer: AnyView? {
@@ -2916,7 +2949,7 @@ struct DYForwardScreen: View {
         accountPrepared = true
     }
     private func perform(_ action: String) {
-        guard !model.sending else { return }
+        guard !onlineActionsAllowed || !model.sending else { return }
         switch action {
         case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
         case "copy": UIPasteboard.general.url = item.webURL; saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
@@ -2927,7 +2960,7 @@ struct DYForwardScreen: View {
             Task {
                 defer { saving = false }
                 do {
-                    try await DYSaver.save(item)
+                    try await DYSaver.save(item, fromOfflineLibrary: fromOfflineLibrary)
                     saveMessage = item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册"
                 } catch { saveMessage = "保存失败：\(error.localizedDescription)" }
             }
@@ -3524,11 +3557,14 @@ private extension EnvironmentValues {
 /// 状态挂在稳定的菜单外层，而不是会随原生菜单关闭而销毁的条目里。
 struct DYForwardPresentation: ViewModifier {
     let item: DYAweme
+    var fromOfflineLibrary = false
+    var onVisibilityChanged: ((Bool) -> Void)? = nil
     @State private var showing = false
     func body(content: Content) -> some View {
         content.environment(\.dyForwardAction, { showing = true })
+            .onChange(of: showing) { _, visible in onVisibilityChanged?(visible) }
             .fullScreenCover(isPresented: $showing) {
-                DYForwardScreen(item: item).presentationBackground(.clear)
+                DYForwardScreen(item: item, fromOfflineLibrary: fromOfflineLibrary).presentationBackground(.clear)
             }
     }
 }

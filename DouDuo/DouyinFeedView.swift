@@ -1067,14 +1067,14 @@ final class DYPreloader {
     private var obs: [String: NSKeyValueObservation] = [:]
     /// 当前预热窗口里的条目（页面归还播放器时用来判断还要不要留着）
     private var window: [String: DYAweme] = [:]
-    private var last: (items: [DYAweme], index: Int)?
+    private var last: (items: [DYAweme], index: Int, localOnly: Bool)?
     #if DEBUG
     var disabled = ProcessInfo.processInfo.environment["WUWEI_DEBUG_DOUYIN_NOPRELOAD"] == "1"
     #else
     let disabled = false
     #endif
 
-    func update(_ items: [DYAweme], current index: Int) {
+    func update(_ items: [DYAweme], current index: Int, localOnly: Bool = false) {
         guard !disabled, items.indices.contains(index) else { return }
         let th = ProcessInfo.processInfo.thermalState
         let ahead = th == .critical ? 1 : (th == .serious ? min(2, Self.ahead) : Self.ahead)
@@ -1082,7 +1082,7 @@ final class DYPreloader {
         let window = lo <= hi ? Array(items[lo...hi]) : []
         let ids = Set(window.map(\.id))
         self.window = Dictionary(window.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        last = (items, index)
+        last = (items, index, localOnly)
         // 离开窗口的：释放没被领走的；已领走的只要离当前 ≥2 条就不再记账（页面已经销毁）
         for (id, p) in players where !ids.contains(id) { release(id, p) }
         let near = Set(items[max(0, index - 1)...min(items.count - 1, index + 1)].map(\.id))
@@ -1094,7 +1094,12 @@ final class DYPreloader {
                 DYReadiness.mark(a.id)
                 continue
             }
-            let asset = DYMedia.asset(DYVideoCache.localURL(a.id) ?? url)
+            let local = DYVideoCache.localURL(a.id)
+            if localOnly, local == nil {
+                DYReadiness.mark(a.id)
+                continue
+            }
+            let asset = DYMedia.asset(local ?? url)
             let item = AVPlayerItem(asset: asset)
             // 紧挨着的下一条要「已经加载好」：不限制前向缓冲（0 = 交给系统，能把拿到的都先拿到）；
             // 再后面的留 15 秒够起播，省流量
@@ -1113,7 +1118,14 @@ final class DYPreloader {
                     let e = it.error as NSError?
                     let src = (it.asset as? AVURLAsset)?.url
                     DYLiveModel.log("DDPRELOADFAIL \(a.id.suffix(6)) local=\(src?.isFileURL ?? false) err=\(e?.domain ?? "-")/\(e?.code ?? 0) under=\((e?.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain)/\($0.code)" } ?? "-")")
-                    DispatchQueue.main.async { self?.retry(a, remote: url, wasLocal: src?.isFileURL ?? false) }
+                    if localOnly {
+                        DYReadiness.mark(a.id)
+                    } else {
+                        DispatchQueue.main.async { [weak self, weak p] in
+                            guard let self, let p, self.players[a.id] === p else { return }
+                            self.retry(a, remote: url, wasLocal: src?.isFileURL ?? false)
+                        }
+                    }
                     return
                 }
                 guard it.status == .readyToPlay else { return }
@@ -1145,10 +1157,14 @@ final class DYPreloader {
     func giveBack(_ id: String, _ p: AVPlayer) -> Bool {
         let wasOut = handedOut.remove(id) != nil
         guard !disabled, window[id] != nil, players[id] == nil,
-              let item = p.currentItem, item.status != .failed else {
+              let item = p.currentItem, item.status != .failed,
+              last?.localOnly != true || (item.asset as? AVURLAsset)?.url.isFileURL == true else {
             // 页面那份没了、这里也没有：窗口内的重新备一份
-            if wasOut, window[id] != nil, players[id] == nil, let last {
-                DispatchQueue.main.async { [weak self] in self?.update(last.items, current: last.index) }
+            if wasOut, window[id] != nil, players[id] == nil {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let last = self.last, self.window[id] != nil else { return }
+                    self.update(last.items, current: last.index, localOnly: last.localOnly)
+                }
             }
             return false
         }
@@ -1158,17 +1174,26 @@ final class DYPreloader {
         if item.status == .readyToPlay {
             DYReadiness.mark(id)
         } else {
-            obs[id] = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+            obs[id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
                 if it.status == .readyToPlay { DYReadiness.mark(id) }
-                else if it.status == .failed { DispatchQueue.main.async { self?.retryReturned(id) } }
+                else if it.status == .failed {
+                    DispatchQueue.main.async { [weak self, weak p] in
+                        guard let self, let p, self.players[id] === p else { return }
+                        self.retryReturned(id, player: p)
+                    }
+                }
             }
         }
         return true
     }
 
-    private func retryReturned(_ id: String) {
-        guard let a = window[id], let s = a.play, let url = URL(string: s), let p = players[id] else { return }
-        retry(a, remote: url, wasLocal: (p.currentItem?.asset as? AVURLAsset)?.url.isFileURL ?? false)
+    private func retryReturned(_ id: String, player: AVPlayer) {
+        if last?.localOnly == true {
+            DYReadiness.mark(id)
+            return
+        }
+        guard let a = window[id], let s = a.play, let url = URL(string: s) else { return }
+        retry(a, remote: url, wasLocal: (player.currentItem?.asset as? AVURLAsset)?.url.isFileURL ?? false)
     }
 
     func clear() {
@@ -1223,6 +1248,16 @@ final class DYFeedModel: ObservableObject {
     @Published var items: [DYAweme] = []
     @Published var error: String?
     @Published var loading = false
+    @Published var offlinePlayback = false
+    @Published var savedOfflineIDs: [String] = []
+    @Published var automaticOfflineIDs: [String] = []
+    var failedRecommendationIDs: Set<String> = []
+    var finishedOfflineID: String?
+    var onlineContinuationID: String?
+    var onlineRecoveryTask: Task<Void, Never>?
+    var recoveringOnlineEpoch: Int?
+    var offlineEpoch = 0
+    var pathIsOffline = false
     @Published var liked: Set<String> = []
     @Published var collected: Set<String> = []
     @Published var toast: String?
@@ -1338,8 +1373,13 @@ final class DYFeedModel: ObservableObject {
     }
 
     func loadMore(_ bridge: DouyinBridge) async {
+        guard !offlinePlayback else { return }
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            if ProcessInfo.processInfo.environment["DOUDUO_TEST_RECONNECT_AFTER"] != nil {
+                let seen = Set(items.map(\.id))
+                items += allowedRecommendations(Self.hashtagFixtures).filter { !seen.contains($0.id) }
+            }
             error = items.isEmpty ? "暂时没有符合标签过滤条件的推荐" : nil
             return
         }
@@ -1347,13 +1387,14 @@ final class DYFeedModel: ObservableObject {
         guard !loading, hasMore || items.isEmpty || !pool.isEmpty else { return }
         loading = true
         defer { loading = false }
+        let epoch = offlineEpoch
         let want = 6
         var added = fill(want)
         do {
             var pages = 0
             while added < want && pages < 8 && (hasMore || items.isEmpty) {
                 let r = try await bridge.fetchFeed()
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !offlinePlayback, epoch == offlineEpoch else { return }
                 pages += 1
                 let seen = Set(items.map(\.id)).union(pool.map(\.id))
                 let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty) }
@@ -1373,7 +1414,7 @@ final class DYFeedModel: ObservableObject {
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
-            if items.isEmpty { self.error = error.localizedDescription }
+            if !offlinePlayback, epoch == offlineEpoch, items.isEmpty { self.error = error.localizedDescription }
         }
     }
 
@@ -1390,6 +1431,7 @@ private struct DYFeedHostFrameKey: PreferenceKey {
 
 extension EnvironmentValues {
     @Entry var duoSystemBars = false
+    @Entry var dyOfflineVideoPlayback: DYOfflinePlaybackContext? = nil
     @Entry var duoInlineVideoNavigation = false
     @Entry var duoContentInsets = EdgeInsets()
     @Entry var duoVisibleVideo: Binding<DYAweme?> = .constant(nil)
@@ -1586,7 +1628,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             guard !initialized else { return }
             initialized = true
             #if DEBUG
-            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1", !DYOfflineDownloads.shared.isOffline {
                 feed.items = feed.allowedRecommendations(DYFeedModel.hashtagFixtures)
                 currentID = feed.items.first?.id
                 scrollID = currentID
@@ -1622,6 +1664,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             #endif
             Task { myUser = try? await bridge.selfProfile() }
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
+            if DYOfflineDownloads.shared.isOffline {
+                await updateOfflineFeed(true)
+                if feed.offlinePlayback { return }
+            }
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
             let handedOff = handoffID.map { id in feed.items.contains { $0.id == id } } ?? false
             if handedOff, let id = handoffID {
@@ -1682,7 +1728,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .task(id: currentID) {
             // 旧会话没有新增字段：只补当前作品元数据，不换播放地址、不丢进度。
-            guard let id = currentID, feed.items.contains(where: { $0.id == id && $0.publishedAt == nil }),
+            guard !feed.offlinePlayback, let id = currentID, feed.items.contains(where: { $0.id == id && $0.publishedAt == nil }),
                   let detail = try? await bridge.awemeDetail(id), !Task.isCancelled,
                   let index = feed.items.firstIndex(where: { $0.id == id }) else { return }
             feed.items[index].publishedAt = detail.publishedAt
@@ -1718,6 +1764,13 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
+        .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
+            Task { await updateOfflineFeed(offline) }
+        }
+        .onReceive(DYOfflineDownloads.shared.$storageRevision) { _ in
+            Task { await refreshOfflineQueueIfNeeded() }
+        }
+        .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
@@ -1725,13 +1778,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
 
     /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
     private func reloadAfterLogin() {
-        live.reset(); preloader.clear(); feed.reset(); currentID = nil
-        bridge.reload()
-        Task {
-            await feed.loadMore(bridge)
-            currentID = feed.items.first?.id
-            focusCurrent()
-        }
+        live.reset()
+        reloadRecommendationsAfterLogin()
         if tab == .live { Task { await live.load(bridge, reset: true) } }
     }
 
@@ -1741,10 +1789,15 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                                       onOpen: { showComments = false }))
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
-        .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            DDPlayback.shared.releaseCover()
+            if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
+        }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
                              onRefresh: { Task { await refreshRecommendations() } },
-                             onCacheCleared: { focusCurrent() })
+                             onCacheCleared: { focusCurrent() },
+                             offlineCandidateSource: { try await offlineCandidates($0) },
+                             offlineInteractionBridge: bridge)
                 // 老板要求：进设置页视频也停（以前只有信息页停）
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
@@ -2293,7 +2346,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
     private func page(for item: DYAweme) -> some View {
         let extras = AnyView(moreExtrasMenu(item))
-        let active = item.id == currentID && web == nil && tab == .recommend && !overlayOpen
+        let active = item.id == currentID && web == nil && tab == .recommend && !overlayOpen && !showSettings
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
@@ -2313,6 +2366,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                            onDislike: { dislike(item.id) },
                            moreExtras: extras,
                            onEnded: { playNext(after: item.id) })
+            .environment(\.dyOfflineVideoPlayback, offlinePlaybackContext(for: item))
     }
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
@@ -2627,6 +2681,7 @@ struct DouyinFeedScreen: View {
 
 extension EnvironmentValues {
     @Entry var dyStandaloneBack: (() -> Void)? = nil
+    @Entry var dyStandaloneBackIdentifier = "douyin.list.back"
 }
 
 @available(iOS 27.1, *)
@@ -2765,14 +2820,9 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
 
     /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
     private func reloadAfterLogin() {
-        live.reset(); preloader.clear(); feed.reset(); currentID = nil
+        live.reset()
         followList.resetModel(); followCurrentID = nil
-        bridge.reload()
-        Task {
-            await feed.loadMore(bridge)
-            currentID = feed.items.first?.id
-            focusCurrent()
-        }
+        reloadRecommendationsAfterLogin()
         if tab == .live { Task { await live.load(bridge, reset: true) } }
     }
 
@@ -2789,7 +2839,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             guard !initialized else { return }
             initialized = true
             #if DEBUG
-            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
+            if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1", !DYOfflineDownloads.shared.isOffline {
                 feed.items = feed.allowedRecommendations(DYFeedModel.hashtagFixtures)
                 currentID = feed.items.first?.id
                 scrollID = currentID
@@ -2824,6 +2874,10 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             }
             #endif
             if tab == .live { return }   // 起手就是直播页（调试）时别把推荐流的播放器都拉起来
+            if DYOfflineDownloads.shared.isOffline {
+                await updateOfflineFeed(true)
+                if feed.offlinePlayback { return }
+            }
             // 秒开：先播上次缓存好、还没看过的；连接抖音 / 拉推荐在后台接着往后补（两套界面共用 DYFeedModel.restoreForLaunch）
             let handedOff = handoffID.map { id in feed.items.contains { $0.id == id } } ?? false
             if handedOff, let id = handoffID {
@@ -2884,7 +2938,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         }
         .task(id: currentID) {
             // 旧会话没有新增字段：只补当前作品元数据，不换播放地址、不丢进度。
-            guard let id = currentID, feed.items.contains(where: { $0.id == id && $0.publishedAt == nil }),
+            guard !feed.offlinePlayback, let id = currentID, feed.items.contains(where: { $0.id == id && $0.publishedAt == nil }),
                   let detail = try? await bridge.awemeDetail(id), !Task.isCancelled,
                   let index = feed.items.firstIndex(where: { $0.id == id }) else { return }
             feed.items[index].publishedAt = detail.publishedAt
@@ -2917,14 +2971,26 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         }
         .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
+        .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
+            Task { await updateOfflineFeed(offline) }
+        }
+        .onReceive(DYOfflineDownloads.shared.$storageRevision) { _ in
+            Task { await refreshOfflineQueueIfNeeded() }
+        }
+        .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear { live.stop(); preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
-        .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            DDPlayback.shared.releaseCover()
+            if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
+        }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
                              onRefresh: { Task { await refreshRecommendations() } },
-                             onCacheCleared: { focusCurrent() })
+                             onCacheCleared: { focusCurrent() },
+                             offlineCandidateSource: { try await offlineCandidates($0) },
+                             offlineInteractionBridge: bridge)
                 // 老板要求：进设置页视频也停（以前只有信息页停）
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
@@ -3451,7 +3517,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
     private func page(for item: DYAweme, audible: Bool, interactive: Bool) -> some View {
-        let active = audible && item.id == currentID && web == nil && !overlayOpen
+        let active = audible && item.id == currentID && web == nil && !overlayOpen && !showSettings
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
@@ -3474,6 +3540,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                            onChannelDragEnd: interactive ? { dx, predicted, width, cancelled in
                                endChannelDrag(translation: dx, predicted: predicted, width: width, cancelled: cancelled)
                            } : nil)
+            .environment(\.dyOfflineVideoPlayback, offlinePlaybackContext(for: item))
     }
 
     /// 经典顶栏「更多」：铺满宽度 / 静音 / 听书 / 自动连播在表层，其余全在设置页（刷新推荐 / 弹幕 / 界面不在这里重复）。
@@ -3503,6 +3570,9 @@ private extension Double {
 }
 
 struct DYUpstreamVideoPage: View {
+    @Environment(\.dyStandaloneBackIdentifier) private var backIdentifier
+    @Environment(\.dyOfflineVideoPlayback) private var offlinePlayback
+    private var usesOfflineFile: Bool { offlinePlayback?.inLibrary == true }
     @Environment(\.horizontalSizeClass) private var hSize
     private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
     private var actionColumnWidth: CGFloat { 54 }
@@ -3547,6 +3617,7 @@ struct DYUpstreamVideoPage: View {
     @AppStorage("douyin_muted_v1") private var muted = false
     @AppStorage("douyin_bg_play_v1") private var bgPlay = false
     @State private var heart = false
+    @State private var shareCoversOfflineVideo = false
     @State private var saving = false
     @FocusState private var danmakuFocused: Bool
     @StateObject private var dm = DYDanmakuModel()
@@ -3579,18 +3650,19 @@ struct DYUpstreamVideoPage: View {
     var body: some View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
-            if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
+            if item.images.isEmpty,
+               let source = usesOfflineFile ? offlinePlayback?.localURL() : item.play.flatMap(URL.init(string:)) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
                 // 注意：不要拿「预存的第一段」起播——半截 MP4 的样本表指向文件尾，
                 // AVFoundation 会直接报 -11828（实测长横屏视频因此黑屏 14–28 秒）。
                 // 长视频：整条缓存好了本地播，没缓存好就走重定向地址流播（1–2 秒起播）。
-                let url = DYVideoCache.localURL(item.id) ?? remote
+                let url = usesOfflineFile ? source : (DYVideoCache.localURL(item.id) ?? source)
                 // 复用影库播放器：横滑快进（带预览缩略图）、双击、长按 2 倍速、竖滑切视频、底部可拖进度条、VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
-                                    isActive: isCurrent, topInset: insets.top, bottomInset: insets.bottom,
+                                    isActive: isCurrent && !shareCoversOfflineVideo, topInset: insets.top, bottomInset: insets.bottom,
                                     resumePosition: resume, compactChrome: true,
-                                    preparedPlayer: { preloader.take(item.id) },
-                                    returnPlayer: { preloader.giveBack(item.id, $0) },
+                                    preparedPlayer: usesOfflineFile ? nil : { preloader.take(item.id) },
+                                    returnPlayer: usesOfflineFile ? nil : { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
                                     onDoubleTap: {
                                         onDoubleTap()
@@ -3600,14 +3672,16 @@ struct DYUpstreamVideoPage: View {
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? dm.items : [],
-                                    altURL: nil,
+                                    altURL: usesOfflineFile ? nil : source,
                                     quality: item.q,
-                                    fastURL: item.playFast.flatMap(URL.init(string:)),
-                                    posterURL: item.cover.flatMap(URL.init(string:)),
+                                    fastURL: usesOfflineFile ? nil : item.playFast.flatMap(URL.init(string:)),
+                                    posterURL: usesOfflineFile ? nil : item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.height > 0 ? item.width / item.height : 0,
                                     headEndSeconds: nil,
                                     continuationURL: nil,
                                     boost: boost)
+            } else if usesOfflineFile {
+                ContentUnavailableView("这个离线视频已移除", systemImage: "airplane")
             } else {
                 // 图集也要有背景音乐（原来只翻图、没声音）
                 DYImageGallery(images: item.images,
@@ -3722,7 +3796,7 @@ struct DYUpstreamVideoPage: View {
         onToast?("正在保存…")
         Task {
             do {
-                try await DYSaver.save(item)
+                try await DYSaver.save(item, fromOfflineLibrary: usesOfflineFile)
                 onToast?(item.images.isEmpty ? "视频已保存到相册" : "图集已保存到相册")
             } catch {
                 onToast?("保存失败：\(error.localizedDescription)")
@@ -3808,14 +3882,14 @@ struct DYUpstreamVideoPage: View {
                     }
                     .buttonStyle(.plain)
                     .ddMediaGlassCircle()   // 亮色模式下视频上的玻璃控件仍保持暗色（PR #36）
-                    if chromeMode.usesRail {
+                    if chromeMode.usesRail && !usesOfflineFile {
                         DDRailProgressRing(show: isCurrent, fg: fg)
                     }
                 }
                 .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("返回上一层")
-                .accessibilityIdentifier("douyin.list.back")
+                .accessibilityIdentifier(backIdentifier)
             }
             VStack(spacing: theme.media.actionItemSpacing) {
                 railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
@@ -3883,7 +3957,14 @@ struct DYUpstreamVideoPage: View {
     private func moreMenu(_ fg: Color) -> some View {
         Menu {
             ControlGroup {
-                DYForwardMenu(item: item, bridge: bridge, foreground: fg)
+                if offlinePlayback?.onlineActionsAllowed == false {
+                    Button("复制链接", systemImage: "link") {
+                        UIPasteboard.general.url = item.webURL
+                        onToast?("链接已复制")
+                    }
+                } else {
+                    DYForwardMenu(item: item, bridge: bridge, foreground: fg)
+                }
                 if let onDislike {
                     Button("不感兴趣", systemImage: "hand.thumbsdown") { onDislike() }
                         .accessibilityIdentifier("douyin.dislike")
@@ -3945,13 +4026,16 @@ struct DYUpstreamVideoPage: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .accessibilityIdentifier("douyin.more")
-        .modifier(DYForwardPresentation(item: item))
+        .modifier(DYForwardPresentation(item: item, fromOfflineLibrary: usesOfflineFile,
+                                        onVisibilityChanged: { shareCoversOfflineVideo = usesOfflineFile && $0 }))
     }
 
 }
 
 @available(iOS 27.1, *)
 struct DYClassicVideoPage: View {
+    @Environment(\.dyOfflineVideoPlayback) private var offlinePlayback
+    private var usesOfflineFile: Bool { offlinePlayback?.inLibrary == true }
     @Environment(\.duoCleanScreen) private var cleanScreen
     @Environment(\.duoSystemBars) private var systemBars
     @Environment(\.toolbarVerticalEdge) private var verticalBarEdge
@@ -4077,18 +4161,19 @@ struct DYClassicVideoPage: View {
     var body: some View {
         let fg = theme.media.onMedia.color(for: scheme)
         ZStack(alignment: .bottomLeading) {
-            if item.images.isEmpty, let s = item.play, let remote = URL(string: s) {
+            if item.images.isEmpty,
+               let source = usesOfflineFile ? offlinePlayback?.localURL() : item.play.flatMap(URL.init(string:)) {
                 // 只用「整条缓存」或「在线流」：不再走头部缓存 + 接续（那一下切换必然闪/卡）
                 // 注意：不要拿「预存的第一段」起播——半截 MP4 的样本表指向文件尾，
                 // AVFoundation 会直接报 -11828（实测长横屏视频因此黑屏 14–28 秒）。
                 // 长视频：整条缓存好了本地播，没缓存好就走重定向地址流播（1–2 秒起播）。
-                let url = DYVideoCache.localURL(item.id) ?? remote
+                let url = usesOfflineFile ? source : (DYVideoCache.localURL(item.id) ?? source)
                 // 复用播放器：左右切换作者/关注、双击点赞、分区长按、竖滑切视频、底部拖动进度及 VLC 兜底
                 PlayerPage.external(id: item.id, title: item.desc, url: url, durationSec: item.duration,
                                     isActive: isCurrent, topInset: insets.top, bottomInset: mediaBottomInset,
                                     resumePosition: resume, compactChrome: true,
-                                    preparedPlayer: { preloader.take(item.id) },
-                                    returnPlayer: { preloader.giveBack(item.id, $0) },
+                                    preparedPlayer: usesOfflineFile ? nil : { preloader.take(item.id) },
+                                    returnPlayer: usesOfflineFile ? nil : { preloader.giveBack(item.id, $0) },
                                     onEnded: autoNext ? onEnded : nil,
                                     onDoubleTap: {
                                         onDoubleTap()
@@ -4098,10 +4183,10 @@ struct DYClassicVideoPage: View {
                                     onSavePosition: onSavePosition, onClose: {}, fillWidth: autoFit,
                                     onFillWidthChange: { autoFit = $0 },
                                     danmaku: danmakuOn ? dm.items : [],
-                                    altURL: nil,
+                                    altURL: usesOfflineFile ? nil : source,
                                     quality: item.q,
-                                    fastURL: item.playFast.flatMap(URL.init(string:)),
-                                    posterURL: item.cover.flatMap(URL.init(string:)),
+                                    fastURL: usesOfflineFile ? nil : item.playFast.flatMap(URL.init(string:)),
+                                    posterURL: usesOfflineFile ? nil : item.cover.flatMap(URL.init(string:)),
                                     videoAspect: item.videoAspect,
                                     headEndSeconds: nil,
                                     continuationURL: nil,
@@ -4113,6 +4198,8 @@ struct DYClassicVideoPage: View {
                                     onHorizontalDragEnd: cleanScreen ? nil : onChannelDragEnd)
                     .environment(\.duoContentInsets, contentInsets)
                     .environment(\.dyUsesClassicVideoLayout, true)
+            } else if usesOfflineFile {
+                ContentUnavailableView("这个离线视频已移除", systemImage: "airplane")
             } else {
                 // 图集也要有背景音乐（原来只翻图、没声音）
                 DYImageGallery(images: item.images,
@@ -4170,7 +4257,8 @@ struct DYClassicVideoPage: View {
         }
         .sensoryFeedback(.impact(weight: .light), trigger: liked) { old, new in !old && new }
         .dyBottomSheet(isPresented: $showShare, kind: .share) {
-            DYForwardScreen(item: item)
+            DYForwardScreen(item: item, fromOfflineLibrary: usesOfflineFile,
+                            onlineActionsAllowed: offlinePlayback?.onlineActionsAllowed != false)
         }
         .dyBottomSheet(isPresented: $showOptions, kind: .options) {
             DYVideoOptionsPanel(onDislike: onDislike, onSendDanmaku: bridge == nil ? nil : {
@@ -4362,6 +4450,18 @@ struct DYClassicVideoPage: View {
 }
 
 enum DYFormat {
+    private static let dateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
+    static func dateTime(_ date: Date) -> String {
+        dateTimeFormatter.string(from: date)
+    }
+
     static func clock(_ t: Double) -> String {
         guard t.isFinite, t >= 0 else { return "0:00" }
         let i = Int(t.rounded(.down))
@@ -5447,14 +5547,19 @@ private struct DYTopChromeFrameKey: PreferenceKey {
 extension DYFeedModel {
     static var hashtagFixtures: [DYAweme] {
         let grid = ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1"
-        let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+        let offlineFixture = ProcessInfo.processInfo.environment["DOUDUO_OFFLINE_FIXTURE_URL"]
+        let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1" || offlineFixture != nil
         let regionFixture = ProcessInfo.processInfo.environment["DOUDUO_REGION_FIXTURE"] == "1"
         let video = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("search-playback-fixture.mp4")
         return [("hashtag-cat", "日常 #猫咪 #旅行\n" + String(repeating: "这段简介用于检查展开后的标签点击与换行。", count: 8) + " #摄影"),
          ("hashtag-travel", "周末记录 #旅行"),
          ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
-            var item = DYAweme(id: regionFixture && id == "hashtag-travel" ? "7707976793810111778" : id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
+            let portrait = offlineFixture != nil && id == "hashtag-travel"
+            var item = DYAweme(id: regionFixture && id == "hashtag-travel" ? "7707976793810111778" : id,
+                    desc: text, width: playable ? (portrait ? 360 : 640) : 1080,
+                    height: playable ? (portrait ? 640 : 360) : 1920, duration: playable ? 60 : 0,
+                    play: offlineFixture ?? (playable ? video.absoluteString : nil),
                     cover: nil, images: grid ? ["data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%271%27 height=%271%27/%3E"] : [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
                     stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
                     userDigged: nil, isCollect: nil, publishedAt: 1,
@@ -5476,15 +5581,15 @@ extension DYFeedModel {
 extension DYFeedModel {
     /// Prepare separately so an empty, failed or cancelled request cannot erase playback.
     /// Callers hold their refresh guard while waiting for existing prefetch work.
-    func prepareRefresh(_ bridge: DouyinBridge) async throws -> DYFeedModel {
-        while loading { try await Task.sleep(for: .milliseconds(100)) }
+    func prepareRefresh(_ bridge: DouyinBridge, excludingCurrentItems: Bool = true) async throws -> DYFeedModel {
+        while excludingCurrentItems, loading { try await Task.sleep(for: .milliseconds(100)) }
         try Task.checkCancellation()
         let previous = Set(items.map(\.id))
         let replacement = DYFeedModel(defaults: defaults)
         replacement.screenWide = screenWide
         await replacement.loadMore(bridge)
         try Task.checkCancellation()
-        replacement.items.removeAll { previous.contains($0.id) }
+        if excludingCurrentItems { replacement.items.removeAll { previous.contains($0.id) } }
         return replacement
     }
 
@@ -5495,6 +5600,21 @@ extension DYFeedModel {
         pool = replacement.pool
         liked.formUnion(replacement.liked)
         collected.formUnion(replacement.collected)
+    }
+
+    func recoverOnline(with replacement: DYFeedModel, keeping local: DYAweme?, excluding consumed: Set<String>) -> DYAweme? {
+        var seen = consumed
+        let fresh = replacement.items.filter { !failedRecommendationIDs.contains($0.id) && seen.insert($0.id).inserted }
+        guard let first = local ?? fresh.first, !fresh.isEmpty else { return nil }
+        // Keep the mounted page and its AVPlayer when the current offline video is still playing.
+        items = (local.map { [$0] } ?? []) + fresh
+        pool = replacement.pool.filter { !failedRecommendationIDs.contains($0.id) && seen.insert($0.id).inserted }
+        liked.formUnion(replacement.liked)
+        collected.formUnion(replacement.collected)
+        hasMore = replacement.hasMore
+        error = nil
+        offlinePlayback = false
+        return first
     }
 
     func toggleLike(_ id: String, force: Bool?, bridge: DouyinBridge) {
@@ -5578,7 +5698,7 @@ extension DYFeedModel {
     /// 返回要定位的当前条和各条进度；都没有返回 nil。
     func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
         // 启动先清掉上次看过的缓存，避免重启后又被当成「待看」塞回推荐里
-        Task { await DYVideoCache.shared.purgeWatched(); await DYVideoCache.shared.purgeHeads() }
+        Task { await DYVideoCache.shared.purgeWatched() }
         var result: (currentID: String?, positions: [String: Double])?
         // 启动不再恢复上次会话的条目：抖音播放地址带签名，过一段时间就 403，
         // 拿旧条目起播会一直等到超时（实测有条等了 56.93 秒）。
