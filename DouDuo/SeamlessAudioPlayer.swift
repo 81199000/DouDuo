@@ -463,7 +463,7 @@ final class DDAudioPreloadPool {
     private var byAsset: [ObjectIdentifier: String] = [:]
 
     func prewarm(id: String, asset: AVURLAsset, item: AVPlayerItem) {
-        // 1x 不用引擎，就不预解码音频（省掉滑动时主线程上的解码）
+        // 起播不用引擎，就不预解码音频（省掉滑动时主线程上的解码）
         guard DDSeamlessController.engineWanted, byID[id] == nil else { return }
         let stream = DDAudioStream(asset: asset)
         byID[id] = stream
@@ -534,14 +534,14 @@ final class DDSeamlessController {
     /// 声音交接要等流准备好；等太久（在线流首包慢）就先按原生方式变速，交接完成后接着无缝
     private let handoffNativeFallbackDelay: Double = 0.35
 
-    /// 设置里的播放速度不是 1x 才启用独立音频引擎；1x 直接用 AVPlayer 原生声音。
-    /// 引擎在主线程解码 AAC，1x 下没有收益反而拖慢滑动（1.3.13 卡顿反馈）。
-    nonisolated static var engineWanted: Bool {
-        let rate = UserDefaults.standard.object(forKey: "douyin_playback_rate_v1") as? Double ?? 1
-        return abs(rate - 1) > 0.001
-    }
+    /// 起播一律用 AVPlayer 原生声音（任何倍速），只在播放中**改速度**（长按加速、锁定、菜单改速）时
+    /// 才就地交给独立引擎（engineHandoff），保住变速不断声不爆音。
+    /// 原生声音才有系统空间音频；以前设置里的速度不是 1x 时整条视频都走引擎，倍速看视频就没了空间音频
+    /// （议题 #52-1，老板 2026-11-18 定方案 B）。引擎在主线程解码，平时不用它也省了滑动开销。
+    /// 交接后这条视频剩下的时间留在引擎上（切回原生会再断一下声），滑到下一条重新用原生声音。
+    nonisolated static var engineWanted: Bool { false }
 
-    /// - Parameter engineHandoff: 原生声音（1x）时，变速是否允许就地交给独立引擎（画中画要原生声音，不允许）
+    /// - Parameter engineHandoff: 原生声音时，变速是否允许就地交给独立引擎（画中画要原生声音，不允许）
     func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool,
               useEngine: Bool = DDSeamlessController.engineWanted, engineHandoff: Bool = false) {
         reset()
@@ -556,7 +556,7 @@ final class DDSeamlessController {
         #if DEBUG
         ddWrite("DDSEAM bind engine=\(useEngine) handoff=\(engineHandoff) rate=\(rate)")
         #endif
-        // 1x：不建音频流，直接走原生声音（预热池里若有这条的流也一并丢掉，音轨重新打开）
+        // 原生声音起播（任何倍速）：不建音频流（预热池里若有这条的流也一并丢掉，音轨重新打开）
         if !useEngine {
             mode = .fallbackAVPlayer
             handoffAllowed = engineHandoff
@@ -698,7 +698,7 @@ final class DDSeamlessController {
         }
     }
 
-    // MARK: 1x 原生声音 → 独立引擎（就地交接，见 handoffAllowed）
+    // MARK: 原生声音 → 独立引擎（就地交接，见 handoffAllowed）
 
     private var handoffNativeFallen = false
     private var engagedByHandoff = false
