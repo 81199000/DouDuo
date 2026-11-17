@@ -69,7 +69,10 @@ private struct VideoPage: View {
                     VideoPlayer(player: player)
                         .disabled(true)
                         .frame(width: geo.size.width + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
-                               height: geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom)
+                               height: geo.size.height + geo.safeAreaInsets.bottom)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { like() }
+                        .onTapGesture { togglePause() }
                 }
 
                 // 底部信息：一行标题 + 作者，避开圆角和底部指示
@@ -117,10 +120,8 @@ private struct VideoPage: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
-        .ignoresSafeArea()
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { like() }
-        .onTapGesture { togglePause() }
+        // 只铺到左右和底部圆角；顶部留给系统状态栏（时间 / 返回），不再被全屏手势层盖住
+        .ignoresSafeArea(edges: [.bottom, .horizontal])
         // 只给当前条创建播放器，邻近页不预拉流（省电省流量）
         .onChange(of: active) { _, on in on ? start() : stop() }
         .onAppear { if active { start() } }
