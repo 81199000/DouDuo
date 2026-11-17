@@ -1486,6 +1486,31 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
+    /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
+    func testManageEntriesExist() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 60), mode)
+            // 经典：长按视频出面板；默认 / 简洁 / 极简：视频的「更多」菜单
+            if mode == "duoClassic" {
+                app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.45)).press(forDuration: 0.9)
+            } else {
+                let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+                XCTAssertNotNil(more, "\(mode): 找不到「更多」"); more?.tap()
+            }
+            let later = app.buttons["douyin.watchlater.add"].firstMatch
+            XCTAssertTrue(later.waitForExistence(timeout: 6), "\(mode): 更多面板里没有「稍后再看」")
+            attach(app, "manage-watchlater-" + mode)
+            app.terminate()
+        }
+    }
+
     /// 「我的」等列表播放页：外屏横屏视频上移 / 内屏右侧 / 半折常驻，四种界面与推荐页同一套（老板 2026-11-17）
     func testListPlayerCommentsMatchFeedInEveryMode() throws {
         continueAfterFailure = false
