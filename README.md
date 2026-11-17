@@ -32,7 +32,7 @@
 - 保存视频 / 图集到相册
 
 **Apple Watch**
-- 手表上刷推荐视频：不用在手表登录，iPhone 推来视频、手表连 Wi-Fi 直接播。安装和用法见 [Apple Watch 使用说明](docs/apple-watch.md)
+- 手表上刷推荐视频：不用在手表登录，iPhone 推来视频、手表连 Wi-Fi 直接播。爱思助手、全能签签名的包手表一般装不上，安装方法见 [Apple Watch 使用说明](docs/apple-watch.md)
 
 每个版本的改动见 [更新说明](docs/releases/) 或 [GitHub Releases](https://github.com/81199000/DouDuo/releases)。
 
