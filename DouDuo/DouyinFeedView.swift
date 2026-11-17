@@ -3961,7 +3961,7 @@ struct DYUpstreamVideoPage: View {
             ControlGroup {
                 if offlinePlayback?.onlineActionsAllowed == false {
                     Button("复制链接", systemImage: "link") {
-                        DYShareLinkCopy.copy(item)
+                        DYCopyVideoLink.copy(item)
                         onToast?("链接已复制")
                     }
                 } else {

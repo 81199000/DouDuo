@@ -78,7 +78,7 @@ final class DYClipboardLinkWatcher: ObservableObject {
 }
 
 /// 复制链接统一走这里：写抖音口令格式。App 里自己复制的链接回到 App 时同样会打开
-enum DYShareLinkCopy {
+enum DYCopyVideoLink {
     @MainActor static func copy(_ item: DYAweme) {
         UIPasteboard.general.string = DYShareLink.shareText(for: item)
     }
