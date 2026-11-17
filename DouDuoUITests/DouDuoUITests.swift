@@ -1486,6 +1486,54 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
+    /// 「我的」点「去登录」要打开抖音网页登录页（老板 2026-11-17 报「点击登录无反应」）
+    func testMineLoginOpensWeb() throws {
+        continueAfterFailure = false
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["duoClassic", "rail", "classic"]
+        for mode in modes {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            if mode == "rail" { app.launchEnvironment["DOUDUO_OPEN"] = "mine" }
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            if mode == "duoClassic" {
+                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30)); app.buttons["我的"].firstMatch.tap()
+            } else if mode == "classic" {
+                XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+            }
+            let login = app.buttons["去登录"].firstMatch
+            guard login.waitForExistence(timeout: 30) else { attach(app, "login-no-button-" + mode); throw XCTSkip("\(mode): 已登录，没有「去登录」") }
+            attach(app, "login-before-" + mode)
+            login.tap()
+            XCTAssertTrue(app.buttons["douyin.web.back"].firstMatch.waitForExistence(timeout: 10), "\(mode): 点「去登录」没打开网页")
+            attach(app, "login-after-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 简洁 / 极简：信息页 → 右侧栏「我的」→「去登录」要打开网页（老板真机走的这条路）
+    func testMessagesMineLoginOpensWeb() throws {
+        continueAfterFailure = false
+        let mode = ProcessInfo.processInfo.environment["DD_ONLY_MODE"] ?? "rail"
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let mine = app.buttons["我的"].firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 30), "信息页右侧栏没有「我的」")
+        mine.tap()
+        let login = app.buttons["去登录"].firstMatch
+        guard login.waitForExistence(timeout: 30) else { attach(app, "msg-mine-no-login"); throw XCTSkip("已登录") }
+        attach(app, "msg-mine-login-before")
+        login.tap()
+        let opened = app.buttons["douyin.web.back"].firstMatch.waitForExistence(timeout: 10)
+        attach(app, "msg-mine-login-after")
+        XCTAssertTrue(opened, "信息页里的「我的」点「去登录」没打开网页")
+    }
+
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
     func testManageEntriesExist() throws {
         continueAfterFailure = false
