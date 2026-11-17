@@ -125,6 +125,12 @@ struct DYSettingsScreen: View {
                     }
                     .disabled(clearing)
                     .accessibilityIdentifier("settings.cache.clear")
+                    NavigationLink {
+                        DYStorageScreen()
+                    } label: {
+                        Label("储存空间", systemImage: "internaldrive")
+                    }
+                    .accessibilityIdentifier("settings.storage")
                 } header: {
                     Text("缓存")
                 }
