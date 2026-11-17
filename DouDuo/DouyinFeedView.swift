@@ -102,6 +102,8 @@ struct DYComment: Identifiable, Decodable, Equatable {
     let time: Double
     let replies: Int
     let ip: String?
+    /// 评论作者的 sec_uid，用来认出「这条是我发的」（能删）。缺字段时为空。
+    var sec: String? = nil
     /// 这条评论在账号里是否已赞。缺字段当未赞。
     var userDigged: Int? = nil
     /// 评论配图（image_list）与表情包贴纸（sticker），缺字段为空
@@ -1013,7 +1015,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
     };
     const one = c => ({
-      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
+      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0,
       images: ddImages(c), sticker: ddSticker(c),
       parent: (c.reply_id && String(c.reply_id) !== '0') ? String(c.reply_id) : null
@@ -3720,6 +3722,20 @@ struct DYUpstreamVideoPage: View {
         return [DYFeedRailEntry(id: item.id, tab: rootRailTab, actions: AnyView(actions(fg)))]
     }
 
+    /// 加入稍后再看。抖音确认了才提示成功。
+    private func addWatchLater() {
+        guard let bridge else { return }
+        Task {
+            do {
+                switch try await bridge.addWatchLater(item.id) {
+                case .ok: onToast?("已加入稍后再看")
+                case .notLoggedIn: onToast?("抖音未登录")
+                case .failed(let why): onToast?("没加进去：" + why)
+                }
+            } catch { onToast?("没加进去：" + error.localizedDescription) }
+        }
+    }
+
     private func save() {
         guard !saving else { return }
         saving = true
@@ -3927,6 +3943,10 @@ struct DYUpstreamVideoPage: View {
                     .accessibilityIdentifier("douyin.quick.bgplay")
                 Toggle(isOn: $autoNext) { Label("自动连播", systemImage: "play.square.stack") }
                     .accessibilityIdentifier("douyin.quick.autonext")
+            }
+            if bridge != nil {
+                Button("稍后再看", systemImage: "clock") { addWatchLater() }
+                    .accessibilityIdentifier("douyin.watchlater.add")
             }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
@@ -4178,7 +4198,7 @@ struct DYClassicVideoPage: View {
             DYVideoOptionsPanel(onDislike: onDislike, onSendDanmaku: bridge == nil ? nil : {
                 dm.showInput = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
-            })
+            }, onWatchLater: bridge == nil ? nil : { addWatchLater() })
         }
         .onAppear { if isCurrent { publishVisible() } }
         .onChange(of: isCurrent) { _, active in if active { publishVisible() } }
@@ -4203,6 +4223,20 @@ struct DYClassicVideoPage: View {
 
     /// 只有关注流需要把「当前可见视频」报给根视图（评论/标签用）；推荐流根视图自己有 currentID。
     /// 同一条不重复写，避免翻页时根视图多重算一轮。
+    /// 加入稍后再看。抖音确认了才提示成功。
+    private func addWatchLater() {
+        guard let bridge else { return }
+        Task {
+            do {
+                switch try await bridge.addWatchLater(item.id) {
+                case .ok: onToast?("已加入稍后再看")
+                case .notLoggedIn: onToast?("抖音未登录")
+                case .failed(let why): onToast?("没加进去：" + why)
+                }
+            } catch { onToast?("没加进去：" + error.localizedDescription) }
+        }
+    }
+
     private func publishVisible() {
         guard visibleVideo.wrappedValue?.id != item.id else { return }
         visibleVideo.wrappedValue = item
@@ -4417,6 +4451,11 @@ struct DYCommentPanel: View {
     @State private var atError: String?
     @State private var sending = false
     @State private var sendErr: String?
+    /// 我自己的 sec_uid，用来认出哪些评论能删
+    @State private var mySec: String?
+    @State private var deletingComment: DYComment?
+    @State private var deletingParent: String?
+    @State private var deleteBusy = false
     /// 评论配图：相册里选中的那一项 → 处理好等着发的图 → 已经传上去的结果（发评论失败再点发送时不重传）
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var imageDraft: DYCommentImageDraft?
@@ -4921,6 +4960,14 @@ struct DYCommentPanel: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.composer")
         .task { await DYEmojiStore.shared.load(bridge: bridge) }
+        .task { if mySec == nil { mySec = try? await bridge.selfSecUid() } }
+        .alert("删除这条评论？", isPresented: Binding(get: { deletingComment != nil }, set: { if !$0 { deletingComment = nil } })) {
+            Button("删除", role: .destructive) {
+                if let c = deletingComment { Task { await deleteComment(c, parent: deletingParent) } }
+                deletingComment = nil
+            }
+            Button("取消", role: .cancel) { deletingComment = nil }
+        } message: { Text("删除后找不回来。") }
     }
 
     /// 拉「我关注的人」给 @ 面板用
@@ -5073,6 +5120,48 @@ struct DYCommentPanel: View {
                 }
             }
             .accessibilityIdentifier(highlight == c.id ? "douyin.comment.focused" : "douyin.comment.row")
+            .contextMenu {
+                if canDelete(c) {
+                    Button("删除", systemImage: "trash", role: .destructive) {
+                        deletingParent = parent ?? c.parent
+                        deletingComment = c
+                    }
+                    .accessibilityIdentifier("douyin.comment.delete")
+                }
+            }
+    }
+
+    /// 能删的评论：我自己发的，或者这条作品是我的（作者能删自己作品下的评论）。认不出我是谁时不给删。
+    private func canDelete(_ c: DYComment) -> Bool {
+        guard let me = mySec, !me.isEmpty else { return false }
+        return c.sec == me || aweme.author.secUid == me
+    }
+
+    /// 删除评论。抖音确认了才从列表里拿掉；失败时原样留着并说明原因。
+    private func deleteComment(_ c: DYComment, parent: String?) async {
+        guard !deleteBusy else { return }
+        deleteBusy = true
+        defer { deleteBusy = false }
+        do {
+            switch try await bridge.deleteComment(c.id) {
+            case .ok:
+                if let parent, replies[parent]?.contains(where: { $0.id == c.id }) == true {
+                    replies[parent]?.removeAll { $0.id == c.id }
+                } else {
+                    items.removeAll { $0.id == c.id }
+                    replies[c.id] = nil
+                }
+                if replyTo?.id == c.id { replyTo = nil; replyParent = nil }
+                if total > 0 { total -= 1 }
+                sendErr = nil
+            case .notLoggedIn:
+                sendErr = "抖音未登录"
+            case .failed(let why):
+                sendErr = "没删掉：" + why
+            }
+        } catch {
+            sendErr = "没删掉：" + error.localizedDescription
+        }
     }
 
     private func rowBody(_ c: DYComment) -> some View {

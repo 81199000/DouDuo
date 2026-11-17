@@ -461,6 +461,8 @@ struct DYMessagesScreen: View {
     @State private var showChatOptions = false
     @State private var changingConversation: String?
     @State private var deletingConversation: DYConversationRow?
+    /// 长按聊天里某条消息后，网页脚本给它打的记号
+    @State private var deletingMessageToken: String?
     @State private var actionError: String?
     @State private var openedFromShare = false
     @State private var shareOpenFailed = false
@@ -593,6 +595,13 @@ struct DYMessagesScreen: View {
             }
             Button("取消", role: .cancel) { deletingConversation = nil }
         } message: { Text("会话将从消息列表移除。") }
+        .alert("删除这条消息？", isPresented: Binding(get: { deletingMessageToken != nil }, set: { if !$0 { deletingMessageToken = nil } })) {
+            Button("删除", role: .destructive) {
+                if let token = deletingMessageToken { Task { await deleteChatMessage(token) } }
+                deletingMessageToken = nil
+            }
+            Button("取消", role: .cancel) { deletingMessageToken = nil }
+        }
         .task(id: navigation.chatID) {
             guard let id = navigation.chatID else { return }
             while !Task.isCancelled, navigation.chatID == id {
@@ -633,6 +642,9 @@ struct DYMessagesScreen: View {
                 guard let data = json.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
                 switch obj["type"] as? String {
+                case "msg-menu":
+                    guard let token = obj["token"] as? String, !token.isEmpty else { return }
+                    Task { @MainActor in self.deletingMessageToken = token }
                 case "video":
                     guard let id = obj["id"] as? String, !id.isEmpty else { return }
                     Task { @MainActor in
@@ -1034,6 +1046,13 @@ struct DYMessagesScreen: View {
         conversations.sort(by: DYConversationRow.byTimeDesc)
         cache.snapshot.conversations = conversations
         cache.save()
+    }
+
+    /// 删除聊天里的一条消息：交给抖音网页自己的「删除」，没确认删掉就报出来。
+    private func deleteChatMessage(_ token: String) async {
+        guard let web = chatModel.web else { actionError = "聊天页还没准备好"; return }
+        let result = await DYChatWebBridge.deleteMessage(token: token, web: web)
+        if let failure = result?.failure ?? (result == nil ? "删除没有完成，请稍后重试" : nil) { actionError = failure }
     }
 
     private func changeConversation(_ row: DYConversationRow, action: DYChatWebBridge.Action) async {
