@@ -1470,6 +1470,7 @@ struct DYMineScreen: View {
     @State private var clearingHistory = false
     /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
     @State private var showLogin = false
+    @State private var showAccounts = false
     @State private var autoLoginShown = false
 
     var body: some View {
@@ -1485,13 +1486,41 @@ struct DYMineScreen: View {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
                     // 「网页版 / 登录」按钮已按老板要求去掉：未登录时页内仍有「去登录」入口，功能不受影响
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("账号", systemImage: "person.2.circle") { showAccounts = true }
+                            .accessibilityIdentifier("douyin.mine.accounts")
+                    }
                 }
+        }
+        .sheet(isPresented: $showAccounts) {
+            DYAccountsScreen(onChanged: { Task { await accountChanged() } },
+                             onAddAccount: {
+                                 // 添加账号：先把当前账号存好并退出本机登录态，再弹登录页
+                                 Task {
+                                     await DYAccountStore.shared.signOut()
+                                     await accountChanged(showLoginAfter: true)
+                                 }
+                             })
         }
 
     }
 
+    /// 切换 / 退出 / 添加账号后：签名页重载，清空当前页面数据，重新读资料
+    private func accountChanged(showLoginAfter: Bool = false) async {
+        user = nil; userErr = nil; models = [:]
+        bridge.reload()
+        onLogin()   // 外层刷新推荐流
+        try? await Task.sleep(for: .seconds(2))
+        await loadSelf()
+        if showLoginAfter { try? await Task.sleep(for: .milliseconds(400)); showLogin = true }
+    }
+
     private func loadSelf() async {
-        do { user = try await bridge.selfProfile(); userErr = nil } catch {
+        do {
+            let u = try await bridge.selfProfile()
+            user = u; userErr = nil
+            await DYAccountStore.shared.remember(u)   // 登录过的账号存起来，之后可直接切换
+        } catch {
             userErr = error.localizedDescription
             DYLiveModel.log("DDMINE self err " + error.localizedDescription)
         }
