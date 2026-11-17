@@ -1834,7 +1834,7 @@ final class DouDuoUITests: XCTestCase {
         clear.tap()
         let confirm = app.alerts["清理缓存？"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        XCTAssertTrue(confirm.staticTexts["清除缓存和诊断日志，保留登录、消息和设置。"].exists)
+        XCTAssertTrue(confirm.staticTexts["清除缓存和诊断日志，保留离线视频。"].exists)
         confirm.buttons["取消"].tap()
         XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
 
@@ -2047,6 +2047,396 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "build95-pip-restored")
         app.buttons["douyin.cleanScreen"].tap()
         XCTAssertTrue(app.buttons["douyin.comments"].waitForExistence(timeout: 5))
+    }
+
+    func testManualDownloadsContinueOnFeedAndPlayOffline() throws {
+        continueAfterFailure = false
+        guard let fixtureURL = ProcessInfo.processInfo.environment["DOUDUO_OFFLINE_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the local video download fixture")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic", "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_OFFLINE_FIXTURE_URL": fixtureURL, "DOUDUO_APPEARANCE": "system"
+        ]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douyin_wide_landscape_v1", "NO", "-douyin_playback_rate_v1", "1.25",
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+
+        func openSettings() {
+            let more = app.buttons["douyin.more"].firstMatch
+            XCTAssertTrue(more.waitForExistence(timeout: 15))
+            _ = app.screenshot()
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let settings = app.buttons["设置"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.tap()
+        }
+
+        func openStorage() {
+            openSettings()
+            let storage = app.descendants(matching: .any)["settings.storage"].firstMatch
+            for _ in 0..<5 where !storage.isHittable { app.swipeUp() }
+            XCTAssertTrue(storage.isHittable)
+            storage.tap()
+            XCTAssertTrue(app.navigationBars["储存空间"].waitForExistence(timeout: 5))
+        }
+
+        func openOfflineDownloads(checkPosition: Bool = false) {
+            openSettings()
+            let downloadLink = app.descendants(matching: .any)["settings.cache.offline"].firstMatch
+            for _ in 0..<5 where !downloadLink.isHittable { app.swipeUp() }
+            XCTAssertTrue(downloadLink.isHittable, app.debugDescription)
+            if checkPosition {
+                let cache = app.descendants(matching: .any)["settings.cache.count"].firstMatch
+                let storage = app.descendants(matching: .any)["settings.storage"].firstMatch
+                XCTAssertTrue(cache.exists && storage.exists)
+                XCTAssertLessThan(cache.frame.midY, downloadLink.frame.midY)
+                XCTAssertLessThan(downloadLink.frame.midY, storage.frame.midY)
+            }
+            downloadLink.tap()
+        }
+
+        app.launch()
+        print("OFFLINE_DUO_WINDOW \(app.windows.firstMatch.frame)")
+        let speedHint = app.descendants(matching: .any)["douyin.playbackSpeedHint"].firstMatch
+        XCTAssertTrue(speedHint.waitForExistence(timeout: 5))
+        let speedFrame = speedHint.frame
+        XCTAssertFalse(speedFrame.isEmpty)
+        openOfflineDownloads(checkPosition: true)
+        let selection = app.descendants(matching: .any)["offline.count"].firstMatch
+        XCTAssertTrue(selection.waitForExistence(timeout: 5))
+        let automaticDownload = app.switches["offline.automatic"].firstMatch
+        XCTAssertTrue(automaticDownload.exists)
+        XCTAssertEqual(automaticDownload.value as? String, "0")
+        let downloadButton = app.buttons["offline.estimate"]
+        XCTAssertTrue(downloadButton.isHittable)
+        let downloadFrame = downloadButton.frame
+        attach(app, "offline-download-idle")
+        selection.tap()
+        for count in [50, 100, 150, 200] {
+            XCTAssertTrue(app.buttons["\(count) 条"].firstMatch.exists)
+        }
+        XCTAssertFalse(app.buttons["1 条"].exists)
+        app.buttons["200 条"].firstMatch.tap()
+        downloadButton.tap()
+        let confirm = app.alerts["下载离线视频？"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirm.staticTexts.allElementsBoundByIndex.contains { $0.label.contains("6 GB") && $0.label.contains("200 条") })
+        confirm.buttons["取消"].tap()
+
+        selection.tap()
+        app.buttons["50 条"].firstMatch.tap()
+        downloadButton.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.staticTexts.allElementsBoundByIndex.contains { $0.label.contains("1.5 GB") && $0.label.contains("50 条") })
+        attach(app, "offline-estimate")
+        confirm.buttons["开始下载"].tap()
+
+        let progressRow = app.descendants(matching: .any)["offline.progress"].firstMatch
+        XCTAssertTrue(progressRow.waitForExistence(timeout: 5))
+        let stop = app.buttons["offline.stop"]
+        XCTAssertTrue(stop.isHittable)
+        XCTAssertEqual(stop.frame.minX, downloadFrame.minX, accuracy: 1)
+        XCTAssertEqual(stop.frame.minY, downloadFrame.minY, accuracy: 1)
+        XCTAssertEqual(stop.frame.width, downloadFrame.width, accuracy: 1)
+        XCTAssertEqual(stop.frame.height, downloadFrame.height, accuracy: 1)
+        XCTAssertGreaterThan(progressRow.frame.midY, app.windows.firstMatch.frame.midY)
+        XCTAssertFalse(app.buttons["返回刷视频"].exists)
+        attach(app, "offline-progress")
+        stop.tap()
+        let stopConfirmation = app.alerts["停止下载？"]
+        XCTAssertTrue(stopConfirmation.waitForExistence(timeout: 5))
+        stopConfirmation.buttons["取消"].tap()
+        if ProcessInfo.processInfo.environment["DOUDUO_TEST_DISPLAY"] == "inner" {
+            XCTAssertTrue(waitUntil(timeout: 22) {
+                let counts = (stop.value as? String ?? "").split { !$0.isNumber }.compactMap { Int($0) }
+                return counts.count >= 2 && counts[0] == 1 && counts[1] > 1
+            }, "The fixture should show a partially filled download button")
+            attach(app, "offline-progress-partial")
+            XCTAssertEqual(stop.frame.size, downloadFrame.size)
+        }
+
+        // Close the settings sheet by its native dismiss gesture.
+        let settingsStack = app.navigationBars["离线视频"]
+        let window = app.windows.firstMatch
+        let from = settingsStack.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22))
+        let to = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.83))
+        from.press(forDuration: 0.08, thenDragTo: to)
+        XCTAssertTrue(settingsStack.waitForNonExistence(timeout: 5))
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(current.waitForExistence(timeout: 5))
+        let first = current.label
+        let feedSwipeStart = window.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.76))
+        let feedSwipeEnd = window.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.18))
+        for _ in 0..<3 where current.label == first {
+            feedSwipeStart.press(forDuration: 0.05, thenDragTo: feedSwipeEnd, withVelocity: .fast, thenHoldForDuration: 0)
+        }
+        XCTAssertTrue(waitUntil(timeout: 6) { current.label != first }, "Feed did not page after returning from the download screen")
+        let banner = app.buttons["douyin.offline.banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 45), app.debugDescription)
+        XCTAssertEqual(banner.label, "离线视频下载完成")
+        let completion = try XCTUnwrap(banner.value as? String)
+        let downloaded = try XCTUnwrap(completion.split(whereSeparator: { !$0.isNumber }).first.flatMap { Int($0) })
+        XCTAssertGreaterThan(downloaded, 0)
+        attach(app, "offline-complete-banner")
+        if banner.isHittable { banner.tap() }
+
+        openStorage()
+        app.buttons["storage.clear"].tap()
+        let clear = app.alerts["清理缓存？"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 5))
+        clear.buttons["清理缓存"].tap()
+        let cleaned = app.descendants(matching: .any)["storage.result"].firstMatch
+        XCTAssertTrue(cleaned.waitForExistence(timeout: 15))
+        XCTAssertEqual(cleaned.label, "缓存已清理")
+        app.terminate()
+
+        app.launchEnvironment["DOUDUO_TEST_OFFLINE"] = "1"
+        app.launch()
+        let indicator = app.descendants(matching: .any)["douyin.video.offlineIndicator"].firstMatch
+        XCTAssertTrue(indicator.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertEqual(indicator.label, "离线视频")
+        XCTAssertEqual(indicator.value as? String, "1/\(downloaded)")
+        let offlineFrame = indicator.frame
+        XCTAssertEqual(offlineFrame.minX, speedFrame.minX, accuracy: 1)
+        XCTAssertEqual(offlineFrame.minY, speedFrame.minY, accuracy: 1)
+        XCTAssertEqual(offlineFrame.width, speedFrame.width, accuracy: 1)
+        XCTAssertEqual(offlineFrame.height, speedFrame.height, accuracy: 1)
+        print("DUODUO_CAPTURE offline-video-indicator")
+        XCTAssertTrue(waitUntil(timeout: 8) { current.exists && current.label.hasPrefix("hashtag-") }, app.debugDescription)
+        let progress = app.descendants(matching: .any)["douyin.progress"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 12) {
+            guard progress.exists, let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 1
+        }, app.debugDescription)
+        attach(app, "offline-local-playback")
+        openOfflineDownloads()
+        let duration = app.descendants(matching: .any)["offline.duration"].firstMatch
+        XCTAssertTrue(duration.waitForExistence(timeout: 5), app.debugDescription)
+        let durationLabels = [duration.label, duration.value as? String ?? ""] + duration.staticTexts.allElementsBoundByIndex.map(\.label)
+        XCTAssertTrue(durationLabels.contains { $0.range(of: #"\d+:\d{2}(?::\d{2})?"#, options: .regularExpression) != nil }, durationLabels.joined(separator: " | "))
+        let expiry = app.descendants(matching: .any)["offline.expiration"].firstMatch
+        let remove = app.buttons["offline.delete"]
+        XCTAssertTrue(expiry.exists && remove.exists)
+        XCTAssertGreaterThan(expiry.frame.midY, remove.frame.midY)
+        XCTAssertNotNil(expiry.label.range(of: #"\d{4}-\d{2}-\d{2} \d{2}:\d{2}"#, options: .regularExpression), expiry.label)
+        XCTAssertFalse(app.descendants(matching: .any)["offline.saved"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["离线视频下载完成"].exists)
+        attach(app, "offline-download-library")
+        let libraryLink = app.descendants(matching: .any)["offline.library"].firstMatch
+        XCTAssertTrue(libraryLink.isHittable)
+        XCTAssertEqual(libraryLink.value as? String, "\(downloaded) 条")
+        libraryLink.tap()
+        let closePlayer = app.buttons["offline.library.close"]
+        XCTAssertTrue(closePlayer.waitForExistence(timeout: 5))
+        XCTAssertTrue(indicator.waitForExistence(timeout: 4), app.debugDescription)
+        XCTAssertEqual(indicator.value as? String, "1/\(downloaded)")
+        let fullscreen = app.descendants(matching: .any)["offline.library.player"].firstMatch
+        XCTAssertTrue(fullscreen.exists)
+        XCTAssertGreaterThanOrEqual(fullscreen.frame.width, window.frame.width * 0.98)
+        XCTAssertGreaterThanOrEqual(fullscreen.frame.height, window.frame.height * 0.98)
+        XCTAssertFalse(app.buttons["offline.estimate"].isHittable)
+        print("DUODUO_CAPTURE offline-library-fullscreen")
+        XCTAssertTrue(waitUntil(timeout: 10) {
+            guard let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 1
+        }, "The offline library should play while settings covers the recommendation feed.")
+
+        closePlayer.tap()
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        app.alerts["删除全部离线视频？"].buttons["删除"].tap()
+        XCTAssertTrue(remove.waitForNonExistence(timeout: 5))
+    }
+
+    func testOfflineLibraryRestoresLastVideoAndPlaybackPosition() throws {
+        continueAfterFailure = false
+        guard ProcessInfo.processInfo.environment["DOUDUO_LIBRARY_FIXTURE"] == "1" else {
+            throw XCTSkip("Requires two locally saved offline video fixtures")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic", "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_TEST_OFFLINE": "1", "DOUDUO_APPEARANCE": "system", "DOUDUO_PLAYBACK_FIXTURE": "1"
+        ]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douyin_playback_rate_v1", "1.25", "-douyin_bg_play_v1", "YES",
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+
+        let launchLibrary = app.buttons["offline.library"]
+        let close = app.buttons["offline.library.close"]
+        let current = app.staticTexts["offline.library.currentID"].firstMatch
+        let progress = app.descendants(matching: .any)["douyin.progress"].firstMatch
+        let playerState = app.staticTexts["douyin.video.playback"].firstMatch
+
+        func openOfflinePage() {
+            let more = app.buttons["douyin.more"].firstMatch
+            XCTAssertTrue(more.waitForExistence(timeout: 15))
+            _ = app.screenshot()
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let settings = app.buttons["设置"].firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.tap()
+            let offline = app.descendants(matching: .any)["settings.cache.offline"].firstMatch
+            for _ in 0..<5 where !offline.isHittable { app.swipeUp() }
+            XCTAssertTrue(offline.isHittable, app.debugDescription)
+            offline.tap()
+        }
+
+        func openPlayer() {
+            XCTAssertTrue(launchLibrary.waitForExistence(timeout: 5))
+            launchLibrary.tap()
+            XCTAssertTrue(close.waitForExistence(timeout: 5))
+        }
+
+        func elapsed() -> Int? {
+            guard progress.exists, let value = progress.value as? String else { return nil }
+            return value.split(separator: " ").first.flatMap { Int($0) }
+        }
+
+        func activeAudioIsCurrent(paused: Bool) -> Bool {
+            let probe = app.staticTexts["douyin.search.playbackProbe"].firstMatch
+            guard probe.exists,
+                  let snapshot = try? JSONSerialization.jsonObject(with: Data(probe.label.utf8)) as? [String: Any],
+                  let players = snapshot["players"] as? [[String: Any]] else { return false }
+            let selected = players.filter {
+                $0["id"] as? String == "offline-qa-second" && $0["library"] as? Bool == true && $0["active"] as? Bool == true
+            }
+            let playing = players.filter { ($0["rate"] as? Double ?? 0) > 0 || $0["engine"] as? Bool == true }
+            guard selected.count == 1, selected.first?["remote"] as? Bool == true else { return false }
+            if paused { return playing.isEmpty }
+            return playing.count == 1 && playing.first?["instance"] as? String == selected.first?["instance"] as? String
+        }
+
+        app.launch()
+        openOfflinePage()
+        attach(app, "offline-download-library")
+        openPlayer()
+        XCTAssertTrue(wait(label: "offline-qa-first", on: current, timeout: 5))
+        XCTAssertTrue(app.buttons["douyin.like"].firstMatch.waitForExistence(timeout: 5))
+
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.76))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.18))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(wait(label: "offline-qa-second", on: current, timeout: 6), app.debugDescription)
+        XCTAssertTrue(waitUntil(timeout: 6) { activeAudioIsCurrent(paused: false) }, "Only the selected offline player should own playback after paging")
+
+        XCTAssertTrue(waitUntil(timeout: 5) { (elapsed() ?? 0) >= 1 })
+        let beforeScrub = try XCTUnwrap(elapsed())
+        let scrubStart = progress.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.7))
+        let scrubEnd = progress.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.7))
+        scrubStart.press(forDuration: 0.10, thenDragTo: scrubEnd)
+        XCTAssertTrue(waitUntil(timeout: 5) { (elapsed() ?? 0) > beforeScrub + 9 }, "Dragging should seek the local video")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.40)).tap()
+        XCTAssertTrue(wait(label: "paused", on: playerState, timeout: 4), app.debugDescription)
+        XCTAssertTrue(waitUntil(timeout: 4) { activeAudioIsCurrent(paused: true) }, "Pausing the current clip must not bring back another clip's audio")
+        let saved = try XCTUnwrap(elapsed())
+        XCTAssertGreaterThanOrEqual(saved, 10)
+        attach(app, "offline-library-interactions")
+
+        close.tap()
+        openPlayer()
+        XCTAssertTrue(wait(label: "offline-qa-second", on: current, timeout: 5))
+        XCTAssertTrue(waitUntil(timeout: 3) { (elapsed() ?? 0) >= saved - 1 }, "Closing the player should remember the seek position")
+        close.tap()
+
+        app.terminate()
+        app.launch()
+        openOfflinePage()
+        openPlayer()
+        XCTAssertTrue(wait(label: "offline-qa-second", on: current, timeout: 5))
+        XCTAssertTrue(waitUntil(timeout: 3) { (elapsed() ?? 0) >= saved - 1 }, "The saved position should survive an app relaunch")
+    }
+
+    func testOnlineRecommendationReusesDownloadWithoutOfflineBadge() throws {
+        continueAfterFailure = false
+        guard ProcessInfo.processInfo.environment["DOUDUO_ONLINE_CACHE_FIXTURE"] == "1",
+              let failingSource = ProcessInfo.processInfo.environment["DOUDUO_FALLBACK_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the offline copy of the first online recommendation")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic", "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_OFFLINE_FIXTURE_URL": failingSource
+        ]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douyin_playback_rate_v1", "1", "-douyin_wide_landscape_v1", "NO",
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 8))
+        let indicator = app.descendants(matching: .any)["douyin.video.offlineIndicator"].firstMatch
+        XCTAssertFalse(indicator.exists)
+        let progress = app.otherElements["douyin.progress"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 4) {
+            guard let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 1
+        }, "The matching offline copy should play even with the fixture URL unavailable")
+        XCTAssertFalse(indicator.exists)
+    }
+
+    func testFailedRecommendationContinuesFromVideoCache() throws {
+        continueAfterFailure = false
+        guard let fixtureURL = ProcessInfo.processInfo.environment["DOUDUO_FALLBACK_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the invalid video URL and a pre-seeded automatic video cache")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic", "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_OFFLINE_FIXTURE_URL": fixtureURL, "DOUDUO_APPEARANCE": "system"
+        ]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(wait(label: "hashtag-travel", on: current, timeout: 45), app.debugDescription)
+
+        let progress = app.descendants(matching: .any)["douyin.progress"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 12) {
+            guard let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 1
+        }, app.debugDescription)
+    }
+
+    func testRecommendationAutomaticallyReturnsOnlineAfterOfflineVideo() throws {
+        continueAfterFailure = false
+        guard let fixtureURL = ProcessInfo.processInfo.environment["DOUDUO_RECONNECT_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the local video fixture and a pre-seeded offline download")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic", "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_OFFLINE_FIXTURE_URL": fixtureURL, "DOUDUO_APPEARANCE": "system",
+            "DOUDUO_TEST_OFFLINE": "1", "DOUDUO_TEST_RECONNECT_AFTER": "7"
+        ]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(wait(label: "offline-qa-first", on: current, timeout: 8), app.debugDescription)
+        let progress = app.descendants(matching: .any)["douyin.progress"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 11) {
+            guard current.label == "offline-qa-first", let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 8
+        }, "Reconnecting should keep the healthy offline video until it finishes.")
+        XCTAssertTrue(wait(label: "hashtag-cat", on: current, timeout: 25), app.debugDescription)
+        XCTAssertTrue(waitUntil(timeout: 12) {
+            guard let value = progress.value as? String,
+                  let elapsed = value.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return elapsed >= 1
+        }, "Fresh online video should play automatically.")
     }
 
     func testLongPressZonesAndSettingsMigration() throws {

@@ -135,6 +135,9 @@ struct DouDuoApp: App {
             .overlay(alignment: .topLeading) { DDAppearanceStateProbe() }
             #endif
             .modifier(DYHingeStateRoot())
+            .task(id: scenePhase) {
+                if scenePhase == .active { await DYOfflineDownloads.shared.refreshRetention() }
+            }
         }
         // 退到后台 / 锁屏：短视频按「后台播放」停声。直播走同一条恢复，是否出声看「后台直播声音」。
         // 回到前台会先经过 inactive。这里如果当成后台，会把刚刚恢复的直播立刻停掉。
@@ -162,6 +165,34 @@ struct DouDuoApp: App {
             case .resume: DDPlayback.shared.resumeAll()
             case .none: break
             }
+        }
+    }
+}
+
+struct DYOfflineAutomaticDownload: ViewModifier {
+    let ready: Bool
+    let candidateSource: (Int) async throws -> [DYAweme]
+
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(DYOfflineDownloads.automaticDownloadKey) private var enabled = false
+    @AppStorage(DYOfflineDownloads.downloadTargetKey) private var target = DYOfflineDownloads.defaultDownloadTarget
+    @ObservedObject private var downloads = DYOfflineDownloads.shared
+
+    private var activeTarget: Int? {
+        guard enabled, ready, scenePhase == .active, downloads.isOnWiFi,
+              !downloads.isOffline, downloads.savedCount < target else { return nil }
+        return target
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: activeTarget) {
+            guard activeTarget != nil else { return }
+            await downloads.refreshRetention()
+            guard !Task.isCancelled, activeTarget != nil else { return }
+            downloads.startAutomatic(candidateSource: candidateSource)
+        }
+        .onChange(of: enabled) { _, enabled in
+            if !enabled { downloads.stopAutomatic() }
         }
     }
 }
