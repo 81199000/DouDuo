@@ -248,9 +248,8 @@ struct DYVideoCaptionHeader: View {
                     searchHashtag(name)
                     return .handled
                 })
-            if let metadata = aweme.metadataText() {
-                Text(metadata).font(.caption).foregroundStyle(.themeTextSecondary)
-            }
+            DYWorkMetadataText(item: aweme, active: true)
+                .font(.caption).foregroundStyle(.themeTextSecondary)
         }
         .foregroundStyle(.themeTextPrimary)
         .frame(maxWidth: .infinity, alignment: .leading)

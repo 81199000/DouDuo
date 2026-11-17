@@ -17,6 +17,7 @@
 		196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 730650A08AE183BAB384340D /* DYSwipeProbe.swift */; };
 		19ECC8D42A077E8652DD8714 /* DYRelationsPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */; };
 		1C1DFA2A3BC33A54BA080EEE /* DYHashtagFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A40470F20A49FE6787F16E /* DYHashtagFilter.swift */; };
+		2537A9A44CC476616009B14D /* DYWorkMetadataText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C790D59BF29FBA8623D2C4 /* DYWorkMetadataText.swift */; };
 		26559796455EB77627AA7093 /* VLCPlayerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */; };
 		26D6D0D3767D87B3312DE3FF /* DYHashtagFilterScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C554EAEA45B5D350721D26D6 /* DYHashtagFilterScreen.swift */; };
 		2727373BBAE8236687D47078 /* DDWebAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAEEA21047D0EC20D5AC1F3C /* DDWebAppearance.swift */; };
@@ -45,6 +46,7 @@
 		52563CA162FA95F96FE27785 /* DYForwardFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */; };
 		55147881C1BCC59CF2277E64 /* DYGalleryMusic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AFC4408149F67A953BE7CC5 /* DYGalleryMusic.swift */; };
 		5751001D3873E34BD6392BEF /* DYPlaybackTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */; };
+		57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */ = {isa = PBXBuildFile; fileRef = 6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */; };
 		5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */; };
 		5E559F14A34B0BC320D02B20 /* DouyinWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5AFA52547E516238F34D3A7 /* DouyinWebView.swift */; };
 		6273092DE9964219DDA74C50 /* DYMessageDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9929F2A3F9E6C999A67F565 /* DYMessageDivider.swift */; };
@@ -69,8 +71,10 @@
 		844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */; };
 		8527AFFAA0970036C2B5C61F /* DYSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */; };
 		85C30C1C9411C32D14761E7A /* DouyinExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66F335DE5A601EA019AD61E /* DouyinExtras.swift */; };
+		872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */ = {isa = PBXBuildFile; fileRef = 25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */; };
 		896AEDFA28BCF82C5E68E9DE /* DYForwardReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D3A302578F63723DC624C1 /* DYForwardReceipt.swift */; };
 		8EB9B00BA15FC48C75B49677 /* DYChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641CB2690B07BD7100280B09 /* DYChatComposer.swift */; };
+		958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */; };
 		9F40E63A14141175377E9040 /* DYChatHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4522BBA2C9DA5257C7ADCC /* DYChatHeader.swift */; };
 		A6977B290150EFD0B47768E4 /* DYRecommendFeedHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66460DEF146A3933D0480329 /* DYRecommendFeedHost.swift */; };
 		AAF87B9A920594ED30D856E2 /* DouyinCommentApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */; };
@@ -95,6 +99,7 @@
 		D4C0D14AA0AE10DD71A00B3B /* DYHashtagFilterButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = E948B13DA5E6505F703CAA4C /* DYHashtagFilterButton.swift */; };
 		D6A40EE7FB068521E3E7CB20 /* DYRelationsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8BAE91B96A90EB92AC6A7F /* DYRelationsProbe.swift */; };
 		D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */; };
+		DC20068F342E15BD7D314F4A /* DYPublicationRegionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */; };
 		DC990FC343EDD6CE18CCCB91 /* DYMessageNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8692ACA58496924A8020F3F1 /* DYMessageNavigation.swift */; };
 		DE2A3FB15A8ED7BF07FD37C5 /* FollowLiveLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */; };
 		E1D4182D4938B480875B179E /* DYConversationSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C43FA3C5D8DB75D2826682B /* DYConversationSync.swift */; };
@@ -134,9 +139,11 @@
 		0D5F9BC07F7BAA601E6AB9B3 /* DYMessageFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageFixture.swift; sourceTree = "<group>"; };
 		110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDAppearanceProbe.swift; sourceTree = "<group>"; };
 		1172CA3BD3E88F1B0C316895 /* DYForwardCompose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardCompose.swift; sourceTree = "<group>"; };
+		12C790D59BF29FBA8623D2C4 /* DYWorkMetadataText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYWorkMetadataText.swift; sourceTree = "<group>"; };
 		1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYRelationsPagingTests.swift; sourceTree = "<group>"; };
 		21E706CE2EE957B9C81B44D2 /* DYReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYReadiness.swift; sourceTree = "<group>"; };
 		247A523C254CDEF946BEA5A1 /* DouyinForwardPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinForwardPanel.swift; sourceTree = "<group>"; };
+		25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "ProvinceCityChina-MIT.txt"; sourceTree = "<group>"; };
 		26628003EB3A42ADD3566C56 /* DYMessageRailProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageRailProbeTests.swift; sourceTree = "<group>"; };
 		29DE92BCB223AA37A12275DA /* DYChatImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatImageCache.swift; sourceTree = "<group>"; };
 		2A26A5E0649453C171341984 /* DYVideoOptionsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoOptionsPanel.swift; sourceTree = "<group>"; };
@@ -151,6 +158,7 @@
 		36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinCommentApiProbe.swift; sourceTree = "<group>"; };
 		3D36E286153BCFB6F4429C62 /* DYMessageLayoutProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageLayoutProbe.swift; sourceTree = "<group>"; };
 		42B2AB160A33107F2CFB8F46 /* DouDuoVideoFitTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoVideoFitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPublicationRegionClient.swift; sourceTree = "<group>"; };
 		4533C36FD7AE2A46CAA52B82 /* DouDuo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DouDuo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F438BF3690CFD4BD6A0051 /* DYConversationCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYConversationCell.swift; sourceTree = "<group>"; };
 		4A3202317C2541C9EFEC8DBF /* DouyinLiveChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveChat.swift; sourceTree = "<group>"; };
@@ -168,6 +176,7 @@
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
 		6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardFeedback.swift; sourceTree = "<group>"; };
+		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
 		70B25F5F38F6A322FCA53439 /* DYDMProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDMProbe.swift; sourceTree = "<group>"; };
 		730650A08AE183BAB384340D /* DYSwipeProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSwipeProbe.swift; sourceTree = "<group>"; };
 		74F646B31DAD1BDD97D97FBA /* DYConversationStreak.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYConversationStreak.swift; sourceTree = "<group>"; };
@@ -187,6 +196,7 @@
 		93E1C4B6340A84BAFB38739F /* DYFeedPager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFeedPager.swift; sourceTree = "<group>"; };
 		960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortVideoPlayer.swift; sourceTree = "<group>"; };
 		9AFC4408149F67A953BE7CC5 /* DYGalleryMusic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYGalleryMusic.swift; sourceTree = "<group>"; };
+		9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPublicationRegion.swift; sourceTree = "<group>"; };
 		9E79B1B7855114828E14FCBA /* DouyinDuoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinDuoLayout.swift; sourceTree = "<group>"; };
 		A4F1DFA94B73649EE84FAC2B /* DYDanmakuEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDanmakuEngine.swift; sourceTree = "<group>"; };
 		A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoUITests.swift; sourceTree = "<group>"; };
@@ -271,6 +281,7 @@
 				C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */,
 				016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */,
 				001C015957CC2755309F4EE5 /* DouyinPeopleCache.swift */,
+				6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */,
 				366286F958759FA9BE49695E /* DouyinRelatedSearch.swift */,
 				883B76D790E10A3E7DDFCE0D /* DouyinRelations.swift */,
 				008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */,
@@ -323,6 +334,8 @@
 				D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */,
 				79B6E29A6530FCADAE181F08 /* DYPictureInPicture.swift */,
 				33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */,
+				9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */,
+				42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */,
 				21E706CE2EE957B9C81B44D2 /* DYReadiness.swift */,
 				66460DEF146A3933D0480329 /* DYRecommendFeedHost.swift */,
 				7A8BAE91B96A90EB92AC6A7F /* DYRelationsProbe.swift */,
@@ -336,9 +349,11 @@
 				5053C76DAFCB7CD6A7418C7E /* DYVideoMoreMenu.swift */,
 				2A26A5E0649453C171341984 /* DYVideoOptionsPanel.swift */,
 				4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */,
+				12C790D59BF29FBA8623D2C4 /* DYWorkMetadataText.swift */,
 				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
+				25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */,
 				D7CD74B4F7A62B69D376114F /* SeamlessAudioPlayer.swift */,
 				960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */,
 				E8C00A82D0DF6727AA1E57D1 /* Theme.swift */,
@@ -505,6 +520,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */,
+				57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */,
+				872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -577,6 +594,8 @@
 				5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */,
 				C2897DBD3C7E64EE0B0B7009 /* DYPictureInPicture.swift in Sources */,
 				5751001D3873E34BD6392BEF /* DYPlaybackTelemetry.swift in Sources */,
+				958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */,
+				DC20068F342E15BD7D314F4A /* DYPublicationRegionClient.swift in Sources */,
 				ABB3FB8972E51EC26F6CFCE0 /* DYReadiness.swift in Sources */,
 				A6977B290150EFD0B47768E4 /* DYRecommendFeedHost.swift in Sources */,
 				D6A40EE7FB068521E3E7CB20 /* DYRelationsProbe.swift in Sources */,
@@ -590,6 +609,7 @@
 				727FF399B8CF3C46700F5D15 /* DYVideoMoreMenu.swift in Sources */,
 				40D20049423A4FFE6A28EA9E /* DYVideoOptionsPanel.swift in Sources */,
 				D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */,
+				2537A9A44CC476616009B14D /* DYWorkMetadataText.swift in Sources */,
 				844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */,
 				28289ABD1DCF4363BEB6CB68 /* DouyinApiScanner.swift in Sources */,
 				417E6C46DBCC2F012480B85B /* DouyinBridge+CommentImage.swift in Sources */,

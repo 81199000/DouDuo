@@ -1,10 +1,82 @@
 import SwiftUI
+import UIKit
 
 /// Declaration order is also the system vertical tab bar's order.
 enum DYMainTab: String, CaseIterable, Hashable {
     /// 当前大页的持久化键（重启恢复要和代码状态一致）
     static let storageKey = "duoduomain_tab_v1"
     case mine = "我的", messages = "消息", home = "首页"
+}
+
+/// Reject Home reselection at the native tab controller, before the system
+/// can scroll the feed to the top. Keep SwiftUI's delegate for other events.
+struct DYHomeReselectionGuard: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.install() }
+
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) {
+        controller.uninstall()
+    }
+
+    final class Controller: UIViewController, UITabBarControllerDelegate {
+        private weak var installedOn: UITabBarController?
+        private nonisolated(unsafe) weak var previousDelegate: (any UITabBarControllerDelegate)?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            install()
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            if parent == nil { uninstall() }
+            else { install() }
+        }
+
+        func install() {
+            guard let tabs = tabBarController else { return }
+            if installedOn !== tabs { uninstall() }
+            guard tabs.delegate !== self else { return }
+            previousDelegate = tabs.delegate
+            installedOn = tabs
+            tabs.delegate = self
+        }
+
+        func uninstall() {
+            if let installedOn, installedOn.delegate === self {
+                installedOn.delegate = previousDelegate
+            }
+            installedOn = nil
+            previousDelegate = nil
+        }
+
+        func tabBarController(_ controller: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
+            if tab === controller.selectedTab && tab.title == DYMainTab.home.rawValue { return rejectHomeReselection() }
+            return previousDelegate?.tabBarController?(controller, shouldSelectTab: tab) ?? true
+        }
+
+        func tabBarController(_ controller: UITabBarController, shouldSelect viewController: UIViewController) -> Bool {
+            if viewController === controller.selectedViewController &&
+                viewController.tabBarItem.title == DYMainTab.home.rawValue { return rejectHomeReselection() }
+            return previousDelegate?.tabBarController?(controller, shouldSelect: viewController) ?? true
+        }
+
+        private func rejectHomeReselection() -> Bool {
+            #if DEBUG
+            DYLiveModel.log("DDDOCK ignored Home reselection")
+            #endif
+            return false
+        }
+
+        override nonisolated func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || previousDelegate?.responds(to: selector) == true
+        }
+
+        override nonisolated func forwardingTarget(for selector: Selector!) -> Any? {
+            if let previousDelegate, previousDelegate.responds(to: selector) { return previousDelegate }
+            return super.forwardingTarget(for: selector)
+        }
+    }
 }
 
 /// Let the system compress tabs before video actions when its shared vertical
