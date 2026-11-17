@@ -281,7 +281,9 @@ extension DouyinBridge {
         let d = try await call(Self.publishJS, args: args, attempts: 1)
         let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
         DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
-        if r.code == 8 { throw DYError.bad("抖音未登录：到「我的」点「去登录」，或从「设置」进「网页版 / 登录」") }
+        // code 8：抖音不认这份登录。真机常见「能看不能写」的半失效登录（资料、作品照常读，评论被拒，老板 11-18），
+        // 让界面直接弹登录页重新登录，不再叫用户自己去「我的」找入口（那里显示已登录，根本没有「去登录」）
+        if r.code == 8 { throw DYLoginExpired() }
         if r.status == 200, (r.code ?? 0) == 0, let c = r.comment {
             // 回执里没带图片地址时，去评论列表里把这条带图的找回来，不然本地显示成一条空评论
             if image != nil, (c.images ?? []).isEmpty,
