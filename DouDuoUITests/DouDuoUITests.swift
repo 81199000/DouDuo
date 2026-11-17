@@ -1654,6 +1654,49 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "login-stale-session")
     }
 
+    /// 多账号：账号页列出存着的账号，点一下切换（换 cookie），退出当前账号，左滑移除（假账号，不碰真实账号）
+    func testAccountsSwitchSignOutRemove() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9", "-douduo_accounts_v1", "", "-douduo_account_current_v1", ""]
+        app.launch()
+        // 未登录会先弹登录页：关掉
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 20) { close.tap() }
+        let accounts = app.buttons["douyin.mine.accounts"].firstMatch
+        XCTAssertTrue(accounts.waitForExistence(timeout: 15), "「我的」没有「账号」按钮"); accounts.tap()
+        let a = app.buttons["douyin.account.1001"].firstMatch, b = app.buttons["douyin.account.1002"].firstMatch
+        XCTAssertTrue(a.waitForExistence(timeout: 8) && b.exists, "账号页没列出存着的账号")
+        XCTAssertTrue(app.buttons["douyin.account.add"].exists, "没有「添加账号」")
+        attach(app, "accounts-list")
+        // 切到乙：账号页关闭
+        b.tap()
+        XCTAssertTrue(a.waitForNonExistence(timeout: 8), "切换后账号页没关")
+        // 再打开：乙打勾，有「退出当前账号」
+        accounts.tap()
+        XCTAssertTrue(app.buttons["douyin.account.signout"].waitForExistence(timeout: 8), "切换后没有「退出当前账号」")
+        attach(app, "accounts-switched")
+        // 退出
+        app.buttons["douyin.account.signout"].tap()
+        let confirm = app.buttons["退出"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        XCTAssertTrue(a.waitForNonExistence(timeout: 8), "退出后账号页没关")
+        // 退出后账号还在列表，可以移除
+        accounts.tap()
+        XCTAssertTrue(b.waitForExistence(timeout: 8), "退出后账号不在列表了")
+        XCTAssertFalse(app.buttons["douyin.account.signout"].exists, "退出后还显示「退出当前账号」")
+        b.swipeLeft()
+        app.buttons["移除"].firstMatch.tap()
+        let confirmRemove = app.buttons["移除"].firstMatch
+        if confirmRemove.waitForExistence(timeout: 5) { confirmRemove.tap() }
+        XCTAssertTrue(b.waitForNonExistence(timeout: 5), "移除后账号还在")
+        attach(app, "accounts-removed")
+    }
+
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
     func testManageEntriesExist() throws {
         continueAfterFailure = false

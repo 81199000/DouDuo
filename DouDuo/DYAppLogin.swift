@@ -303,7 +303,11 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         return JSON.stringify({
           path: location.pathname,
           qr: qrImg ? qrImg.src : null, cd: cd ? Number(cd) : 0, tip: tip || null, qrTip: qrTip || null, verify,
-          dry: window.__ddDry || [], scanAsk
+          dry: window.__ddDry || [], scanAsk,
+          // 点登录后网页上能看到的字 + 有没有大号方图/弹窗：抖音新设备二次验证页没见过，靠这个从日志还原
+          seen: leaf.slice(0, 60).join('|'),
+          boxes: [...document.querySelectorAll('img,canvas,iframe')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 100; })
+                   .map(e => e.tagName + ':' + Math.round(e.getBoundingClientRect().width) + 'x' + Math.round(e.getBoundingClientRect().height) + ':' + String(e.src || '').slice(0, 40)).join(',')
         });
         """#, arguments: [:], in: nil, in: .page) { [weak self] r in
             guard let self, case .success(let v) = r, let s = v as? String,
@@ -323,6 +327,10 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         #if DEBUG
         if let dry = j["dry"] as? [String], dry.count != lastDry { lastDry = dry.count; DYLiveModel.log("DDAPPLOGIN dry " + dry.joined(separator: ",")) }
         #endif
+        if loginClickedAt != nil, let seen = j["seen"] as? String {
+            let snap = seen + " ## " + (j["boxes"] as? String ?? "")
+            if snap != lastSeen { lastSeen = snap; DYLiveModel.log("DDAPPLOGIN after-login path=\(path) " + String(snap.prefix(900))) }
+        }
         countdown = j["cd"] as? Int ?? 0
         if let t = j["tip"] as? String, t != message {
             Task {
@@ -346,6 +354,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     }
     private var lastQR: String?
     private var lastDry = 0
+    private var lastSeen = ""
 
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
     private func confirmLogin() async {
