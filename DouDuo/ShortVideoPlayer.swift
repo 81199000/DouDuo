@@ -750,13 +750,8 @@ struct PlayerPage: View {
             guard isActive else { return }
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
-            // 1x ↔ 非 1x：当前这条换声音通路（原生 ↔ 独立引擎），从当前画面位置接着放
-            if vlc == nil, let p = player, (!cleanScreen && DDSeamlessController.engineWanted) != (seamAudio.mode != .fallbackAVPlayer) {
-                bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
-                if isPlaying { seamAudio.setRate(Float(target)) }
-                dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: target)
-                return
-            }
+            // 起播一律原生声音；播放中改速度交给 seamAudio.setRate：原生时就地交接给独立引擎（不断声），
+            // 已在引擎上就直接改引擎速率。不再按 1x / 非 1x 换声音通路（换通路要重绑，会断一下声，#52-1）。
             if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
             else if isPlaying {
                 seamAudio.setRate(Float(target))
