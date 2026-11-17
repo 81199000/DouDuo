@@ -8,14 +8,11 @@ final class WatchModel: NSObject, ObservableObject {
     static let shared = WatchModel()
 
     @Published var status = DDWatchStatus()
-    @Published var inbox = DDWatchInbox()
     @Published var videos: [DDWatchVideoMeta] = []
     @Published var reachable = false
     @Published var activated = false
-    @Published var loadingInbox = false
     @Published var requestingVideos = false
-    @Published var inboxError: String?
-    @Published var inboxUpdated: Date?
+    @Published var notice: String?
 
     /// 链接放多久算可能过期（与手机端 maxAge 一致）
     static let maxAge: TimeInterval = 6 * 3600
@@ -30,16 +27,11 @@ final class WatchModel: NSObject, ObservableObject {
         return d
     }()
     nonisolated private static var listURL: URL { dir.appendingPathComponent("watch-list.json") }
-    nonisolated private static var inboxURL: URL { dir.appendingPathComponent("watch-inbox.json") }
     nonisolated private static var watchedURL: URL { dir.appendingPathComponent("watch-seen.json") }
 
     override init() {
         super.init()
         if let d = try? Data(contentsOf: Self.listURL), let l = try? JSONDecoder().decode([DDWatchVideoMeta].self, from: d) { videos = l }
-        if let d = try? Data(contentsOf: Self.inboxURL), let i = try? JSONDecoder().decode(DDWatchInbox.self, from: d) {
-            inbox = i; status = i.status
-            inboxUpdated = Date(timeIntervalSince1970: i.status.updated)
-        }
         if let d = try? Data(contentsOf: Self.watchedURL), let w = try? JSONDecoder().decode([String].self, from: d) { watched = Set(w) }
         dropExpired()
         // 启动清一次缓存，之后每 10 分钟一次（App 开着期间也不会越存越多）
@@ -58,9 +50,6 @@ final class WatchModel: NSObject, ObservableObject {
     private func save() {
         if let d = try? JSONEncoder().encode(videos) { try? d.write(to: Self.listURL, options: .atomic) }
         if let d = try? JSONEncoder().encode(Array(watched.suffix(500))) { try? d.write(to: Self.watchedURL, options: .atomic) }
-    }
-    private func saveInbox() {
-        if let d = try? JSONEncoder().encode(inbox) { try? d.write(to: Self.inboxURL, options: .atomic) }
     }
 
     private func dropExpired() {
@@ -120,22 +109,6 @@ final class WatchModel: NSObject, ObservableObject {
         }
     }
 
-    func refreshInbox() async {
-        loadingInbox = true
-        defer { loadingInbox = false }
-        guard let r = await send([DDWatchKey.cmd: DDWatchCmd.inbox], timeout: 30),
-              let box = DDWatchCodec.unpack(DDWatchInbox.self, from: r) else {
-            // 没连上手机：保留上次的内容，只提示更新时间
-            inboxError = reachable ? "iPhone 没有响应" : "未连接 iPhone"
-            return
-        }
-        inboxError = nil
-        inbox = box
-        status = box.status
-        inboxUpdated = Date()
-        saveInbox()
-    }
-
     func refreshStatus() async {
         guard let r = await send([DDWatchKey.cmd: DDWatchCmd.status]),
               let st = DDWatchCodec.unpack(DDWatchStatus.self, from: r) else { return }
@@ -159,7 +132,7 @@ final class WatchModel: NSObject, ObservableObject {
         let r = await send([DDWatchKey.cmd: DDWatchCmd.like, DDWatchKey.id: id, DDWatchKey.on: want])
         if (r?["ok"] as? Bool) != true, let j = videos.firstIndex(where: { $0.id == id }) {
             videos[j].liked = !want   // 手机没响应就回滚，并提示
-            inboxError = "点赞需要连接 iPhone"
+            notice = "点赞需要连接 iPhone"
         }
         save()
     }
@@ -189,9 +162,8 @@ final class WatchLink: NSObject, WCSessionDelegate {
         Task { @MainActor in
             let m = WatchModel.shared
             m.reachable = r
-            // 刚连上手机：补刷清单和消息
+            // 刚连上手机：补刷清单
             if r { await m.requestVideos() }
-            if r, m.inboxError != nil || (m.inbox.notices.isEmpty && m.inbox.chats.isEmpty) { await m.refreshInbox() }
         }
     }
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {

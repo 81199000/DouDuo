@@ -78,7 +78,6 @@
 		872685DC5CA8B571E9581D66 /* ProvinceCityChina-MIT.txt in Resources */ = {isa = PBXBuildFile; fileRef = 25D854BC200EDAD4963BD771 /* ProvinceCityChina-MIT.txt */; };
 		896AEDFA28BCF82C5E68E9DE /* DYForwardReceipt.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D3A302578F63723DC624C1 /* DYForwardReceipt.swift */; };
 		8EB9B00BA15FC48C75B49677 /* DYChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641CB2690B07BD7100280B09 /* DYChatComposer.swift */; };
-		94F678CAA7E710E284F14F66 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444FA0B3719841590A0FA1AA /* InboxView.swift */; };
 		958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */; };
 		9F40E63A14141175377E9040 /* DYChatHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4522BBA2C9DA5257C7ADCC /* DYChatHeader.swift */; };
 		A6977B290150EFD0B47768E4 /* DYRecommendFeedHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66460DEF146A3933D0480329 /* DYRecommendFeedHost.swift */; };
@@ -195,7 +194,6 @@
 		42B2AB160A33107F2CFB8F46 /* DouDuoVideoFitTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DouDuoVideoFitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		42C0E6796BA2CD0B5C05314F /* DouDuoWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DouDuoWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPublicationRegionClient.swift; sourceTree = "<group>"; };
-		444FA0B3719841590A0FA1AA /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		4533C36FD7AE2A46CAA52B82 /* DouDuo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DouDuo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F438BF3690CFD4BD6A0051 /* DYConversationCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYConversationCell.swift; sourceTree = "<group>"; };
 		4A3202317C2541C9EFEC8DBF /* DouyinLiveChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveChat.swift; sourceTree = "<group>"; };
@@ -302,7 +300,6 @@
 			children = (
 				BD5849919CB8F6E62BCB5FB5 /* Assets.xcassets */,
 				E212A9BEA30ED23266E79516 /* DouDuoWatchApp.swift */,
-				444FA0B3719841590A0FA1AA /* InboxView.swift */,
 				EF453C6E736BA8E9EAA6B3CD /* VideoPagerView.swift */,
 				6DC08129F3C42A4F721FFF7D /* WatchCache.swift */,
 				56CD15E9E8EB923A619DF9E1 /* WatchModel.swift */,
@@ -766,7 +763,6 @@
 			files = (
 				C9DBA9FD4C9220360FA300A4 /* DDWatchProtocol.swift in Sources */,
 				51D471AEB674B831F47262B5 /* DouDuoWatchApp.swift in Sources */,
-				94F678CAA7E710E284F14F66 /* InboxView.swift in Sources */,
 				AEC80DB4FD8673C14A2C37C2 /* VideoPagerView.swift in Sources */,
 				64AD7552F04277DBF69EBB15 /* WatchCache.swift in Sources */,
 				081C663156336EB28D898536 /* WatchModel.swift in Sources */,

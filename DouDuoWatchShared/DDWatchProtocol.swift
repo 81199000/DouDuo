@@ -16,42 +16,14 @@ enum DDWatchKey {
 }
 
 enum DDWatchCmd {
-    static let inbox = "inbox"        // 取消息（通知 + 私信）→ reply[json]=DDWatchInbox
     static let videos = "videos"      // 请 iPhone 再推几条视频文件过来 → reply[count]
     static let like = "like"          // 点赞/取消赞（iPhone 代发）→ reply[ok]
-    static let status = "status"      // 登录态/未读数 → reply[json]=DDWatchStatus
+    static let status = "status"      // 登录态 → reply[json]=DDWatchStatus
 }
 
 struct DDWatchStatus: Codable, Equatable {
     var loggedIn: Bool = false
-    var comment = 0, digg = 0, fans = 0, system = 0, chat = 0
     var updated: Double = 0
-    var unreadTotal: Int { comment + digg + fans + system + chat }
-}
-
-struct DDWatchNotice: Codable, Identifiable, Equatable {
-    var id: String
-    var name: String
-    var action: String
-    var detail: String
-    var time: Double
-    var unread: Bool
-}
-
-struct DDWatchChat: Codable, Identifiable, Equatable {
-    var id: String
-    var name: String
-    var preview: String
-    var time: String
-    var badge: Int
-}
-
-struct DDWatchInbox: Codable, Equatable {
-    var status = DDWatchStatus()
-    var notices: [DDWatchNotice] = []
-    var chats: [DDWatchChat] = []
-    /// false = 这次没能向抖音刷新，给的是 iPhone 上的缓存
-    var fresh = false
 }
 
 /// 一条可播视频：只存链接，手表用自己的 WiFi 直接拉流，不占存储。
