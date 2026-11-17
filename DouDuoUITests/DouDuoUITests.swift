@@ -1486,29 +1486,394 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
+    /// 「我的」点「去登录」要打开抖音网页登录页（老板 2026-11-17 报「点击登录无反应」）
+    func testMineLoginOpensWeb() throws {
+        continueAfterFailure = false
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["duoClassic", "rail", "classic"]
+        for mode in modes {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            if mode == "rail" { app.launchEnvironment["DOUDUO_OPEN"] = "mine" }
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            if mode == "duoClassic" {
+                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30)); app.buttons["我的"].firstMatch.tap()
+            } else if mode == "classic" {
+                XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+            }
+            let login = app.buttons["去登录"].firstMatch
+            guard login.waitForExistence(timeout: 30) else { attach(app, "login-no-button-" + mode); throw XCTSkip("\(mode): 已登录，没有「去登录」") }
+            attach(app, "login-before-" + mode)
+            login.tap()
+            XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 10), "\(mode): 点「去登录」没打开登录页")
+            attach(app, "login-after-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 简洁 / 极简：信息页 → 右侧栏「我的」→「去登录」要打开网页（老板真机走的这条路）
+    func testMessagesMineLoginOpensWeb() throws {
+        continueAfterFailure = false
+        let mode = ProcessInfo.processInfo.environment["DD_ONLY_MODE"] ?? "rail"
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+        app.launchEnvironment["DOUDUO_OPEN"] = "messages"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let mine = app.buttons["我的"].firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 30), "信息页右侧栏没有「我的」")
+        mine.tap()
+        let login = app.buttons["去登录"].firstMatch
+        guard login.waitForExistence(timeout: 30) else { attach(app, "msg-mine-no-login"); throw XCTSkip("已登录") }
+        attach(app, "msg-mine-login-before")
+        login.tap()
+        let opened = app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 10)
+        attach(app, "msg-mine-login-after")
+        XCTAssertTrue(opened, "信息页里的「我的」点「去登录」没打开登录页")
+    }
+
+    /// 点「我的」直接进「我的」；未登录先弹 App 内登录页：验证码 / 扫码两种，扫码页有二维码（老板 2026-11-17）
+    func testMineOpensAppLoginWhenLoggedOut() throws {
+        continueAfterFailure = false
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["rail", "classic", "duoClassic"]
+        for mode in modes {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            switch mode {
+            case "duoClassic":
+                // 底部 Tab「我的」：只点看得见的那个（firstMatch 可能匹配到屏外的同名按钮，点不上）
+                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30))
+                // 播放时系统 Tab 栏会缩起来，「我的」点不到：先点「首页」把 Tab 栏叫出来（同 testStandaloneCommentsRespectLayout）
+                app.buttons["首页"].firstMatch.tap()
+                app.buttons["我的"].firstMatch.tap()
+            case "classic":
+                XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+            default:   // 简洁 / 极简：模块菜单 →「我的」
+                let menu = app.buttons["douyin.module.menu"].firstMatch
+                XCTAssertTrue(menu.waitForExistence(timeout: 30), "\(mode): 没有模块菜单"); menu.tap()
+                let mine = app.buttons["douyin.module.mine"].firstMatch
+                XCTAssertTrue(mine.waitForExistence(timeout: 5), "\(mode): 模块菜单里没有「我的」"); mine.tap()
+            }
+            // 未登录：自动弹登录页
+            let send = app.buttons["douyin.login.sendcode"].firstMatch
+            XCTAssertTrue(send.waitForExistence(timeout: 30), "\(mode): 未登录没自动弹登录页")
+            XCTAssertTrue(app.textFields["douyin.login.phone"].exists, "\(mode): 没有手机号输入框")
+            XCTAssertTrue(app.textFields["douyin.login.code"].exists, "\(mode): 没有验证码输入框")
+            XCTAssertFalse(send.isEnabled, "\(mode): 没填手机号就能点获取验证码")
+            attach(app, "app-login-code-" + mode)
+            // 扫码：显示二维码，提示用另一台手机扫（抖音不认相册里的图）
+            app.segmentedControls["douyin.login.mode"].buttons["扫码登录"].tap()
+            XCTAssertTrue(app.images["douyin.login.qr"].waitForExistence(timeout: 20), "\(mode): 扫码页没出二维码")
+            XCTAssertTrue((app.staticTexts["douyin.login.qr.hint"].label).contains("另一台"), "\(mode): 没提示用另一台手机扫")
+            XCTAssertFalse(app.buttons["douyin.login.qr.save"].exists, "\(mode): 还留着「存到相册」")
+            attach(app, "app-login-qr-" + mode)
+            // 关掉后停在「我的」（不是信息页），页内有「去登录」
+            app.buttons["douyin.login.close"].tap()
+            let mineLogin = app.buttons["douyin.mine.login"].firstMatch
+            XCTAssertTrue(mineLogin.waitForExistence(timeout: 10), "\(mode): 关掉登录后不在「我的」")
+            XCTAssertTrue(mineLogin.isHittable, "\(mode): 「我的」不在前台（被信息页盖着）")
+            attach(app, "app-login-closed-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// App 登录页的按钮真能驱动网页：填号码点「获取验证码」→ 网页发起 send_code；填码点「登录」→ 网页发起登录请求。
+    /// DOUDUO_LOGIN_DRYRUN=1 把这两个请求拦在本地，不会真发短信、不会真登录。
+    func testAppLoginDrivesWebDryRun() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchEnvironment["DOUDUO_LOGIN_DRYRUN"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+        let phone = app.textFields["douyin.login.phone"].firstMatch
+        XCTAssertTrue(phone.waitForExistence(timeout: 30), "没弹登录页")
+        sleep(4)   // 等网页登录页加载完
+        phone.tap(); phone.typeText("13800138000")
+        let send = app.buttons["douyin.login.sendcode"].firstMatch
+        XCTAssertTrue(send.isEnabled, "填了 11 位号码「获取验证码」还是灰的")
+        send.tap()
+        // 网页开始倒计时 → App 按钮变成「Ns 后重发」
+        let counting = NSPredicate(format: "label CONTAINS '后重发'")
+        expectation(for: counting, evaluatedWith: send)
+        waitForExpectations(timeout: 10)
+        attach(app, "app-login-dry-sent")
+        let code = app.textFields["douyin.login.code"].firstMatch
+        code.tap(); code.typeText("123456")
+        app.buttons["douyin.login.submit"].tap()
+        // 网页提交后跳走（真机登录成功时就是这样）：App 必须核对登录态并给出结果，不能没反应（老板 11-17）
+        let msg = app.staticTexts["douyin.login.message"].firstMatch
+        XCTAssertTrue(msg.waitForExistence(timeout: 15), "网页跳走后 App 没有任何反馈")
+        attach(app, "app-login-dry-submit")
+        XCTAssertTrue(msg.label.contains("没登录上"), "提示不对：\(msg.label)")
+    }
+
+    /// 刚启动签名页还没好就点「我的」，也要弹登录（老板真机：启动后马上进「我的」不弹）
+    func testMineAutoLoginRightAfterLaunch() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()   // 一出来就点，不等推荐流加载
+        let mine = app.buttons["douyin.module.mine"].firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 5)); mine.tap()
+        XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 15), "启动后马上进「我的」没弹登录")
+    }
+
+    /// cookie 里有过期的旧 sessionid、账号其实未登录：登录页要停住让人输入，不能一打开就自己关掉（老板 11-17）
+    func testLoginSheetStaysOpenWithStaleSession() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launchEnvironment["DOUDUO_STALE_SESSION"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let login = app.buttons["douyin.mine.login"].firstMatch
+        let send = app.buttons["douyin.login.sendcode"].firstMatch
+        if !send.waitForExistence(timeout: 25) {   // 有旧 cookie 时可能不自动弹，就点「去登录」
+            XCTAssertTrue(login.waitForExistence(timeout: 20), "既没弹登录也没有「去登录」"); login.tap()
+            XCTAssertTrue(send.waitForExistence(timeout: 10), "点「去登录」没出登录页")
+        }
+        sleep(8)   // 旧版这几秒内会自己关掉
+        XCTAssertTrue(send.exists, "登录页自己收回去了")
+        let phone = app.textFields["douyin.login.phone"].firstMatch
+        phone.tap(); phone.typeText("138")
+        XCTAssertTrue((phone.value as? String ?? "").contains("138"), "手机号输不进去")
+        attach(app, "login-stale-session")
+    }
+
+    /// 多账号：账号页列出存着的账号，点一下切换（换 cookie），退出当前账号，左滑移除（假账号，不碰真实账号）
+    func testAccountsSwitchSignOutRemove() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_OPEN"] = "mine"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9", "-douduo_accounts_v1", "", "-douduo_account_current_v1", ""]
+        app.launch()
+        // 未登录会先弹登录页：关掉
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 20) { close.tap() }
+        let accounts = app.buttons["douyin.mine.accounts"].firstMatch
+        XCTAssertTrue(accounts.waitForExistence(timeout: 15), "「我的」没有「账号」按钮"); accounts.tap()
+        let a = app.buttons["douyin.account.1001"].firstMatch, b = app.buttons["douyin.account.1002"].firstMatch
+        XCTAssertTrue(a.waitForExistence(timeout: 8) && b.exists, "账号页没列出存着的账号")
+        XCTAssertTrue(app.buttons["douyin.account.add"].exists, "没有「添加账号」")
+        attach(app, "accounts-list")
+        // 切到乙：账号页关闭
+        b.tap()
+        XCTAssertTrue(a.waitForNonExistence(timeout: 8), "切换后账号页没关")
+        // 再打开：乙打勾，有「退出当前账号」
+        accounts.tap()
+        XCTAssertTrue(app.buttons["douyin.account.signout"].waitForExistence(timeout: 8), "切换后没有「退出当前账号」")
+        attach(app, "accounts-switched")
+        // 退出
+        app.buttons["douyin.account.signout"].tap()
+        let confirm = app.buttons["退出"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        XCTAssertTrue(a.waitForNonExistence(timeout: 8), "退出后账号页没关")
+        // 退出后账号还在列表，可以移除
+        accounts.tap()
+        XCTAssertTrue(b.waitForExistence(timeout: 8), "退出后账号不在列表了")
+        XCTAssertFalse(app.buttons["douyin.account.signout"].exists, "退出后还显示「退出当前账号」")
+        b.swipeLeft()
+        app.buttons["移除"].firstMatch.tap()
+        let confirmRemove = app.buttons["移除"].firstMatch
+        if confirmRemove.waitForExistence(timeout: 5) { confirmRemove.tap() }
+        XCTAssertTrue(b.waitForNonExistence(timeout: 5), "移除后账号还在")
+        attach(app, "accounts-removed")
+    }
+
+    /// 简洁 / 极简「我的」：右侧栏只有 返回 / 账号 / 信息 / 我的，不显示 互动 粉丝 系统 陌生人；「账号」不跟返回键重叠
+    func testMineRailLayout() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()
+        app.buttons["douyin.module.mine"].firstMatch.tap()
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 15) { close.tap() }
+        let accounts = app.buttons["douyin.mine.accounts"].firstMatch
+        XCTAssertTrue(accounts.waitForExistence(timeout: 10), "「我的」右侧栏没有「账号」")
+        XCTAssertEqual(app.buttons.matching(identifier: "douyin.mine.accounts").count, 1, "「账号」出现了不止一个")
+        for id in ["douyin.messages.rail.interactive", "douyin.messages.rail.fans", "douyin.messages.rail.system", "douyin.messages.rail.stranger"] {
+            XCTAssertFalse(app.buttons[id].exists, "「我的」页还显示 \(id)")
+        }
+        let back = app.buttons["douyin.messages.close"].firstMatch
+        XCTAssertTrue(back.exists, "没有返回键")
+        XCTAssertFalse(back.frame.intersects(accounts.frame), "「账号」跟返回键重叠")
+        attach(app, "mine-rail")
+        accounts.tap()
+        XCTAssertTrue(app.buttons["douyin.account.add"].waitForExistence(timeout: 8), "点右侧栏「账号」没打开账号页")
+        app.buttons["关闭"].firstMatch.tap()
+        // 回信息页：四个分类回来
+        app.buttons["douyin.messages.tab.messages"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["douyin.messages.rail.interactive"].waitForExistence(timeout: 5), "回信息页后分类没回来")
+        XCTAssertFalse(app.buttons["douyin.mine.accounts"].exists, "信息页还显示「账号」")
+        attach(app, "messages-rail")
+    }
+
+    /// 切换账号后信息页马上按新账号重新核对（不等 5 分钟缓存）：日志里要出现 scope reset + 聊天网页重建
+    func testAccountSwitchRechecksMessages() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9", "-douduo_accounts_v1", "", "-douduo_account_current_v1", ""]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()
+        app.buttons["douyin.module.mine"].firstMatch.tap()
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 15) { close.tap() }
+        // 先看一眼信息页，让账号核对缓存住「未登录」
+        app.buttons["douyin.messages.tab.messages"].firstMatch.tap(); sleep(3)
+        app.buttons["douyin.messages.mine"].firstMatch.tap()
+        app.buttons["douyin.mine.accounts"].firstMatch.tap()
+        let b = app.buttons["douyin.account.1002"].firstMatch
+        XCTAssertTrue(b.waitForExistence(timeout: 8)); b.tap()
+        sleep(4)
+        attach(app, "account-switch-messages")
+    }
+
+    /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
+    func testManageEntriesExist() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 60), mode)
+            // 经典：长按视频出面板；默认 / 简洁 / 极简：视频的「更多」菜单
+            if mode == "duoClassic" {
+                app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.45)).press(forDuration: 0.9)
+            } else {
+                let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+                XCTAssertNotNil(more, "\(mode): 找不到「更多」"); more?.tap()
+            }
+            let later = app.buttons["douyin.watchlater.add"].firstMatch
+            XCTAssertTrue(later.waitForExistence(timeout: 6), "\(mode): 更多面板里没有「稍后再看」")
+            attach(app, "manage-watchlater-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 「我的」等列表播放页：外屏横屏视频上移 / 内屏右侧 / 半折常驻，四种界面与推荐页同一套（老板 2026-11-17）
+    func testListPlayerCommentsMatchFeedInEveryMode() throws {
+        continueAfterFailure = false
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["rail", "classic", "minimal", "duoClassic"]
+        for mode in modes {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_COMMENT_ENTRY"] = "mine"
+            if mode == "rail" || mode == "minimal" { app.launchEnvironment["DOUDUO_OPEN"] = "mine" }
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7707707401935336335"   // 1920x1080 横屏视频
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7707707401935336335", on: app.staticTexts["douyin.currentID"], timeout: 60), mode)
+            if mode == "duoClassic" {   // 与 testStandaloneCommentsRespectLayout 同一入口
+                app.buttons["首页"].firstMatch.tap()
+                app.buttons["我的"].firstMatch.tap()
+            } else if mode == "classic" { app.buttons["douyin.mine.top"].firstMatch.tap() }
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.list.player").firstMatch.waitForExistence(timeout: 30), mode + " 列表播放页没打开")
+            let screen = app.windows.firstMatch.frame
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            let halfFold = list.waitForExistence(timeout: 4)   // 半折：评论常驻，不用点
+            if !halfFold {
+                let comment = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+                XCTAssertNotNil(comment, "\(mode): 找不到评论按钮"); comment?.tap()
+                XCTAssertTrue(list.waitForExistence(timeout: 10), "\(mode): 评论没出来")
+            }
+            if screen.width < 560 && !halfFold {
+                // 外屏：横屏视频在上、评论在下、贴满宽
+                XCTAssertGreaterThan(list.frame.minY, screen.height * 0.3, "\(mode): 外屏横屏视频应在评论上方")
+                XCTAssertEqual(list.frame.maxX, screen.maxX, accuracy: 2, "\(mode): 评论右边不应留空")
+            } else if screen.width >= 700 {
+                XCTAssertGreaterThan(list.frame.minX, screen.width * 0.4, "\(mode): 内屏评论应在右侧")
+            }
+            XCTAssertFalse(app.buttons["douyin.like"].firstMatch.isHittable, "\(mode): 评论打开时视频按钮应收起")
+            attach(app, "list-player-comments-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 内屏横拿：评论从右侧滑出，右划关闭——四种界面同一套（评论统一，老板 2026-11-17）
+    func testInnerSideCommentsSwipeRightToCloseInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["duoClassic", "rail", "classic", "minimal"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                    "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 60), mode)
+            guard app.windows.firstMatch.frame.width >= 700 else { throw XCTSkip("需要内屏横拿") }
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮"); button?.tap()
+            let comments = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(comments.waitForExistence(timeout: 15), "\(mode): 评论没出来")
+            XCTAssertGreaterThan(comments.frame.minX, app.windows.firstMatch.frame.width * 0.4, "\(mode): 评论应在右侧")
+            XCTAssertFalse(app.buttons["douyin.like"].firstMatch.isHittable, "\(mode): 评论打开时视频按钮应收起")
+            attach(app, "inner-side-comments-" + mode)
+            comments.swipeUp()
+            let start = comments.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 180, dy: 3)))
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForNonExistence(timeout: 5), "\(mode): 右划应关闭评论")
+            app.terminate()
+        }
+    }
+
+    /// 半折评论常驻：四种界面同一套（评论统一，老板 2026-11-17）
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
         continueAfterFailure = false
-        let app = launchOnlineRegression()
-        XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForExistence(timeout: 15), "实际半折自动显示评论")
-        pauseRegressionVideo(app)
-        attach(app, "physical-half-fold-comments")
-        for id in ["douyin.like", "douyin.share", "douyin.cleanScreen", "首页"] {
-            XCTAssertFalse(app.buttons[id].firstMatch.isHittable, id + " 半折评论时隐藏")
+        for mode in ["duoClassic", "rail", "classic", "minimal"] {
+            let app = launchOnlineRegression(mode: mode)
+            XCTAssertTrue(app.scrollViews["douyin.comments.list"].firstMatch.waitForExistence(timeout: 15), "\(mode) 实际半折自动显示评论")
+            pauseRegressionVideo(app)
+            attach(app, "physical-half-fold-comments-" + mode)
+            for id in ["douyin.like", "douyin.share", "douyin.cleanScreen", "首页"] {
+                XCTAssertFalse(app.buttons[id].firstMatch.isHittable, mode + " " + id + " 半折评论时隐藏")
+            }
+            let panel = app.descendants(matching: .any).matching(identifier: "douyin.comments.panel").firstMatch
+            let screen = app.windows.firstMatch.frame
+            if screen.width > screen.height {
+                XCTAssertLessThanOrEqual(panel.frame.minY, screen.minY + 2, "半折评论背景贴顶")
+                XCTAssertGreaterThanOrEqual(panel.frame.maxY, screen.maxY - 2, "半折评论背景贴底")
+                XCTAssertGreaterThanOrEqual(panel.frame.maxX, screen.maxX - 2, "半折评论背景贴右边")
+                let title = app.staticTexts["douyin.comments.title"].firstMatch
+                let composer = app.descendants(matching: .any).matching(identifier: "douyin.comment.send").firstMatch
+                XCTAssertTrue(title.exists)
+                XCTAssertTrue(composer.exists)
+                XCTAssertLessThan(title.frame.minX - panel.frame.minX, 40, "横向状态栏应与左侧评论标题同排")
+                XCTAssertGreaterThan(composer.frame.midX, screen.maxX - 64, "评论操作应使用原系统竖栏占用的空间")
+            }
+            XCTAssertFalse(app.buttons["douyin.comments.close"].exists, "\(mode) 半折时评论继续常驻")
+            app.terminate()
         }
-        let panel = app.descendants(matching: .any).matching(identifier: "douyin.comments.panel").firstMatch
-        let screen = app.windows.firstMatch.frame
-        if screen.width > screen.height {
-            XCTAssertLessThanOrEqual(panel.frame.minY, screen.minY + 2, "半折评论背景贴顶")
-            XCTAssertGreaterThanOrEqual(panel.frame.maxY, screen.maxY - 2, "半折评论背景贴底")
-            XCTAssertGreaterThanOrEqual(panel.frame.maxX, screen.maxX - 2, "半折评论背景贴右边")
-            let title = app.staticTexts["douyin.comments.title"].firstMatch
-            let composer = app.descendants(matching: .any).matching(identifier: "douyin.comment.send").firstMatch
-            XCTAssertTrue(title.exists)
-            XCTAssertTrue(composer.exists)
-            XCTAssertLessThan(title.frame.minX - panel.frame.minX, 40, "横向状态栏应与左侧评论标题同排")
-            XCTAssertGreaterThan(composer.frame.midX, screen.maxX - 64, "评论操作应使用原系统竖栏占用的空间")
-        }
-        XCTAssertFalse(app.buttons["douyin.comments.close"].exists, "半折时评论继续常驻")
     }
 
     func testCleanScreenRestoresStableSidebar() throws {
@@ -2695,22 +3060,84 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
+    /// 外屏横屏视频打开评论：四种界面都把视频移到评论上方（经典几何，老板 2026-11-17）
+    func testOuterLandscapeVideoLiftsAboveCommentsInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "classic", "minimal", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7707707401935336335"   // 1920x1080 横屏视频
+            app.launchArguments += ["-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页",
+                                    "-douyin_autoplay_v1", "NO", "-douyin_muted_v1", "YES"]
+            app.launch()
+            XCTAssertTrue(wait(label: "7707707401935336335", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 45), mode)
+            guard app.windows.firstMatch.frame.width < 560 else { throw XCTSkip("需要外屏") }
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮")
+            button?.tap()
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(list.waitForExistence(timeout: 10), "\(mode): 评论列表没出来")
+            // 视频层在评论打开时对无障碍隐藏（经典的叠放评论是模态），锚点可能读不到；读得到就必须是 lifted
+            let lift = app.staticTexts["douyin.video.lift"].firstMatch
+            if lift.waitForExistence(timeout: 2) {
+                let lifted = NSPredicate(format: "label BEGINSWITH 'lifted'")
+                XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: lifted, evaluatedWith: lift)], timeout: 5), .completed,
+                               "\(mode): 横屏视频没有移到评论上方（\(lift.label)）")
+            }
+            XCTAssertGreaterThan(list.frame.minY, app.windows.firstMatch.frame.height * 0.3, "\(mode): 评论应在视频下方")
+            XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, "\(mode): 评论右边不应留空")
+            attach(app, "outer-landscape-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// 评论四种界面统一用经典那套（DYCommentStage）：点评论按钮，评论列表出来、输入框可点、菜单全部收起。
+    func testCommentsOpenInEveryMode() throws {
+        continueAfterFailure = false
+        for mode in ["rail", "classic", "minimal", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                    "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+            app.launch()
+            XCTAssertTrue(wait(label: "hashtag-cat", on: app.staticTexts["douyin.currentID"].firstMatch, timeout: 20), mode)
+            let button = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
+            XCTAssertNotNil(button, "\(mode): 找不到评论按钮")
+            button?.tap()
+            let list = app.scrollViews["douyin.comments.list"].firstMatch
+            XCTAssertTrue(list.waitForExistence(timeout: 10), "\(mode): 评论列表没出来")
+            XCTAssertGreaterThan(list.frame.height, 100, "\(mode): 评论列表高度太小 \(list.frame)")
+            attach(app, "comments-open-" + mode)
+            if mode != "duoClassic" {
+                XCTAssertFalse(app.buttons.matching(identifier: "douyin.module.menu").allElementsBoundByIndex.contains { $0.isHittable },
+                               "\(mode): 评论打开时模块圆钮应收起")
+            }
+            app.terminate()
+        }
+    }
+
     /// 在「更多」第一层切换界面模式，立即生效。
     func testStandaloneCommentsRespectLayout() throws {
         continueAfterFailure = false
-        for mode in ["classic", "duoClassic"] {
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["classic", "rail", "minimal", "duoClassic"]
+        for mode in modes {
             let app = XCUIApplication()
             app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
             app.launchEnvironment["DOUDUO_COMMENT_ENTRY"] = "mine"
+            if mode == "rail" || mode == "minimal" { app.launchEnvironment["DOUDUO_OPEN"] = "mine" }
             app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406"
-            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+            // 上一轮停在「我的」会被记住，固定从首页起
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页"]
             addTeardownBlock { app.terminate() }
             app.launch()
             XCTAssertTrue(wait(label: "7678628867820506406", on: app.staticTexts["douyin.currentID"], timeout: 60))
             if mode == "duoClassic" {
                 app.buttons["首页"].firstMatch.tap()
                 app.buttons["我的"].firstMatch.tap()
-            } else { app.buttons["douyin.mine.top"].firstMatch.tap() }
+            } else if mode == "classic" {
+                app.buttons["douyin.mine.top"].firstMatch.tap()
+            }   // 简洁 / 极简：启动时 DOUDUO_OPEN=mine 直接打开「我的」
             XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "douyin.list.player").firstMatch.waitForExistence(timeout: 30))
             let comment = app.buttons.matching(identifier: "douyin.comments").allElementsBoundByIndex.first { $0.isHittable }
             XCTAssertNotNil(comment)
@@ -2719,10 +3146,10 @@ final class DouDuoUITests: XCTestCase {
             let related = app.scrollViews["douyin.comments.relatedSearch"].firstMatch
             XCTAssertTrue(list.waitForExistence(timeout: 10))
             XCTAssertTrue(related.waitForExistence(timeout: 20))
-            if mode == "duoClassic" { XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2) }
-            else {
-                XCTAssertGreaterThanOrEqual(related.frame.minY, list.frame.maxY - 2)
-                XCTAssertFalse(app.otherElements["douyin.sheet.edgeSurface"].exists)
+            // 评论面板四种界面统一经典样式（老板 2026-11-17）：相关搜索在评论列表上方
+            XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方")
+            if app.windows.firstMatch.frame.width < 700 {
+                XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, mode + " 评论右边不应留空")
             }
             attach(app, "v14-standalone-comments-" + mode)
             app.buttons["douyin.comments.close"].firstMatch.tap()
@@ -2760,7 +3187,7 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "v14-classic-search-return")
     }
 
-    func testCommentPresentationIsIsolatedAcrossLayouts() throws {
+    func testCommentPresentationIsUnifiedAcrossLayouts() throws {
         continueAfterFailure = false
         for mode in ["classic", "rail", "minimal", "duoClassic"] {
             let app = launchChrome(mode)
@@ -2775,19 +3202,12 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(related.waitForExistence(timeout: 20))
             let input = app.descendants(matching: .any).matching(identifier: "douyin.comment.input").firstMatch
             XCTAssertTrue(input.isHittable)
-            if mode == "duoClassic" {
-                XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2)
-                if app.windows.firstMatch.frame.width < 700 {
-                    XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2)
-                    XCTAssertEqual(list.frame.minX, 0, accuracy: 2)
-                }
-            } else {
-                XCTAssertGreaterThanOrEqual(related.frame.minY, list.frame.maxY - 2)
-                XCTAssertFalse(app.otherElements["douyin.sheet.edgeSurface"].exists)
-                if app.windows.firstMatch.frame.width >= 700 {
-                    XCTAssertTrue(app.buttons.matching(identifier: "douyin.like").allElementsBoundByIndex.contains { $0.isHittable },
-                                  mode + " 内屏评论不能隐藏互动栏")
-                }
+            // 评论四种界面统一用经典样式（老板 2026-11-17 定，docs/ui-modes.md）：
+            // 相关搜索在评论列表上方；窄屏贴边占满宽，不在右边留空；打开评论时视频上的按钮收起。
+            XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方（经典样式）")
+            if app.windows.firstMatch.frame.width < 700 {
+                XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, mode + " 评论右边不应留空")
+                XCTAssertEqual(list.frame.minX, 0, accuracy: 2)
             }
             attach(app, "v14-comments-" + mode)
             app.buttons["douyin.comments.close"].firstMatch.tap()
@@ -2833,7 +3253,9 @@ final class DouDuoUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
-        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9", "-douyin_autoplay_v1", "NO"]
+        // 固定从首页起：上一个用例停在「我的」会被记住，切到经典就落在「我的」，未登录还会弹登录页盖住视频
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9", "-douyin_autoplay_v1", "NO",
+                                "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let current = app.staticTexts["douyin.currentID"].firstMatch
@@ -4697,10 +5119,10 @@ extension DouDuoUITests {
         XCTAssertTrue(recommend.waitForExistence(timeout: 10))
     }
 
-    private func launchOnlineRegression(pinned: Bool = true, forceWide: Bool = false) -> XCUIApplication {
+    private func launchOnlineRegression(pinned: Bool = true, forceWide: Bool = false, mode: String = "duoClassic") -> XCUIApplication {
         let app = XCUIApplication()
         addTeardownBlock { app.terminate() }
-        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
         if forceWide {
             app.launchEnvironment["DOUDUO_FORCEWIDE"] = "1"
             app.launchArguments += ["-douyin_wide_landscape_v1", "YES"]
@@ -4799,6 +5221,44 @@ extension DouDuoUITests {
             app.buttons["douyin.search.back"].firstMatch.tap()
             XCTAssertTrue(button("douyin.comments").waitForExistence(timeout: 10))
             app.terminate()
+        }
+    }
+}
+
+extension DouDuoUITests {
+    /// 老板 11-17 报：冷启动（没有缓存）时卡在第一条，看了一半再上滑也翻不过去，要滑好几次。
+    /// 第一条播了一阵之后，第一下上滑就必须翻到下一条。只读，不点赞不发帖。
+    func testColdStartFirstSwipeAdvances() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        if let mode = ProcessInfo.processInfo.environment["DD_MODE"] { app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "9.9.9"]
+        if let n = ProcessInfo.processInfo.environment["DD_CACHE_COUNT"] { app.launchArguments += ["-douyin_cache_count_v2", n] }
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        XCTAssertTrue(current.waitForExistence(timeout: 30))
+        XCTAssertTrue(waitUntil(timeout: 60) { current.label != "-" }, "推荐流没有加载出来")
+        if ProcessInfo.processInfo.environment["DD_WARM"] == "1" {
+            // 真机上最常见的进法：上次留下了缓存好没看的视频，这次启动先播它
+            Thread.sleep(forTimeInterval: 25)
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(current.waitForExistence(timeout: 30))
+            XCTAssertTrue(waitUntil(timeout: 60) { current.label != "-" }, "二次启动推荐流没有加载出来")
+        }
+        // 先看一阵再滑（老板报的是「看到一半还滑不动」）。刚启动头几秒推荐还没拉回来时滑不动是既定规则，不在这里测。
+        let wait = Double(ProcessInfo.processInfo.environment["DD_WATCH_SECONDS"] ?? "") ?? 12
+        Thread.sleep(forTimeInterval: wait)
+        let window = app.windows.firstMatch
+        for round in 1...3 {
+            let before = current.label
+            // 跟真人一样快甩一小段（约 1/4 屏），不是慢慢拖过去
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.7))
+                .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.45)),
+                       withVelocity: .fast, thenHoldForDuration: 0)
+            XCTAssertTrue(waitUntil(timeout: 3) { current.label != before }, "第 \(round) 条：上滑一次没有翻到下一条")
+            Thread.sleep(forTimeInterval: 2)
         }
     }
 }
