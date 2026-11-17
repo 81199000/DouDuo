@@ -730,6 +730,9 @@ struct DYCommentPlayerLayout<Video: View>: View {
     @State private var cleanScreen = false
     var focus: DYCommentFocus? = nil
     var onBack: () -> Void
+    var backIdentifier = "douyin.list.back"
+    var allowsComments = true
+    var allowsResidentComments = true
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     @Environment(\.dySearchPresented) private var searchPresented
     @Environment(\.dyStacksLandscapeComments) private var stacksLandscapeComments
@@ -742,7 +745,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
         return false
     }
 
-    private var commentItem: DYAweme? { aweme ?? captionItem }
+    private var commentItem: DYAweme? { allowsComments ? aweme ?? captionItem : nil }
+    private var showsComments: Bool { showComments && !searchPresented && commentItem != nil }
 
     /// 评论四种界面统一用经典那套（老板 2026-11-17）：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板。
     /// 只有菜单（经典的系统导航栏 / 原生按钮）和简介面板按模式分，见 docs/ui-modes.md「必须分开」。
@@ -759,15 +763,15 @@ struct DYCommentPlayerLayout<Video: View>: View {
     }
 
     private var horizontalCommentStatus: Bool {
-        (bookFoldComments || (duoLandscapeWindow && showComments)) && !searchPresented && commentItem != nil
+        (bookFoldComments && !searchPresented && commentItem != nil) || (duoLandscapeWindow && showsComments)
     }
 
     private var hidesCommentStatus: Bool {
-        (hingeClosed || stacksLandscapeComments) && showComments && !searchPresented && commentItem != nil
+        (hingeClosed || stacksLandscapeComments) && showsComments
     }
 
     private var presentsLandscapeComments: Bool {
-        showComments && !searchPresented && (focus == nil || openedCommentsManually || captionItem != nil)
+        showsComments && (focus == nil || openedCommentsManually || captionItem != nil)
             && DYInlineCommentPlacement.applies(to: commentItem, enabled: stacksLandscapeComments)
     }
 
@@ -777,6 +781,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
                                          usesHorizontalStatus: horizontalCommentStatus))
             .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : commentItem?.id)
             .environment(\.dyExpandVideoCaption, { item in
+                guard allowsComments else { return }
                 captionItem = item
                 showComments = true
             })
@@ -788,18 +793,19 @@ struct DYCommentPlayerLayout<Video: View>: View {
 
     private var playerLayout: some View {
         GeometryReader { geo in
-            let placement = showComments && !searchPresented
+            let placement = showsComments
                 ? DYInlineCommentPlacement(geo, aweme: commentItem, enabled: presentsLandscapeComments,
                                           showsCaption: captionItem != nil, usesCompactPanel: stacksLandscapeComments)
                 : nil
-            let layout = DYCommentPaneMetrics(geo, isPresented: showComments && !searchPresented && placement == nil,
-                                              allowsResident: !searchPresented)
+            let layout = DYCommentPaneMetrics(geo, isPresented: showsComments && placement == nil,
+                                              allowsResident: !searchPresented && allowsComments && allowsResidentComments)
             ZStack(alignment: .topLeading) {
                 video(geo.safeAreaInsets)
                     .environment(\.dyStandaloneBack, onBack)
-                    .environment(\.duoInlineVideoNavigation, layout.showsPane || showComments)
+                    .environment(\.dyStandaloneBackIdentifier, backIdentifier)
+                    .environment(\.duoInlineVideoNavigation, layout.showsPane || showsComments)
                     .environment(\.duoCleanScreen, cleanScreen)
-                    .environment(\.dyCommentsOpen, !searchPresented && (showComments || layout.showsPane))
+                    .environment(\.dyCommentsOpen, showsComments || layout.showsPane)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
                     // 侧栏评论时裁边：播放器环境光底铺满整屏，会盖住右侧评论栏（同推荐页 DYCommentStage）
                     .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
@@ -824,8 +830,9 @@ struct DYCommentPlayerLayout<Video: View>: View {
             .background(Color.ddBackground.ignoresSafeArea())
             .overlayPreferenceValue(DYActiveVideoActionsKey.self) { actions in
                 if #available(iOS 27.1, *), usesClassicLayout {
-                    DYNativeVideoActions(actions: showComments || layout.showsPane ? nil : actions,
-                                         isClean: cleanScreen, onToggleClean: { cleanScreen.toggle() }, onBack: onBack)
+                    DYNativeVideoActions(actions: showsComments || layout.showsPane ? nil : actions,
+                                         isClean: cleanScreen, onToggleClean: { cleanScreen.toggle() },
+                                         onBack: onBack, backIdentifier: backIdentifier)
                         .id(horizontalCommentStatus || hidesCommentStatus)
                 }
             }
@@ -838,7 +845,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
             .modifier(DYInlineCommentOverlay(placement: placement, bridge: bridge, aweme: commentItem,
                                              focus: focus, onClose: { showComments = false }))
             .dyBottomSheet(isPresented: Binding(
-                get: { showComments && !searchPresented && placement == nil && !layout.sideBySide && !layout.resident && commentItem != nil },
+                get: { showsComments && placement == nil && !layout.sideBySide && !layout.resident },
                 set: { if placement == nil && !layout.sideBySide && !layout.resident { showComments = $0 } }
             ), kind: .comments, hidesStatusBar: hidesCommentStatus) {
                 if let aweme = commentItem {

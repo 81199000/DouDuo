@@ -37,6 +37,18 @@ enum DDLogWriter {
     static let queue = DispatchQueue(label: "douduo.log", qos: .utility)
     nonisolated(unsafe) static let formatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
     nonisolated(unsafe) private static var handle: FileHandle?
+    /// 储存空间页「清理缓存」：删掉诊断日志 ddlog.txt，下次写日志时重建
+    static func clear() async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                try? handle?.close()
+                handle = nil
+                let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddlog.txt")
+                continuation.resume(returning: DYStorageFiles.removeIfPresent(url))
+            }
+        }
+    }
+
     static func append(_ line: String) {
         if handle == nil, let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
             let url = dir.appendingPathComponent("ddlog.txt")

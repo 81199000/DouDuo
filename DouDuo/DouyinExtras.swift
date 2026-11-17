@@ -786,9 +786,14 @@ enum DYSaver {
         }
     }
 
-    static func save(_ a: DYAweme) async throws {
+    static func save(_ a: DYAweme, fromOfflineLibrary: Bool = false) async throws {
         let st = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard st == .authorized || st == .limited else { throw SaveError.denied }
+        if fromOfflineLibrary {
+            guard let file = DYOfflineVideoStore.localURL(a.id) else { throw SaveError.noURL }
+            try await saveVideo(file)
+            return
+        }
         if !a.images.isEmpty {
             var datas: [Data] = []
             for s in a.images { if let u = URL(string: s) { datas.append(try await download(u)) } }
@@ -802,6 +807,10 @@ enum DYSaver {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("dd-\(a.id).mp4")
         try data.write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
+        try await saveVideo(file)
+    }
+
+    private static func saveVideo(_ file: URL) async throws {
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: file, options: nil)
         }
@@ -933,12 +942,38 @@ final class DYListPlayback {
     var liked: Set<String>
     var collected: Set<String>
     var loadingMore = false
+    @ObservationIgnored private var offlineCheckpoint: DYOfflineVideoStore.PlaybackCheckpoint?
 
     init(items: [DYAweme], start: Int) {
         self.items = items
         currentID = items.indices.contains(start) ? items[start].id : items.first?.id
         liked = Set(items.filter { $0.userDigged == 1 }.map(\.id))
         collected = Set(items.filter { $0.isCollect == 1 }.map(\.id))
+    }
+
+    func restoreOfflineCheckpoint(_ checkpoint: DYOfflineVideoStore.PlaybackCheckpoint) {
+        offlineCheckpoint = checkpoint
+        resume[checkpoint.id] = checkpoint.seconds
+    }
+
+    func updateOfflineItems(_ saved: [DYAweme]) {
+        let oldIDs = Set(items.map(\.id))
+        let oldIndex = items.firstIndex { $0.id == currentID } ?? 0
+        let newItems = saved.filter { !oldIDs.contains($0.id) }
+        liked.formUnion(newItems.filter { $0.userDigged == 1 }.map(\.id))
+        collected.formUnion(newItems.filter { $0.isCollect == 1 }.map(\.id))
+        items = saved
+        if !saved.contains(where: { $0.id == currentID }) {
+            currentID = saved.isEmpty ? nil : saved[min(oldIndex, saved.count - 1)].id
+        }
+    }
+
+    func saveOfflineCheckpoint(_ id: String, seconds: Double, periodic: Bool = false) {
+        guard id == currentID, seconds.isFinite, seconds >= 0 else { return }
+        let checkpoint = DYOfflineVideoStore.PlaybackCheckpoint(id: id, seconds: seconds)
+        if let previous = offlineCheckpoint, previous.id == id,
+           abs(previous.seconds - seconds) < (periodic ? 5 : 0.10) { return }
+        if DYOfflineVideoStore.saveCheckpoint(checkpoint) { offlineCheckpoint = checkpoint }
     }
 }
 
@@ -969,6 +1004,11 @@ struct DYListPlayer: View {
     /// 要返回关掉播放器后才看到（老板 11-16 报：搜索出来的视频点头像不跳，返回才跳）
     let presentsAuthor: Bool
     @State private var authorSheet: DYAweme.Author?
+    let offlineLibrary: Bool
+    @State private var networkIsOffline = false
+    @State private var failedOfflineVideos: Set<String> = []
+    @State private var userScrolling = false
+    @State private var scrollEndTask: Task<Void, Never>?
 
     init(bridge: DouyinBridge, title: String, items: [DYAweme], start: Int,
          loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
@@ -980,10 +1020,13 @@ struct DYListPlayer: View {
 
     init(bridge: DouyinBridge, title: String, playback: DYListPlayback,
          loadMore: (() async -> [DYAweme])? = nil, onAuthor: @escaping (DYAweme) -> Void,
-         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false, presentsAuthor: Bool = false) {
+         commentFocus: DYCommentFocus? = nil, hardStopOnDismiss: Bool = false, presentsAuthor: Bool = false,
+         offlineLibrary: Bool = false) {
         self.bridge = bridge; self.title = title
         self.presentsAuthor = presentsAuthor
         self.commentFocus = commentFocus
+        self.offlineLibrary = offlineLibrary
+        _networkIsOffline = State(initialValue: offlineLibrary && DYOfflineDownloads.shared.isOffline)
         self.hardStopOnDismiss = hardStopOnDismiss
         _showComments = State(initialValue: commentFocus != nil)
         _playback = State(initialValue: playback)
@@ -992,37 +1035,15 @@ struct DYListPlayer: View {
     }
 
     private var current: DYAweme? { playback.items.first { $0.id == playback.currentID } }
+    private var allowsOnlineActions: Bool { !offlineLibrary || !networkIsOffline }
 
     var body: some View {
-        @Bindable var playback = playback
-        DYCommentPlayerLayout(bridge: bridge, aweme: current, showComments: $showComments, focus: commentFocus, onBack: { dismiss() }) { insets in
+        DYCommentPlayerLayout(bridge: bridge, aweme: current, showComments: $showComments, focus: commentFocus,
+                              onBack: { dismiss() }, backIdentifier: offlineLibrary ? "offline.library.close" : "douyin.list.back",
+                              allowsComments: allowsOnlineActions, allowsResidentComments: !offlineLibrary) { insets in
             ZStack(alignment: .topLeading) {
                 Color.ddBackground.ignoresSafeArea()
-                ScrollView(.vertical) {
-                    DYPagerStack(items: playback.items, currentID: playback.currentID, page: { item in
-                            DYVideoPage(item: item, isCurrent: item.id == playback.currentID, insets: insets,
-                                        resume: playback.resume[item.id], liked: playback.liked.contains(item.id), collected: playback.collected.contains(item.id),
-                                        onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
-                                        onDoubleTap: { toggleLike(item.id, force: true) },
-                                        onComments: { showComments.toggle() },
-                                        onSearch: { DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() } },
-                                        onAuthor: { if presentsAuthor { authorSheet = item.author } else { onAuthor(item) } },
-                                        onSavePosition: { playback.resume[item.id] = $0 }, preloader: preloader,
-                                        bridge: bridge, onToast: { show($0) },
-                                        moreExtras: AnyView(Section { DYSettingsButton() }),
-                                        onEnded: { playNext(after: item.id) })
-                    })
-                    .scrollTargetLayout()
-                    .background(DYPagingSpeedBridge(ids: playback.items.map(\.id), currentID: $playback.currentID))
-                }
-                .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $scrollPos, anchor: .center)
-                .onAppear { scrollPos = playback.currentID }
-                .onChange(of: playback.currentID) { _, new in if scrollPos != new { scrollPos = new } }
-                .scrollIndicators(.hidden)
-                .ignoresSafeArea()
-
-
+                pager(insets)
                 if let t = toast {
                     Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -1035,12 +1056,13 @@ struct DYListPlayer: View {
         // 左缘右滑返回上一层（博主主页 / 我的 / 搜索结果 / 消息里点开的视频）
         .dyEdgeBack(enabled: searchSession == nil) { dismiss() }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("douyin.list.player")
+        .accessibilityIdentifier(offlineLibrary ? "offline.library.content" : "douyin.list.player")
+        .accessibilityAction(.escape) { dismiss() }
         #if DEBUG
         .overlay(alignment: .topLeading) {
             Text(playback.currentID ?? "-")
                 .font(.caption2).opacity(0.01)
-                .accessibilityIdentifier("douyin.list.currentID")
+                .accessibilityIdentifier(offlineLibrary ? "offline.library.currentID" : "douyin.list.currentID")
                 .allowsHitTesting(false)
         }
         #endif
@@ -1052,9 +1074,23 @@ struct DYListPlayer: View {
         .environment(\.duoSystemBars, true)
         .environment(\.duoCleanScreen, false)
         .environment(\.duoInlineVideoNavigation, false)
+        .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
+            guard offlineLibrary else { return }
+            networkIsOffline = offline
+            if offline { showComments = false }
+        }
         .onChange(of: playback.currentID) { old, new in
-            if new == nil, let old { playback.currentID = old; return }
+            if new == nil, let old, playback.items.contains(where: { $0.id == old }) {
+                playback.currentID = old
+                return
+            }
             guard let i = playback.items.firstIndex(where: { $0.id == new }) else { return }
+            if offlineLibrary {
+                let id = playback.items[i].id
+                scrollPos = id
+                playback.saveOfflineCheckpoint(id, seconds: playback.resume[id] ?? 0)
+                return
+            }
             preloader.update(playback.items, current: i)
             // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
             if i >= playback.items.count - 4, let loadMore, !playback.loadingMore {
@@ -1067,11 +1103,13 @@ struct DYListPlayer: View {
                 }
             }
         }
-        .onAppear { if let i = playback.items.firstIndex(where: { $0.id == playback.currentID }) {
-            preloader.update(playback.items, current: i)
-            // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
-        } }
+        .onAppear {
+            if !offlineLibrary, let i = playback.items.firstIndex(where: { $0.id == playback.currentID }) {
+                preloader.update(playback.items, current: i)
+            }
+        }
         .onDisappear {
+            scrollEndTask?.cancel()
             preloader.clear()
             if hardStopOnDismiss {
                 // 关掉分享视频：播放器拆掉的同时，把音频引擎和会话一并停掉，
@@ -1080,21 +1118,102 @@ struct DYListPlayer: View {
                 DYLiveModel.log("DDSHAREPLAY close hard-stop")
             }
         }
-        .environment(\.dyOpenSettings, { showSettings = true })
+        .environment(\.dyOpenSettings, { if !offlineLibrary { showSettings = true } })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYSettingsScreen(onOpenWeb: { showSettings = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } })
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
-        .sheet(item: $authorSheet, onDismiss: { DDPlayback.shared.releaseCover() }) { a in
+        .sheet(item: $authorSheet, onDismiss: { if !offlineLibrary { DDPlayback.shared.releaseCover() } }) { a in
             NavigationStack {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
                     authorSheet = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { web = DYWebTarget(url: url) }
                 })
             }
-            .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 作者页盖着时视频停
+            .onAppear { if !offlineLibrary { DDPlayback.shared.pauseAll(reason: .cover) } }
+        }
+    }
+
+    @ViewBuilder private func pager(_ insets: EdgeInsets) -> some View {
+        @Bindable var playback = playback
+        if offlineLibrary {
+            DYFeedPager(items: playback.items, currentID: $playback.currentID, scrollID: $scrollPos,
+                        userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
+                page(item, insets: insets)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("offline.library.player")
+        } else {
+            ScrollView(.vertical) {
+                DYPagerStack(items: playback.items, currentID: playback.currentID, page: { item in
+                    page(item, insets: insets)
+                })
+                .scrollTargetLayout()
+                .background(DYPagingSpeedBridge(ids: playback.items.map(\.id), currentID: $playback.currentID))
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $scrollPos, anchor: .center)
+            .onAppear { scrollPos = playback.currentID }
+            .onChange(of: playback.currentID) { _, new in if scrollPos != new { scrollPos = new } }
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea()
+        }
+    }
+
+    @ViewBuilder private func page(_ item: DYAweme, insets: EdgeInsets) -> some View {
+        let video = DYVideoPage(
+            item: item, isCurrent: item.id == playback.currentID && (!offlineLibrary || (authorSheet == nil && web == nil)),
+            insets: insets, resume: playback.resume[item.id],
+            liked: playback.liked.contains(item.id), collected: playback.collected.contains(item.id),
+            onLike: { toggleLike(item.id, force: nil) }, onCollect: { toggleCollect(item.id) },
+            onDoubleTap: { toggleLike(item.id, force: true) },
+            onComments: { if requireConnection() { showComments.toggle() } },
+            onSearch: { if requireConnection() {
+                DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
+            } },
+            onAuthor: { if requireConnection() {
+                if presentsAuthor { authorSheet = item.author } else { onAuthor(item) }
+            } },
+            onSavePosition: {
+                guard $0.isFinite, $0 >= 0 else { return }
+                playback.resume[item.id] = $0
+                if offlineLibrary { playback.saveOfflineCheckpoint(item.id, seconds: $0) }
+            },
+            preloader: preloader, bridge: allowsOnlineActions ? bridge : nil, onToast: { show($0) },
+            moreExtras: offlineLibrary ? AnyView(EmptyView()) : AnyView(Section { DYSettingsButton() }),
+            onEnded: { playNext(after: item.id) }
+        )
+        if offlineLibrary {
+            video.environment(\.dyOfflineVideoPlayback,
+                DYOfflinePlaybackContext(id: item.id, localOnly: true,
+                    position: playback.items.firstIndex { $0.id == item.id }.map { $0 + 1 },
+                    total: playback.items.count, onFailure: { skipFailedOfflineVideo(item.id) }, inLibrary: true,
+                    onPositionUpdate: { playback.saveOfflineCheckpoint(item.id, seconds: $0, periodic: true) },
+                    onlineActionsAllowed: allowsOnlineActions))
+        } else {
+            video
+        }
+    }
+
+    private func requireConnection() -> Bool {
+        guard allowsOnlineActions else { show("联网后可用"); return false }
+        return true
+    }
+
+    private func skipFailedOfflineVideo(_ id: String) {
+        guard playback.currentID == id else { return }
+        failedOfflineVideos.insert(id)
+        let playable = nextOfflineVideo(after: id)
+        if let playable { advance(from: id, to: playable.id) }
+        else { show("这个离线视频无法播放") }
+    }
+
+    private func nextOfflineVideo(after id: String) -> DYAweme? {
+        guard let i = playback.items.firstIndex(where: { $0.id == id }) else { return nil }
+        return playback.items.dropFirst(i + 1).first {
+            !failedOfflineVideos.contains($0.id) && DYOfflineVideoStore.localURL($0.id) != nil
         }
     }
 
@@ -1105,6 +1224,11 @@ struct DYListPlayer: View {
     }
 
     private func playNext(after id: String) {
+        if offlineLibrary {
+            guard playback.currentID == id else { return }
+            if let next = nextOfflineVideo(after: id) { advance(from: id, to: next.id) }
+            return
+        }
         guard let i = playback.items.firstIndex(where: { $0.id == id }) else { return }
         if i + 1 < playback.items.count { advance(from: id, to: playback.items[i + 1].id); return }
         guard let loadMore, !playback.loadingMore else { return }
@@ -1126,6 +1250,7 @@ struct DYListPlayer: View {
     }
 
     private func toggleLike(_ id: String, force: Bool?) {
+        guard requireConnection() else { return }
         let has = playback.liked.contains(id), want = force ?? !has
         guard want != has else { return }
         if want { playback.liked.insert(id) } else { playback.liked.remove(id) }
@@ -1138,6 +1263,7 @@ struct DYListPlayer: View {
     }
 
     private func toggleCollect(_ id: String) {
+        guard requireConnection() else { return }
         let want = !playback.collected.contains(id)
         if want { playback.collected.insert(id) } else { playback.collected.remove(id) }
         Task {
@@ -1452,6 +1578,7 @@ struct FlowLayout: Layout {
 
 struct DYMineScreen: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     let bridge: DouyinBridge
     let onLogin: () -> Void
@@ -1487,6 +1614,7 @@ struct DYMineScreen: View {
                 .modifier(DYSystemTabBar())
                 .navigationTitle(user?.name ?? "我的")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(embedded ? .hidden : .automatic, for: .navigationBar)
                 .toolbar {
                     if !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
@@ -1526,6 +1654,17 @@ struct DYMineScreen: View {
     }
 
     private func loadSelf() async {
+        #if DEBUG
+        // UI 测试：假的已登录资料，用来检查「我的」页头布局（不读真账号）
+        if ProcessInfo.processInfo.environment["DOUDUO_SELF_FIXTURE"] == "1" {
+            user = DYUser(name: "测试账号", avatar: nil, signature: "这是一段测试用的个人简介，用来检查页头布局。",
+                          secUid: "fixture", uid: "1", followers: 1280, following: 96, likes: 35600, works: 42,
+                          ip: "IP属地：广东", cover: nil)
+            userErr = nil
+            if user != nil { models = [:]; ensure(kind) }
+            return
+        }
+        #endif
         do {
             let u = try await bridge.selfProfile()
             user = u; userErr = nil
@@ -1539,6 +1678,16 @@ struct DYMineScreen: View {
 
     private var content: some View {
         VStack(spacing: 0) {
+            if embedded {
+                // 跟信息页「消息」标题同字号、同高度、同位置
+                HStack {
+                    Text("我的").font(.title2.weight(.semibold))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .frame(height: theme.messages.headerHeight)
+                .accessibilityIdentifier("douyin.mine.title")
+            }
             header.padding(.horizontal, 16).padding(.bottom, 12)
 
             HStack(spacing: 22) {
@@ -1728,24 +1877,32 @@ private struct DYSelfProfileBackdrop: View {
 
     var body: some View {
         if let url {
-            CachedAsyncImage(url: url, thumbnailMaxPixel: 1600) { image in
-                image.resizable().scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 240)
-                    .clipped()
-                    .overlay {
-                        LinearGradient(
-                            colors: [.ddBackground.opacity(0.88), .ddBackground.opacity(0.72), .ddBackground],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                    .ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            } placeholder: {
-                Color.clear
+            // 宽度写死为容器宽度：以前 scaledToFill 后接 .frame(maxWidth: .infinity)，
+            // 封面比例比容器宽时这个框会按图片自身宽度撑开（居中），clipped 只裁到撑开后的框，
+            // 右边就画出容器、盖到右侧栏那一列（合屏时最明显）。顶部仍延伸到状态栏。
+            GeometryReader { geo in
+                let inset = geo.safeAreaInsets
+                let width = max(0, geo.size.width - inset.leading - inset.trailing)
+                CachedAsyncImage(url: url, thumbnailMaxPixel: 1600) { image in
+                    image.resizable().scaledToFill()
+                        .frame(width: width, height: 240)
+                        .clipped()
+                        .overlay {
+                            LinearGradient(
+                                colors: [.ddBackground.opacity(0.88), .ddBackground.opacity(0.72), .ddBackground],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                } placeholder: {
+                    Color.clear
+                }
+                .frame(width: width, height: 240)
+                .padding(.leading, inset.leading)
             }
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 }

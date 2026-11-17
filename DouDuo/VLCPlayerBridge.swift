@@ -559,12 +559,14 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         pendingStartEpoch = nil
         replayIfStopped = nil
         pendingOwned = nil
+        pendingAutoplay = false
         mediaPlayer.pause()
         isPlaying = false
     }
 
     /// 继续同一路媒体。不更换 URL；渲染层还没挂上时，等 drawable 回来再 play。
     func resume() {
+        pendingAutoplay = true
         isPlaying = true
         guard mediaPlayer.drawable != nil else { return }
         mediaPlayer.play()
