@@ -5,7 +5,8 @@ import WebKit
 /// （https://www.douyin.com/login_page），手机号 / 验证码 / 二维码都是网页登录组件真发真收：
 /// - 「获取验证码」= 网页里的「获取验证码」（它只认 mousedown，不认 click）
 /// - 「登录」= 网页里的「登录」
-/// - 二维码 = 网页「扫码登录」页的那张图（data:image/png），网页自己会轮询 check_qrconnect
+/// - 二维码 = 网页「扫码登录」页的那张图（data:image/png），网页自己会轮询 check_qrconnect；
+///   抖音不认相册里的图，只能另一台手机对着屏幕扫
 /// 登录态写进 WKWebsiteDataStore.default()，跟签名页共用 cookie；关掉后外层照旧 bridge.reload() 刷新登录态。
 /// 网页要人机验证 / 二次验证时，原生界面让位，直接把网页那一层露出来让用户在网页里完成。
 struct DYAppLoginScreen: View {
@@ -16,7 +17,6 @@ struct DYAppLoginScreen: View {
     @State private var phone = ""
     @State private var code = ""
     @State private var mode: Mode = .code
-    @State private var showQRSaved = false
     @FocusState private var focus: Field?
 
     enum Mode { case code, qr }
@@ -50,9 +50,6 @@ struct DYAppLoginScreen: View {
         }
         .onChange(of: page.loggedIn) { _, ok in if ok { dismiss() } }
         .onChange(of: page.askScan) { _, ask in if ask { mode = .qr } }
-        .alert("二维码已存到相册", isPresented: $showQRSaved) {
-            Button("好") {}
-        } message: { Text("打开抖音 App → 左上角「扫一扫」→ 右上角「相册」，选这张图，再在抖音里确认登录。") }
     }
 
     private var form: some View {
@@ -123,24 +120,18 @@ struct DYAppLoginScreen: View {
         VStack(spacing: 14) {
             if let img = page.qr {
                 Image(uiImage: img).interpolation(.none).resizable().scaledToFit()
-                    .frame(width: 220, height: 220)
+                    .frame(width: 240, height: 240)
                     .padding(10).background(Color.white, in: RoundedRectangle(cornerRadius: WuWeiDesign.Spacing.lg))
                     .accessibilityIdentifier("douyin.login.qr")
-                Text(page.askScan ? "抖音要求扫码确认：截图这张二维码，到抖音 App 扫码确认登录" : (page.qrStatus ?? "第一次在这台设备登录，抖音可能要求扫码确认。"))
-                    .font(.subheadline.weight(page.askScan ? .semibold : .regular)).multilineTextAlignment(.center)
+                Text(page.askScan ? "抖音要求扫码确认" : (page.qrStatus ?? "用另一台手机扫码登录"))
+                    .font(.headline).multilineTextAlignment(.center)
                     .accessibilityIdentifier("douyin.login.qr.status")
-                Text("截图或存到相册 → 打开抖音 App 左上角「扫一扫」→ 右上角「相册」选这张图 → 在抖音里确认登录")
+                // 抖音不认相册里的二维码图（老板 11-17 实测存相册再扫不通过）：必须另一台设备对着屏幕扫
+                Text("拿另一台已登录抖音的手机 → 打开抖音 App → 左上角「扫一扫」→ 对准这块屏幕上的二维码 → 在那台手机上确认登录")
                     .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                HStack {
-                    Button("存到相册", systemImage: "square.and.arrow.down") {
-                        UIImageWriteToSavedPhotosAlbum(page.qrForSaving ?? img, nil, nil, nil)
-                        showQRSaved = true
-                    }
+                    .accessibilityIdentifier("douyin.login.qr.hint")
+                Button("刷新二维码", systemImage: "arrow.clockwise") { page.showQR(refresh: true) }
                     .buttonStyle(.bordered)
-                    .accessibilityIdentifier("douyin.login.qr.save")
-                    Button("刷新二维码", systemImage: "arrow.clockwise") { page.showQR(refresh: true) }
-                        .buttonStyle(.bordered)
-                }
             } else {
                 ProgressView("正在取二维码…").frame(height: 240)
             }
@@ -151,14 +142,20 @@ struct DYAppLoginScreen: View {
     private func digits(_ s: String) -> String { s.filter(\.isNumber) }
 }
 
+/// 登录态只看共享 cookie 里有没有 sessionid：不依赖签名页有没有加载好
+enum DYLoginState {
+    @MainActor static func hasSession() async -> Bool {
+        let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        return cookies.contains { $0.name == "sessionid" && $0.domain.hasSuffix("douyin.com") && !$0.value.isEmpty }
+    }
+}
+
 /// 抖音登录页的驱动：只做「替用户点网页上的按钮」，不自己调登录接口
 @MainActor
 final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     static let url = URL(string: "https://www.douyin.com/login_page?service=https%3A%2F%2Fwww.douyin.com")!
 
     @Published var qr: UIImage?
-    /// 存相册用：二维码四周补白边，抖音扫图更容易认
-    @Published var qrForSaving: UIImage?
     @Published var qrStatus: String?
     @Published var message: String?
     @Published var busy = false
@@ -193,7 +190,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
               XMLHttpRequest.prototype.send = function () {
                 if (block(this.__u)) {
                   window.__ddDry = (window.__ddDry || []).concat(this.__u.split('?')[0]);
-                  if (!/send_code/.test(this.__u)) return;   // 登录请求只记录、挂起，页面留在原地好核对
+                  // 登录请求：照真机那样网页跳走（/jingxuan），但没有 sessionid —— 验证 App 跳走后还能给反馈
+                  if (!/send_code/.test(this.__u)) { setTimeout(() => { location.href = 'https://www.douyin.com/jingxuan'; }, 600); return; }
                   // 假装抖音回了「已发送」：让网页照真实流程往下走（倒计时 / 登录后续），但请求没出本机
                   const x = this, body = JSON.stringify({message: 'success', data: {}, error_code: 0});
                   Object.defineProperty(x, 'readyState', {value: 4}); Object.defineProperty(x, 'status', {value: 200});
@@ -224,6 +222,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         ready = webView.url?.path.hasPrefix("/login_page") == true
         DYLiveModel.log("DDAPPLOGIN page \(webView.url?.path ?? "-") ready=\(ready)")
         if ready { let p = pending; pending = []; p.forEach { run($0) } }
+        // 网页登录成功会跳回 service（/jingxuan 等）：以前这里 ready=false 后轮询就停了，成功没人发现（老板 11-17 实测）
+        else { Task { await confirmLogin() } }
     }
 
     func sendCode(phone: String) {
@@ -239,6 +239,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
 
     func login(phone: String, code: String) {
         message = nil; busy = true
+        // 网页已经跳走（多半已登录）：不再往登录页塞点击，直接核对登录态
+        guard ready else { Task { await confirmLogin() }; return }
         run(Self.js(fillPhone: phone) + #"""
         const ci = [...document.querySelectorAll('input')].find(i => /验证码/.test(i.placeholder || ''));
         if (!ci) return 'no-code-input';
@@ -256,7 +258,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     func showCodeTab() { run(Self.base + "const t = find(/^验证码登录$/); if (t) t.click(); return 'tab';", tag: "tab") }
 
     func showQR(refresh: Bool = false) {
-        if refresh { qr = nil; qrForSaving = nil; qrStatus = nil }
+        if refresh { qr = nil; qrStatus = nil }
         run(Self.base + #"""
         const t = find(/^扫码登录$/); if (t) t.click();
         const again = find(/刷新|重新获取|点击刷新/); if (again) again.click();
@@ -266,7 +268,10 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// 每秒读一次：登录态、二维码、倒计时、网页提示、有没有弹验证
     private func tick() {
-        guard ready, !loggedIn else { return }
+        guard !loggedIn else { return }
+        // 不管网页在哪一页，cookie 里有 sessionid 就是登录成功
+        Task { if await DYLoginState.hasSession() { await self.confirmLogin() } }
+        guard ready else { return }
         web.callAsyncJavaScript(Self.base + #"""
         const qrs = [...document.querySelectorAll('img')].filter(i => String(i.src).startsWith('data:image/png') && i.naturalWidth >= 100);
         const qrImg = qrs.filter(vis).pop() || qrs[0];
@@ -300,7 +305,12 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         if let dry = j["dry"] as? [String], dry.count != lastDry { lastDry = dry.count; DYLiveModel.log("DDAPPLOGIN dry " + dry.joined(separator: ",")) }
         #endif
         countdown = j["cd"] as? Int ?? 0
-        if let t = j["tip"] as? String { message = t; busy = false }
+        if let t = j["tip"] as? String, t != message {
+            Task {
+                if await DYLoginState.hasSession() { await self.confirmLogin() }
+                else { self.message = t; self.busy = false; DYLiveModel.log("DDAPPLOGIN tip " + t) }
+            }
+        }
         qrStatus = j["qrTip"] as? String
         if let t = j["scanAsk"] as? String, loginClickedAt != nil, !askScan {
             askScan = true; busy = false
@@ -313,7 +323,6 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
            let img = UIImage(data: data) {
             lastQR = src
             qr = img
-            qrForSaving = Self.padded(img)
         }
     }
     private var lastQR: String?
@@ -321,11 +330,21 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
     private func confirmLogin() async {
-        let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
-        let ok = cookies.contains { $0.name == "sessionid" && $0.domain.hasSuffix("douyin.com") && !$0.value.isEmpty }
-        DYLiveModel.log("DDAPPLOGIN confirm sessionid=\(ok)")
-        if ok { loggedIn = true; poll?.invalidate() }
-        else if web.url?.path.hasPrefix("/login_page") != true { web.load(URLRequest(url: Self.url)) }
+        guard !loggedIn else { return }
+        var ok = await DYLoginState.hasSession()
+        // 网页跳走时 cookie 可能晚一点才写进来：再等两轮
+        if !ok, web.url?.path.hasPrefix("/login_page") != true {
+            for _ in 0..<3 where !ok { try? await Task.sleep(for: .seconds(1)); ok = await DYLoginState.hasSession() }
+        }
+        guard !loggedIn else { return }
+        DYLiveModel.log("DDAPPLOGIN confirm sessionid=\(ok) path=\(web.url?.path ?? "-")")
+        if ok { message = nil; busy = false; loggedIn = true; poll?.invalidate() }
+        else if web.url?.path.hasPrefix("/login_page") != true {
+            // 跳走了但没登录上：回登录页，告诉用户再试
+            busy = false
+            message = "没登录上，请重新获取验证码再试"
+            web.load(URLRequest(url: Self.url))
+        }
     }
 
     private func run(_ js: String, tag: String = "") {
@@ -353,15 +372,6 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         if (pi.value.replace(/\\s/g, '') !== '\(phone)') { set(pi, '\(phone)'); await new Promise(r => setTimeout(r, 300)); }
 
         """
-    }
-
-    private static func padded(_ img: UIImage) -> UIImage {
-        let side: CGFloat = 720, pad: CGFloat = 80
-        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { ctx in
-            UIColor.white.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
-            ctx.cgContext.interpolationQuality = .none
-            img.draw(in: CGRect(x: pad, y: pad, width: side - pad * 2, height: side - pad * 2))
-        }
     }
 }
 
