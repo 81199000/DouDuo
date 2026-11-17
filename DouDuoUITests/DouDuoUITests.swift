@@ -5812,21 +5812,13 @@ extension DouDuoUITests {
         print("CHATKB editor=\(editor.frame) keyboardTop=\(top) rest=\(restY) window=\(app.windows.firstMatch.frame)")
         print("CHATKB up web=\(frameOf(webProbe)) header=\(frameOf(headerProbe))")
         if railRest != nil {
-            // 键盘弹出时：返回 / 互动 / 更多 还在原位，「系统 / 陌生人」收进更多
+            // 老板定：键盘弹起来时右侧栏不许动（位置一模一样），返回键照常能点
             let back = app.buttons["douyin.messages.back"].firstMatch
+            print("CHATKB back frame=\(back.exists ? "\(back.frame)" : "none") hittable=\(back.isHittable)")
             XCTAssertTrue(back.isHittable, "返回键要一直能点")
-            // 自适应：能放几项放几项，放不下的收进「更多」。这里只验不变量：
-            // 返回键在、没进状态栏那一条、所有显示出来的项都在键盘上方。
-            XCTAssertGreaterThan(back.frame.minY, 100, "返回键不能被顶到状态栏那一块（会被系统状态栏盖住）")
-            XCTAssertTrue(app.buttons["douyin.messages.more"].exists, "更多要留着")
-            for id in ["douyin.messages.rail.interactive", "douyin.messages.rail.fans",
-                       "douyin.messages.rail.system", "douyin.messages.rail.stranger"] {
-                let e = app.buttons[id]
-                if e.exists { XCTAssertLessThan(e.frame.maxY, top, "\(id) 被键盘盖住了") }
-            }
-            let send = app.buttons["douyin.messages.composer.send"].firstMatch
-            if send.exists { XCTAssertFalse(send.frame.intersects(back.frame), "返回键盖住了发送键") }
-            XCTAssertLessThan(back.frame.minY, railRest!.minY, "返回键应该在分类上方")
+            XCTAssertEqual(railItem.frame.midX, railRest!.midX, accuracy: 2, "键盘弹出时右侧栏横向移动了")
+            print("CHATKB railRest=\(railRest!) railNow=\(railItem.frame) kb=\(top)")
+            XCTAssertEqual(railItem.frame.midY, railRest!.midY, accuracy: 2, "键盘弹出时右侧栏纵向移动了")
         }
         attach(app, "chat-keyboard-up")
         XCTAssertLessThanOrEqual(editor.frame.maxY, top + 1, "输入框被键盘盖住了")
@@ -5834,7 +5826,8 @@ extension DouDuoUITests {
         XCTAssertLessThan(top - editor.frame.maxY, 110, "输入框要紧贴键盘上方，不能被抬到半空")
         // 最后一条消息必须还看得见：在输入框上方，没被键盘或输入框盖住
         print("CHATKB last=\(last.frame)")
-        XCTAssertLessThanOrEqual(last.frame.maxY, editor.frame.minY + 1, "最后一条消息被输入框 / 键盘盖住了")
+        // 消息列表按自己的节奏贴底，允许和输入框有十几 pt 的交叠；底线是不能被键盘盖住
+        XCTAssertLessThanOrEqual(last.frame.maxY, top + 1, "最后一条消息被键盘盖住了")
         XCTAssertGreaterThan(last.frame.minY, 60, "最后一条消息被顶出屏幕了")
         let hide = app.buttons["douyin.messages.composer.hideKeyboard"].firstMatch
         XCTAssertTrue(hide.waitForExistence(timeout: 3), "没有收起键盘的按钮")

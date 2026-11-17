@@ -465,6 +465,13 @@ struct DYMessagesScreen: View {
     /// 所以按键盘的真实位置把没让够的部分补上。
     @State private var keyboardFrame: CGRect?
     @State private var chatPaneFrame = CGRect.zero
+    /// 右侧栏所在容器的高度：键盘弹出会被缩掉一截，贴底排的栏就跟着上移。
+    /// 记下没键盘时的高度，缩掉多少补回多少，栏就待在原地（老板定：键盘弹起来菜单不要动）。
+    /// 底部安全区高度（home 条那段）
+    private var keyboardBottomInset: CGFloat {
+        chatModel.web?.window?.safeAreaInsets.bottom ?? 0
+    }
+
     private var chatKeyboardOverlap: CGFloat {
         guard navigation.isChat, let keyboardFrame else { return 0 }
         return DYLiveKeyboardLayout.overlap(viewportMinY: chatPaneFrame.minY, viewportMaxY: chatPaneFrame.maxY,
@@ -934,8 +941,9 @@ struct DYMessagesScreen: View {
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
         .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
-        // 底部位置跟视频页一致：离底 92pt
-        .padding(.bottom, 92)
+        // 底部位置跟视频页一致：离底 92pt。
+        // 键盘弹出时底部安全区（home 条那一段）消失，贴底排的栏会被顶上去一截 —— 补回来，栏就不动。
+        .padding(.bottom, keyboardFrame == nil ? 92 : 92 - keyboardBottomInset)
         .frame(maxHeight: .infinity, alignment: .bottom)
         .themeShadow(.floatingPanel)
         .ignoresSafeArea(.keyboard)
