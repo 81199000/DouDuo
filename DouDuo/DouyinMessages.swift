@@ -589,6 +589,7 @@ struct DYMessagesScreen: View {
                         }
                     }
             }
+            .ignoresSafeArea(.keyboard)   // 键盘不给这一层减高度：右侧栏是贴底排的，减高度就整列上移
 
         }
         .overlay {
@@ -932,7 +933,7 @@ struct DYMessagesScreen: View {
         // 跟视频页右侧栏同一套避让：状态栏（时间/信号环）显示时是系统遮挡区，
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
-        .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92))
+        .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
         // 底部位置跟视频页一致：离底 92pt
         .padding(.bottom, 92)
         .frame(maxHeight: .infinity, alignment: .bottom)
@@ -1817,6 +1818,8 @@ struct DYNoticeListScreen: View {
     @State private var replied: Set<String> = []
     @State private var toast: String?
     @FocusState private var replyFocused: Bool
+    /// 整页现在不跟键盘避让（右侧栏会错位），回复栏自己垫到键盘上方
+    @State private var replyKeyboardInset: CGFloat = 0
 
     init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void,
          isActive: Bool = true, embedded: Bool = false) {
@@ -1874,7 +1877,13 @@ struct DYNoticeListScreen: View {
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
                          onAuthor: { author = $0.author }, commentFocus: p.focus)
         }
-        .safeAreaInset(edge: .bottom) { if replying != nil { replyBar } }
+        .safeAreaInset(edge: .bottom) { if replying != nil { replyBar.padding(.bottom, replyKeyboardInset) } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            setReplyKeyboard(note, hidden: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
+            setReplyKeyboard(note, hidden: true)
+        }
         .overlay(alignment: .bottom) {
             if let t = toast {
                 Text(t).font(.footnote.weight(.medium)).foregroundStyle(.white)
@@ -1930,6 +1939,20 @@ struct DYNoticeListScreen: View {
             }
             .accessibilityIdentifier("douyin.notice.filter.\(g.rawValue)")
         }
+    }
+
+    /// 键盘在屏幕上多高，回复栏就往上垫多少（减掉窗口底部那段安全区，回复栏本来就在它上面）
+    private func setReplyKeyboard(_ note: Notification, hidden: Bool) {
+        var overlap: CGFloat = 0
+        if !hidden, let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect, frame.height > 1 {
+            let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows).first { $0.isKeyWindow }
+            overlap = max(0, frame.height - (window?.safeAreaInsets.bottom ?? 0))
+        }
+        let next = overlap > 0.5 ? overlap : 0
+        guard abs(next - replyKeyboardInset) > 0.5 else { return }
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        withAnimation(.easeOut(duration: min(max(duration, 0.12), 0.35))) { replyKeyboardInset = next }
     }
 
     private var replyBar: some View {
