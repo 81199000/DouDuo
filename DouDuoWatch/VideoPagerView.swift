@@ -31,9 +31,10 @@ struct VideoPagerView: View {
                     emptyState
                 } else {
                     let i = min(index, model.videos.count - 1)
-                    // 只渲染当前条（滑动中才带上邻居），邻居不创建播放器
+                    // 同一时刻最多只有 1 个播放器（当前条）。滑动过程中带上的邻居只画封面信息，不创建播放器——
+                    // watchOS 的硬件解码资源很少，同时开多路会让媒体服务被系统重置（AVF -11819），所有播放器一起失效。
                     ForEach(neighbors(i), id: \.self) { k in
-                        VideoPage(meta: model.videos[k], active: k == i, preload: k == i + 1, size: geo.size)
+                        VideoPage(meta: model.videos[k], active: k == i && drag == 0, size: geo.size)
                             .offset(y: CGFloat(k - i) * geo.size.height + drag)
                     }
                 }
@@ -87,8 +88,8 @@ struct VideoPagerView: View {
     }
 
     private func neighbors(_ i: Int) -> [Int] {
-        // 当前条 + 下一条常驻（下一条预热）；往回拉时才带上上一条
-        [i - 1, i, i + 1].filter { model.videos.indices.contains($0) && ($0 >= i || drag > 0) }
+        // 拖动时才带上上下邻居（让画面能跟手滑动），松手后只剩当前条
+        [i - 1, i, i + 1].filter { model.videos.indices.contains($0) && ($0 == i || drag != 0) }
     }
 
     private func go(to next: Int) {
@@ -119,10 +120,8 @@ struct VideoPagerView: View {
 private struct VideoPage: View {
     @EnvironmentObject var model: WatchModel
     let meta: DDWatchVideoMeta
-    /// 当前正在看的一条：播放
+    /// 当前正在看的一条：只有它才持有播放器
     let active: Bool
-    /// 下一条：播放器先建好、停在第一帧、缓冲好，等滑过来直接 play()，不用再等起播
-    let preload: Bool
     let size: CGSize
     @State private var player: AVPlayer?
     @State private var paused = false
@@ -133,6 +132,9 @@ private struct VideoPage: View {
     @State private var attempt = 0
     @State private var buffering = true
     @State private var observers: [NSKeyValueObservation] = []
+    /// 播放到结尾的通知观察者：必须在 stop() 里摘掉，否则闭包强引用播放器，滑过的视频一个都不会释放
+    @State private var endToken: NSObjectProtocol?
+    @State private var generation = 0
 
     var body: some View {
         ZStack {
@@ -178,18 +180,16 @@ private struct VideoPage: View {
         .onTapGesture(count: 2) { like() }
         .onTapGesture { togglePause() }
         .onChange(of: active) { _, on in
-            if on { activate() } else if preload { hold() } else { stop() }
+            if on { attempt = 0; failed = false; prepare() } else { stop() }
         }
-        .onChange(of: preload) { _, on in
-            if on { prepare() } else if !active { stop() }
-        }
-        .onAppear { if active || preload { prepare() } }
+        .onAppear { if active { prepare() } }
         .onDisappear { stop() }
     }
 
-    /// 建好播放器。当前条直接播；下一条只暂停等着（静音，不抢声音）
+    /// 为当前条建播放器并播放。命中本地缓存就本地起播，否则流播。
     private func prepare() {
-        guard player == nil else { if active { activate() }; return }
+        guard active, player == nil else { return }
+        let gen = generation
         let item: AVPlayerItem
         if let local = WatchCache.localURL(meta.id) {
             item = AVPlayerItem(url: local)
@@ -205,27 +205,30 @@ private struct VideoPage: View {
         observers = [
             item.observe(\.status, options: [.new]) { it, _ in
                 DispatchQueue.main.async {
+                    guard gen == generation else { return }   // 已经被 stop()/重建过的旧播放器回调，忽略
                     switch it.status {
-                    case .readyToPlay:
-                        ready = true          // 加载成功才挂系统播放器，失败时不会冒出系统自带的 Done 界面
-                    case .failed:
-                        handleFailure(it)
+                    case .readyToPlay: ready = true           // 加载成功才挂系统播放器，失败时不会冒出系统自带的 Done 界面
+                    case .failed: handleFailure(it)
                     default: break
                     }
                 }
             },
             p.observe(\.timeControlStatus, options: [.new]) { pl, _ in
-                DispatchQueue.main.async { buffering = pl.timeControlStatus == .waitingToPlayAtSpecifiedRate }
+                DispatchQueue.main.async { if gen == generation { buffering = pl.timeControlStatus == .waitingToPlayAtSpecifiedRate } }
             },
         ]
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { _ in
+        // weak p：通知闭包不再强引用播放器
+        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak p] _ in
+            guard let p else { return }
             p.seek(to: .zero); if active && !paused { p.play() }
         }
         player = p
-        if active { paused = false; p.play() } else { p.isMuted = true; p.pause() }
+        paused = false
+        p.play()
     }
 
-    /// 失败：先把原因抓出来；本地缓存坏了就删缓存改流播；流播失败重试一次（链接刚过期/网络抖动很常见），再失败才丢掉这条
+    /// 失败处理。-11819（媒体服务被重置）：所有播放器已作废，销毁后等一会儿重新建，最多 3 次；
+    /// 其他流播失败重试 1 次；本地缓存文件有问题就删掉改流播。仍然失败才丢掉这条。
     private func handleFailure(_ it: AVPlayerItem) {
         let err = it.error as NSError?
         var parts: [String] = []
@@ -233,47 +236,35 @@ private struct VideoPage: View {
         if let under = err?.userInfo[NSUnderlyingErrorKey] as? NSError { parts.append("↳\(under.domain.replacingOccurrences(of: "NSURLErrorDomain", with: "URL")) \(under.code)") }
         if let ev = it.errorLog()?.events.last { parts.append("HTTP \(ev.errorStatusCode) \(ev.errorComment ?? "")") }
         let local = WatchCache.localURL(meta.id) != nil
-        let reason = (local ? "[本地] " : "[流播] ") + parts.joined(separator: " ")
+        let reason = (local ? "[本地] " : "[流播] ") + parts.joined(separator: " ") + " #\(attempt + 1)"
         failText = reason
         model.lastFailure = reason
         buffering = false
 
-        if local {                                   // 本地文件有问题：删掉，改流播重来
-            Task { await WatchCache.shared.remove(meta.id) }
-            retry()
-        } else if attempt < 1 {                      // 流播：重试一次
-            retry()
+        let mediaReset = err?.code == -11819
+        let maxTry = mediaReset ? 3 : 1
+        if local { Task { await WatchCache.shared.remove(meta.id) } }
+        if attempt < maxTry || local {
+            attempt += 1
+            let delay = mediaReset ? 1.2 : 0.6
+            stop()
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { prepare() }
         } else {
+            stop()
             failed = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { model.drop(meta.id) }
         }
     }
 
-    private func retry() {
-        attempt += 1
-        stop()
-        ready = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { if active || preload { prepare() } }
-    }
-
-    /// 滑到这一条：已经预热好的播放器直接从头播
-    private func activate() {
-        guard let p = player else { prepare(); return }
-        p.isMuted = false
-        p.seek(to: .zero)
-        paused = false
-        p.play()
-    }
-
-    /// 滑走但仍是「下一条」（往回拉了一下）：停住静音，保留播放器
-    private func hold() {
-        player?.pause(); player?.isMuted = true; player?.seek(to: .zero)
-    }
-
+    /// 彻底释放：暂停、摘掉所有观察者、让正在飞的旧回调失效
     private func stop() {
+        generation += 1
         player?.pause()
+        player?.replaceCurrentItem(with: nil)
         player = nil
         observers = []
+        if let t = endToken { NotificationCenter.default.removeObserver(t); endToken = nil }
+        ready = false
     }
 
     private func togglePause() {
