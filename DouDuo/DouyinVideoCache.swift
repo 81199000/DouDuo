@@ -430,9 +430,18 @@ actor DYVideoCache {
                 if let h = try await downloadParallel(u, id: a.id) {
                     let dst = Self.fileURL(a.id)
                     let bytes = ((try? FileManager.default.attributesOfItem(atPath: h.path)[.size]) as? Int) ?? 0
-                    guard bytes > 50_000 else { try? FileManager.default.removeItem(at: h); continue }
+                    guard bytes > 50_000 else {
+                        try? FileManager.default.removeItem(at: h)
+                        if h.deletingLastPathComponent().lastPathComponent.hasPrefix("ddseg-") {
+                            try? FileManager.default.removeItem(at: h.deletingLastPathComponent())
+                        }
+                        continue
+                    }
                     try? FileManager.default.removeItem(at: dst)
                     try FileManager.default.moveItem(at: h, to: dst)
+                    if h.deletingLastPathComponent().lastPathComponent.hasPrefix("ddseg-") {
+                        try? FileManager.default.removeItem(at: h.deletingLastPathComponent())
+                    }
                     entries.removeAll { $0.aweme.id == a.id }
                     entries.append(Entry(aweme: a, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
                     evict()
@@ -511,9 +520,13 @@ actor DYVideoCache {
             }
             try out.close()
             try? FileManager.default.removeItem(at: first)
+            // 分段已经拼进 full，删掉分段，只留 full 等调用方挪走
+            for f in urls where f != joined { try? FileManager.default.removeItem(at: f) }
             return joined
         } catch {
             try? FileManager.default.removeItem(at: first)
+            // 失败时删掉整个分段目录
+            try? FileManager.default.removeItem(at: dir)
             throw error
         }
     }
@@ -526,6 +539,12 @@ actor DYVideoCache {
 
     func usage() -> (count: Int, bytes: Int) {
         (entries.count + heads.count, entries.reduce(0) { $0 + $1.bytes } + heads.reduce(0) { $0 + $1.bytes })
+    }
+
+    /// 储存空间页「清理缓存」：清视频缓存 + 分段下载留在 tmp 的临时目录
+    func clearForStorage() -> Bool {
+        _ = clear()
+        return DYStorageFiles.removeVideoWork()
     }
 
     func clear() -> Int {

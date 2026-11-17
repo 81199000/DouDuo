@@ -1755,6 +1755,63 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "account-switch-messages")
     }
 
+    /// 储存空间：查看占用、清理缓存
+    func testStorageSpaceCanClearCaches() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = [
+            "DOUDUO_CHROME_MODE": "duoClassic",
+            "DOUDUO_HASHTAG_FIXTURE": "1",
+            "DOUDUO_APPEARANCE": "system"
+        ]
+        // 固定从首页起（停在「我的」时未登录会弹登录页盖住「更多」）
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+
+        let more = app.buttons.matching(identifier: "douyin.more").allElementsBoundByIndex.first { $0.isHittable }
+            ?? app.buttons["douyin.more"].firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 30))
+        print("STORAGE_DUO_WINDOW \(app.windows.firstMatch.frame)")
+        _ = app.screenshot()
+        // SwiftUI Menu reports a legacy Button on Duo, but XCTest can fail to
+        // resolve its activation point. Tap the center of its reported frame.
+        more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let settings = app.buttons["设置"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5), app.debugDescription)
+        settings.tap()
+
+        let destination = app.descendants(matching: .any)["settings.storage"].firstMatch
+        for _ in 0..<5 where !destination.isHittable { app.swipeUp() }
+        XCTAssertTrue(destination.isHittable, app.debugDescription)
+        destination.tap()
+
+        let total = app.descendants(matching: .any)["storage.total"].firstMatch
+        XCTAssertTrue(total.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(app.navigationBars["储存空间"].exists)
+        let deviceShare = app.staticTexts["storage.device-share"]
+        XCTAssertTrue(deviceShare.exists)
+        XCTAssertTrue(deviceShare.label.contains("%"), deviceShare.label)
+        XCTAssertTrue(deviceShare.label.hasPrefix("占手机总容量的"), deviceShare.label)
+        attach(app, "storage-before-cleanup")
+        let clear = app.buttons["storage.clear"]
+        clear.tap()
+        let confirm = app.alerts["清理缓存？"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirm.staticTexts["清除缓存和诊断日志，保留登录、消息和设置。"].exists)
+        confirm.buttons["取消"].tap()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+
+        clear.tap()
+        confirm.buttons["清理缓存"].tap()
+        let result = app.descendants(matching: .any)["storage.result"].firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 20), app.debugDescription)
+        XCTAssertEqual(result.label, "缓存已清理")
+        XCTAssertTrue(total.exists)
+        attach(app, "storage-after-cleanup")
+    }
+
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
     func testManageEntriesExist() throws {
         continueAfterFailure = false
