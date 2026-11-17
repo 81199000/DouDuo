@@ -737,7 +737,10 @@ struct DYMessagesScreen: View {
                             .opacity(showingMine ? 0 : 1)
                             .allowsHitTesting(!showingMine)
                         if showingMine, let mineContent {
+                            // 外层整页忽略了顶部安全区；「我的」自带导航栏，内容要让开状态栏 + 导航栏，
+                            // 否则页头（含「去登录」）被导航栏盖住、点不到（老板 2026-11-17「点击登录无反应」）。
                             mineContent
+                                .safeAreaPadding(.top, messageTopInset)
                                 .padding(edge == .leading ? .leading : .trailing, reserve)
                                 .transition(.opacity)
                         }
