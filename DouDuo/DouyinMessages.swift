@@ -757,7 +757,9 @@ struct DYMessagesScreen: View {
                 GeometryReader { safe in
                     let edge = HorizontalEdge.trailing
                     // 系统竖栏也在右边时，栏居中到那一列；系统竖栏在左边（横屏）时右边没有系统列，离边 12
-                    let column = systemEdge == .trailing ? safe.safeAreaInsets.trailing : 0
+                    // 进入聊天页时系统竖栏是隐藏的，但那一列的安全区还留着 —— 再按它居中，
+                    // 栏就会整体偏左、压到消息上（老板 11-18 报「菜单栏跑到左边」）。聊天时贴着右边排。
+                    let column = (systemEdge == .trailing && !navigation.hasDetail) ? safe.safeAreaInsets.trailing : 0
                     // 跟视频页同一公式：有系统竖栏时栏居中在那一列（+光学微调）；没有时离边 12
                     let outer = column > 0 ? max(0, (column - Self.railWidth) / 2 + theme.media.expandedRailOpticalInset) : 12
                     // 内容区右侧要让出：栏宽 + 栏外留白 − 系统竖栏本身（那一列内容区本来就不占）
@@ -873,7 +875,7 @@ struct DYMessagesScreen: View {
     /// 每项 48pt，项间距 9pt，胶囊上下留白各 8pt，返回键 50pt + 组间距 12pt。
     private var railCapacity: (categories: Int, dock: Bool) {
         // 顶部给状态栏/时间那一圈留位（Duo 外屏的状态是竖排的，占得比普通手机高）
-        let topLimit: CGFloat = 150
+        let topLimit: CGFloat = 200
         let item: CGFloat = 48, gap = theme.media.actionItemSpacing, capsulePad: CGFloat = 16
         let back = 50 + theme.media.actionGroupSpacing
         let usable = railSpace - railBottomPadding - topLimit
@@ -884,7 +886,9 @@ struct DYMessagesScreen: View {
         if 4 - categories > 0 || navigation.isChat { categories = max(0, min(categories, fit - 1)) }
         let used = back + capsulePad + CGFloat(max(1, categories)) * item + CGFloat(max(0, categories - 1)) * gap
         let dockNeeded: CGFloat = item * 2 + gap + 12 + theme.media.actionGroupSpacing
-        return (categories, usable - used >= dockNeeded)
+        let dock = usable - used >= dockNeeded
+        DYLiveModel.log("DDRAILCAP space=\(Int(railSpace)) bottom=\(Int(railBottomPadding)) top=\(Int(topLimit)) fit=\(fit) cats=\(categories) dock=\(dock)")
+        return (categories, dock)
     }
 
     private var messageRail: some View {
