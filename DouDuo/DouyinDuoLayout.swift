@@ -659,6 +659,7 @@ struct DYCommentPaneMetrics {
     let resident: Bool
     let sideBySide: Bool
     let showsPane: Bool
+    var showsSidePane: Bool { showsPane && sideBySide }
     let videoSize: CGSize
     let paneSize: CGSize
     let paneOrigin: CGPoint
@@ -806,9 +807,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
                     .environment(\.duoInlineVideoNavigation, layout.showsPane || showsComments)
                     .environment(\.duoCleanScreen, cleanScreen)
                     .environment(\.dyCommentsOpen, showsComments || layout.showsPane)
+                    .environment(\.dyVideoHasSidePane, layout.showsSidePane)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
-                    // 侧栏评论时裁边：播放器环境光底铺满整屏，会盖住右侧评论栏（同推荐页 DYCommentStage）
-                    .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
