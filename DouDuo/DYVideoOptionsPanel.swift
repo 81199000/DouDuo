@@ -16,6 +16,7 @@ struct DYVideoOptionsPanel: View {
     @State private var headerHeight: CGFloat = 44
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
+    var onWatchLater: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,6 +88,16 @@ struct DYVideoOptionsPanel: View {
                             .padding(.horizontal, 16)
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
                             .accessibilityIdentifier("douyin.danmaku.open")
+                        }
+                        if let onWatchLater {
+                            Divider().padding(.leading, 16)
+                            Button("稍后再看", systemImage: "clock") {
+                                dismiss()
+                                onWatchLater()
+                            }
+                            .padding(.horizontal, 16)
+                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                            .accessibilityIdentifier("douyin.watchlater.add")
                         }
                     }
                     .optionGroup()

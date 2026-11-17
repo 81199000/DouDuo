@@ -328,10 +328,13 @@ extension DouyinBridge {
         return nil
     }
 
-    func deleteComment(_ cid: String) async -> Bool {
-        guard let d = try? await call(Self.deleteCommentJS, args: ["cid": cid], attempts: 1),
-              let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else { return false }
-        return r.status == 200 && (r.code ?? 0) == 0
+    /// 删除评论（自己发的，或自己作品下的）。只在用户确认之后调用，不重试。
+    func deleteComment(_ cid: String) async throws -> DYActionResult {
+        await ensureWriteReady()
+        let d = try await call(Self.deleteCommentJS, args: ["cid": cid], attempts: 1)
+        let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
+        DYLiveModel.log("DDSEND comment-delete status=\(r.status) code=\(r.code.map(String.init) ?? "nil") msg=\(r.msg ?? "-")")
+        return Self.manageResult(DYManageResp(status: r.status, statusCode: r.code, msg: r.msg))
     }
 
     /// 发视频弹幕（offset 秒 = 出现在视频的哪个时间点）
@@ -359,7 +362,7 @@ extension DouyinBridge {
       const o = cmapImg(x.origin_url) || m;
       return m ? { thumb: m.u, full: o.u, w: o.w || m.w, h: o.h || m.h } : null;
     }).filter(Boolean);
-    const cmap = c => c ? ({ id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
+    const cmap = c => c ? ({ id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null,
       images: cmapImages(c) }) : null;
     """#
@@ -401,6 +404,7 @@ extension DouyinBridge {
     """#
 
     static let deleteCommentJS = #"""
+    if (typeof sdkReady === 'function') await sdkReady(6000);
     const r = await req('POST', '/aweme/v1/web/comment/delete?' + q({ cid: cid, channel_id: '0', app_name: 'aweme' }), '');
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, comment: null, danmakuID: null });
@@ -578,7 +582,7 @@ extension DouyinBridge {
       return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
     };
     const items = (d.comments || []).map(c => ({
-      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', avatar: c.user && first(c.user.avatar_thumb),
+      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || 0, replies: 0, ip: c.ip_label || null,
       images: ddImages(c), sticker: ddSticker(c) }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, msg: null });
@@ -822,7 +826,25 @@ struct DYGrid: View {
     let onLoadMore: () -> Void
     let onOpen: (Int) -> Void
     var showsPlayCount = false
+    /// 长按格子出的移除项（例如「移出稍后再看」）。两个都给了才有长按菜单。
+    var removeTitle: String? = nil
+    var onRemove: ((DYAweme) -> Void)? = nil
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
+
+    @ViewBuilder
+    private func gridButton(_ i: Int, _ a: DYAweme) -> some View {
+        let button = Button { onOpen(i) } label: { cell(a) }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("douyin.grid.item.\(a.id)")
+        if let onRemove, let removeTitle {
+            button.contextMenu {
+                Button(removeTitle, systemImage: "minus.circle", role: .destructive) { onRemove(a) }
+                    .accessibilityIdentifier("douyin.grid.remove")
+            }
+        } else {
+            button
+        }
+    }
 
     var body: some View {
         // 底部哨兵只在真正滚进可视区时才翻页：ScrollView 的非惰性子视图会立刻 onAppear，
@@ -831,9 +853,7 @@ struct DYGrid: View {
             ScrollView {
                 LazyVGrid(columns: cols, spacing: 2) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
-                        Button { onOpen(i) } label: { cell(a) }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("douyin.grid.item.\(a.id)")
+                        gridButton(i, a)
                     }
                 }
                 if let error {
@@ -1445,6 +1465,9 @@ struct DYMineScreen: View {
     @State private var models: [DYListKind: DYPagedModel] = [:]
     @State private var open: DYListTarget?
     @State private var relations: DYRelationsTarget?
+    @State private var manageMsg: String?
+    @State private var confirmClearHistory = false
+    @State private var clearingHistory = false
 
     var body: some View {
         NavigationStack {
@@ -1483,8 +1506,26 @@ struct DYMineScreen: View {
             }
             .padding(.bottom, 6)
 
+            if kind == .history || manageMsg != nil {
+                HStack(spacing: 10) {
+                    if let manageMsg {
+                        Text(manageMsg).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                    if kind == .history {
+                        Button(clearingHistory ? "清空中…" : "清空历史", systemImage: "trash") { confirmClearHistory = true }
+                            .font(.caption)
+                            .disabled(clearingHistory)
+                            .accessibilityIdentifier("douyin.mine.history.clear")
+                    }
+                }
+                .padding(.horizontal, 16).padding(.bottom, 6)
+            }
+
             if let m = models[kind] {
-                DYMineList(model: m, showsPlayCount: kind == .post) { i in
+                DYMineList(model: m, showsPlayCount: kind == .post,
+                           removeTitle: kind == .later ? "移出稍后再看" : nil,
+                           onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
@@ -1507,14 +1548,45 @@ struct DYMineScreen: View {
             do { user = try await bridge.selfProfile() } catch { userErr = error.localizedDescription }
         }
         .onAppear { ensure(kind) }
-        .onChange(of: kind) { _, k in ensure(k) }
+        .onChange(of: kind) { _, k in manageMsg = nil; ensure(k) }
+        .alert("清空观看历史？", isPresented: $confirmClearHistory) {
+            Button("清空", role: .destructive) { Task { await clearHistory() } }
+            Button("取消", role: .cancel) {}
+        } message: { Text("清空后找不回来。") }
         .fullScreenCover(item: $open) { t in
             DYListPlayer(bridge: bridge, title: t.title, playback: t.playback,
                          loadMore: t.model.map { m in { await m.loadMore() } }, onAuthor: onAuthor, presentsAuthor: true)
         }
         .fullScreenCover(item: $relations) { t in
-            DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid)
+            DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid, manageFollowers: true)
         }
+    }
+
+    /// 移出稍后再看。抖音确认了才从列表里拿掉。
+    private func removeLater(_ a: DYAweme, from m: DYPagedModel) async {
+        do {
+            switch try await bridge.removeWatchLater(a.id) {
+            case .ok: m.items.removeAll { $0.id == a.id }; manageMsg = nil
+            case .notLoggedIn: manageMsg = "抖音未登录"
+            case .failed(let why): manageMsg = "没移出去：" + why
+            }
+        } catch { manageMsg = "没移出去：" + error.localizedDescription }
+    }
+
+    /// 清空观看历史。成功后重新拉一遍，以抖音那边为准。
+    private func clearHistory() async {
+        guard !clearingHistory else { return }
+        clearingHistory = true
+        defer { clearingHistory = false }
+        do {
+            switch try await bridge.clearHistory() {
+            case .ok:
+                manageMsg = nil
+                if let m = models[.history] { m.reset(); await m.loadMore() }
+            case .notLoggedIn: manageMsg = "抖音未登录"
+            case .failed(let why): manageMsg = "没清掉：" + why
+            }
+        } catch { manageMsg = "没清掉：" + error.localizedDescription }
     }
 
     private func ensure(_ k: DYListKind) {
@@ -1562,10 +1634,13 @@ struct DYMineScreen: View {
 private struct DYMineList: View {
     @ObservedObject var model: DYPagedModel
     var showsPlayCount = false
+    var removeTitle: String? = nil
+    var onRemove: ((DYAweme) -> Void)? = nil
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount,
+               removeTitle: removeTitle, onRemove: onRemove)
     }
 }
 
@@ -1675,6 +1750,11 @@ struct DYAuthorScreen: View {
     @State private var followUID: String?
     @State private var followBusy = false
     @State private var followMsg: String?
+    @State private var blocked = false
+    /// 我自己的 sec_uid；没认出我是谁之前不给拉黑入口
+    @State private var selfSec: String?
+    @State private var blockBusy = false
+    @State private var confirmBlock = false
     @State private var player: DYAuthorPlay?
 
     var body: some View {
@@ -1726,6 +1806,16 @@ struct DYAuthorScreen: View {
             .dyVerticalPreferred()
             ToolbarItem(placement: .primaryAction) { followButton }
                 .dyVerticalPreferred()
+            if canBlock {
+                ToolbarItem(placement: .primaryAction) { blockMenu }
+                    .dyVerticalPreferred()
+            }
+        }
+        .alert(blocked ? "解除拉黑？" : "拉黑这个人？", isPresented: $confirmBlock) {
+            Button(blocked ? "解除拉黑" : "拉黑", role: blocked ? nil : .destructive) { Task { await toggleBlock() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(blocked ? "解除拉黑后，对方可以搜索到你，可以给你发私信" : "拉黑后，对方将无法搜索到你，也不能给你发私信")
         }
         .fullScreenCover(item: $player, onDismiss: { onWorkPresentationChange?(false) }) { p in
             DYListPlayer(bridge: bridge, title: author.name.isEmpty ? "作品" : author.name, playback: p.playback,
@@ -1756,6 +1846,50 @@ struct DYAuthorScreen: View {
     /// 经典模式右半屏博主窗格（onClose 由宿主给）左缘是分界线，不挂边缘返回
     private var edgeBackEnabled: Bool { onClose == nil }
 
+    /// 自己的主页不给拉黑入口；没登录（认不出我是谁）时也不给
+    private var canBlock: Bool {
+        guard let sec = author.secUid, !sec.isEmpty, let me = selfSec, !me.isEmpty else { return false }
+        return sec != me
+    }
+
+    private var blockMenu: some View {
+        Menu {
+            Button(blocked ? "解除拉黑" : "拉黑", systemImage: blocked ? "hand.raised.slash" : "hand.raised") { confirmBlock = true }
+                .disabled(blockBusy)
+                .accessibilityIdentifier("douyin.author.block")
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .accessibilityLabel("更多")
+        .accessibilityIdentifier("douyin.author.more")
+    }
+
+    private func toggleBlock() async {
+        guard !blockBusy else { return }
+        guard let sec = author.secUid, !sec.isEmpty, let uid = followUID ?? author.uid, !uid.isEmpty else {
+            followMsg = "还没拿到对方的账号信息，稍后再试"
+            return
+        }
+        blockBusy = true
+        defer { blockBusy = false }
+        let want = !blocked
+        do {
+            switch try await bridge.blockUser(uid: uid, secUid: sec, block: want) {
+            case .ok:
+                // 关注关系以抖音那边为准重读一遍；拉黑状态用这次写入的回执（回执里的 block_status 已核对过）
+                await loadFollow(sec)
+                blocked = want
+                followMsg = want ? "已拉黑" : "已解除拉黑"
+            case .notLoggedIn:
+                followMsg = "抖音未登录"
+            case .failed(let why):
+                followMsg = (want ? "没拉黑：" : "没解除：") + why
+            }
+        } catch {
+            followMsg = (want ? "没拉黑：" : "没解除：") + error.localizedDescription
+        }
+    }
+
     @ViewBuilder
     private var followButton: some View {
         let uid = followUID ?? author.uid
@@ -1774,6 +1908,8 @@ struct DYAuthorScreen: View {
     private func loadFollow(_ sec: String) async {
         if let s = try? await bridge.followState(sec: sec) {
             followed = s.followed
+            blocked = s.blocked
+            if selfSec == nil { selfSec = try? await bridge.selfSecUid() }
             bridge.rememberFollow(author, followed: s.followed)
             if let uid = s.uid, !uid.isEmpty { followUID = uid }
         }
