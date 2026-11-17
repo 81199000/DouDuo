@@ -5812,12 +5812,16 @@ extension DouDuoUITests {
         print("CHATKB editor=\(editor.frame) keyboardTop=\(top) rest=\(restY) window=\(app.windows.firstMatch.frame)")
         print("CHATKB up web=\(frameOf(webProbe)) header=\(frameOf(headerProbe))")
         if railRest != nil {
-            // 输入时整列让位，只剩最上面的返回键
-            XCTAssertFalse(railItem.isHittable, "键盘弹出时右侧分类栏应当让位")
+            // 键盘弹出时：返回 / 互动 / 更多 还在原位，「系统 / 陌生人」收进更多
             let back = app.buttons["douyin.messages.back"].firstMatch
             XCTAssertTrue(back.isHittable, "返回键要一直能点")
+            XCTAssertTrue(railItem.isHittable, "互动分类要留着")
+            XCTAssertFalse(app.buttons["douyin.messages.rail.system"].exists, "输入时系统分类应收起来")
+            XCTAssertFalse(app.buttons["douyin.messages.rail.stranger"].exists, "输入时陌生人分类应收起来")
+            XCTAssertTrue(app.buttons["douyin.messages.more"].exists, "更多要留着")
             let send = app.buttons["douyin.messages.composer.send"].firstMatch
             if send.exists { XCTAssertFalse(send.frame.intersects(back.frame), "返回键盖住了发送键") }
+            XCTAssertLessThan(back.frame.minY, railRest!.minY, "返回键应该在分类上方")
         }
         attach(app, "chat-keyboard-up")
         XCTAssertLessThanOrEqual(editor.frame.maxY, top + 1, "输入框被键盘盖住了")
@@ -5835,6 +5839,7 @@ extension DouDuoUITests {
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertEqual(editor.frame.midY, restY, accuracy: 3, "键盘收起后输入框要回到原位")
         if let railRest {
+            XCTAssertTrue(app.buttons["douyin.messages.rail.system"].exists, "收起键盘后系统分类要回来")
             XCTAssertTrue(railItem.isHittable, "收起键盘后右侧菜单栏要回来")
             XCTAssertEqual(railItem.frame.midX, railRest.midX, accuracy: 2, "收起键盘后右侧菜单栏要回原位")
             XCTAssertEqual(railItem.frame.midY, railRest.midY, accuracy: 2)
