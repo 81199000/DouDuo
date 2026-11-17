@@ -65,6 +65,8 @@ print("PASS old sessions preserve metadata and decode missing regions")
         self.assertIn('DYPublicationRegionClient.shared.prefetch(regionIDs)',host)
         self.assertEqual(SOURCE.read_text().count('DYWorkMetadataText(item: item, active: isCurrent)'),2)
         self.assertIn('DYWorkMetadataText(item: aweme, active: true)',(ROOT/'DouDuo/DouyinExpandableTitle.swift').read_text())
-        self.assertIn('MARKETING_VERSION: 1.5.5',(ROOT/'project.yml').read_text())
+        # 只确认版本号键存在且是 x.y 或 x.y.z（带不带引号都行），不写死某个版本，升版本时不用再改这条
+        import re
+        self.assertRegex((ROOT/'project.yml').read_text(), r'MARKETING_VERSION:\s*"?\d+\.\d+(\.\d+)?"?')
 
 if __name__ == '__main__': unittest.main()
