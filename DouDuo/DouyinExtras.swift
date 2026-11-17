@@ -1471,7 +1471,13 @@ struct DYMineScreen: View {
     /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
     @State private var showLogin = false
     @State private var showAccounts = false
-    @State private var autoLoginShown = false
+    /// 这次打开期间已经自动弹过登录：放在静态里——简洁 / 极简模式在信息 ⇄ 我的之间切换会重建「我的」，
+    /// @State 会被重置，导致每切回来一次就再弹一次登录
+    private static var autoLoginShownAt: Date?
+    private var autoLoginShown: Bool {
+        get { Self.autoLoginShownAt.map { Date().timeIntervalSince($0) < 120 } ?? false }
+        nonmutating set { Self.autoLoginShownAt = newValue ? Date() : nil }
+    }
 
     var body: some View {
         NavigationStack {
@@ -1486,12 +1492,16 @@ struct DYMineScreen: View {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
                     // 「网页版 / 登录」按钮已按老板要求去掉：未登录时页内仍有「去登录」入口，功能不受影响
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("账号", systemImage: "person.2.circle") { showAccounts = true }
-                            .accessibilityIdentifier("douyin.mine.accounts")
+                    // 嵌在信息页（简洁 / 极简）时「账号」在右侧栏，顶栏不放，免得跟返回键挤在一起
+                    if !embedded {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("账号", systemImage: "person.2.circle") { showAccounts = true }
+                                .accessibilityIdentifier("douyin.mine.accounts")
+                        }
                     }
                 }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dyOpenAccounts)) { _ in if embedded { showAccounts = true } }
         .sheet(isPresented: $showAccounts) {
             DYAccountsScreen(onChanged: { Task { await accountChanged() } },
                              onAddAccount: {

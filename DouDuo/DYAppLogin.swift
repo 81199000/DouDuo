@@ -366,7 +366,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         }
         guard !loggedIn else { return }
         DYLiveModel.log("DDAPPLOGIN confirm newSession=\(ok) path=\(web.url?.path ?? "-")")
-        if ok { message = nil; busy = false; loggedIn = true; poll?.invalidate() }
+        if ok { message = nil; busy = false; loggedIn = true; poll?.invalidate(); DYAccountStore.sessionDidChange() }
         else if web.url?.path.hasPrefix("/login_page") != true {
             // 跳走了但没登录上：回登录页，告诉用户再试
             busy = false

@@ -1697,6 +1697,64 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "accounts-removed")
     }
 
+    /// 简洁 / 极简「我的」：右侧栏只有 返回 / 账号 / 信息 / 我的，不显示 互动 粉丝 系统 陌生人；「账号」不跟返回键重叠
+    func testMineRailLayout() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()
+        app.buttons["douyin.module.mine"].firstMatch.tap()
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 15) { close.tap() }
+        let accounts = app.buttons["douyin.mine.accounts"].firstMatch
+        XCTAssertTrue(accounts.waitForExistence(timeout: 10), "「我的」右侧栏没有「账号」")
+        XCTAssertEqual(app.buttons.matching(identifier: "douyin.mine.accounts").count, 1, "「账号」出现了不止一个")
+        for id in ["douyin.messages.rail.interactive", "douyin.messages.rail.fans", "douyin.messages.rail.system", "douyin.messages.rail.stranger"] {
+            XCTAssertFalse(app.buttons[id].exists, "「我的」页还显示 \(id)")
+        }
+        let back = app.buttons["douyin.messages.close"].firstMatch
+        XCTAssertTrue(back.exists, "没有返回键")
+        XCTAssertFalse(back.frame.intersects(accounts.frame), "「账号」跟返回键重叠")
+        attach(app, "mine-rail")
+        accounts.tap()
+        XCTAssertTrue(app.buttons["douyin.account.add"].waitForExistence(timeout: 8), "点右侧栏「账号」没打开账号页")
+        app.buttons["关闭"].firstMatch.tap()
+        // 回信息页：四个分类回来
+        app.buttons["douyin.messages.tab.messages"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["douyin.messages.rail.interactive"].waitForExistence(timeout: 5), "回信息页后分类没回来")
+        XCTAssertFalse(app.buttons["douyin.mine.accounts"].exists, "信息页还显示「账号」")
+        attach(app, "messages-rail")
+    }
+
+    /// 切换账号后信息页马上按新账号重新核对（不等 5 分钟缓存）：日志里要出现 scope reset + 聊天网页重建
+    func testAccountSwitchRechecksMessages() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchEnvironment["DOUDUO_FAKE_ACCOUNTS"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9", "-douduo_accounts_v1", "", "-douduo_account_current_v1", ""]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()
+        app.buttons["douyin.module.mine"].firstMatch.tap()
+        let close = app.buttons["douyin.login.close"].firstMatch
+        if close.waitForExistence(timeout: 15) { close.tap() }
+        // 先看一眼信息页，让账号核对缓存住「未登录」
+        app.buttons["douyin.messages.tab.messages"].firstMatch.tap(); sleep(3)
+        app.buttons["douyin.messages.mine"].firstMatch.tap()
+        app.buttons["douyin.mine.accounts"].firstMatch.tap()
+        let b = app.buttons["douyin.account.1002"].firstMatch
+        XCTAssertTrue(b.waitForExistence(timeout: 8)); b.tap()
+        sleep(4)
+        attach(app, "account-switch-messages")
+    }
+
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）
     func testManageEntriesExist() throws {
         continueAfterFailure = false
