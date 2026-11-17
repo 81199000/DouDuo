@@ -42,6 +42,14 @@ final class WatchModel: NSObject, ObservableObject {
         }
         if let d = try? Data(contentsOf: Self.watchedURL), let w = try? JSONDecoder().decode([String].self, from: d) { watched = Set(w) }
         dropExpired()
+        // 启动清一次缓存，之后每 10 分钟一次（App 开着期间也不会越存越多）
+        Task {
+            await WatchCache.shared.cleanup()
+            while true {
+                try? await Task.sleep(nanoseconds: 600 * 1_000_000_000)
+                await WatchCache.shared.cleanup()
+            }
+        }
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = WatchLink.shared
         WCSession.default.activate()
@@ -73,6 +81,7 @@ final class WatchModel: NSObject, ObservableObject {
     /// 看完/划走一条：记为已看过，列表快见底就向手机要新的
     func markWatched(_ id: String) {
         watched.insert(id)
+        Task { await WatchCache.shared.remove(id) }   // 看过的不留
         if let i = videos.firstIndex(where: { $0.id == id }) {
             // 只丢掉当前条之前的，当前条留着以免翻页跳动
             if i > 0 { videos.removeFirst(i) }
@@ -84,8 +93,16 @@ final class WatchModel: NSObject, ObservableObject {
     /// 链接失效（播放失败）：丢掉这条
     func drop(_ id: String) {
         videos.removeAll { $0.id == id }
+        Task { await WatchCache.shared.remove(id) }
         save()
         if videos.count <= lowWater { Task { await requestVideos() } }
+    }
+
+    /// 把当前条后面的几条预存到本地
+    func prefetchAhead(from id: String?) {
+        guard let id, let i = videos.firstIndex(where: { $0.id == id }) else { return }
+        let next = Array(videos.dropFirst(i + 1).prefix(WatchCache.ahead))
+        Task { await WatchCache.shared.prefetch(next) }
     }
 
     // MARK: 向 iPhone 要数据
