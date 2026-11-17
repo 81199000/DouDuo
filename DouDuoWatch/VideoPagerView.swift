@@ -23,6 +23,7 @@ struct VideoPagerView: View {
     @State private var index = 0
     @State private var drag: CGFloat = 0
     @State private var crown: Double = 0
+    @FocusState private var crownFocus: Bool
 
     var body: some View {
         GeometryReader { geo in
@@ -34,7 +35,7 @@ struct VideoPagerView: View {
                     let i = min(index, model.videos.count - 1)
                     // 只渲染当前条（滑动中才带上邻居），邻居不创建播放器
                     ForEach(neighbors(i), id: \.self) { k in
-                        VideoPage(meta: model.videos[k], active: k == i && drag == 0, size: geo.size)
+                        VideoPage(meta: model.videos[k], active: k == i, preload: k == i + 1, size: geo.size)
                             .offset(y: CGFloat(k - i) * geo.size.height + drag)
                     }
                 }
@@ -59,8 +60,9 @@ struct VideoPagerView: View {
                         go(to: next)
                     }
             )
-            // 数码表冠：转一格翻一条
-            .focusable()
+            // 数码表冠：转一格翻一条。必须抢到焦点，否则 watchOS 把表冠给了音量
+            .focusable(true)
+            .focused($crownFocus)
             .digitalCrownRotation($crown, from: -1000, through: 1000, by: 1, sensitivity: .low, isContinuous: false, isHapticFeedbackEnabled: true)
             .onChange(of: crown) { old, new in
                 if new > old, index < model.videos.count - 1 { go(to: index + 1) }
@@ -68,7 +70,10 @@ struct VideoPagerView: View {
             }
         }
         .ignoresSafeArea()
-        .onAppear { model.prefetchAhead(from: model.videos.first?.id) }
+        .onAppear {
+            crownFocus = true
+            model.prefetchAhead(from: model.videos.first?.id)
+        }
         .onChange(of: model.videos.count) { _, _ in
             if index >= model.videos.count { index = max(0, model.videos.count - 1) }
             model.prefetchAhead(from: current?.id)
@@ -88,7 +93,8 @@ struct VideoPagerView: View {
     }
 
     private func neighbors(_ i: Int) -> [Int] {
-        [i - 1, i, i + 1].filter { model.videos.indices.contains($0) && ($0 == i || drag != 0) }
+        // 当前条 + 下一条常驻（下一条预热）；往回拉时才带上上一条
+        [i - 1, i, i + 1].filter { model.videos.indices.contains($0) && ($0 >= i || drag > 0) }
     }
 
     private func go(to next: Int) {
@@ -119,7 +125,10 @@ struct VideoPagerView: View {
 private struct VideoPage: View {
     @EnvironmentObject var model: WatchModel
     let meta: DDWatchVideoMeta
+    /// 当前正在看的一条：播放
     let active: Bool
+    /// 下一条：播放器先建好、停在第一帧、缓冲好，等滑过来直接 play()，不用再等起播
+    let preload: Bool
     let size: CGSize
     @State private var player: AVPlayer?
     @State private var paused = false
@@ -169,13 +178,19 @@ private struct VideoPage: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { like() }
         .onTapGesture { togglePause() }
-        .onChange(of: active) { _, on in on ? start() : stop() }
-        .onAppear { if active { start() } }
+        .onChange(of: active) { _, on in
+            if on { activate() } else if preload { hold() } else { stop() }
+        }
+        .onChange(of: preload) { _, on in
+            if on { prepare() } else if !active { stop() }
+        }
+        .onAppear { if active || preload { prepare() } }
         .onDisappear { stop() }
     }
 
-    private func start() {
-        guard player == nil else { return }
+    /// 建好播放器。当前条直接播；下一条只暂停等着（静音，不抢声音）
+    private func prepare() {
+        guard player == nil else { if active { activate() }; return }
         let item: AVPlayerItem
         if let local = WatchCache.localURL(meta.id) {
             item = AVPlayerItem(url: local)
@@ -205,8 +220,21 @@ private struct VideoPage: View {
             p.seek(to: .zero); if active && !paused { p.play() }
         }
         player = p
+        if active { paused = false; p.play() } else { p.isMuted = true; p.pause() }
+    }
+
+    /// 滑到这一条：已经预热好的播放器直接从头播
+    private func activate() {
+        guard let p = player else { prepare(); return }
+        p.isMuted = false
+        p.seek(to: .zero)
         paused = false
         p.play()
+    }
+
+    /// 滑走但仍是「下一条」（往回拉了一下）：停住静音，保留播放器
+    private func hold() {
+        player?.pause(); player?.isMuted = true; player?.seek(to: .zero)
     }
 
     private func stop() {
