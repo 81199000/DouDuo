@@ -886,6 +886,7 @@ struct DYMessagesScreen: View {
             }
             // 四个分类 + 聊天时的「更多」只属于信息页；「我的」页把这组隐藏着占位、「账号」放在同一位置，
             // 两页栏高一样，返回键不会上下跳
+            Group {
             if !showingMine {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railItem(.interactive, icon: "heart", title: "互动",
@@ -929,6 +930,13 @@ struct DYMessagesScreen: View {
                     .frame(width: Self.railWidth)
                     .glassEffect(.regular, in: .capsule)
             }
+            }
+            // 输入时整列让位：键盘一弹只剩最上面的返回键。这一列本来就占满屏高，
+            // 键盘上方那一截放不下「互动/粉丝/系统/陌生人/更多 + 信息/我的」，硬挤就会盖住输入区。
+            // 用透明度隐藏并保留占位，返回键位置不变、收起键盘立刻复原。
+            .opacity(keyboardFrame == nil ? 1 : 0)
+            .allowsHitTesting(keyboardFrame == nil)
+            .animation(.easeOut(duration: 0.15), value: keyboardFrame == nil)
         }
         // 跟视频页右侧栏同一套避让：状态栏（时间/信号环）显示时是系统遮挡区，
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
