@@ -2,8 +2,7 @@ import SwiftUI
 
 /// 推荐页评论排布：四种界面同一份（老板 2026-11-17 定，见 docs/ui-modes.md）。
 ///
-/// 原样搬自经典推荐页（DYClassicFeedScreen.flatArrangement），一套布局通吃所有状态，且**不换容器**
-/// （换容器会重建播放器 → 黑屏 / 重播）：
+/// 推荐流与评论布局共用同一个视频容器。评论面板独立挂载，避免开合时重建播放器。
 /// - Duo 外屏 / 内屏竖拿：横屏视频移到顶部，评论在下（DYInlineCommentOverlay）
 /// - 平放 / 外屏：够宽时评论从右侧滑出（视频缩窄），窄屏走贴边底部面板（dyBottomSheet）
 /// - 半折叠：视频缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
@@ -46,40 +45,16 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                                           allowsResident: !showSearch && !isLive,
                                           paneFraction: showsAuthorPane ? 0.5 : nil,
                                           keepsSideBySide: showsAuthorPane && (authorPane?.workOpen ?? false))
-        let w = geo.size.width, h = geo.size.height
-
-        return ZStack(alignment: .topLeading) {
-            feed()
-                .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
-                // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）忽略安全区、会铺满整屏宽，
-                // 盖住右侧评论栏（简洁模式内屏评论空白的根因）。
-                .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
-            if layout.showsPane {
-                Group {
-                    if showsAuthorPane {
-                        author()
-                            .padding(.trailing, layout.trailingInset)
-                    } else if let cur = aweme {
-                        DYCommentPanel(bridge: bridge, aweme: cur,
-                                       onClose: layout.resident && !showsCaption ? nil : { showComments = false },
-                                       fillsPane: true,
-                                       trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
-                                       horizontalStatus: horizontalCommentStatus)
-                            .id(cur.id)
-                    }
+        // 让视频容器保持同一个身份，侧栏的出现和消失只发生在覆盖层。
+        return feed()
+            .environment(\.dyVideoHasSidePane, layout.showsSidePane)
+            .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .overlay(alignment: .topLeading) {
+                if layout.showsPane {
+                    pane(layout, showsAuthor: showsAuthorPane, authorOpen: authorOpen)
                 }
-                .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
-                .frame(width: layout.paneSize.width, height: layout.paneSize.height)
-                .clipped()
-                .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen)
-                .overlay(alignment: .leading) {
-                    if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
-                }
-                .padding(.leading, layout.paneOrigin.x)
-                .padding(.top, layout.paneOrigin.y)
             }
-        }
-        .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in
             onLayout(resident, layout.resident && layout.sideBySide)
         }
@@ -101,6 +76,31 @@ struct DYCommentStage<Feed: View, Author: View>: View {
             }
         }
     }
+
+    private func pane(_ layout: DYCommentPaneMetrics, showsAuthor: Bool, authorOpen: Bool) -> some View {
+        ZStack(alignment: .topLeading) {
+            if showsAuthor {
+                author()
+                    .padding(.trailing, layout.trailingInset)
+            } else if let aweme {
+                DYCommentPanel(bridge: bridge, aweme: aweme,
+                               onClose: layout.resident && !showsCaption ? nil : { showComments = false },
+                               fillsPane: true,
+                               trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
+                               horizontalStatus: horizontalCommentStatus)
+                    .id(aweme.id)
+            }
+        }
+        .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
+        .frame(width: layout.paneSize.width, height: layout.paneSize.height)
+        .clipped()
+        .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen)
+        .overlay(alignment: .leading) {
+            if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
+        }
+        .padding(.leading, layout.paneOrigin.x)
+        .padding(.top, layout.paneOrigin.y)
+    }
 }
 
 extension DYCommentStage where Author == EmptyView {
@@ -119,9 +119,6 @@ extension DYCommentStage where Author == EmptyView {
 extension EnvironmentValues {
     /// 评论打开（默认 / 简洁 / 极简）：视频页上的按钮和信息收起
     @Entry var dyCommentsOpen = false
-}
-
-struct DDClipIf: ViewModifier {
-    let on: Bool
-    func body(content: Content) -> some View { if on { content.clipped() } else { content } }
+    /// 并排面板出现时，视频环境光只延伸到自己所在的一栏。
+    @Entry var dyVideoHasSidePane = false
 }

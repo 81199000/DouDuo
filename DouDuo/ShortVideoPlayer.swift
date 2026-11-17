@@ -459,6 +459,7 @@ struct PlayerPage: View {
     @State private var videoScale: CGFloat = 1
     @Environment(\.dyUsesClassicVideoLayout) private var usesClassicVideoLayout
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
+    @Environment(\.dyVideoHasSidePane) private var hasSidePane
     @Environment(\.accessibilityReduceMotion) private var commentReduceMotion
 
     /// 评论打开且外屏要把横屏视频移到评论上方：四种界面都一样（评论统一用经典几何，老板 2026-11-17 定）
@@ -523,7 +524,8 @@ struct PlayerPage: View {
             // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
             if ambientLevel > 0, vlc == nil, let player {
                 DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
-                    .ignoresSafeArea()
+                    // 并排时保护右侧面板，同时保留环境光在视频栏上下的延伸。
+                    .ignoresSafeArea(edges: hasSidePane ? [.top, .bottom, .leading] : .all)
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
