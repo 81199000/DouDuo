@@ -367,8 +367,12 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     private var lastSeen = ""
 
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
+    /// 轮询和网页跳转会同时触发确认：同一时间只跑一份（以前两份并发，日志里确认/保存各记两遍）
+    private var confirming = false
     private func confirmLogin() async {
-        guard !loggedIn, !savingTrust else { return }
+        guard !loggedIn, !savingTrust, !confirming else { return }
+        confirming = true
+        defer { confirming = false }
         var ok = await hasNewSession()
         // 网页跳走时 cookie 可能晚一点才写进来：再等几轮
         if !ok, web.url?.path.hasPrefix("/login_page") != true {
