@@ -1725,6 +1725,27 @@ final class DouDuoUITests: XCTestCase {
     }
 
     /// 简洁 / 极简「我的」：右侧栏只有 返回 / 账号 / 信息 / 我的，不显示 互动 粉丝 系统 陌生人；「账号」不跟返回键重叠
+    /// 剪贴板里有抖音分享（长链接 / 抖音口令短链）：回到 App 直接打开那条视频
+    func testShareLinkOpensVideo() throws {
+        continueAfterFailure = false
+        let text = ProcessInfo.processInfo.environment["DD_SHARE_TEXT"]
+            ?? "今天的风景 https://www.douyin.com/video/7705001843541851839 复制此链接，打开抖音搜索，直接观看视频！"
+        let want = ProcessInfo.processInfo.environment["DD_SHARE_ID"] ?? "7705001843541851839"
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE": "rail", "DOUDUO_SHARE_TEXT": text]
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let back = app.buttons["douyin.list.back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 40), "没打开分享的视频（单条播放页没出来）")
+        let player = app.descendants(matching: .any)["douyin.list.player"].firstMatch
+        XCTAssertTrue(player.waitForExistence(timeout: 5))
+        let current = player.value as? String ?? ""
+        print("DDSHARE current=\(current)")
+        XCTAssertEqual(current, want, "打开的不是分享的那条")
+        attach(app, "share-open")
+    }
+
     func testMineRailLayout() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

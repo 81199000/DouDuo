@@ -1057,6 +1057,7 @@ struct DYListPlayer: View {
         .dyEdgeBack(enabled: searchSession == nil) { dismiss() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(offlineLibrary ? "offline.library.content" : "douyin.list.player")
+        .accessibilityValue(playback.currentID ?? "")
         .accessibilityAction(.escape) { dismiss() }
         #if DEBUG
         .overlay(alignment: .topLeading) {

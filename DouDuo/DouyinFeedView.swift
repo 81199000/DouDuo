@@ -2673,6 +2673,8 @@ struct DouyinFeedScreen: View {
             }
         }
         .modifier(DYHashtagFilterPresentation())
+        // 剪贴板里有抖音视频链接：回到 App 直接打开播放
+        .modifier(DYSharedLinkOpener(bridge: shared.bridge))
         .background(alignment: .topLeading) {
             DYDMMonitorHost()
         }
@@ -3959,7 +3961,7 @@ struct DYUpstreamVideoPage: View {
             ControlGroup {
                 if offlinePlayback?.onlineActionsAllowed == false {
                     Button("复制链接", systemImage: "link") {
-                        UIPasteboard.general.url = item.webURL
+                        DYShareLinkCopy.copy(item)
                         onToast?("链接已复制")
                     }
                 } else {
