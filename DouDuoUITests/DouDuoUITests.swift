@@ -1546,7 +1546,11 @@ final class DouDuoUITests: XCTestCase {
             app.launch()
             switch mode {
             case "duoClassic":
-                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30)); app.buttons["我的"].firstMatch.tap()
+                // 底部 Tab「我的」：只点看得见的那个（firstMatch 可能匹配到屏外的同名按钮，点不上）
+                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30))
+                let tab = app.tabBars.buttons["我的"].firstMatch
+                if tab.exists && tab.isHittable { tab.tap() }
+                else { app.buttons.matching(identifier: "我的").allElementsBoundByIndex.first { $0.isHittable }?.tap() }
             case "classic":
                 XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
             default:   // 简洁 / 极简：模块菜单 →「我的」
@@ -1562,9 +1566,11 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(app.textFields["douyin.login.code"].exists, "\(mode): 没有验证码输入框")
             XCTAssertFalse(send.isEnabled, "\(mode): 没填手机号就能点获取验证码")
             attach(app, "app-login-code-" + mode)
-            // 扫码：显示二维码
+            // 扫码：显示二维码，提示用另一台手机扫（抖音不认相册里的图）
             app.segmentedControls["douyin.login.mode"].buttons["扫码登录"].tap()
             XCTAssertTrue(app.images["douyin.login.qr"].waitForExistence(timeout: 20), "\(mode): 扫码页没出二维码")
+            XCTAssertTrue((app.staticTexts["douyin.login.qr.hint"].label).contains("另一台"), "\(mode): 没提示用另一台手机扫")
+            XCTAssertFalse(app.buttons["douyin.login.qr.save"].exists, "\(mode): 还留着「存到相册」")
             attach(app, "app-login-qr-" + mode)
             // 关掉后停在「我的」（不是信息页），页内有「去登录」
             app.buttons["douyin.login.close"].tap()
@@ -1602,8 +1608,26 @@ final class DouDuoUITests: XCTestCase {
         let code = app.textFields["douyin.login.code"].firstMatch
         code.tap(); code.typeText("123456")
         app.buttons["douyin.login.submit"].tap()
-        sleep(4)
+        // 网页提交后跳走（真机登录成功时就是这样）：App 必须核对登录态并给出结果，不能没反应（老板 11-17）
+        let msg = app.staticTexts["douyin.login.message"].firstMatch
+        XCTAssertTrue(msg.waitForExistence(timeout: 15), "网页跳走后 App 没有任何反馈")
         attach(app, "app-login-dry-submit")
+        XCTAssertTrue(msg.label.contains("没登录上"), "提示不对：\(msg.label)")
+    }
+
+    /// 刚启动签名页还没好就点「我的」，也要弹登录（老板真机：启动后马上进「我的」不弹）
+    func testMineAutoLoginRightAfterLaunch() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "rail"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        let menu = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 30)); menu.tap()   // 一出来就点，不等推荐流加载
+        let mine = app.buttons["douyin.module.mine"].firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 5)); mine.tap()
+        XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 15), "启动后马上进「我的」没弹登录")
     }
 
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）

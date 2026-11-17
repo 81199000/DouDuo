@@ -1491,7 +1491,10 @@ struct DYMineScreen: View {
     }
 
     private func loadSelf() async {
-        do { user = try await bridge.selfProfile(); userErr = nil } catch { userErr = error.localizedDescription }
+        do { user = try await bridge.selfProfile(); userErr = nil } catch {
+            userErr = error.localizedDescription
+            DYLiveModel.log("DDMINE self err " + error.localizedDescription)
+        }
         if user != nil { models = [:]; ensure(kind) }
     }
 
@@ -1553,10 +1556,18 @@ struct DYMineScreen: View {
                 return
             }
             #endif
-            await loadSelf()
-            // 未登录：进「我的」先弹登录（每次打开「我的」只自动弹一次，关掉后页内仍有「去登录」）
-            if userErr?.contains("未登录") == true, !autoLoginShown {
+            // 未登录：进「我的」先弹登录。看共享 cookie 有没有 sessionid，不等资料接口——
+            // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹（老板 11-17）
+            if !autoLoginShown, !(await DYLoginState.hasSession()) {
                 autoLoginShown = true
+                DYLiveModel.log("DDAPPLOGIN auto-show (no sessionid)")
+                showLogin = true
+            }
+            await loadSelf()
+            // cookie 还在但会话已失效（抖音侧退出 / 过期）：资料接口说未登录，也弹
+            if user == nil, !autoLoginShown, userErr?.contains("未登录") == true {
+                autoLoginShown = true
+                DYLiveModel.log("DDAPPLOGIN auto-show (profile 未登录)")
                 showLogin = true
             }
         }
