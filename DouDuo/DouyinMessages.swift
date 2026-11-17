@@ -886,14 +886,17 @@ struct DYMessagesScreen: View {
             }
             // 四个分类 + 聊天时的「更多」只属于信息页；「我的」页把这组隐藏着占位、「账号」放在同一位置，
             // 两页栏高一样，返回键不会上下跳
-            Group {
             if !showingMine {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railItem(.interactive, icon: "heart", title: "互动",
                              badge: (counts[DYNoticeGroup.comment.rawValue] ?? 0) + (counts[DYNoticeGroup.digg.rawValue] ?? 0))
                     railItem(.fans, icon: "person", title: "粉丝", badge: counts[DYNoticeGroup.fans.rawValue] ?? 0)
-                    railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
-                    railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
+                    // 键盘占掉下半屏时放不下整列（返回键会被顶出去）：把系统 / 陌生人收进「更多」，
+                    // 想找它们先收起键盘，或者点「更多」。
+                    if keyboardFrame == nil {
+                        railItem(.system, icon: "bell", title: "系统", badge: counts[DYNoticeGroup.system.rawValue] ?? 0)
+                        railItem(.stranger, icon: "person.crop.circle.badge.questionmark", title: "陌生人", badge: strangerBadge)
+                    }
                     if navigation.isChat { chatMoreRailButton }
                 }
                 .padding(.vertical, 8)
@@ -911,8 +914,8 @@ struct DYMessagesScreen: View {
                 .padding(.vertical, 8)
                 .frame(width: Self.railWidth, height: 48 * 4 + theme.media.actionItemSpacing * 3 + 16)
             }
-            // 我的：直接进「我的」
-            if mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
+            // 我的：直接进「我的」。键盘弹出时这一组也收起来，给上面的按键留高度
+            if keyboardFrame == nil, mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "bubble.left.and.bubble.right", title: "信息", selected: !showingMine, badge: 0,
                                dot: showingMine && unreadTotal > 0,
@@ -931,19 +934,12 @@ struct DYMessagesScreen: View {
                     .glassEffect(.regular, in: .capsule)
             }
             }
-            // 输入时整列让位：键盘一弹只剩最上面的返回键。这一列本来就占满屏高，
-            // 键盘上方那一截放不下「互动/粉丝/系统/陌生人/更多 + 信息/我的」，硬挤就会盖住输入区。
-            // 用透明度隐藏并保留占位，返回键位置不变、收起键盘立刻复原。
-            .opacity(keyboardFrame == nil ? 1 : 0)
-            .allowsHitTesting(keyboardFrame == nil)
-            .animation(.easeOut(duration: 0.15), value: keyboardFrame == nil)
-        }
         // 跟视频页右侧栏同一套避让：状态栏（时间/信号环）显示时是系统遮挡区，
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
         .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
-        // 底部位置跟视频页一致：离底 92pt
-        .padding(.bottom, 92)
+        // 底部位置跟视频页一致：离底 92pt；键盘弹出时贴着键盘放，省下的高度给上面的按键
+        .padding(.bottom, keyboardFrame == nil ? 92 : 8)
         .frame(maxHeight: .infinity, alignment: .bottom)
         .themeShadow(.floatingPanel)
         .ignoresSafeArea(.keyboard)
@@ -1390,6 +1386,8 @@ struct DYMessagesScreen: View {
             Color.ddMessageChatBackground
             DYChatWebSurface(model: chatModel, active: chatSurfaceActive)
                 .padding(.bottom, chatKeyboardOverlap)
+                // 网页是 UIView，跟着动画逐帧改高度就会卡。这里直接改，不参与动画（输入框照常有滑动动画）。
+                .animation(nil, value: chatKeyboardOverlap)
                 .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
                 .accessibilityValue(lastOpenUsedSnapshot ? "snapshot" : "fresh")
