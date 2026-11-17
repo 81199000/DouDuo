@@ -4587,6 +4587,39 @@ extension DouDuoUITests {
         attach(app, "regression-refresh")
     }
 
+    func testClassicHomeDockReselectionKeepsCurrentVideo() {
+        continueAfterFailure = false
+        let app = launchOnlineRegression(pinned: false)
+        let window = app.windows.firstMatch
+        let current = app.staticTexts["douyin.currentID"].firstMatch
+        let initial = current.label
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.68))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.20))
+        for _ in 0..<3 {
+            start.press(forDuration: 0.05, thenDragTo: end)
+            if waitUntil(timeout: 5, condition: { current.label != initial }) { break }
+        }
+        let paged = current.label
+        XCTAssertNotEqual(paged, initial, "The test must leave the first video")
+
+        let home = app.buttons["首页"].firstMatch
+        XCTAssertTrue(home.waitForExistence(timeout: 10))
+        for _ in 0..<2 {
+            home.tap()
+            XCTAssertFalse(waitUntil(timeout: 1) { current.label != paged },
+                           "Reselecting Home must not scroll the feed to the first video")
+        }
+
+        let mine = app.buttons["我的"].firstMatch
+        if !mine.isHittable { home.tap() } // Expand the system dock if it is compressed.
+        XCTAssertTrue(mine.isHittable)
+        mine.tap()
+        XCTAssertTrue(app.buttons["douyin.mine.post"].waitForExistence(timeout: 15))
+        home.tap()
+        XCTAssertTrue(current.waitForExistence(timeout: 10))
+        XCTAssertEqual(current.label, paged, "Switching home from another tab restores the same video")
+    }
+
     func testClassicCaptionCommentsAndCleanOnline() throws {
         continueAfterFailure = false
         let app = launchOnlineRegression()
