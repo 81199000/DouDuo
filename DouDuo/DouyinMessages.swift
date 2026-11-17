@@ -460,6 +460,28 @@ struct DYMessagesScreen: View {
     @State private var messageTopInset: CGFloat = 0
     @State private var isHalfFolded = false
     @StateObject private var composer = DYChatComposerModel()
+    /// 键盘在屏幕上的位置（没弹出时为 nil）与聊天窗格的位置：算键盘盖住聊天窗格多少。
+    /// 系统自带的键盘避让在这里只让出一小截（真机 / 模拟器都是输入框和最后几条消息被键盘盖住），
+    /// 所以按键盘的真实位置把没让够的部分补上。
+    @State private var keyboardFrame: CGRect?
+    @State private var chatPaneFrame = CGRect.zero
+    private var chatKeyboardOverlap: CGFloat {
+        guard navigation.isChat, let keyboardFrame else { return 0 }
+        return DYLiveKeyboardLayout.overlap(viewportMinY: chatPaneFrame.minY, viewportMaxY: chatPaneFrame.maxY,
+                                            keyboardMinY: keyboardFrame.minY, keyboardMaxY: keyboardFrame.maxY)
+    }
+    private func noteKeyboard(_ note: Notification, hidden: Bool = false) {
+        var frame = hidden ? nil : (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)
+        // 通知里是屏幕坐标，聊天窗格量的是窗口坐标：iPad 分屏 / 台前调度时窗口不在屏幕原点，要换算
+        if let screenFrame = frame, let window = chatModel.web?.window {
+            frame = window.convert(screenFrame, from: window.screen.coordinateSpace)
+        }
+        let next = frame.flatMap { $0.height > 1 ? $0 : nil }
+        guard next != keyboardFrame else { return }
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        withAnimation(.easeOut(duration: min(max(duration, 0.12), 0.35))) { keyboardFrame = next }
+        DYLiveModel.log("DDCHATKB keyboard=\(next.map { "\(Int($0.minY))-\(Int($0.maxY))" } ?? "none") pane=\(Int(chatPaneFrame.minY))-\(Int(chatPaneFrame.maxY)) lift=\(Int(chatKeyboardOverlap))")
+    }
     @State private var chatAuthor: DYAweme.Author?
     @State private var showChatOptions = false
     @State private var changingConversation: String?
@@ -613,6 +635,7 @@ struct DYMessagesScreen: View {
                    !Task.isCancelled, snapshot.id == id, navigation.chatID == id {
                     composer.setAccountScope(cache.accountScope)
                     await composer.refresh(web: web, id: id)
+                    await DYChatWebBridge.keepBottomAnchored(web)
                     if var row = cache.selectedChat, row.id == id, row.streak != snapshot.streak {
                         row.streak = snapshot.streak
                         cache.selectedChat = row
@@ -1357,6 +1380,7 @@ struct DYMessagesScreen: View {
         ZStack(alignment: .topLeading) {
             Color.ddMessageChatBackground
             DYChatWebSurface(model: chatModel, active: chatSurfaceActive)
+                .padding(.bottom, chatKeyboardOverlap)
                 .opacity(chatDOMReady ? 1 : 0)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
                 .accessibilityValue(lastOpenUsedSnapshot ? "snapshot" : "fresh")
@@ -1390,9 +1414,12 @@ struct DYMessagesScreen: View {
         .overlay(alignment: .bottom) {
             if composer.isConnected(to: navigation.chatID) {
                 DYChatComposer(model: composer, active: navigation.isChat && openingChat == nil)
-                    .padding(.horizontal, 16).padding(.bottom, composer.bottomInset)
+                    .padding(.horizontal, 16).padding(.bottom, composer.bottomInset + chatKeyboardOverlap)
             }
         }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { chatPaneFrame = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { noteKeyboard($0) }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { noteKeyboard($0, hidden: true) }
         .accessibilityElement(children: .contain)
     }
 
