@@ -2,38 +2,105 @@ import SwiftUI
 import AVFoundation
 import AVKit
 
-/// 竖向翻页看视频。当前条优先用本地缓存，没有就用链接直接拉流（手表自己的 WiFi）；后面几条在后台预存。
+/// 视频画面：用系统 VideoPlayer 出画面（表上和模拟器都验证过能出画），但把它完全「封死」：
+/// - allowsHitTesting(false)：不接任何触摸，系统不会再弹出自带的全屏播放器（左上「Done」、播放键、静音钮）
+/// - 点击、双击、上下滑都由外层透明手势层处理
+struct WatchVideoSurface: View {
+    let player: AVPlayer
+    let size: CGSize
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+    }
+}
+
+/// 竖向翻页看视频：自己做上下滑动（数码表冠也能翻），不用系统 TabView / 系统播放器。
 /// 点一下暂停/播放，双击点赞（由 iPhone 代发）。
 struct VideoPagerView: View {
     @EnvironmentObject var model: WatchModel
-    @State private var currentID: String?
+    @State private var index = 0
+    @State private var drag: CGFloat = 0
+    @State private var crown: Double = 0
 
     var body: some View {
-        ZStack {
-            if model.videos.isEmpty {
-                emptyState
-            } else {
-                TabView(selection: $currentID) {
-                    ForEach(model.videos) { v in
-                        VideoPage(meta: v, active: currentID == v.id).tag(Optional(v.id))
+        GeometryReader { geo in
+            ZStack {
+                Color.black
+                if model.videos.isEmpty {
+                    emptyState
+                } else {
+                    let i = min(index, model.videos.count - 1)
+                    // 只渲染当前条（滑动中才带上邻居），邻居不创建播放器
+                    ForEach(neighbors(i), id: \.self) { k in
+                        VideoPage(meta: model.videos[k], active: k == i && drag == 0, size: geo.size)
+                            .offset(y: CGFloat(k - i) * geo.size.height + drag)
                     }
                 }
-                .tabViewStyle(.verticalPage)
-                .onChange(of: currentID) { old, new in
-                    if let old, old != new { model.markWatched(old) }
-                    model.prefetchAhead(from: new)
-                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 12)
+                    .onChanged { v in
+                        guard abs(v.translation.height) > abs(v.translation.width) else { return }
+                        let atTop = index == 0 && v.translation.height > 0
+                        let atEnd = index >= model.videos.count - 1 && v.translation.height < 0
+                        drag = (atTop || atEnd) ? v.translation.height * 0.25 : v.translation.height
+                    }
+                    .onEnded { v in
+                        let h = geo.size.height
+                        let t = v.predictedEndTranslation.height
+                        var next = index
+                        if (v.translation.height < -h * 0.2 || t < -h * 0.5) && index < model.videos.count - 1 { next += 1 }
+                        else if (v.translation.height > h * 0.2 || t > h * 0.5) && index > 0 { next -= 1 }
+                        go(to: next)
+                    }
+            )
+            // 数码表冠：转一格翻一条
+            .focusable()
+            .digitalCrownRotation($crown, from: -1000, through: 1000, by: 1, sensitivity: .low, isContinuous: false, isHapticFeedbackEnabled: true)
+            .onChange(of: crown) { old, new in
+                if new > old, index < model.videos.count - 1 { go(to: index + 1) }
+                else if new < old, index > 0 { go(to: index - 1) }
             }
         }
-        .onAppear {
-            if currentID == nil { currentID = model.videos.first?.id }
-            model.prefetchAhead(from: currentID)
-        }
+        .ignoresSafeArea()
+        .onAppear { model.prefetchAhead(from: model.videos.first?.id) }
         .onChange(of: model.videos.count) { _, _ in
-            if currentID == nil || !model.videos.contains(where: { $0.id == currentID }) { currentID = model.videos.first?.id }
-            model.prefetchAhead(from: currentID)
+            if index >= model.videos.count { index = max(0, model.videos.count - 1) }
+            model.prefetchAhead(from: current?.id)
         }
         .task { if model.videos.count < 8 { await model.requestVideos() } }
+        .overlay(alignment: .top) {
+            if let n = model.notice {
+                Text(n).font(.system(size: 10)).padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.black.opacity(0.7), in: Capsule()).padding(.top, 6)
+                    .task { try? await Task.sleep(nanoseconds: 2_000_000_000); model.notice = nil }
+            }
+        }
+    }
+
+    private var current: DDWatchVideoMeta? {
+        model.videos.indices.contains(index) ? model.videos[index] : nil
+    }
+
+    private func neighbors(_ i: Int) -> [Int] {
+        [i - 1, i, i + 1].filter { model.videos.indices.contains($0) && ($0 == i || drag != 0) }
+    }
+
+    private func go(to next: Int) {
+        let old = current?.id
+        withAnimation(.easeOut(duration: 0.22)) { index = next; drag = 0 }
+        let cur = model.videos.indices.contains(next) ? model.videos[next].id : nil
+        if let old, old != cur { model.markWatched(old) }   // 看过的移出清单并删缓存
+        // markWatched 会把当前条之前的都移除，列表前缘变了，重新对齐下标
+        DispatchQueue.main.async {
+            if let cur, let i = model.videos.firstIndex(where: { $0.id == cur }) { index = i }
+            model.prefetchAhead(from: cur)
+        }
     }
 
     private var emptyState: some View {
@@ -44,7 +111,8 @@ struct VideoPagerView: View {
             Text(model.reachable ? (model.requestingVideos ? "正在向 iPhone 取视频链接…" : "还没有视频") : "没有可看的视频，连上 iPhone 后会自动获取")
                 .font(.footnote).multilineTextAlignment(.center)
             Button("获取视频") { Task { await model.requestVideos() } }.disabled(!model.reachable || model.requestingVideos)
-        }.padding(.horizontal, 6)
+            Text("表端 " + WatchBuild.stamp).font(.system(size: 9)).foregroundStyle(.tertiary)
+        }.padding(.horizontal, 8)
     }
 }
 
@@ -52,77 +120,55 @@ private struct VideoPage: View {
     @EnvironmentObject var model: WatchModel
     let meta: DDWatchVideoMeta
     let active: Bool
+    let size: CGSize
     @State private var player: AVPlayer?
     @State private var paused = false
     @State private var burst = false
     @State private var failed = false
     @State private var buffering = true
     @State private var observers: [NSKeyValueObservation] = []
-    @State private var showInfo = true   // 点一下暂停时顺便显示/隐藏信息
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.black
-                // 视频画面：铺满整屏（含圆角区域），竖屏视频按宽度适配
-                if let player {
-                    VideoPlayer(player: player)
-                        .disabled(true)
-                        .frame(width: geo.size.width + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
-                               height: geo.size.height + geo.safeAreaInsets.bottom)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { like() }
-                        .onTapGesture { togglePause() }
-                }
+        ZStack {
+            Color.black
+            if let player { WatchVideoSurface(player: player, size: size) }
 
-                // 底部信息：一行标题 + 作者，避开圆角和底部指示
-                VStack(spacing: 0) {
-                    Spacer()
-                    HStack(alignment: .bottom, spacing: 6) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(meta.desc.isEmpty ? "@" + meta.author : meta.desc)
-                                .font(.system(size: 12, weight: .semibold))
-                                .lineLimit(1)
-                            Text("@" + meta.author)
-                                .font(.system(size: 10))
-                                .lineLimit(1)
-                                .foregroundStyle(.white.opacity(0.75))
-                        }
-                        .shadow(color: .black.opacity(0.8), radius: 2, x: 0, y: 1)
-                        Spacer(minLength: 2)
-                        Button { Task { await model.toggleLike(meta.id) } } label: {
-                            Image(systemName: meta.liked ? "heart.fill" : "heart")
-                                .font(.system(size: 17))
-                                .foregroundStyle(meta.liked ? .red : .white)
-                                .shadow(color: .black.opacity(0.8), radius: 2)
-                        }.buttonStyle(.plain)
+            // 底部信息：一行标题 + 作者，避开圆角
+            VStack(spacing: 0) {
+                Spacer()
+                HStack(alignment: .bottom, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(meta.desc.isEmpty ? "@" + meta.author : meta.desc)
+                            .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        Text("@" + meta.author)
+                            .font(.system(size: 10)).lineLimit(1).foregroundStyle(.white.opacity(0.75))
                     }
-                    // 水平留出圆角，底部留出屏幕圆角弧度
-                    .padding(.leading, max(12, geo.safeAreaInsets.leading + 8))
-                    .padding(.trailing, max(14, geo.safeAreaInsets.trailing + 10))
-                    .padding(.bottom, max(8, geo.safeAreaInsets.bottom + 4))
-                    .padding(.top, 14)
-                    .background(
-                        LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
-                    )
+                    .shadow(color: .black.opacity(0.8), radius: 2, x: 0, y: 1)
+                    Spacer(minLength: 2)
+                    Image(systemName: meta.liked ? "heart.fill" : "heart")
+                        .font(.system(size: 17))
+                        .foregroundStyle(meta.liked ? .red : .white)
+                        .shadow(color: .black.opacity(0.8), radius: 2)
                 }
-                .opacity(showInfo ? 1 : 0)
-
-                if buffering && active && !failed { ProgressView().tint(.white) }
-                if failed {
-                    VStack(spacing: 4) {
-                        Image(systemName: "wifi.exclamationmark").font(.system(size: 22))
-                        Text("加载失败，已跳过").font(.system(size: 10))
-                    }
-                }
-                if paused { Image(systemName: "pause.fill").font(.system(size: 28)).foregroundStyle(.white.opacity(0.85)) }
-                if burst { Image(systemName: "heart.fill").font(.system(size: 46)).foregroundStyle(.red).transition(.scale.combined(with: .opacity)) }
+                .padding(.leading, 18).padding(.trailing, 20)
+                .padding(.bottom, 14).padding(.top, 14)
+                .background(LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom))
             }
-            .frame(width: geo.size.width, height: geo.size.height)
+
+            if buffering && active && !failed { ProgressView().tint(.white) }
+            if failed {
+                VStack(spacing: 4) {
+                    Image(systemName: "wifi.exclamationmark").font(.system(size: 22))
+                    Text("加载失败，已跳过").font(.system(size: 10))
+                }
+            }
+            if paused { Image(systemName: "pause.fill").font(.system(size: 28)).foregroundStyle(.white.opacity(0.85)) }
+            if burst { Image(systemName: "heart.fill").font(.system(size: 46)).foregroundStyle(.red).transition(.scale.combined(with: .opacity)) }
         }
-        // 只铺到左右和底部圆角；顶部留给系统状态栏（时间 / 返回），不再被全屏手势层盖住
-        .ignoresSafeArea(edges: [.bottom, .horizontal])
-        // 只给当前条创建播放器，邻近页不预拉流（省电省流量）
+        .frame(width: size.width, height: size.height)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { like() }
+        .onTapGesture { togglePause() }
         .onChange(of: active) { _, on in on ? start() : stop() }
         .onAppear { if active { start() } }
         .onDisappear { stop() }
@@ -132,9 +178,8 @@ private struct VideoPage: View {
         guard player == nil else { return }
         let item: AVPlayerItem
         if let local = WatchCache.localURL(meta.id) {
-            item = AVPlayerItem(url: local)          // 命中缓存：本地起播
+            item = AVPlayerItem(url: local)
         } else if let url = URL(string: meta.url) {
-            // 没缓存：直接拉流。CDN 实测只带 Referer/UA 或什么都不带都能 206，仍带上浏览器头以防风控收紧
             let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": [
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
                 "Referer": "https://www.douyin.com/",
