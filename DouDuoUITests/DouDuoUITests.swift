@@ -5816,6 +5816,7 @@ extension DouDuoUITests {
             let back = app.buttons["douyin.messages.back"].firstMatch
             XCTAssertTrue(back.isHittable, "返回键要一直能点")
             XCTAssertTrue(railItem.isHittable, "互动分类要留着")
+            XCTAssertGreaterThan(back.frame.minY, 100, "返回键不能被顶到状态栏那一块（会被系统状态栏盖住）")
             XCTAssertFalse(app.buttons["douyin.messages.rail.system"].exists, "输入时系统分类应收起来")
             XCTAssertFalse(app.buttons["douyin.messages.rail.stranger"].exists, "输入时陌生人分类应收起来")
             XCTAssertTrue(app.buttons["douyin.messages.more"].exists, "更多要留着")
