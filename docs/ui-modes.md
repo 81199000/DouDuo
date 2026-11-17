@@ -60,7 +60,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
   - 坑：侧栏评论时视频区必须裁边（`DDClipIf`），否则播放器的环境光底（忽略安全区、铺满整屏）会盖住右侧评论栏 → 简洁内屏评论空白
   - 回归：`testOuterLandscapeVideoLiftsAboveCommentsInEveryMode`、`testInnerSideCommentsSwipeRightToCloseInEveryMode`、`testPhysicalHalfFoldCommentsHideSidebar`（四种模式）、`testCommentPresentationIsUnifiedAcrossLayouts`
 - [x] 推荐流横竖选片（老板 2026-11-17）：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
-- [ ] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）评论还分 `classicBody` / `upstreamBody` 两份，待接 `DYCommentStage`
+- [x] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）：四种模式同一套经典评论几何（`playerLayout`），删掉非经典的 `upstreamBody`；只有菜单（经典系统导航栏 / 原生按钮）和简介面板按模式分。回归 `testListPlayerCommentsMatchFeedInEveryMode`、`testStandaloneCommentsRespectLayout`
 
 ## 模拟器测 Duo 各姿态
 
