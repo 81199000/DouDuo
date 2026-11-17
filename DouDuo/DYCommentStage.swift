@@ -121,19 +121,11 @@ extension EnvironmentValues {
     @Entry var dyCommentsOpen = false
 }
 
-/// 只在 on 时裁边。**不能写成 `if on { content.clipped() } else { content }`**：
-/// 两个分支是两种视图类型，开关评论时 SwiftUI 会把整块视频（含播放器）拆掉重建 →
-/// 内屏横屏开关评论区进度倒退、画面闪（议题 #52-2）。所以裁剪一直挂着，关时把裁剪范围放到极大。
+/// 只在 on 时裁边。
+/// ⚠️ 已知问题（议题 #52-2）：两个分支是两种视图类型，内屏横屏开关评论会重建播放器，进度倒退几秒。
+/// 1.6.1 试过改成常挂 clipShape（关时把裁剪范围放到极大），真机评论区黑屏，已回滚（老板 11-18）——
+/// 别再用超大 clipShape / mask 包视频层。
 struct DDClipIf: ViewModifier {
     let on: Bool
-    func body(content: Content) -> some View {
-        content.clipShape(DDClipIfShape(on: on))
-    }
-}
-
-private struct DDClipIfShape: Shape {
-    var on: Bool
-    func path(in rect: CGRect) -> Path {
-        Path(on ? rect : rect.insetBy(dx: -100_000, dy: -100_000))
-    }
+    func body(content: Content) -> some View { if on { content.clipped() } else { content } }
 }
