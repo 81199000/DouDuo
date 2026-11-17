@@ -1756,6 +1756,14 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["douyin.messages.rail.interactive"].waitForExistence(timeout: 5), "回信息页后分类没回来")
         XCTAssertFalse(app.buttons["douyin.mine.accounts"].exists, "信息页还显示「账号」")
         attach(app, "messages-rail")
+        // 信息 / 我的 两页的返回键位置要一致（打印出来对比）
+        let backMsg = app.buttons["douyin.messages.close"].firstMatch.frame
+        app.buttons["douyin.messages.mine"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["douyin.mine.accounts"].firstMatch.waitForExistence(timeout: 8))
+        sleep(1)
+        let backMine = app.buttons["douyin.messages.close"].firstMatch.frame
+        XCTAssertEqual(backMsg.minY, backMine.minY, accuracy: 1, "返回键在信息 / 我的两页位置不一样")
+        attach(app, "mine-rail-again")
     }
 
     /// 切换账号后信息页马上按新账号重新核对（不等 5 分钟缓存）：日志里要出现 scope reset + 聊天网页重建

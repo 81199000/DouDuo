@@ -1452,6 +1452,7 @@ struct FlowLayout: Layout {
 
 struct DYMineScreen: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
     let bridge: DouyinBridge
     let onLogin: () -> Void
@@ -1487,6 +1488,7 @@ struct DYMineScreen: View {
                 .modifier(DYSystemTabBar())
                 .navigationTitle(user?.name ?? "我的")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(embedded ? .hidden : .automatic, for: .navigationBar)
                 .toolbar {
                     if !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
@@ -1526,6 +1528,17 @@ struct DYMineScreen: View {
     }
 
     private func loadSelf() async {
+        #if DEBUG
+        // UI 测试：假的已登录资料，用来检查「我的」页头布局（不读真账号）
+        if ProcessInfo.processInfo.environment["DOUDUO_SELF_FIXTURE"] == "1" {
+            user = DYUser(name: "测试账号", avatar: nil, signature: "这是一段测试用的个人简介，用来检查页头布局。",
+                          secUid: "fixture", uid: "1", followers: 1280, following: 96, likes: 35600, works: 42,
+                          ip: "IP属地：广东", cover: nil)
+            userErr = nil
+            if user != nil { models = [:]; ensure(kind) }
+            return
+        }
+        #endif
         do {
             let u = try await bridge.selfProfile()
             user = u; userErr = nil
@@ -1539,6 +1552,16 @@ struct DYMineScreen: View {
 
     private var content: some View {
         VStack(spacing: 0) {
+            if embedded {
+                // 跟信息页「消息」标题同字号、同高度、同位置
+                HStack {
+                    Text("我的").font(.title2.weight(.semibold))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .frame(height: theme.messages.headerHeight)
+                .accessibilityIdentifier("douyin.mine.title")
+            }
             header.padding(.horizontal, 16).padding(.bottom, 12)
 
             HStack(spacing: 22) {
