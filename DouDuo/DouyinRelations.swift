@@ -156,9 +156,15 @@ struct DYRelationsScreen: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: DYRelationModel
     @State private var open: DYRelationUser?
+    /// 只有看自己的粉丝列表时才给「移除粉丝」
+    private let manageFollowers: Bool
+    @State private var removing: DYRelationUser?
+    @State private var removeBusy = false
+    @State private var removeMsg: String?
 
-    init(bridge: DouyinBridge, kind: DYRelationKind, uid: String, secUid: String) {
+    init(bridge: DouyinBridge, kind: DYRelationKind, uid: String, secUid: String, manageFollowers: Bool = false) {
         self.bridge = bridge; self.kind = kind; self.uid = uid; self.secUid = secUid
+        self.manageFollowers = manageFollowers && kind == .followers
         _model = StateObject(wrappedValue: DYRelationModel { cur in
             try await bridge.relationList(kind, uid: uid, secUid: secUid, cursor: cur)
         })
@@ -186,6 +192,12 @@ struct DYRelationsScreen: View {
                         Button { open = u } label: { row(u) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("douyin.relations.row")
+                            .contextMenu {
+                                if manageFollowers, !u.secUid.isEmpty {
+                                    Button("移除粉丝", systemImage: "person.badge.minus", role: .destructive) { removing = u }
+                                        .accessibilityIdentifier("douyin.relations.remove")
+                                }
+                            }
                             .onAppear {
                                 // 滑到最后一行就拉下一页
                                 if u.id == model.items.last?.id { Task { await model.loadMore() } }
@@ -207,6 +219,16 @@ struct DYRelationsScreen: View {
         .background(Color.ddBackground.ignoresSafeArea())
         .dyEdgeBack { dismiss() }
         .task { await model.loadMore() }
+        .alert("移除这位粉丝？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button("移除", role: .destructive) {
+                if let u = removing { Task { await removeFollower(u) } }
+                removing = nil
+            }
+            Button("取消", role: .cancel) { removing = nil }
+        } message: { Text("\(removing?.name ?? "对方") 将不再关注你。") }
+        .alert("没移除成", isPresented: Binding(get: { removeMsg != nil }, set: { if !$0 { removeMsg = nil } })) {
+            Button("好", role: .cancel) { removeMsg = nil }
+        } message: { Text(removeMsg ?? "请稍后重试") }
         .fullScreenCover(item: $open) { u in
             NavigationStack {
                 DYAuthorScreen(bridge: bridge,
@@ -216,6 +238,22 @@ struct DYRelationsScreen: View {
                                onWeb: { _ in })
             }
         }
+    }
+
+    /// 移除粉丝。抖音确认了才从列表里拿掉。
+    private func removeFollower(_ u: DYRelationUser) async {
+        guard !removeBusy else { return }
+        removeBusy = true
+        defer { removeBusy = false }
+        do {
+            switch try await bridge.removeFollower(secUid: u.secUid) {
+            case .ok:
+                model.items.removeAll { $0.id == u.id }
+                if model.total > 0 { model.total -= 1 }
+            case .notLoggedIn: removeMsg = "抖音未登录"
+            case .failed(let why): removeMsg = why
+            }
+        } catch { removeMsg = error.localizedDescription }
     }
 
     private func row(_ u: DYRelationUser) -> some View {
