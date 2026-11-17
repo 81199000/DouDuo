@@ -99,6 +99,8 @@ struct DouDuoApp: App {
         URLCache.shared = URLCache(memoryCapacity: 64 << 20,
                                    diskCapacity: 512 << 20,
                                    diskPath: "dd-url-cache")
+        // 自动清理以前版本漏在 tmp 里的视频下载残留（分段目录 / 半截下载），老用户升级后不用手动点清理
+        DYStorageFiles.cleanLeftoversAtLaunch()
     }
 
     var body: some Scene {

@@ -174,6 +174,43 @@ actor DYStorageFiles {
         return success
     }
 
+    /// 启动时自动清理：以前版本漏删的分段下载目录 ddseg-/ddrest-、
+    /// 超过 10 分钟没动的系统半截下载。只清超过 2 分钟没动的，正在下的不碰。后台线程跑，不卡启动。
+    static func cleanLeftoversAtLaunch() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: fm.temporaryDirectory,
+                                                          includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+            var removed = 0
+            var bytes: Int64 = 0
+            for file in files {
+                let name = file.lastPathComponent
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let idle = Date().timeIntervalSince(modified)
+                let leftover = (isLegacyVideoWork(name) && idle > 120) || isStaleSystemDownload(file)
+                guard leftover else { continue }
+                let size = directorySize(file)
+                if removeIfPresent(file) { removed += 1; bytes += size }
+            }
+            if removed > 0 {
+                let mb = bytes / 1024 / 1024
+                Task { @MainActor in DYLiveModel.log("DDSTORAGE launch cleanup removed=\(removed) freed=\(mb)MB") }
+            }
+        }
+    }
+
+    private static func directorySize(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        if !isDir.boolValue { return Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+        var total: Int64 = 0
+        if let e = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
+            for case let f as URL in e { total += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+        }
+        return total
+    }
+
     static func removeIfPresent(_ url: URL) -> Bool {
         do {
             try FileManager.default.removeItem(at: url)
