@@ -21,6 +21,8 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
     #endif
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // 手表伴侣：启动（含被系统后台唤醒）就激活通信，不等界面出来
+        Task { @MainActor in DDWatchBridge.shared.activate() }
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_RESET_HASHTAG_FILTER"] == "1" {
             UserDefaults.standard.removeObject(forKey: DYHashtagFilter.storageKey)
@@ -145,6 +147,7 @@ struct DouDuoApp: App {
             #if DEBUG
             LocalVideoLaunch.log("DDSCENE phase=\(String(describing: phase))")
             #endif
+            if phase == .active { Task { await DDWatchBridge.shared.refreshPool(force: false) } }
             if phase == .active {
                 // 信息页（fullScreenCover）切后台回来，系统会把状态栏（时间/信号）判成隐藏，
                 // 而所有页面都要求显示（真机日志 prefersStatusBarHidden=false）。回前台后让各层重新上报一次。
