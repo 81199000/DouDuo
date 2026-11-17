@@ -436,6 +436,8 @@ struct DYMessagesScreen: View {
     var onMine: (() -> Void)? = nil
     /// 「我的」页内容（简洁/极简模式：跟信息页融合，共用右侧栏，点返回回到信息）
     var mineContent: AnyView? = nil
+    /// 打开时先显示哪一页：点「我的」进来就是「我的」，点「信息」进来就是信息（老板 2026-11-17）
+    var startsOnMine = false
     @State private var showingMine = false
     let onWeb: (URL) -> Void
     var forwardedShare: DYForwardReceipt? = nil
@@ -493,6 +495,7 @@ struct DYMessagesScreen: View {
             GeometryReader { safeGeometry in
                 messageContent
                     .onChange(of: safeGeometry.safeAreaInsets.top, initial: true) { _, value in messageTopInset = value }
+                    .onAppear { if startsOnMine, mineContent != nil { showingMine = true } }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("douyin.messages.root")
                     .modifier(DYSystemTabBar(hidden: !sidebarVisible && navigation.hasDetail && !keepsSharedChatDock))

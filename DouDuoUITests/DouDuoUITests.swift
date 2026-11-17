@@ -1506,7 +1506,7 @@ final class DouDuoUITests: XCTestCase {
             guard login.waitForExistence(timeout: 30) else { attach(app, "login-no-button-" + mode); throw XCTSkip("\(mode): 已登录，没有「去登录」") }
             attach(app, "login-before-" + mode)
             login.tap()
-            XCTAssertTrue(app.buttons["douyin.web.back"].firstMatch.waitForExistence(timeout: 10), "\(mode): 点「去登录」没打开网页")
+            XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 10), "\(mode): 点「去登录」没打开登录页")
             attach(app, "login-after-" + mode)
             app.terminate()
         }
@@ -1529,9 +1529,81 @@ final class DouDuoUITests: XCTestCase {
         guard login.waitForExistence(timeout: 30) else { attach(app, "msg-mine-no-login"); throw XCTSkip("已登录") }
         attach(app, "msg-mine-login-before")
         login.tap()
-        let opened = app.buttons["douyin.web.back"].firstMatch.waitForExistence(timeout: 10)
+        let opened = app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 10)
         attach(app, "msg-mine-login-after")
-        XCTAssertTrue(opened, "信息页里的「我的」点「去登录」没打开网页")
+        XCTAssertTrue(opened, "信息页里的「我的」点「去登录」没打开登录页")
+    }
+
+    /// 点「我的」直接进「我的」；未登录先弹 App 内登录页：验证码 / 扫码两种，扫码页有二维码（老板 2026-11-17）
+    func testMineOpensAppLoginWhenLoggedOut() throws {
+        continueAfterFailure = false
+        let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["rail", "classic", "duoClassic"]
+        for mode in modes {
+            let app = XCUIApplication()
+            app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                    "-douduo_dismissed_update_v1", "9.9.9"]
+            app.launch()
+            switch mode {
+            case "duoClassic":
+                XCTAssertTrue(app.buttons["我的"].firstMatch.waitForExistence(timeout: 30)); app.buttons["我的"].firstMatch.tap()
+            case "classic":
+                XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+            default:   // 简洁 / 极简：模块菜单 →「我的」
+                let menu = app.buttons["douyin.module.menu"].firstMatch
+                XCTAssertTrue(menu.waitForExistence(timeout: 30), "\(mode): 没有模块菜单"); menu.tap()
+                let mine = app.buttons["douyin.module.mine"].firstMatch
+                XCTAssertTrue(mine.waitForExistence(timeout: 5), "\(mode): 模块菜单里没有「我的」"); mine.tap()
+            }
+            // 未登录：自动弹登录页
+            let send = app.buttons["douyin.login.sendcode"].firstMatch
+            XCTAssertTrue(send.waitForExistence(timeout: 30), "\(mode): 未登录没自动弹登录页")
+            XCTAssertTrue(app.textFields["douyin.login.phone"].exists, "\(mode): 没有手机号输入框")
+            XCTAssertTrue(app.textFields["douyin.login.code"].exists, "\(mode): 没有验证码输入框")
+            XCTAssertFalse(send.isEnabled, "\(mode): 没填手机号就能点获取验证码")
+            attach(app, "app-login-code-" + mode)
+            // 扫码：显示二维码
+            app.segmentedControls["douyin.login.mode"].buttons["扫码登录"].tap()
+            XCTAssertTrue(app.images["douyin.login.qr"].waitForExistence(timeout: 20), "\(mode): 扫码页没出二维码")
+            attach(app, "app-login-qr-" + mode)
+            // 关掉后停在「我的」（不是信息页），页内有「去登录」
+            app.buttons["douyin.login.close"].tap()
+            let mineLogin = app.buttons["douyin.mine.login"].firstMatch
+            XCTAssertTrue(mineLogin.waitForExistence(timeout: 10), "\(mode): 关掉登录后不在「我的」")
+            XCTAssertTrue(mineLogin.isHittable, "\(mode): 「我的」不在前台（被信息页盖着）")
+            attach(app, "app-login-closed-" + mode)
+            app.terminate()
+        }
+    }
+
+    /// App 登录页的按钮真能驱动网页：填号码点「获取验证码」→ 网页发起 send_code；填码点「登录」→ 网页发起登录请求。
+    /// DOUDUO_LOGIN_DRYRUN=1 把这两个请求拦在本地，不会真发短信、不会真登录。
+    func testAppLoginDrivesWebDryRun() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        app.launchEnvironment["DOUDUO_LOGIN_DRYRUN"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-duoduomain_tab_v1", "首页",
+                                "-douduo_dismissed_update_v1", "9.9.9"]
+        app.launch()
+        XCTAssertTrue(app.buttons["douyin.mine.top"].firstMatch.waitForExistence(timeout: 30)); app.buttons["douyin.mine.top"].firstMatch.tap()
+        let phone = app.textFields["douyin.login.phone"].firstMatch
+        XCTAssertTrue(phone.waitForExistence(timeout: 30), "没弹登录页")
+        sleep(4)   // 等网页登录页加载完
+        phone.tap(); phone.typeText("13800138000")
+        let send = app.buttons["douyin.login.sendcode"].firstMatch
+        XCTAssertTrue(send.isEnabled, "填了 11 位号码「获取验证码」还是灰的")
+        send.tap()
+        // 网页开始倒计时 → App 按钮变成「Ns 后重发」
+        let counting = NSPredicate(format: "label CONTAINS '后重发'")
+        expectation(for: counting, evaluatedWith: send)
+        waitForExpectations(timeout: 10)
+        attach(app, "app-login-dry-sent")
+        let code = app.textFields["douyin.login.code"].firstMatch
+        code.tap(); code.typeText("123456")
+        app.buttons["douyin.login.submit"].tap()
+        sleep(4)
+        attach(app, "app-login-dry-submit")
     }
 
     /// main 140417d 管理功能入口：只检查入口在，不点执行（会改真实账号）

@@ -1389,6 +1389,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State var refreshing = false
     @State var showComments = false
     @State private var web: DYWebTarget?
+    /// App 内登录页（关注页「登录」等入口）
+    @State private var showAppLogin = false
     @State private var showSettings = false
     @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
@@ -1409,6 +1411,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
+    /// 从模块菜单「我的」打开信息页时直接停在「我的」
+    @State private var messagesStartOnMine = false
     /// 信息页「已盖上」：比 showMessages 晚一点置位。
     /// 点信息时如果同一帧就把所有视频页标成 inactive，整列视频页重建 + 播放器拆停都挤在弹出前（实测 ~550ms 才开始弹）。
     /// 先弹页面、动画走完再让视频页退场；弹出时外层视频已经由 pauseAll(.cover) 暂停，不会漏声。
@@ -1670,6 +1674,18 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .onDisappear { live.stop(); preloader.clear() }
     }
 
+    /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
+    private func reloadAfterLogin() {
+        live.reset(); preloader.clear(); feed.reset(); currentID = nil
+        bridge.reload()
+        Task {
+            await feed.loadMore(bridge)
+            currentID = feed.items.first?.id
+            focusCurrent()
+        }
+        if tab == .live { Task { await live.load(bridge, reset: true) } }
+    }
+
     var body: some View {
         loadedFeed
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
@@ -1685,23 +1701,19 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
-            live.reset(); preloader.clear(); feed.reset(); currentID = nil; bridge.reload()
-            Task {
-                await feed.loadMore(bridge)
-                currentID = feed.items.first?.id
-                focusCurrent()
-            }
-            if tab == .live { Task { await live.load(bridge, reset: true) } }
+            reloadAfterLogin()
         }) { t in
             DouyinWebScreen(start: t.url)
         }
-        .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover() }) {
+        .sheet(isPresented: $showAppLogin, onDismiss: { reloadAfterLogin() }) { DYAppLoginScreen() }
+        .fullScreenCover(isPresented: $showMessages, onDismiss: { DDPlayback.shared.releaseCover(); messagesStartOnMine = false }) {
             // 信息 + 我的融合：点右侧栏「我的」在信息页里原地切换，返回键回到信息（不再跳到另一个全屏页）
             DYMessagesScreen(bridge: bridge, onClose: { showMessages = false },
                              mineContent: AnyView(DYMineScreen(bridge: bridge,
-                                 onLogin: { showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
+                                 onLogin: { reloadAfterLogin() },
                                  onAuthor: { a in showMessages = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { authorTarget = a.author } },
                                  embedded: true)),
+                             startsOnMine: messagesStartOnMine,
                              onWeb: { u in
                 showMessages = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: u) }
@@ -1849,7 +1861,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
-                             onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
+                             onLogin: { showAppLogin = true },
                              onToast: { showToast($0) }, onComments: { item in
                                  followCommentItem = item; showComments = true
                              })
@@ -1893,7 +1905,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .fullScreenCover(isPresented: $showMine, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYMineScreen(bridge: bridge,
-                         onLogin: { showMine = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } },
+                         onLogin: { reloadAfterLogin() },
                          onAuthor: { a in authorTarget = a.author })
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
@@ -2149,7 +2161,9 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
                     // 信息与我的已合成一页：只留一个入口「我的」，未读红点挂在这里
-                    minimalMenuRow("我的", "person.crop.circle", badge: noticeUnread > 0, id: "douyin.module.mine") { showMessages = true }
+                    minimalMenuRow("我的", "person.crop.circle", badge: noticeUnread > 0, id: "douyin.module.mine") {
+                        messagesStartOnMine = true; showMessages = true
+                    }
                 }
                 .padding(.vertical, 8)
                 .frame(minWidth: 170)
@@ -2603,6 +2617,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @State var showComments = false
     @State private var captionItem: DYAweme?
     @State private var web: DYWebTarget?
+    /// App 内登录页（关注页「登录」等入口）
+    @State private var showAppLogin = false
     @State private var showSettings = false
     @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
@@ -2698,6 +2714,19 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     private var presentsLandscapeComments: Bool {
         showComments && !showSearch && authorTarget == nil && tab != .live
             && DYInlineCommentPlacement.applies(to: commentAweme, enabled: stacksLandscapeComments)
+    }
+
+    /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
+    private func reloadAfterLogin() {
+        live.reset(); preloader.clear(); feed.reset(); currentID = nil
+        followList.resetModel(); followCurrentID = nil
+        bridge.reload()
+        Task {
+            await feed.loadMore(bridge)
+            currentID = feed.items.first?.id
+            focusCurrent()
+        }
+        if tab == .live { Task { await live.load(bridge, reset: true) } }
     }
 
     var body: some View {
@@ -2853,18 +2882,11 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
-            live.reset(); preloader.clear(); feed.reset(); currentID = nil
-            followList.resetModel(); followCurrentID = nil
-            bridge.reload()
-            Task {
-                await feed.loadMore(bridge)
-                currentID = feed.items.first?.id
-                focusCurrent()
-            }
-            if tab == .live { Task { await live.load(bridge, reset: true) } }
+            reloadAfterLogin()
         }) { t in
             DouyinWebScreen(start: t.url)
         }
+        .sheet(isPresented: $showAppLogin, onDismiss: { reloadAfterLogin() }) { DYAppLoginScreen() }
         .onChange(of: bridge.followSession) { _, _ in
             followList.resetModel()
             followCurrentID = nil
@@ -2914,7 +2936,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         TabView(selection: mainTabSelection) {
             Tab("我的", systemImage: "person.crop.circle", value: DYMainTab.mine) {
                 DYMineScreen(bridge: bridge,
-                             onLogin: { mainTab = .home; web = DYWebTarget(url: DouyinWeb.home) },
+                             onLogin: { reloadAfterLogin() },
                              onAuthor: { item in
                                  mainTab = .home
                                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { authorTarget = item.author }
@@ -3325,7 +3347,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         case .follow:
             DYFollowFeed(bridge: bridge, insets: insets, active: audible && web == nil && !overlayOpen,
                          onAuthor: { a in authorTarget = a.author },
-                         onLogin: { web = DYWebTarget(url: DouyinWeb.home) },
+                         onLogin: { showAppLogin = true },
                          onToast: { showToast($0) },
                          onComments: { item in
                              visibleVideo = item
