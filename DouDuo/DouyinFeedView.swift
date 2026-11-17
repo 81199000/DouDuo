@@ -42,6 +42,9 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var awemeType: Int? = nil
     /// 作品原始发布时间（Unix 秒）；可选以兼容已保存的旧播放会话。
     var publishedAt: TimeInterval? = nil
+    /// Optional work-level fields; old sessions remain decodable.
+    var publicationCityCode: String? = nil
+    var publicationCountry: String? = nil
     /// 保留平台返回的 AI 声明原文；没有标记不代表非 AI。
     var aiDeclaration: String? = nil
     /// Optional for compatibility with sessions saved before hashtag support.
@@ -953,6 +956,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         author: { name: (a.author && a.author.nickname) || '', avatar: a.author && first(a.author.avatar_thumb), secUid: a.author && a.author.sec_uid, uid: a.author && a.author.uid ? String(a.author.uid) : null, follow: a.author ? (a.author.follow_status || 0) : 0 },
         awemeType: a.aweme_type || 0,
         publishedAt: typeof a.create_time === 'number' && Number.isFinite(a.create_time) && a.create_time > 0 ? a.create_time : null,
+        publicationCityCode: typeof a.city === 'string' ? a.city : Number.isSafeInteger(a.city) ? String(a.city) : null,
+        publicationCountry: a.region == null ? null : typeof a.region === 'string' ? a.region : '?',
         aiDeclaration: a.risk_infos && typeof a.risk_infos.content === 'string' && /(?:\bAI\b|人工智能)/i.test(a.risk_infos.content) ? (a.risk_infos.content.trim() || null) : null,
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0, play: st.play_count == null ? null : Number(st.play_count) },
         music: (a.music && a.music.title) || '',
@@ -3761,14 +3766,11 @@ struct DYUpstreamVideoPage: View {
                 .modifier(DYHoldBoost(control: boost))
                 .accessibilityIdentifier("douyin.author")
             }
-            if let metadata = item.metadataText() {
-                Text(metadata)
-                    .font(.subheadline)
-                    .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("douyin.video.metadata")
-            }
+            DYWorkMetadataText(item: item, active: isCurrent)
+                .font(.subheadline)
+                .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,
                                   secondary: theme.media.onMediaSecondary.color(for: scheme),
@@ -4222,12 +4224,10 @@ struct DYClassicVideoPage: View {
                                   secondary: fg.opacity(0.7), hashtagNames: item.hashtagNames ?? [],
                                   onExpand: expandVideoCaption.map { open in { open(item) } })
             }
-            if let metadata = item.metadataText() {
-                Text(metadata).font(.caption2.weight(.regular))
-                    .foregroundStyle(fg.opacity(0.62))
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("douyin.video.metadata")
-            }
+            DYWorkMetadataText(item: item, active: isCurrent)
+                .font(.caption2.weight(.regular))
+                .foregroundStyle(fg.opacity(0.62))
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
                     .font(.caption2).lineLimit(1)
@@ -5382,16 +5382,23 @@ extension DYFeedModel {
     static var hashtagFixtures: [DYAweme] {
         let grid = ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1"
         let playable = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
+        let regionFixture = ProcessInfo.processInfo.environment["DOUDUO_REGION_FIXTURE"] == "1"
         let video = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("search-playback-fixture.mp4")
         return [("hashtag-cat", "日常 #猫咪 #旅行\n" + String(repeating: "这段简介用于检查展开后的标签点击与换行。", count: 8) + " #摄影"),
          ("hashtag-travel", "周末记录 #旅行"),
          ("hashtag-plain", "这是一段没有标签的普通简介，提到猫咪也不会被屏蔽。")].map { id, text in
-            DYAweme(id: id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
+            var item = DYAweme(id: regionFixture && id == "hashtag-travel" ? "7707976793810111778" : id, desc: text, width: playable ? 640 : 1080, height: playable ? 360 : 1920, duration: playable ? 60 : 0, play: playable ? video.absoluteString : nil,
                     cover: nil, images: grid ? ["data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%271%27 height=%271%27/%3E"] : [], author: .init(name: "标签功能测试", avatar: nil, secUid: nil),
                     stats: .init(digg: 0, comment: 0, collect: 0, share: 0), music: "",
                     userDigged: nil, isCollect: nil, publishedAt: 1,
                     hashtagNames: id == "hashtag-cat" ? ["猫咪", "旅行", "摄影", "美食", "科技", "自然", "城市漫步", "运动"] : nil)
+            if regionFixture {
+                item.publicationCityCode = id == "hashtag-cat" ? "440300" : id == "hashtag-plain" ? "2197820" : nil
+                item.publicationCountry = id == "hashtag-cat" ? "CN" : id == "hashtag-plain" ? "FJ" : nil
+                item.aiDeclaration = "作者声明：内容由 AI 生成"
+            }
+            return item
         }
     }
 }

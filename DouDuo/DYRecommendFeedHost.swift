@@ -109,6 +109,10 @@ extension DYRecommendFeedHost {
         // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
+        let regionIDs = ahead.prefix(2).filter {
+            DYPublicationRegion.name(for: $0.publicationCityCode, country: $0.publicationCountry) == nil
+        }.map(\.id)
+        Task(priority: .utility) { await DYPublicationRegionClient.shared.prefetch(regionIDs) }
         let currentItem = feed.items[i]
         Task {
             await DYVideoCache.shared.markWatched(curID)
