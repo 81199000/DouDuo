@@ -860,7 +860,8 @@ struct DYMessagesScreen: View {
                 .accessibilityLabel("返回")
                 .accessibilityIdentifier(!showingMine && navigation.hasDetail ? "douyin.messages.back" : "douyin.messages.close")
             }
-            // 四个分类 + 聊天时的「更多」：只属于信息页，「我的」页不显示（老板 11-17）
+            // 四个分类 + 聊天时的「更多」只属于信息页；「我的」页把这组隐藏着占位、「账号」放在同一位置，
+            // 两页栏高一样，返回键不会上下跳
             if !showingMine {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railItem(.interactive, icon: "heart", title: "互动",
@@ -874,19 +875,22 @@ struct DYMessagesScreen: View {
                 .frame(width: Self.railWidth)
                 .glassEffect(.regular, in: .capsule)
             } else {
-                // 「我的」页：右侧栏放「账号」（多账号切换 / 退出），不再放左上角跟返回键重叠
+                // 「我的」页：「账号」放在分类组的位置，整组高度跟信息页四个分类一样（空着占位），
+                // 两页栏高一致，返回键不上下跳
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "person.2.circle", title: "账号", selected: false, badge: 0,
                                id: "douyin.mine.accounts") { NotificationCenter.default.post(name: .dyOpenAccounts, object: nil) }
+                    .glassEffect(.regular, in: .capsule)
+                    Spacer(minLength: 0)
                 }
                 .padding(.vertical, 8)
-                .frame(width: Self.railWidth)
-                .glassEffect(.regular, in: .capsule)
+                .frame(width: Self.railWidth, height: 48 * 4 + theme.media.actionItemSpacing * 3 + 16)
             }
             // 我的：直接进「我的」
             if mineContent != nil || (onMine != nil && chromeModeRaw != DDChromeMode.duoClassic.rawValue) {
                 VStack(spacing: theme.media.actionItemSpacing) {
                     railButton(icon: "bubble.left.and.bubble.right", title: "信息", selected: !showingMine, badge: 0,
+                               dot: showingMine && unreadTotal > 0,
                                id: "douyin.messages.tab.messages") {
                         if showingMine { withAnimation(.easeOut(duration: 0.18)) { showingMine = false } }
                     }
@@ -923,7 +927,14 @@ struct DYMessagesScreen: View {
         }
     }
 
-    private func railButton(icon: String, title: String, selected: Bool, badge: Int, id: String,
+    /// 信息页所有未读：互动 + 粉丝 + 系统 + 陌生人 + 聊天会话
+    private var unreadTotal: Int {
+        let notices = [DYNoticeGroup.comment, .digg, .fans, .system].reduce(0) { $0 + (counts[$1.rawValue] ?? 0) }
+        let chats = conversations.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+        return notices + chats + strangerBadge
+    }
+
+    private func railButton(icon: String, title: String, selected: Bool, badge: Int, dot: Bool = false, id: String,
                             action: @escaping () -> Void) -> some View {
         let tint = selected ? theme.accent.color(for: scheme) : Color.primary
         return Button(action: action) {
@@ -940,6 +951,11 @@ struct DYMessagesScreen: View {
                                 .padding(.horizontal, 4).padding(.vertical, 1.5)
                                 .background(theme.status.danger.color(for: scheme), in: .capsule)
                                 .offset(x: 8, y: -3)
+                        } else if dot {
+                            Circle().fill(theme.status.danger.color(for: scheme))
+                                .frame(width: 8, height: 8)
+                                .offset(x: 2, y: 1)
+                                .accessibilityIdentifier(id + ".dot")
                         }
                     }
                 Text(title).font(.caption2.weight(.medium))
@@ -951,7 +967,7 @@ struct DYMessagesScreen: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : "")
+        .accessibilityValue(badge > 0 ? "\(badge) 条未读" : (dot ? "有未读" : ""))
         .accessibilityIdentifier(id)
     }
 
