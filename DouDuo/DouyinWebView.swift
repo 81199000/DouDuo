@@ -485,6 +485,7 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         cfg.userContentController.addUserScript(
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        DYTrustLogin.install(in: cfg)   // 网页版里登录后弹「是否保存登录信息？」也默认点「保存」
         // 聊天页点分享视频 → 抽 aweme_id 发给 App（只在 /chat 页生效）
         cfg.userContentController.addUserScript(
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
