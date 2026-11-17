@@ -17,6 +17,8 @@ enum DDWatchKey {
 
 enum DDWatchCmd {
     static let videos = "videos"      // 请 iPhone 再推几条视频文件过来 → reply[count]
+    /// 手表看完/划走一条：通知手机向抖音上报观看，并记入「手表已看」去重表
+    static let seen = "seen"
     static let like = "like"          // 点赞/取消赞（iPhone 代发）→ reply[ok]
     static let status = "status"      // 登录态 → reply[json]=DDWatchStatus
 }
@@ -37,6 +39,9 @@ struct DDWatchVideoMeta: Codable, Identifiable, Equatable {
     var width: Double
     var height: Double
     var url: String = ""
+    /// 上报观看要用：作者 uid、作品类型（0=视频）
+    var authorUID: String = ""
+    var awemeType: Int = 0
     /// 手机取到这条链接的时间（Unix 秒），用来判断链接是否可能过期
     var fetched: Double = 0
 }
