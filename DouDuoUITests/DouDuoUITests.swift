@@ -5815,11 +5815,15 @@ extension DouDuoUITests {
             // 键盘弹出时：返回 / 互动 / 更多 还在原位，「系统 / 陌生人」收进更多
             let back = app.buttons["douyin.messages.back"].firstMatch
             XCTAssertTrue(back.isHittable, "返回键要一直能点")
-            XCTAssertTrue(railItem.isHittable, "互动分类要留着")
+            // 自适应：能放几项放几项，放不下的收进「更多」。这里只验不变量：
+            // 返回键在、没进状态栏那一条、所有显示出来的项都在键盘上方。
             XCTAssertGreaterThan(back.frame.minY, 100, "返回键不能被顶到状态栏那一块（会被系统状态栏盖住）")
-            XCTAssertFalse(app.buttons["douyin.messages.rail.system"].exists, "输入时系统分类应收起来")
-            XCTAssertFalse(app.buttons["douyin.messages.rail.stranger"].exists, "输入时陌生人分类应收起来")
             XCTAssertTrue(app.buttons["douyin.messages.more"].exists, "更多要留着")
+            for id in ["douyin.messages.rail.interactive", "douyin.messages.rail.fans",
+                       "douyin.messages.rail.system", "douyin.messages.rail.stranger"] {
+                let e = app.buttons[id]
+                if e.exists { XCTAssertLessThan(e.frame.maxY, top, "\(id) 被键盘盖住了") }
+            }
             let send = app.buttons["douyin.messages.composer.send"].firstMatch
             if send.exists { XCTAssertFalse(send.frame.intersects(back.frame), "返回键盖住了发送键") }
             XCTAssertLessThan(back.frame.minY, railRest!.minY, "返回键应该在分类上方")
@@ -5841,6 +5845,7 @@ extension DouDuoUITests {
         XCTAssertEqual(editor.frame.midY, restY, accuracy: 3, "键盘收起后输入框要回到原位")
         if let railRest {
             XCTAssertTrue(app.buttons["douyin.messages.rail.system"].exists, "收起键盘后系统分类要回来")
+            XCTAssertTrue(app.buttons["douyin.messages.rail.stranger"].exists, "收起键盘后陌生人分类要回来")
             XCTAssertTrue(railItem.isHittable, "收起键盘后右侧菜单栏要回来")
             XCTAssertEqual(railItem.frame.midX, railRest.midX, accuracy: 2, "收起键盘后右侧菜单栏要回原位")
             XCTAssertEqual(railItem.frame.midY, railRest.midY, accuracy: 2)
