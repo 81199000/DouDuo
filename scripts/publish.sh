@@ -53,7 +53,8 @@ fi
 
 # ---------- 3. 编译 ----------
 step "模拟器编译"
-xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -sdk iphonesimulator \
+# 同真机包：不加 -sdk，否则内嵌的手表 App 也按 iPhone 模拟器 SDK 编，手表图标报错
+xcodebuild -project DouDuo.xcodeproj -scheme DouDuo \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$TMPDIR/dd-publish-sim" \
   build CODE_SIGNING_ALLOWED=NO > "$TMPDIR/dd-publish-sim.log" 2>&1 \
   || { grep -E 'error:' "$TMPDIR/dd-publish-sim.log" | head; die "模拟器编译失败（$TMPDIR/dd-publish-sim.log）"; }
