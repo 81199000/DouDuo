@@ -66,14 +66,7 @@ final class DDPlayback {
         stoppers[id] = stop; starters[id] = start
         if let retainsAudioSession { sessionRetainers[id] = retainsAudioSession }
         else { sessionRetainers[id] = nil }
-        // appIsActive 初值是 true，只有经过「切后台」回调才会变 false。系统因 Apple Watch 连接把 App 在后台拉起时
-        // 不会经过那个回调，推荐流的播放器就会以为在前台直接出声。这里再看系统真实状态：真在后台就不放。
-        // （UIApplication.applicationState 必须在主线程读；register 本身总在主线程被调用，不在则退回旧判断。）
-        let reallyBackground = Thread.isMainThread
-            && MainActor.assumeIsolated { UIApplication.shared.applicationState == .background }
-        // 离线库覆盖层里的播放器（playsInsideCover）只在前台才会创建，不受上面「真在后台」判断影响
-        let shouldStop = (!appIsActive && !playsInsideCover) || reallyBackground
-        DYLiveModel.log("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive) sysBackground=\(reallyBackground)")
+        let shouldStop = !appIsActive && !playsInsideCover
         #if DEBUG
         ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive)")
         #endif
@@ -757,13 +750,8 @@ struct PlayerPage: View {
             guard isActive else { return }
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
-            // 1x ↔ 非 1x：当前这条换声音通路（原生 ↔ 独立引擎），从当前画面位置接着放
-            if vlc == nil, let p = player, (!cleanScreen && DDSeamlessController.engineWanted) != (seamAudio.mode != .fallbackAVPlayer) {
-                bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
-                if isPlaying { seamAudio.setRate(Float(target)) }
-                dmClock.sync(p.currentTime().seconds, playing: isPlaying, rate: target)
-                return
-            }
+            // 起播一律原生声音；播放中改速度交给 seamAudio.setRate：原生时就地交接给独立引擎（不断声），
+            // 已在引擎上就直接改引擎速率。不再按 1x / 非 1x 换声音通路（换通路要重绑，会断一下声，#52-1）。
             if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
             else if isPlaying {
                 seamAudio.setRate(Float(target))

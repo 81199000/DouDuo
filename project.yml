@@ -3,15 +3,14 @@ options:
   bundleIdPrefix: me.rrmm
   deploymentTarget:
     iOS: "26.0"
-    watchOS: "26.0"
   createIntermediateGroups: true
 packages:
   VLCKitSPM:
     path: Vendor/VLCKit
 settings:
   base:
-    MARKETING_VERSION: 1.6.0
-    CURRENT_PROJECT_VERSION: "114"
+    MARKETING_VERSION: 1.6.1
+    CURRENT_PROJECT_VERSION: "115"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
 targets:
@@ -20,11 +19,8 @@ targets:
     platform: iOS
     sources:
       - path: DouDuo
-      - path: DouDuoWatchShared
     dependencies:
       - package: VLCKitSPM
-      - target: DouDuoWatch
-        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo
@@ -52,25 +48,6 @@ targets:
         UIBackgroundModes: [audio]
         # ProMotion：iPhone 默认把 App 限制在 60Hz，必须声明这一项才能跑 120Hz（弹幕滚动、翻页更顺）
         CADisableMinimumFrameDurationOnPhone: true
-  # Apple Watch 伴侣：不登录，只显示 iPhone 推来的消息和视频（见 DDWatchBridge.swift）
-  DouDuoWatch:
-    type: application
-    platform: watchOS
-    sources:
-      - path: DouDuoWatch
-      - path: DouDuoWatchShared
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo.watchkitapp
-        PRODUCT_NAME: DouDuoWatch
-        INFOPLIST_KEY_CFBundleDisplayName: DouDuo
-        CODE_SIGN_STYLE: Automatic
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        GENERATE_INFOPLIST_FILE: YES
-        SKIP_INSTALL: YES
-        TARGETED_DEVICE_FAMILY: "4"
-        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: me.rrmm.douduo
-        INFOPLIST_KEY_WKApplication: YES
   DouDuoUITests:
     type: bundle.ui-testing
     platform: iOS
