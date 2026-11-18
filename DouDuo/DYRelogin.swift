@@ -70,6 +70,18 @@ private struct DYCommentRecoveryScreen: View {
                     sessionGone = true
                     message = "本机的抖音登录已经没了（被退出），评论发不出去。点「重新登录」登录后再发，草稿还在，不会自动重发。"
                     DYLiveModel.log("DDSESSION comment recovery: sessionid gone")
+                    return
+                }
+                // cookie 还在不代表还登录着：11-19 00:48 真机评论 403 后，sessionid 仍在本机，
+                // 但抖音已把这次登录作废（读自己资料返回「用户未登录」）。实际问一次服务器再下结论。
+                do {
+                    _ = try await bridge.selfProfile()
+                } catch where Self.saysLoggedOut(error) {
+                    sessionGone = true
+                    message = "抖音把这次登录作废了：本机还留着登录记录，但抖音那边已是未登录，所以评论发不出去。点「重新登录」登录后再发，草稿还在，不会自动重发。"
+                    DYLiveModel.log("DDSESSION comment recovery: server says logged out (cookie present)")
+                } catch {
+                    DYLiveModel.log("DDSESSION comment recovery: profile check inconclusive")
                 }
             }
             .toolbar {
@@ -99,6 +111,12 @@ private struct DYCommentRecoveryScreen: View {
             DYAppLoginScreen()
         }
 
+    }
+
+    /// 只认抖音明确说「未登录」；网络错、超时不算，免得误报掉线
+    static func saysLoggedOut(_ error: Error) -> Bool {
+        let text = error.localizedDescription
+        return text.contains("未登录") || text.contains("登录已失效") || text.contains("请先登录")
     }
 
     @MainActor private func verify() async {
