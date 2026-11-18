@@ -673,10 +673,18 @@ struct DYMessagesScreen: View {
         .task {
             // 网页聊天页 → App：点分享视频卡片跳原生播放（DouyinWebView 的 ddMsg 通道）
             if #available(iOS 27.1, *) { DYLiveModel.log("DDMSG layout=resizable") } else { DYLiveModel.log("DDMSG layout=legacy") }
+            // 聊天里点对方头像/昵称：网页会整页跳 /user/<sec>（网页版主页）→ 拦下改开原生作者主页
+            chatModel.onUserLink = { sec in
+                Task { @MainActor in self.openUser(sec: sec) }
+            }
             chatModel.onAppMessage = { json in
                 guard let data = json.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
                 switch obj["type"] as? String {
+                case "user":
+                    guard let sec = obj["sec"] as? String, !sec.isEmpty else { return }
+                    DYLiveModel.log("DDMSGUSER intercept click sec=\(sec.prefix(12))")
+                    Task { @MainActor in self.openUser(sec: sec) }
                 case "msg-menu":
                     guard let token = obj["token"] as? String, !token.isEmpty else { return }
                     Task { @MainActor in self.deletingMessageToken = token }
@@ -1791,6 +1799,15 @@ struct DYMessagesScreen: View {
     private func openFriend(_ f: DYFriend) {
         guard !f.secUid.isEmpty else { return }
         chatAuthor = .init(name: f.name, avatar: f.avatar, secUid: f.secUid)
+    }
+
+    /// 聊天网页里点了某人的头像/昵称（sec_uid）：用已知的会话/朋友资料补名字和头像，打开原生作者主页
+    private func openUser(sec: String) {
+        guard !sec.isEmpty, chatAuthor?.secUid != sec else { return }
+        let row = (conversations + cache.strangerRows + cache.unfollowedRows).first { $0.sec == sec }
+        let friend = friends.first { $0.secUid == sec }
+        chatAuthor = .init(name: row?.name ?? friend?.name ?? "", avatar: row?.avatar ?? friend?.avatar, secUid: sec)
+        DYLiveModel.log("DDMSGUSER open native author sec=\(sec.prefix(12)) known=\(row != nil || friend != nil)")
     }
 }
 
