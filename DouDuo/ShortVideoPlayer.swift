@@ -319,6 +319,11 @@ struct DYHoldBoostArea: ViewModifier {
 }
 
 struct PlayerPage: View {
+    @Environment(\.dyRestrictsPlaybackToPane) private var restrictsPlaybackToPane
+
+    private var playbackSafeAreaEdges: Edge.Set {
+        restrictsPlaybackToPane ? [] : .all
+    }
     @Environment(\.dyOfflineVideoPlayback) private var offlineVideoContext
     @Environment(\.duoCleanScreen) private var cleanScreen
     @Environment(\.duoContentInsets) private var chromeInsets
@@ -516,7 +521,7 @@ struct PlayerPage: View {
             // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
             if ambientLevel > 0, vlc == nil, let player {
                 DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
-                    .ignoresSafeArea()
+                    .ignoresSafeArea(edges: playbackSafeAreaEdges)
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
@@ -829,7 +834,7 @@ struct PlayerPage: View {
         ZStack {
             if let vlc {
                 // 画面铺到屏幕边缘（状态栏/底部安全区也盖住）：跟抖音原生一样，不留上下黑边
-                VLCPlayerSurface(controller: vlc, fillWidth: fillsVideoPlane).ignoresSafeArea()
+                VLCPlayerSurface(controller: vlc, fillWidth: fillsVideoPlane).ignoresSafeArea(edges: playbackSafeAreaEdges)
             } else if let player {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
@@ -844,12 +849,12 @@ struct PlayerPage: View {
                                  onPictureInPictureUnavailable: {
                                      if !DDPlayback.bgPlay { pauseInlineForBackground() }
                                  })
-                        .ignoresSafeArea()
+                        .ignoresSafeArea(edges: playbackSafeAreaEdges)
                     // 头部缓存接在线流：新播放器先叠在上面亮相（已缓冲、时间点对齐），再撤掉旧的，
                     // 避免换 AVPlayerLayer 的 player 时断帧
                     if let np = nextPlayer {
                         VideoSurface(player: np, fillWidth: fillsVideoPlane)
-                            .ignoresSafeArea()
+                            .ignoresSafeArea(edges: playbackSafeAreaEdges)
                             .opacity(nextOpacity)
                             .allowsHitTesting(false)
                     }
@@ -859,7 +864,7 @@ struct PlayerPage: View {
             }
             if vlc == nil, let hd = hdPlayer {
                 // 0.001 而不是 0：完全透明的层可能不出画面，换上来时会黑一下
-                VideoSurface(player: hd, fillWidth: fillsVideoPlane).ignoresSafeArea()
+                VideoSurface(player: hd, fillWidth: fillsVideoPlane).ignoresSafeArea(edges: playbackSafeAreaEdges)
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
             // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面（老板嫌「开头跳一下预览图」）
