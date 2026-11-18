@@ -39,6 +39,8 @@ struct DYCommentFocus: Equatable, Hashable {
     let awemeID: String
     let cid: String
     let parentCid: String?
+    /// 通知里点「回复」：定位到这条后直接进入「回复 @它」（和在评论区里点它一样，走同一套发送）
+    var startReply = false
 }
 
 struct DYNoticePage: Decodable {

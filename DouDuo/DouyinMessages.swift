@@ -2011,6 +2011,13 @@ struct DYNoticeListScreen: View {
     }
 
     private func startReply(_ n: DYNotice) {
+        // 老板 11-19：通知里直接回复屡次「显示成功却看不到」，评论区里回复一直正常。
+        // 有视频和评论 id 的，一律打开那条视频的评论区并进入「回复 @它」，用评论区同一套发送。
+        if n.commentFocus != nil {
+            DYLiveModel.log("DDNOTICEREPLY via=comment-panel")
+            Task { await open(n, reply: true) }
+            return
+        }
         if replying?.id != n.id { replyDraft = "" }
         replying = n; replyErr = nil
         replyFocused = true
@@ -2265,7 +2272,7 @@ struct DYNoticeListScreen: View {
         }
     }
 
-    private func open(_ n: DYNotice) async {
+    private func open(_ n: DYNotice, reply: Bool = false) async {
         guard isActive else { return }
         let generation = activationGeneration
         if n.type == 33, let a = n.author {
@@ -2283,7 +2290,9 @@ struct DYNoticeListScreen: View {
             let item = try await bridge.awemeDetail(id)
             guard generation == activationGeneration else { return }
             // 评论通知：进视频直接打开评论区并定位到这条评论
-            player = DYMessagePlay(item: item, focus: n.commentFocus)
+            var focus = n.commentFocus
+            focus?.startReply = reply
+            player = DYMessagePlay(item: item, focus: focus)
         } catch {
             self.error = error.localizedDescription
         }
