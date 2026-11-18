@@ -1958,6 +1958,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// 点页签只切页，不再顺手刷新（点顶部会误触成「刷新视频」）。
     /// 要换一批推荐走「更多 → 刷新推荐」。
     private func selectTab(_ target: DYTab) {
+        DYLiveModel.log("DDTAB select target=\(target) from=\(tab) screen=upstream")
         guard tab != target else { return }
         if target != .live {
             queuedLiveAction = nil
@@ -2250,6 +2251,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     else if !minimalMenuOpen { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
                 },
                 onTap: {
+                    DYLiveModel.log("DDTAB module-open")
                     minimalMenuOpen = true
                     if chromeMode.hidesInfo { peek.on = true }
                 }))
@@ -2303,6 +2305,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) { minimalMenuOpen = false }
+            DYLiveModel.log("DDTAB menu-row \(id)")
             DispatchQueue.main.async { action() }
         } label: {
             HStack(spacing: 10) {
@@ -3203,6 +3206,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     }
 
     private func selectTab(_ target: DYTab) {
+        DYLiveModel.log("DDTAB select target=\(target) from=\(tab) screen=classic settling=\(channelSettling) width=\(Int(channelWidth))")
         guard tab != target, !channelSettling else { return }
         showComments = false
         authorTarget = nil
