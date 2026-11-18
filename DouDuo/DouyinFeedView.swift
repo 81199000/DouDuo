@@ -2229,12 +2229,16 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
 
     private func queueLiveModule(_ action: DYLiveModuleRequest.Action) {
         queuedLiveAction = action
+        // 菜单行先无动画收起、下一轮才跑动作（fc4acc7）：收起时的 onChange 已经跑过了，
+        // 这里不立刻发出去就要等下次开关菜单才生效 = 老板 11-19「我的关注 / 发现更多要点两次」。
+        if !minimalMenuOpen { publishQueuedLiveModule() }
     }
 
     private func publishQueuedLiveModule() {
         guard let action = queuedLiveAction else { return }
         queuedLiveAction = nil
         let token = (liveModuleRequest?.token ?? 0) + 1
+        DYLiveModel.log("DDLIVEMODULE publish \(action) token=\(token) menuOpen=\(minimalMenuOpen)")
         liveModuleRequest = DYLiveModuleRequest(token: token, action: action)
     }
 
