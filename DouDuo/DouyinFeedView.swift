@@ -241,6 +241,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         cfg.allowsPictureInPictureMediaPlayback = false
         cfg.userContentController.addUserScript(WKUserScript(source: Self.noMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         DYTrustLogin.install(in: cfg)   // 签名页上弹「是否保存登录信息？」也默认点「保存」
+        DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
@@ -3010,6 +3011,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             DouyinWebScreen(start: t.url)
         }
         .sheet(isPresented: $showAppLogin, onDismiss: { reloadAfterLogin() }) { DYAppLoginScreen() }
+        .modifier(DYSessionLostAlert { showAppLogin = true })
         .onChange(of: bridge.followSession) { _, _ in
             followList.resetModel()
             followCurrentID = nil

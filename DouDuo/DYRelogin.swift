@@ -39,6 +39,8 @@ private struct DYCommentRecoveryScreen: View {
     @State private var showLogin = false
     @State private var confirmCleanup = false
     @State private var busy = false
+    /// 本机 sessionid 已经没了（被网页登出 / 过期清掉）：这时不能再说「登录已保留」
+    @State private var sessionGone = false
     @State private var message = "抖音拦下了这次评论（要求验证或暂时受限），不等于整个登录已过期。原登录与草稿已保留，不会自动重发。可先打开网页版看看有没有验证提示，或歇几分钟再发。"
 
     var body: some View {
@@ -46,6 +48,9 @@ private struct DYCommentRecoveryScreen: View {
             Form {
                 Section {
                     Text(message)
+                    if sessionGone {
+                        Button("重新登录") { showLogin = true }
+                    }
                     Button("保留登录，打开网页版检查验证") { showWeb = true }
                     Button("核验当前账号资料") { Task { await verify() } }
                         .disabled(busy)
@@ -59,7 +64,14 @@ private struct DYCommentRecoveryScreen: View {
                     Text("仅在你明确确认后清理共享网页登录数据；这会影响其他页面的登录，但不会删除此处草稿。")
                 }
             }
-            .navigationTitle("评论验证与恢复")
+            .navigationTitle(sessionGone ? "需要重新登录" : "评论验证与恢复")
+            .task {
+                if !(await DYLoginState.hasSession()) {
+                    sessionGone = true
+                    message = "本机的抖音登录已经没了（被退出），评论发不出去。点「重新登录」登录后再发，草稿还在，不会自动重发。"
+                    DYLiveModel.log("DDSESSION comment recovery: sessionid gone")
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("保留草稿并关闭") { dismiss() } }
             }
