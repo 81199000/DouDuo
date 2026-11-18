@@ -293,11 +293,11 @@ extension DouyinBridge {
         do { d = try await call(Self.publishJS, args: args, attempts: 1) }
         catch {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=transport-unknown")
-            throw DYError.bad("评论结果未确认，草稿已保留；请先查看评论，勿连续重发")
+            throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
         }
         guard let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=decode-unknown")
-            throw DYError.bad("评论回执无法识别，草稿已保留；请先查看评论，勿连续重发")
+            throw DYCommentUnconfirmed(message: "回执无法识别，可能已发出；先刷新评论区核对")
         }
         // 服务端文案、正文、账号标识与响应全文不入日志。
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=response status=\(r.status) code=\(r.code.map(String.init) ?? "nil") diag=\(r.diagnostic ?? "-")")
@@ -337,7 +337,7 @@ extension DouyinBridge {
             throw DYLoginExpired()
         }
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=unknown waitedMs=\(waited)")
-        throw DYError.bad("评论结果未确认，草稿已保留；请先查看对应评论或回复，勿连续重发")
+        throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
     }
 
     /// 发送后回查的总时限（秒）。超时按「结果未知」处理，不当成功、不重发。
@@ -1071,8 +1071,8 @@ struct DYListPlayer: View {
     let commentFocus: DYCommentFocus?
     /// 信息里点开的分享视频：关掉时彻底收掉声音（播放器、音频引擎、音频会话）
     let hardStopOnDismiss: Bool
-    /// 打开期间把外层（首页/信息页底下的）播放压住；关掉时成对释放
-    @State private var coverHeld = false
+    /// 打开时外面已经盖了几层遮罩（信息页 / 我的）：这个播放器就在那一层之上，可以照常播
+    @State private var coverLevel = DDPlayback.shared.coverDepth
     /// 点头像时作者页由播放器自己弹在上面。播放器是全屏页：交给底下的页面弹，会被播放器盖住，
     /// 要返回关掉播放器后才看到（老板 11-16 报：搜索出来的视频点头像不跳，返回才跳）
     let presentsAuthor: Bool
@@ -1148,6 +1148,7 @@ struct DYListPlayer: View {
         .environment(\.duoSystemBars, true)
         .environment(\.duoCleanScreen, false)
         .environment(\.duoInlineVideoNavigation, false)
+        .environment(\.ddCoverLevel, offlineLibrary ? 0 : coverLevel)
         .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
             guard offlineLibrary else { return }
             networkIsOffline = offline

@@ -1444,6 +1444,8 @@ private struct DYFeedHostFrameKey: PreferenceKey {
 extension EnvironmentValues {
     @Entry var duoSystemBars = false
     @Entry var dyOfflineVideoPlayback: DYOfflinePlaybackContext? = nil
+    /// 全屏播放器打开时的遮罩层级（见 DDPlayback.coverLevels）；首页为 0
+    @Entry var ddCoverLevel = 0
     @Entry var duoInlineVideoNavigation = false
     @Entry var duoContentInsets = EdgeInsets()
     @Entry var duoVisibleVideo: Binding<DYAweme?> = .constant(nil)
@@ -4538,10 +4540,18 @@ struct DYCommentPanel: View {
     @State private var atLoading = false
     @State private var atError: String?
     @State private var sending = false
+    /// 先上屏的本地评论（id 以 local- 开头）：发送中 / 失败可重发 / 结果不明
+    @State private var pending: [String: DYPendingSend] = [:]
+    /// 结果不明的那条要重发：先二次确认，免得发两条
+    @State private var confirmResend: String?
+    /// 草稿当前对应的「作品+回复目标」；切换目标时先把旧草稿存好再换
+    @State private var draftKey: String?
     @State private var sendErr: String?
     @State private var showRelogin = false
     /// 我自己的 sec_uid，用来认出哪些评论能删
     @State private var mySec: String?
+    @State private var myName: String?
+    @State private var myAvatar: String?
     @State private var deletingComment: DYComment?
     @State private var deletingParent: String?
     @State private var deleteBusy = false
@@ -4872,9 +4882,11 @@ struct DYCommentPanel: View {
     /// 关掉评论区：把已加载的评论、楼中楼和当前位置存下，同一条视频再打开时原样恢复
     private func saveCommentPosition() {
         guard focus == nil, !items.isEmpty else { return }
+        // 没确认的本地评论不进记忆：重开评论区时它会变成一条看起来已发出的普通评论
+        let keep = { (c: DYComment) in !DYPendingSend.isLocal(c.id) }
         DYCommentMemory.shared.put(aweme.id, .init(
-            items: items, cursor: cursor, hasMore: hasMore, total: total,
-            replies: replies, replyCursor: replyCursor, replyMore: replyMore,
+            items: items.filter(keep), cursor: cursor, hasMore: hasMore, total: total,
+            replies: replies.mapValues { $0.filter(keep) }, replyCursor: replyCursor, replyMore: replyMore,
             digged: digged, diggShown: diggShown, topID: topVisibleID))
         DYLiveModel.log("DDCOMMENTMEM save aweme=\(aweme.id.suffix(6)) n=\(items.count) top=\(topVisibleID?.suffix(6) ?? "-")")
     }
@@ -5052,7 +5064,17 @@ struct DYCommentPanel: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.composer")
         .task { await DYEmojiStore.shared.load(bridge: bridge) }
-        .task { if mySec == nil { mySec = try? await bridge.selfSecUid() } }
+        .task {
+            guard mySec == nil, let me = try? await bridge.selfProfile() else { return }
+            mySec = me.secUid; myName = me.name; myAvatar = me.avatar
+        }
+        .task { restoreDraft() }
+        .onChange(of: draft) { _, text in DYCommentDraftStore.save(currentDraftKey, text: text) }
+        .onChange(of: replyTo?.id) { _, _ in switchDraftTarget() }
+        .alert("这条可能已经发出去了", isPresented: Binding(get: { confirmResend != nil }, set: { if !$0 { confirmResend = nil } })) {
+            Button("仍要重发") { if let id = confirmResend { Task { await deliver(id) } }; confirmResend = nil }
+            Button("先不发", role: .cancel) { confirmResend = nil }
+        } message: { Text("抖音没给明确结果。重发前建议先下拉刷新看看评论区有没有这条，否则可能发两条。") }
         .alert("删除这条评论？", isPresented: Binding(get: { deletingComment != nil }, set: { if !$0 { deletingComment = nil } })) {
             Button("删除", role: .destructive) {
                 if let c = deletingComment { Task { await deleteComment(c, parent: deletingParent) } }
@@ -5138,6 +5160,25 @@ struct DYCommentPanel: View {
     }
 
     /// 有字或有图就能发（网页同款：带图时正文可以为空）
+    private var currentDraftKey: String {
+        DYCommentDraftStore.id(aweme.id, top: replyParent ?? replyTo?.id, to: replyParent == nil ? nil : replyTo?.id)
+    }
+
+    /// 打开评论区：把这条作品上次没发的草稿放回来
+    private func restoreDraft() {
+        draftKey = currentDraftKey
+        if draft.isEmpty, let saved = DYCommentDraftStore.load(currentDraftKey) { draft = saved }
+    }
+
+    /// 换了回复对象：旧目标的草稿已随打字存好；新目标有草稿就换上，没有就保留当前输入
+    private func switchDraftTarget() {
+        let key = currentDraftKey
+        guard key != draftKey else { return }
+        if let old = draftKey { DYCommentDraftStore.save(old, text: draft) }
+        draftKey = key
+        if let saved = DYCommentDraftStore.load(key) { draft = saved }
+    }
+
     private var hasCommentContent: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageDraft != nil
     }
@@ -5165,44 +5206,119 @@ struct DYCommentPanel: View {
         }
     }
 
+    /// 点发送：先把评论放进列表（发送中），输入框立刻清空可继续操作；结果回来再更新那一行。
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hasCommentContent, !sending, !imageLoading else { return }
+        // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
+        let top = replyParent ?? replyTo?.id
+        let to = replyParent == nil ? nil : replyTo?.id
+        let localID = DYPendingSend.prefix + UUID().uuidString
+        pending[localID] = DYPendingSend(text: text, imageDraft: imageDraft, uploaded: imageUploaded, top: top, replyTo: to,
+                                         replyTarget: replyTo, sentAt: Date().timeIntervalSince1970)
+        let local = DYComment(id: localID, text: text, name: myName ?? "我", avatar: myAvatar, digg: 0,
+                              time: Date().timeIntervalSince1970, replies: 0, ip: nil, sec: mySec,
+                              parent: top, replyTo: to)
+        if let top { replies[top, default: []].insert(local, at: 0) } else { items.insert(local, at: 0) }
+        DYCommentDraftStore.remove(currentDraftKey)
+        draft = ""; replyTo = nil; replyParent = nil; sendErr = nil
+        clearCommentImage()
+        inputFocused = false
+        await deliver(localID)
+    }
+
+    /// 真正发出去。只对这一条本地评论负责：成功换成服务器那条，失败/不明就地标在那一行上。
+    private func deliver(_ localID: String) async {
+        guard var job = pending[localID] else { return }
+        job.state = .sending; pending[localID] = job
         sending = true
         defer { sending = false }
         do {
-            // 先传图再发评论；图传上去了但评论没发成时留着结果，再点发送不重传
+            // 先传图再发评论；图传上去了但评论没发成时留着结果，重发不重传
             var image: DYImageXUploadResult?
-            if let img = imageDraft {
-                if imageUploaded == nil {
-                    imageUploaded = try await bridge.uploadCommentImage(img.data, fileName: img.fileName, measured: img.measured)
+            if let img = job.imageDraft {
+                if job.uploaded == nil {
+                    do { job.uploaded = try await bridge.uploadCommentImage(img.data, fileName: img.fileName, measured: img.measured) }
+                    catch { throw DYError.bad("图片没传上去：\(error.localizedDescription)") }
+                    pending[localID]?.uploaded = job.uploaded
                 }
-                image = imageUploaded
+                image = job.uploaded
             }
-            // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
-            let top = replyParent ?? replyTo?.id
-            let c = try await bridge.publishComment(aweme.id, text: text, replyID: top,
-                                                    replyToReplyID: replyParent == nil ? nil : replyTo?.id, image: image)
-            if let top {
-                replies[top, default: []].insert(c, at: 0)
-            } else {
-                items.insert(c, at: 0)
-                total += 1
-            }
-            draft = ""; replyTo = nil; replyParent = nil; sendErr = nil
-            clearCommentImage()
-            inputFocused = false
+            let c = try await bridge.publishComment(aweme.id, text: job.text, replyID: job.top,
+                                                    replyToReplyID: job.replyTo, image: image)
+            replaceLocal(localID, with: c, top: job.top)
+            pending[localID] = nil
+            if job.top == nil { total += 1 }
         } catch is DYLoginExpired {
-            // 草稿留着：重新登录后再点一次发送
-            sendErr = "抖音拦下了这次评论（需要验证或暂时受限）；登录和草稿已保留，请选择恢复方式"
-            inputFocused = false
+            pending[localID]?.state = .failed("抖音拦下了这条（需要验证或暂时受限）")
+            sendErr = "抖音拦下了这次评论（需要验证或暂时受限）；评论留在列表里，处理后可点重发"
             DYRelogin.start { showRelogin = true }
+        } catch let e as DYCommentUnconfirmed {
+            pending[localID]?.state = .unknown(e.message)
         } catch {
-            sendErr = "发送失败：\(error.localizedDescription)"
+            pending[localID]?.state = .failed(error.localizedDescription)
         }
     }
 
+    private func replaceLocal(_ localID: String, with c: DYComment, top: String?) {
+        if let top, let i = replies[top]?.firstIndex(where: { $0.id == localID }) { replies[top]?[i] = c }
+        else if let i = items.firstIndex(where: { $0.id == localID }) { items[i] = c }
+    }
+
+    private func removeLocal(_ localID: String) {
+        guard let job = pending.removeValue(forKey: localID) else { return }
+        if let top = job.top { replies[top]?.removeAll { $0.id == localID } } else { items.removeAll { $0.id == localID } }
+    }
+
+    /// 失败那条「改一改」：拿回输入框（文字、图片、回复目标都还原），列表里那条撤掉
+    private func editLocal(_ localID: String) {
+        guard let job = pending[localID] else { return }
+        removeLocal(localID)
+        replyTo = job.replyTarget; replyParent = job.replyTarget == nil ? nil : (job.top == job.replyTarget?.id ? nil : job.top)
+        draft = job.text; imageDraft = job.imageDraft; imageUploaded = job.uploaded
+        inputFocused = true
+    }
+
+    @ViewBuilder
     private func row(_ c: DYComment, parent: String?) -> some View {
+        if let job = pending[c.id] {
+            VStack(alignment: .leading, spacing: 6) {
+                rowBody(c).opacity(job.state == .sending ? 0.6 : 1)
+                pendingStatus(c.id, job)
+            }
+            .accessibilityIdentifier("douyin.comment.pending")
+        } else {
+            sentRow(c, parent: parent)
+        }
+    }
+
+    @ViewBuilder
+    private func pendingStatus(_ id: String, _ job: DYPendingSend) -> some View {
+        let danger = theme.status.danger.color(for: scheme)
+        HStack(spacing: 12) {
+            switch job.state {
+            case .sending:
+                ProgressView().controlSize(.mini)
+                Text("发送中…").foregroundStyle(.themeTextSecondary)
+            case .failed(let why):
+                Label("没发出去：\(why)", systemImage: "exclamationmark.circle.fill").foregroundStyle(danger).lineLimit(2)
+                Spacer(minLength: 4)
+                Button("重发") { Task { await deliver(id) } }.disabled(sending).accessibilityIdentifier("douyin.comment.retry")
+                Button("改一改") { editLocal(id) }
+                Button("删除", role: .destructive) { removeLocal(id) }
+            case .unknown(let why):
+                Label(why, systemImage: "questionmark.circle.fill").foregroundStyle(.themeTextSecondary).lineLimit(2)
+                Spacer(minLength: 4)
+                Button("仍要重发") { confirmResend = id }.disabled(sending).accessibilityIdentifier("douyin.comment.retry")
+                Button("删除", role: .destructive) { removeLocal(id) }
+            }
+        }
+        .font(.caption)
+        .buttonStyle(.borderless)
+        .padding(.leading, 42)
+    }
+
+    private func sentRow(_ c: DYComment, parent: String?) -> some View {
         rowBody(c)
             .contentShape(Rectangle())
             .onTapGesture {
@@ -5230,7 +5346,7 @@ struct DYCommentPanel: View {
 
     /// 能删的评论：我自己发的，或者这条作品是我的（作者能删自己作品下的评论）。认不出我是谁时不给删。
     private func canDelete(_ c: DYComment) -> Bool {
-        guard let me = mySec, !me.isEmpty else { return false }
+        guard !DYPendingSend.isLocal(c.id), let me = mySec, !me.isEmpty else { return false }
         return c.sec == me || aweme.author.secUid == me
     }
 
@@ -5280,7 +5396,7 @@ struct DYCommentPanel: View {
                 .font(.caption2).foregroundStyle(.themeTextSecondary)
             }
             Spacer(minLength: 4)
-            commentDigg(c)
+            if !DYPendingSend.isLocal(c.id) { commentDigg(c) }
         }
     }
 
