@@ -5377,6 +5377,46 @@ final class DouDuoUITests: XCTestCase {
         throw XCTSkip("仅只读验收，不执行账号点赞或收藏写操作")
     }
 
+    func testManualLivePiPMenuIsScopedToTheCurrentRoom() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "duoClassic"
+        app.launchEnvironment["DOUDUO_STARTLIVE"] = "1"
+        app.launchEnvironment["DOUDUO_LIVEMOCK"] = "1"
+        app.launchArguments += ["-douyin_muted_v1", "YES"]
+        app.launch()
+        addTeardownBlock { app.terminate() }
+
+        let enterRoom = app.buttons["live.room.enter"].firstMatch
+        let pip = app.buttons["live.room.pip"]
+        let badge = app.descendants(matching: .any).matching(identifier: "live.room.pipStatus").firstMatch
+        XCTAssertTrue(enterRoom.waitForExistence(timeout: 15))
+        XCTAssertFalse(pip.exists)
+        XCTAssertFalse(badge.exists)
+
+        enterRoom.tap()
+        let more = app.buttons["live.room.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        XCTAssertTrue(pip.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch
+        // The system menu publishes its accessibility elements before its presentation finishes.
+        let menuVisible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = pip.frame
+            return !frame.isEmpty && window.frame.contains(CGPoint(x: frame.midX, y: frame.midY))
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [menuVisible], timeout: 10), .completed)
+        pip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // The fixture has no media. A tap reports that playback is unavailable.
+        let alert = app.alerts["画中画"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["好"].tap()
+        app.buttons["live.room.close"].tap()
+        XCTAssertTrue(enterRoom.waitForExistence(timeout: 5))
+        XCTAssertFalse(pip.exists)
+        XCTAssertFalse(badge.exists)
+    }
+
     func testFollowedLivePickerRestoresRecommendation() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

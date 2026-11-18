@@ -66,6 +66,7 @@ targets:
     sources:
       - path: DouDuo/DYVideoFit.swift
       - path: DouDuo/DYShareLinkParse.swift
+      - path: DouDuo/DYLivePiPPolicy.swift
       - path: DouDuoTests
     settings:
       base:

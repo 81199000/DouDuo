@@ -11,6 +11,13 @@ struct DYLiveStream: Hashable {
 }
 
 extension DYLiveRoom {
+    func hlsURL(for quality: String) -> URL? {
+        guard let value = hls[quality], !value.isEmpty,
+              let url = URL(string: value),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
+    }
+
     /// 优先连续 HTTP-FLV，避免 HLS 播放列表/分片等待；同画质 HLS 保留为兜底。
     var liveStreams: [DYLiveStream] {
         let flv = flv ?? [:]
@@ -30,6 +37,50 @@ extension DYLiveRoom {
             }
         }
         return result
+    }
+}
+
+/// 内存中的输入标识同时约束房间、档位和播放代际；其中的地址不写入日志或缓存。
+struct DYFeaturedPiPInput: Equatable {
+    let generation: UUID
+    let roomID: String
+    let webRid: String
+    let quality: String
+    let listedHLS: URL
+
+    func replacement(_ room: DYLiveRoom) -> URL? {
+        guard room.id == roomID, room.webRid == webRid,
+              let url = room.hlsURL(for: quality), url != listedHLS else { return nil }
+        return url
+    }
+}
+
+/// 只在本次原源尝试期间持有的元数据，不持有播放器或媒体。
+struct DYFeaturedPiPMetadata {
+    let url: URL
+    let receivedAt: TimeInterval
+
+    func isFresh(at now: TimeInterval) -> Bool {
+        now >= receivedAt && now - receivedAt < 15
+    }
+}
+
+struct DYFeaturedPiPDetail {
+    let input: DYFeaturedPiPInput
+    let url: URL?
+    let session: Int
+    let resolvedAt: TimeInterval
+    let originalFailure: DYLivePiPPrepFailure?
+    let reused: Bool
+
+    /// 同一网页会话内，仅复用近期已出画的详情与完全相同的原地址。不续期。
+    func reuse(for current: DYFeaturedPiPInput, session: Int?, now: TimeInterval) -> Self? {
+        guard let url, originalFailure == .noPicture, session == self.session,
+              now >= resolvedAt, now - resolvedAt < 15,
+              current.roomID == input.roomID, current.webRid == input.webRid,
+              current.quality == input.quality, current.listedHLS == input.listedHLS else { return nil }
+        return Self(input: current, url: url, session: self.session, resolvedAt: resolvedAt,
+                    originalFailure: originalFailure, reused: true)
     }
 }
 
@@ -69,6 +120,13 @@ final class DYLiveModel: ObservableObject {
     @Published var loading = false
     private(set) var fetchedAt = Date.distantPast
     @Published var ready = false
+    @Published private var pausedPiPReturn = DYLivePausedReturn()
+    var isPausedAfterPiPReturn: Bool {
+        pausedPiPReturn.holds(currentRoom: currentID, sourceRoom: roomRef?.id, generation: streamGeneration)
+    }
+    var playbackOverlay: DYLivePlaybackOverlay {
+        .resolve(ready: ready, hasError: playbackError != nil, paused: isPausedAfterPiPReturn)
+    }
     /// 当前这一路解码出的画面尺寸。只在尺寸变化时更新，用来重新判断横屏分屏。
     @Published var playbackVideoSize: CGSize = .zero
     @Published var zone: DYLiveZone?
@@ -93,6 +151,19 @@ final class DYLiveModel: ObservableObject {
     static func qualityName(_ q: String) -> String {
         ["ORIGION": "原画", "FULL_HD1": "蓝光", "HD1": "超清", "SD1": "高清", "SD2": "标清"][q] ?? q
     }
+    @Published var manualPiPNotice: String?
+
+    func requestLivePiP() {
+        guard !pipSession.manualRequestInProgress, !pipSession.pipActive else { return }
+        if let notice = DYLivePiPPolicy.manualUnavailableMessage(readiness: pipReadiness) {
+            manualPiPNotice = notice
+            preparePiPHandoffIfNeeded()
+            return
+        }
+        if !pipSession.requestManualPiP() {
+            manualPiPNotice = "暂时无法开启画中画，请稍后重试。"
+        }
+    }
     func setQuality(_ q: String?) {
         quality = q
         UserDefaults.standard.set(q, forKey: "douyin_live_quality_v1")
@@ -106,6 +177,8 @@ final class DYLiveModel: ObservableObject {
         #endif
     }() {
         didSet {
+            pipSession.setMuted(muted)
+            guard !pipSession.isAudibleOwner else { return }
             vlc.outputMuted = muted
             if !muted, sessionReleased {
                 if activatePlaybackSession() {
@@ -118,13 +191,68 @@ final class DYLiveModel: ObservableObject {
         }
     }
     let vlc = VLCPlayerController()
+    let pipSession = DYLivePiPSession()
+    private var returnToVLCObserver: AnyCancellable?
+    private var pipSessionChange: AnyCancellable?
+    /// 预备时限、试播时限和失败后的那一次重试共用这一个任务；取消预备时一起取消。
+    private var pipPrepareTask: Task<Void, Never>?
+    /// 这一代流里 HLS 预备的失败记账；换源、换房、重连从零开始。
+    @Published private var pipAttempts = DYLivePiPAttempts()
+    @Published private var pipRetryPending = false
+    private var lastPreparedHLS: URL?
+    @Published private var featuredPiPDetail: DYFeaturedPiPDetail?
+    private var verifiedFeaturedPiPDetail: DYFeaturedPiPDetail?
+    private weak var featuredPiPBridge: DouyinBridge?
+    private var prefetchGeneration: UUID?
+    private var featuredPrefetch: (input: DYFeaturedPiPInput, session: Int, bridge: DouyinBridge,
+                                    task: Task<DYFeaturedPiPMetadata?, Never>)?
+    private var pipActiveObserver: NSObjectProtocol?
+    var usesAVPlayerSurface: Bool { pipSession.hasTakenOver }
+    /// 预备中的 HLS 画面层也要挂进窗口（压在 VLC 下面），首帧才会就绪。
+    var mountsPiPLayer: Bool { pipSession.preparing || pipSession.prepared || pipSession.hasTakenOver }
+
+    private var pipHLSQualities: Set<String> {
+        Set((roomRef?.hls ?? [:]).compactMap { $0.value.isEmpty ? nil : $0.key })
+    }
+
+    private func pipHandoffDecision(vlcShowsPicture: Bool, handoffInProgress: Bool,
+                                    appActive: Bool, coverHold: Bool) -> DYLiveHandoffDecision {
+        DYLivePiPPolicy.handoffDecision(
+            vlcPlaysFLV: sources.first?.isFLV == true, vlcQuality: sources.first?.quality,
+            hlsQualities: pipHLSQualities, vlcShowsPicture: vlcShowsPicture, handoffInProgress: handoffInProgress,
+            appActive: appActive, coverHold: coverHold)
+    }
+
+    var pipReadiness: DYLivePiPReadiness {
+        let sourceExclusion: DYLiveHandoffExclusion?
+        switch pipHandoffDecision(vlcShowsPicture: true, handoffInProgress: false, appActive: true, coverHold: false) {
+        case .skip(let reason) where reason == .noHLS || reason == .hlsMissingAtQuality: sourceExclusion = reason
+        default: sourceExclusion = nil
+        }
+        return DYLivePiPPolicy.readiness(
+            sourceExclusion: sourceExclusion,
+            vlcShowsPicture: ready && vlc.mediaPlayer.hasVideoOut,
+            phase: pipSession.phase,
+            possible: loadedRoom == currentID && ready && pipSession.manualPiPAvailable,
+            attempts: pipAttempts, retryPending: pipRetryPending,
+            resolvingDetail: pendingFeaturedPiPInput != nil)
+    }
+
+    var manualPiPIndicator: DYLivePiPIndicator? {
+        let current = visible && !browsing && !suspended && !audioInterrupted && ready
+            && loadedRoom == currentID && roomRef?.id == currentID && !DDPlayback.shared.coverHold
+            && UIApplication.shared.applicationState == .active
+        return DYLivePiPPolicy.indicator(readiness: pipReadiness, current: current,
+            active: pipSession.pipActive, pending: pipSession.manualRequestInProgress)
+    }
+
     private var requestGeneration = UUID()
     private var loadedRoom: String?
     private var roomRef: DYLiveRoom?
     private var sources: [DYLiveStream] = []
     private var retryTask: Task<Void, Never>?
     private var startedAt = ProcessInfo.processInfo.systemUptime
-    private var streamGeneration = UUID()
+    private(set) var streamGeneration = UUID()
     private let lifecycleID = UUID()
     private var visible = false
     /// 前后台过渡已经开始。重复回调不能再改策略，也不能再重连一次。
@@ -177,6 +305,7 @@ final class DYLiveModel: ObservableObject {
     }
     func deactivate() {
         visible = false
+        verifiedFeaturedPiPDetail = nil
         if let interruptionObserver {
             NotificationCenter.default.removeObserver(interruptionObserver)
             self.interruptionObserver = nil
@@ -195,8 +324,13 @@ final class DYLiveModel: ObservableObject {
     }
 
     init() {
+        // 画面层跟着 AVPlayer 的接管/释放切换；这些状态在 pipSession 上，界面只观察 model。
+        pipSessionChange = pipSession.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         vlc.onProgress = { [weak self] time in
-            guard let self else { return }
+            guard let self, !self.isPausedAfterPiPReturn else { return }
+            if self.pipSession.isAudibleOwner { return }
             if self.suspended {
                 self.reapplyBackgroundMuteIfNeeded()
             } else if self.vlc.mediaPlayer.audio?.isMuted != DYLivePlaybackGate.foregroundOutputMuted(userMuted: self.muted) {
@@ -207,18 +341,22 @@ final class DYLiveModel: ObservableObject {
                   self.vlc.mediaPlayer.hasVideoOut else { return }
             self.ready = true
             self.retryTask?.cancel()
-            Self.log("DDLIVE_READY room=\(self.loadedRoom ?? "-") elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
+            Self.log("DDLIVE_READY elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
+            self.preparePiPHandoffIfNeeded()
         }
         vlc.onVideoSize = { [weak self] size in
             guard let self, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
             self.playbackVideoSize = size
         }
         vlc.onError = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+            guard let self, self.loadedRoom != nil else { return }
+            guard self.liveCanProgress else { return }
             self.tryNextSource(reason: "decoder/network error", generation: self.streamGeneration)
         }
         vlc.onEnd = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+            guard let self, self.loadedRoom != nil else { return }
+            guard self.liveCanProgress else { return }
+            self.cancelPiPHandoffPreparation()
             self.playbackError = "直播已结束或连接中断，可重试或上滑换台"
             self.ready = false
         }
@@ -262,9 +400,15 @@ final class DYLiveModel: ObservableObject {
 
     func play(_ room: DYLiveRoom?) {
         guard let room else { return }
+        if isPausedAfterPiPReturn {
+            // 同房元数据刷新可保留；自动播放或迟到的旧房回调不能解除用户暂停。
+            if room.id == currentID { roomRef = room }
+            return
+        }
         roomRef = room
-        let restart = loadedRoom != room.id || DYLivePlaybackGate.shouldRestartSameRoom(
-            state: playbackState(), ready: ready, hasMedia: vlc.mediaPlayer.media != nil)
+        // AVPlayer 接管后 VLC 是停着的，那不是要重开同一间的信号。
+        let restart = loadedRoom != room.id || (!pipSession.hasTakenOver && DYLivePlaybackGate.shouldRestartSameRoom(
+            state: playbackState(), ready: ready, hasMedia: vlc.mediaPlayer.media != nil))
         let applicationActive = UIApplication.shared.applicationState == .active
         if DYLivePlaybackGate.acceptsRoomChange(playbackRegisteredActive: DDPlayback.shared.appIsActive, applicationActive: applicationActive, visible: visible), restart {
             suspended = false
@@ -278,7 +422,11 @@ final class DYLiveModel: ObservableObject {
             }
             return
         }
-        guard restart else { return }
+        guard restart else {
+            // 同房刷新可只更新 PiP 的 HLS。旧地址的失败不应封住新地址，也无需重开 VLC。
+            prepareRefreshedFeaturedHLSIfNeeded()
+            return
+        }
         loadedRoom = room.id
         sources = room.liveStreams
         // 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
@@ -291,6 +439,9 @@ final class DYLiveModel: ObservableObject {
     /// 滑到另一间时先撤掉上一间的就绪状态，避免旧画面被当成这一间已经播出。
     func noteVisibleRoom(_ id: String?) {
         guard id != currentID else { return }
+        manualPiPNotice = nil
+        pausedPiPReturn.clear()
+        if pipSession.manualRequestInProgress, pipSession.prepared { pipSession.invalidate() }
         currentID = id
         if loadedRoom != id {
             ready = false
@@ -316,6 +467,17 @@ final class DYLiveModel: ObservableObject {
     /// 只有真正要播出直播声音时才占着播放会话。静音或被打断时不拿它保活。
     private var wantsBackgroundAudioSession: Bool {
         guard DDPlayback.shared.pauseReason == .background, !audioInterrupted else { return false }
+        if visible, loadedRoom == currentID,
+           suspended, !audioInterrupted, !DDPlayback.shared.coverHold,
+           pipSession.startupPending || pipSession.pictureInPictureController.starting || pipSession.pipActive {
+            return true
+        }
+        if pipSession.hasTakenOver {
+            let pip = pipSession.pictureInPictureController
+            if pipSession.pipActive || pip.starting || pip.keepsVideoLayer {
+                return visible && !muted
+            }
+        }
         return DYLivePlaybackGate.retainsAudioSession(
             visible: visible,
             hasMedia: vlc.mediaPlayer.media != nil,
@@ -324,15 +486,112 @@ final class DYLiveModel: ObservableObject {
             interrupted: audioInterrupted)
     }
 
+    private var featuredPiPInput: DYFeaturedPiPInput? {
+        guard zone == nil, !isFollowedVisit, !followedOnly,
+              let room = roomRef, room.id == currentID, room.id == loadedRoom,
+              !room.webRid.isEmpty, let quality = sources.first?.quality,
+              let url = room.hlsURL(for: quality) else { return nil }
+        return DYFeaturedPiPInput(generation: streamGeneration, roomID: room.id,
+                                  webRid: room.webRid, quality: quality, listedHLS: url)
+    }
+
+    private func prepareRefreshedFeaturedHLSIfNeeded() {
+        guard !pipAttempts.mayPrepare, let input = featuredPiPInput,
+              input.listedHLS != lastPreparedHLS, featuredPiPDetail?.input != input else { return }
+        preparePiPHandoffIfNeeded()
+    }
+
+    private var currentListedPiPInput: DYFeaturedPiPInput? {
+        guard entered, visible, !browsing, !suspended, !isPausedAfterPiPReturn, !audioInterrupted, ready,
+              vlc.mediaPlayer.hasVideoOut, UIApplication.shared.applicationState == .active,
+              !DDPlayback.shared.coverHold, let input = featuredPiPInput, input.listedHLS == lastPreparedHLS,
+              featuredPiPDetail?.input != input else { return nil }
+        return input
+    }
+
+    /// 仅在原候选已按既有规则失败后才允许使用详情。
+    var pendingFeaturedPiPInput: DYFeaturedPiPInput? {
+        guard pipSession.phase == .idle, !pipRetryPending, !pipAttempts.mayPrepare,
+              pipAttempts.lastFailure == .noPicture || pipAttempts.lastFailure == .notLoaded else { return nil }
+        return currentListedPiPInput
+    }
+
+    var featuredPrefetchInput: DYFeaturedPiPInput? {
+        guard let input = currentListedPiPInput, let source = sources.first,
+              !source.isFLV, source.url == input.listedHLS,
+              pipSession.preparing || pipRetryPending || pendingFeaturedPiPInput == input else { return nil }
+        return input
+    }
+
+    func updateFeaturedPrefetch(_ input: DYFeaturedPiPInput?, using bridge: DouyinBridge) {
+        if let existing = featuredPrefetch, existing.input == input, existing.bridge === bridge,
+           existing.session == bridge.followSession { return }
+        cancelFeaturedPrefetch()
+        guard let input, input == featuredPrefetchInput, pipSession.preparing,
+              prefetchGeneration != input.generation, let task = bridge.prefetchFeaturedPiP(input) else { return }
+        prefetchGeneration = input.generation
+        featuredPrefetch = (input, bridge.followSession, bridge, task)
+    }
+
+    private func cancelFeaturedPrefetch() {
+        featuredPrefetch?.task.cancel()
+        featuredPrefetch = nil
+    }
+
+    func resolveFeaturedPiP(_ input: DYFeaturedPiPInput, using bridge: DouyinBridge) async {
+        let session = bridge.followSession
+        func isCurrent() -> Bool {
+            !Task.isCancelled && session == bridge.followSession && pendingFeaturedPiPInput == input
+        }
+        guard isCurrent() else { return }
+        var metadata: DYFeaturedPiPMetadata?
+        if let early = featuredPrefetch, early.input == input, early.session == session, early.bridge === bridge {
+            let result = await early.task.value
+            guard isCurrent() else { return }
+            if let result, result.isFresh(at: ProcessInfo.processInfo.systemUptime) { metadata = result }
+        }
+        if metadata == nil {
+            let room = await bridge.resolveLivePlaybackRoom(webRid: input.webRid)
+            guard isCurrent() else { return }
+            metadata = room.flatMap(input.replacement).map {
+                DYFeaturedPiPMetadata(url: $0, receivedAt: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        featuredPiPBridge = bridge
+        featuredPiPDetail = DYFeaturedPiPDetail(input: input, url: metadata?.url, session: session,
+                                                resolvedAt: metadata?.receivedAt ?? now,
+                                                originalFailure: pipAttempts.lastFailure, reused: false)
+        guard metadata != nil else { return }
+        preparePiPHandoffIfNeeded()
+    }
+
     private func suspendForBackground() {
         let reason = DDPlayback.shared.pauseReason
         if reason == .inactive || !visible { return }
+        cancelFeaturedPrefetch()
+        if reason == .background,
+           loadedRoom == currentID,
+           pipSession.startupPending || pipSession.pipActive || pipSession.pictureInPictureController.starting {
+            suspended = true
+            suspendedAt = Date()
+            retryTask?.cancel()
+            if !pipSession.hasTakenOver, !backgroundSoundEnabled {
+                vlc.outputMuted = true
+                vlc.mediaPlayer.audio?.isMuted = true
+            }
+            pipSession.pictureInPictureController.didEnterBackground()
+            return
+        }
+        cancelPiPHandoffPreparation()
         if reason == .cover {
             guard !suspended else { return }
             suspended = true
             suspendedAt = Date()
             retryTask?.cancel()
             sessionReleased = true
+            // 设置等覆盖层下不让 AVPlayer 继续出声；关掉后走原来的重连，按当时的偏好重新决定。
+            if pipSession.hasTakenOver { pipSession.invalidate() }
             if loadedRoom != nil, vlc.mediaPlayer.media != nil { vlc.pause() }
             return
         }
@@ -341,6 +600,19 @@ final class DYLiveModel: ObservableObject {
             suspended = true
             suspendedAt = Date()
             retryTask?.cancel()
+        }
+        let pip = pipSession.pictureInPictureController
+        if pipSession.hasTakenOver, pipSession.pipActive || pip.starting || pip.keepsVideoLayer {
+            pip.didEnterBackground()
+            return
+        }
+        if pipSession.hasTakenOver {
+            pipSession.stopForBackgroundWithoutPiP()
+            if !backgroundSoundEnabled {
+                pipSession.releaseAudibleOwner(generation: streamGeneration, roomID: loadedRoom ?? "",
+                                               userMuted: muted,
+                                               foregroundOutputMuted: DYLivePlaybackGate.foregroundOutputMuted(userMuted: muted))
+            }
         }
         // 只有「后台直播声音」关闭、并且已经进了真正的 background，才停媒体。
         if DYLivePlaybackGate.stopsMediaOnBackground(backgroundSound: backgroundSoundEnabled) {
@@ -353,9 +625,19 @@ final class DYLiveModel: ObservableObject {
             }
             stoppedForBackground = true
             sessionReleased = true
+            let releaseGeneration = streamGeneration
             streamGeneration = UUID()
+            if pipSession.isAudibleOwner {
+                pipSession.releaseAudibleOwner(generation: releaseGeneration, roomID: loadedRoom ?? "",
+                                               userMuted: muted,
+                                               foregroundOutputMuted: DYLivePlaybackGate.foregroundOutputMuted(userMuted: muted))
+            }
             vlc.stop()
             return
+        }
+        if pipSession.hasTakenOver, !pipSession.pipActive, backgroundSoundEnabled, loadedRoom != nil,
+           vlc.mediaPlayer.media == nil, let source = sources.first {
+            startVLCSources(generation: streamGeneration, source: source)
         }
         guard first else { return }
         captureBackgroundInput()
@@ -371,7 +653,22 @@ final class DYLiveModel: ObservableObject {
     }
 
     private func resumeFromBackground() {
+        if isPausedAfterPiPReturn {
+            return
+        }
         if DDPlayback.shared.coverHold { return }
+        let pip = pipSession.pictureInPictureController
+        if pip.active || pip.starting {
+            pip.returnToInline()
+            return
+        }
+        pipSession.cancelPendingStart()
+        if pip.awaitingClose { return }
+        // A system restoration may finish before the app becomes active.
+        if pipSession.hasTakenOver {
+            restoreVLCFromPiP()
+            return
+        }
         if stoppedForBackground {
             let action = DYLivePlaybackGate.silenceResume(
                 visible: visible, hasRoom: roomRef != nil, coverHold: false, pending: true)
@@ -421,6 +718,8 @@ final class DYLiveModel: ObservableObject {
                 retryTask?.cancel()
             }
             armResumeWatch()
+            // 进后台取消的预备只在 VLC 首帧时才会开始；沿用同一路 VLC 回来没有新的首帧，在这里接着预备。
+            if ready { preparePiPHandoffWhenActive() }
         case .reconnect:
             if DYLivePlaybackGate.shouldRebuildPlayer(
                 backgroundSound: backgroundSoundEnabled,
@@ -472,6 +771,7 @@ final class DYLiveModel: ObservableObject {
         switch type {
         case .began:
             guard visible, loadedRoom != nil else { return }
+            objectWillChange.send()
             audioInterrupted = true
             sessionReleased = true
             // 系统已经拿走音频。只静音的话，VLC 仍可能把播放会话抢回来。
@@ -520,16 +820,291 @@ final class DYLiveModel: ObservableObject {
         }
     }
 
+
     private func startCurrentSource() {
+        manualPiPNotice = nil
+        pausedPiPReturn.clear()
+        returnToVLCObserver = nil
         retryTask?.cancel()
         streamGeneration = UUID()
+        cancelFeaturedPrefetch()
+        lastPreparedHLS = nil
+        featuredPiPDetail = nil
         let generation = streamGeneration
         ready = false; playbackError = nil; playbackVideoSize = .zero
+        cancelPiPHandoffPreparation()
+        pipSession.invalidate()
+        clearPiPActiveObserver()
+        if pipAttempts != DYLivePiPAttempts() { pipAttempts = DYLivePiPAttempts() }
         guard let source = sources.first else {
             playbackError = "没有可用直播线路，请重试或换一个直播间"
             vlc.stop()
             return
         }
+        startVLCSources(generation: generation, source: source)
+    }
+
+    /// VLC 已经出画后才在下面静音预备 HLS；HLS 有可显示的首帧才静音试播，真正播起来才接管，否则一直留在 VLC。
+    /// 调用点：VLC 首帧、沿用现有 VLC 回到前台、暂时性失败后的那一次重试。
+    private func preparePiPHandoffIfNeeded() {
+        if !pipSession.pictureInPictureController.supported || loadedRoom != currentID {
+            return
+        }
+        let decision = pipHandoffDecision(
+            vlcShowsPicture: ready && vlc.mediaPlayer.hasVideoOut,
+            handoffInProgress: pipSession.phase != .idle,
+            appActive: UIApplication.shared.applicationState == .active,
+            coverHold: DDPlayback.shared.coverHold)
+        guard !pipRetryPending,
+              case .prepare(let quality, let warmsOnItemReady) = decision,
+              liveCanProgress, let roomID = loadedRoom,
+              let listedHLS = roomRef?.hlsURL(for: quality) else {
+            return
+        }
+        let input = featuredPiPInput
+        if featuredPiPDetail == nil, lastPreparedHLS == nil, let input,
+           let reuse = verifiedFeaturedPiPDetail?.reuse(for: input, session: featuredPiPBridge?.followSession,
+                                                        now: ProcessInfo.processInfo.systemUptime) {
+            featuredPiPDetail = reuse
+        }
+        let detail = featuredPiPDetail.flatMap {
+            $0.input == input && $0.session == featuredPiPBridge?.followSession ? $0 : nil
+        }
+        let url = detail?.url ?? listedHLS
+        if input != nil, let lastPreparedHLS, lastPreparedHLS != url, pipAttempts.failures > 0 {
+            pipAttempts = DYLivePiPAttempts()
+        }
+        guard pipAttempts.mayPrepare else { return }
+        lastPreparedHLS = url
+        let generation = streamGeneration
+        let preparedSource = sources.first
+        pipSession.prepareHandoff(asset: DYMedia.liveAsset(url), generation: generation, roomID: roomID,
+                                  warmsOnItemReady: warmsOnItemReady,
+                                  onReady: { [weak self] in
+            self?.startPiPWarmup(generation: generation, roomID: roomID)
+        },
+                                  onPlaying: { [weak self] in
+            self?.claimPiPHandoff(generation: generation, roomID: roomID)
+        },
+                                  onPrepFailed: { [weak self] failure in
+            guard let self, DYLivePiPPolicy.acceptsCallback(current: self.streamGeneration, event: generation,
+                                                      ownerRoom: self.loadedRoom, eventRoom: roomID) else { return }
+            self.handlePiPPrepFailure(failure, generation: generation)
+        },
+                                  onBackgroundClose: { [weak self] in
+            guard let self else { return }
+            guard DYLivePiPPolicy.acceptsCallback(current: self.streamGeneration, event: generation,
+                                            ownerRoom: self.loadedRoom, eventRoom: roomID) else { return }
+            self.stop()
+            DDPlayback.shared.releaseAudioSessionIfIdleInBackground()
+        },
+                                  onUnavailable: { [weak self] in
+            guard let self else { return }
+            guard DYLivePiPPolicy.acceptsCallback(current: self.streamGeneration, event: generation,
+                                            ownerRoom: self.loadedRoom, eventRoom: roomID) else { return }
+            self.handlePiPUnavailable(generation: generation)
+        },
+                                  onReturned: { [weak self] in
+            guard let self,
+                  DYLivePiPPolicy.acceptsCallback(current: self.streamGeneration, event: generation,
+                                            ownerRoom: self.loadedRoom, eventRoom: roomID),
+                  self.currentID == roomID else { return }
+            self.restoreVLCFromPiP()
+        },
+                                  canUsePreparedItem: { [weak self] in
+            guard let self else { return false }
+            return self.currentID == roomID && self.sources.first == preparedSource
+                && (detail?.url == nil || detail?.session == self.featuredPiPBridge?.followSession)
+                && self.visible
+                && !self.audioInterrupted && !DDPlayback.shared.coverHold
+                && DYLivePiPPolicy.acceptsCallback(current: self.streamGeneration, event: generation,
+                                             ownerRoom: self.loadedRoom, eventRoom: roomID)
+        },
+                                  canStartPreparedPlayback: { [weak self] in
+            guard let self else { return false }
+            return self.ready && self.vlc.mediaPlayer.isPlaying && self.vlc.mediaPlayer.hasVideoOut
+        })
+        armPiPLimit(generation: generation, limit: DYLivePiPPolicy.liveHandoffPrepareLimit)
+    }
+
+    /// 预备或试播超时：按当时的阶段和 item 状态归类，交给失败记账决定这一代还试不试。
+    private func armPiPLimit(generation: UUID, limit: Duration) {
+        pipPrepareTask?.cancel()
+        pipPrepareTask = Task { [weak self] in
+            do { try await Task.sleep(for: limit) } catch { return }
+            guard let self, self.streamGeneration == generation,
+                  self.pipSession.preparing else { return }
+            let inferred = DYLivePiPPolicy.timeoutFailure(
+                phase: self.pipSession.phase, itemReady: self.pipSession.itemReady,
+                layerReady: self.pipSession.playerLayer.isReadyForDisplay)
+            let failure = inferred ?? .stalled
+            self.handlePiPPrepFailure(failure, generation: generation)
+        }
+    }
+
+    /// VLC 一直在播，丢掉这次 HLS。暂时性失败在同一代里隔一会儿再试一次；不兼容或已试满就不再预备。
+    private func handlePiPPrepFailure(_ failure: DYLivePiPPrepFailure, generation: UUID) {
+        guard streamGeneration == generation else { return }
+        cancelPiPHandoffPreparation()
+        if let detail = featuredPiPDetail, detail.reused, detail.url == lastPreparedHLS {
+            verifiedFeaturedPiPDetail = nil
+            featuredPiPDetail = nil
+            pipAttempts = DYLivePiPAttempts()
+            preparePiPHandoffIfNeeded()
+            return
+        }
+        let delay = pipAttempts.record(failure)
+        guard let delay else {
+            // 列表可能在旧 item 准备期间已刷新；终态到达后再检查一次当前地址。
+            prepareRefreshedFeaturedHLSIfNeeded()
+            return
+        }
+        pipRetryPending = true
+        pipPrepareTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, self.streamGeneration == generation, self.pipRetryPending else { return }
+            self.pipRetryPending = false
+            self.preparePiPHandoffIfNeeded()
+        }
+    }
+
+    /// HLS 有了可显示帧：静音试播，VLC 不动。只有真正播起来（`onPlaying`）才接管。
+    private func startPiPWarmup(generation: UUID, roomID: String) {
+        guard DYLivePiPPolicy.acceptsCallback(current: streamGeneration, event: generation,
+                                        ownerRoom: loadedRoom, eventRoom: roomID) else { return }
+        guard liveCanProgress, UIApplication.shared.applicationState == .active, !DDPlayback.shared.coverHold else {
+            cancelPiPHandoffPreparation()
+            return
+        }
+        armPiPLimit(generation: generation, limit: DYLivePiPPolicy.warmupLimit)
+        pipSession.warmUp(generation: generation, roomID: roomID)
+    }
+
+    private func claimPiPHandoff(generation: UUID, roomID: String) {
+        guard DYLivePiPPolicy.acceptsCallback(current: streamGeneration, event: generation,
+                                        ownerRoom: loadedRoom, eventRoom: roomID) else { return }
+        guard currentID == roomID, visible, !DDPlayback.shared.coverHold else {
+            pipSession.invalidate()
+            return
+        }
+        if !pipSession.prepared {
+            guard pipSession.playerLayer.isReadyForDisplay, liveCanProgress,
+                  UIApplication.shared.applicationState == .active else {
+                cancelPiPHandoffPreparation()
+                return
+            }
+            pipPrepareTask?.cancel()
+            pipPrepareTask = nil
+            pipSession.finishPreparation()
+            if pipSession.prepared, let detail = featuredPiPDetail, detail.input == featuredPiPInput,
+               detail.url == lastPreparedHLS,
+               detail.url != nil, detail.originalFailure == .noPicture, !detail.reused,
+               detail.session == featuredPiPBridge?.followSession {
+                verifiedFeaturedPiPDetail = detail
+            }
+            return
+        }
+        guard pipSession.pipActive else { return }
+        pipPrepareTask?.cancel()
+        pipPrepareTask = nil
+        pipSession.claimAudibleOwner(generation: generation, roomID: roomID, vlc: vlc, userMuted: muted)
+        ready = true
+        retryTask?.cancel()
+        if let item = pipSession.playerLayer.player?.currentItem {
+            let size = item.presentationSize
+            if size.width > 0, size.height > 0 { playbackVideoSize = size }
+        }
+    }
+
+    private func restoreVLCFromPiP() {
+        guard visible, !DDPlayback.shared.coverHold, let loadedRoom, loadedRoom == currentID else { return }
+        guard UIApplication.shared.applicationState == .active else {
+            guard returnToVLCObserver == nil else { return }
+            let generation = streamGeneration
+            returnToVLCObserver = NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+                .sink { [weak self] _ in
+                    guard let self, self.streamGeneration == generation else { return }
+                    self.returnToVLCObserver = nil
+                    self.restoreVLCFromPiP()
+                }
+            return
+        }
+        returnToVLCObserver = nil
+        let hadTakenOver = pipSession.hasTakenOver
+        let returnAction = DYLivePiPPolicy.returnAction(
+            hadTakenOver: hadTakenOver, wasPlaying: pipSession.playAfterReturn)
+        pipSession.invalidate()
+        suspended = false
+        suspendedAt = nil
+        stoppedForBackground = false
+        audioInterrupted = false
+        if returnAction == .reconnectVLC {
+            startCurrentSource()
+        } else if returnAction == .stayPaused {
+            // 先停止并递增代次，再记录暂停，避免旧回调或前台恢复重新接入视频。
+            stop()
+            guard currentID == loadedRoom, roomRef?.id == loadedRoom else { return }
+            playbackError = nil
+            pausedPiPReturn.hold(roomID: loadedRoom, generation: streamGeneration)
+        } else {
+            applyForegroundAudio(reopenTrack: sessionReleased)
+        }
+    }
+
+    private func handlePiPUnavailable(generation: UUID) {
+        let hadTakenOver = pipSession.hasTakenOver
+        let manualStartFailed = pipSession.manualRequestInProgress
+        if manualStartFailed {
+            manualPiPNotice = "画中画未能启动，请稍后重试；直播继续播放。"
+        }
+        pipSession.invalidate()
+        // A cancelled manual request does not prove this rendition is unsupported.
+        if !manualStartFailed { _ = pipAttempts.record(.media) }
+        if hadTakenOver {
+            fallbackFromHLSToVLC(generation: generation)
+        } else if UIApplication.shared.applicationState == .background {
+            suspendForBackground()
+            DDPlayback.shared.releaseAudioSessionIfIdleInBackground()
+        } else {
+            applyForegroundAudio(reopenTrack: sessionReleased)
+        }
+    }
+
+    /// 回前台时 scenePhase 先变 active，UIApplication 仍是 inactive，预备会被前台条件挡掉；等它真正 active 再预备一次。
+    private func preparePiPHandoffWhenActive() {
+        guard UIApplication.shared.applicationState != .active else {
+            preparePiPHandoffIfNeeded()
+            return
+        }
+        guard pipActiveObserver == nil else { return }
+        let generation = streamGeneration
+        pipActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.clearPiPActiveObserver()
+                guard self.streamGeneration == generation, self.ready else { return }
+                self.preparePiPHandoffIfNeeded()
+            }
+        }
+    }
+
+    private func clearPiPActiveObserver() {
+        guard let pipActiveObserver else { return }
+        NotificationCenter.default.removeObserver(pipActiveObserver)
+        self.pipActiveObserver = nil
+    }
+
+    private func cancelPiPHandoffPreparation() {
+        clearPiPActiveObserver()
+        pipPrepareTask?.cancel()
+        pipPrepareTask = nil
+        if pipRetryPending { pipRetryPending = false }
+        if pipSession.preparing || pipSession.prepared { pipSession.invalidate() }
+    }
+
+
+    private func startVLCSources(generation: UUID, source: DYLiveStream) {
         startedAt = ProcessInfo.processInfo.systemUptime
         let sessionOK = activatePlaybackSession()
         if sessionOK { sessionReleased = false }
@@ -539,7 +1114,25 @@ final class DYLiveModel: ObservableObject {
             self?.armSourceTimeout(generation: generation, flv: flv)
         }
         vlc.replace(url: source.url, headers: DYMedia.liveHeaders, cachingMs: source.cacheMS)
-        Self.log("DDLIVEPLAY room=\(loadedRoom ?? "-") protocol=\(source.isFLV ? "FLV" : "HLS") q=\(source.quality) cache=\(source.cacheMS) drawable=\(vlc.mediaPlayer.drawable != nil) session=\(sessionOK ? 1 : 0)")
+        Self.log("DDLIVEPLAY protocol=\(source.isFLV ? "FLV" : "HLS") q=\(source.quality) cache=\(source.cacheMS) drawable=\(vlc.mediaPlayer.drawable != nil) session=\(sessionOK ? 1 : 0)")
+    }
+
+    private func fallbackFromHLSToVLC(generation: UUID) {
+        guard DYLivePlaybackGate.acceptEvent(currentGeneration: streamGeneration, eventGeneration: generation,
+                                             ownerRoomID: loadedRoom, eventRoomID: loadedRoom) else { return }
+        let appInBackground = UIApplication.shared.applicationState != .active
+        guard DYLivePiPPolicy.permitsHLSToVLCFallback(liveCanProgress: liveCanProgress,
+                                                backgroundSound: backgroundSoundEnabled,
+                                                appInBackground: appInBackground) else { return }
+        pipSession.invalidate()
+        guard let source = sources.first else {
+            playbackError = "直播连接失败，请重试或上滑换台"
+            ready = false
+            vlc.stop()
+            return
+        }
+        ready = false
+        startVLCSources(generation: streamGeneration, source: source)
     }
 
     @discardableResult
@@ -559,7 +1152,8 @@ final class DYLiveModel: ObservableObject {
             do { try await Task.sleep(for: .seconds(flv ? 6 : 10)) } catch { return }
             guard let self else { return }
             guard DYLivePlaybackGate.acceptEvent(currentGeneration: self.streamGeneration, eventGeneration: generation, ownerRoomID: self.loadedRoom, eventRoomID: self.loadedRoom),
-                  !self.ready, self.liveCanProgress else { return }
+                  !self.ready else { return }
+            guard self.liveCanProgress else { return }
             self.tryNextSource(reason: "startup timeout", generation: generation)
         }
     }
@@ -587,12 +1181,26 @@ final class DYLiveModel: ObservableObject {
         Self.log("DDLIVE_FALLBACK reason=\(reason) remaining=\(sources.count)")
         if !sources.isEmpty { sources.removeFirst() }
         guard !sources.isEmpty else {
+            cancelPiPHandoffPreparation()
             playbackError = "直播连接失败，请重试或上滑换台"; ready = false; vlc.stop(); return
         }
         startCurrentSource()
     }
 
+    func reconnect() {
+        retry()
+    }
+
+    func resumePausedPiP() {
+        guard isPausedAfterPiPReturn else { return }
+        retry()
+    }
+
     func retry() {
+        if pausedPiPReturn.roomID != nil {
+            guard isPausedAfterPiPReturn else { return }
+            pausedPiPReturn.clear()
+        }
         if isFollowedCatalog, let room = rooms.first(where: { $0.id == currentID }), room.liveStreams.isEmpty {
             playbackError = nil
             catalogResolveNonce += 1
@@ -603,12 +1211,13 @@ final class DYLiveModel: ObservableObject {
     }
     func enterRoom() {
         entered = true; clean = false
-        Self.log("DDLIVE_ENTER room=\(currentID ?? "-") reused=true")
+        Self.log("DDLIVE_ENTER reused=true")
     }
     func leaveRoom() {
+        cancelFeaturedPrefetch()
         guard visit.followed, let saved = savedFeed else {
             entered = false; clean = false
-            Self.log("DDLIVE_LEAVE room=\(currentID ?? "-") reused=true")
+            Self.log("DDLIVE_LEAVE reused=true")
             return
         }
         visit.leave()
@@ -635,19 +1244,29 @@ final class DYLiveModel: ObservableObject {
         }
     }
     func stop() {
+        manualPiPNotice = nil
+        pausedPiPReturn.clear()
+        returnToVLCObserver = nil
         suspended = false
         suspendedAt = nil
         stoppedForBackground = false
         audioInterrupted = false
         sessionReleased = false
         retryTask?.cancel(); streamGeneration = UUID()
+        cancelFeaturedPrefetch()
+        lastPreparedHLS = nil
+        featuredPiPDetail = nil
         vlc.cancelInterruptionRebuild()
+        cancelPiPHandoffPreparation()
+        pipSession.invalidate()
         loadedRoom = nil; vlc.stop(); ready = false
     }
     func reset() {
         followedOnly = false
         requestGeneration = UUID(); loading = false
         stop(); rooms = []; currentID = nil; error = nil; playbackError = nil
+        roomRef = nil
+        sources = []
         entered = false; clean = false
         visit.clear(); savedFeed = nil
     }
@@ -682,9 +1301,16 @@ final class DYLiveModel: ObservableObject {
             $0.id == room.id || (!room.webRid.isEmpty && $0.webRid == room.webRid)
         }) else { return }
         let previous = rooms[index].id
+        let keepsPause = isPausedAfterPiPReturn && currentID == previous
         rooms[index] = room
         if currentID == previous { currentID = room.id }
         guard currentID == room.id else { return }
+        if keepsPause {
+            // 同一 webRid 的解析结果可能补全房间 ID；资料更新不是用户继续播放。
+            roomRef = room
+            pausedPiPReturn.hold(roomID: room.id, generation: streamGeneration)
+            return
+        }
         loadedRoom = nil
         play(room)
     }
@@ -718,7 +1344,16 @@ final class DYLiveModel: ObservableObject {
         return URLSession(configuration: c)
     }()
 
+    func sessionDidExpire(_ bridge: DouyinBridge, reload: Bool) {
+        bridge.invalidateFollowSession()
+        invalidateFollowLive()
+        reset()
+        if reload { Task { await load(bridge, reset: true) } }
+    }
+
     func invalidateFollowLive() {
+        cancelFeaturedPrefetch()
+        verifiedFeaturedPiPDetail = nil
         followLive = []
         followLiveKind = nil
         followLiveFetchedAt = .distantPast
@@ -1026,6 +1661,46 @@ struct DYLiveModuleAnchorKey: PreferenceKey {
     }
 }
 
+
+private struct DYLivePiPStatusBadge: View {
+    let status: DYLivePiPIndicator?
+
+    var body: some View {
+        Group {
+            if let status {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(status == .ready ? Color.green : status == .preparing ? Color.yellow : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(status.rawValue)
+                        .font(.system(size: 12, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .fixedSize()
+                .background(Color(white: 0.10).opacity(0.88), in: Capsule())
+                .overlay { Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 1) }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Picture in Picture \(status.rawValue.lowercased())")
+                .accessibilityAddTraits(.isStaticText)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("live.room.pipStatus")
+    }
+}
+
+private struct DYLivePiPHeaderBoundsKey: PreferenceKey {
+    static var defaultValue: CGRect { .null }
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if !next.isNull { value = next }
+    }
+}
+
 struct DYLiveFeed: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -1035,6 +1710,7 @@ struct DYLiveFeed: View {
     let onWeb: (URL) -> Void
     var active = true
     /// 顶栏在 `douduo.feed` 坐标里的框。位置仍由顶栏自己决定，这里只用来把按钮放到它下面。
+    @State private var pipHeaderBounds: CGRect = .null
     var topChrome: CGRect = .zero
     var screenInsets: EdgeInsets = .init()
     var moduleRequest: DYLiveModuleRequest? = nil
@@ -1090,6 +1766,7 @@ struct DYLiveFeed: View {
     private var keyboardLocksPaging: Bool { inputFocused || keyboardOverlap > 1 }
 
     var body: some View {
+        let detailInput = active ? model.pendingFeaturedPiPInput : nil
         GeometryReader { geo in
             let viewport = geo.frame(in: .global)
             let layout = resolvedLayout(in: geo)
@@ -1103,12 +1780,36 @@ struct DYLiveFeed: View {
                     aspect: DYLiveLayoutAVideo.aspect(of: model.playbackVideoSize),
                     safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
                 : shown.video
+            let pipBadgePane = shown.layout == .existing ? videoFrame : shown.interaction
+            let pipBadgeTop = DYLivePiPBadgePlacement.topInset(
+                video: pipBadgePane,
+                header: pipHeaderBounds.offsetBy(dx: -viewport.minX, dy: -viewport.minY),
+                preferredTop: shown.layout == .existing ? 110 : 12)
             ZStack {
                 (shown.layout == .existing ? Color.ddBackground : Color.black)
-                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
+                ZStack {
+                    if model.mountsPiPLayer {
+                        DYLivePiPVideoSurface(session: model.pipSession)
+                    }
+                    if !model.usesAVPlayerSurface {
+                        VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
+                    }
+                }
                     .frame(width: videoFrame.width, height: videoFrame.height)
                     .position(x: videoFrame.midX, y: videoFrame.midY)
                     .allowsHitTesting(false)
+                Group {
+                    if active && model.entered {
+                        DYLivePiPStatusBadge(status: model.manualPiPIndicator)
+                    }
+                }
+                .padding(.top, pipBadgeTop ?? 0).padding(.leading, 8)
+                .opacity(pipBadgeTop == nil ? 0 : 1)
+                .accessibilityHidden(pipBadgeTop == nil)
+                .frame(width: pipBadgePane.width, height: pipBadgePane.height, alignment: .topLeading)
+                .position(x: pipBadgePane.midX, y: pipBadgePane.midY)
+                .allowsHitTesting(false)
+                .zIndex(1)
                 if model.rooms.isEmpty { emptyState }
                 else {
                     pages(video: shown.video, interaction: shown.interaction,
@@ -1181,6 +1882,9 @@ struct DYLiveFeed: View {
                 }
             }
         }
+        .onPreferenceChange(DYLivePiPHeaderBoundsKey.self) { frame in
+            if pipHeaderBounds != frame { pipHeaderBounds = frame }
+        }
         .onLiveHingeChange { status in
             hingeStatus = status
             if status == .closed || status == .partiallyOpen { manualSplit = false }
@@ -1222,6 +1926,12 @@ struct DYLiveFeed: View {
             if !model.isFollowedVisit, !model.isFollowedCatalog, let id, let i = model.rooms.firstIndex(where: { $0.id == id }), i >= model.rooms.count - 3 {
                 Task { await model.load(bridge) }
             }
+        }
+        .onChange(of: active ? model.featuredPrefetchInput : nil, initial: true) { _, input in
+            model.updateFeaturedPrefetch(input, using: bridge)
+        }
+        .task(id: detailInput) {
+            if let detailInput { await model.resolveFeaturedPiP(detailInput, using: bridge) }
         }
         .task(id: chatTarget) {
             guard let id = chatTarget else {
@@ -1758,7 +2468,7 @@ struct DYLiveFeed: View {
                 if !userScrolling {
                     gestureStartID = model.currentID
                     #if DEBUG
-                    DYLiveModel.log("DDLIVE_SCROLL start=\(model.currentID ?? "-") count=\(model.rooms.count)")
+                    DYLiveModel.log("DDLIVE_SCROLL count=\(model.rooms.count)")
                     #endif
                 }
                 scrollEndTask?.cancel(); userScrolling = true
@@ -1907,9 +2617,16 @@ private struct DYLiveRoomPage: View {
                 if isCurrent && !model.entered {
                     Color.clear.contentShape(Rectangle()).onTapGesture { model.enterRoom() }
                 }
-                if isCurrent, !model.ready || model.playbackError != nil {
+                if isCurrent, model.playbackOverlay != .none {
                     VStack(spacing: 10) {
-                        if let error = model.playbackError {
+                        if model.playbackOverlay == .paused {
+                            Image(systemName: "pause.circle").font(.title)
+                            Text("直播已暂停").font(.footnote)
+                                .accessibilityIdentifier("live.pause.state")
+                            Button("继续播放", systemImage: "play.fill", action: model.resumePausedPiP)
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("live.pause.resume")
+                        } else if let error = model.playbackError {
                             Text(error).font(.footnote).multilineTextAlignment(.center)
                             Button("重试", action: model.retry).buttonStyle(.bordered)
                         } else {
@@ -1944,6 +2661,12 @@ private struct DYLiveRoomPage: View {
                         foldActive: DYDuoMetrics.foldIsActive(geo))
                     VStack {
                         header(showsClose: !closeOnBottom)
+                            .background {
+                                GeometryReader { headerGeometry in
+                                    Color.clear.preference(key: DYLivePiPHeaderBoundsKey.self,
+                                        value: isCurrent ? headerGeometry.frame(in: .global) : .null)
+                                }
+                            }
                         Spacer(minLength: 12)
                         HStack(alignment: .bottom, spacing: 12) {
                             VStack(alignment: .leading, spacing: 12) {
@@ -1968,7 +2691,13 @@ private struct DYLiveRoomPage: View {
                                            action: splitAction)
                                         .disabled(splitRole == .hidden)
                                         .accessibilityIdentifier("live.room.split")
-                                    Button("重新连接", systemImage: "arrow.clockwise", action: model.retry)
+                                    Button(model.pipSession.manualRequestInProgress ? "画中画启动中…" : "画中画", systemImage: "pip") {
+                                        model.requestLivePiP()
+                                    }
+                                    .disabled(model.pipSession.manualRequestInProgress || model.pipSession.pipActive)
+                                    .accessibilityLabel("画中画")
+                                    .accessibilityIdentifier("live.room.pip")
+                                    Button("重新连接", systemImage: "arrow.clockwise", action: model.reconnect)
                                     Button("官网互动（礼物）", systemImage: "safari") { onWeb(room.webURL) }
                                     } label: { Image(systemName: "ellipsis").font(.title2).frame(width: 44, height: 44).ddMediaGlassCircle() }
                                     .accessibilityIdentifier("live.room.more")
@@ -2019,6 +2748,13 @@ private struct DYLiveRoomPage: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .foregroundStyle(foreground)
+        }
+        .alert("画中画", isPresented: Binding(
+            get: { isCurrent && model.manualPiPNotice != nil },
+            set: { if !$0 { model.manualPiPNotice = nil } })) {
+            Button("好", role: .cancel) { model.manualPiPNotice = nil }
+        } message: {
+            Text(model.manualPiPNotice ?? "")
         }
         #if DEBUG
         .accessibilityElement(children: .contain)
