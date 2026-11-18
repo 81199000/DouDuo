@@ -13,11 +13,12 @@ models = section(feed, 'struct DYComment:', '/// 评论里的一张图') + secti
 methods = section(extras, '    func publishComment(', '    /// 删除评论')
 recovery = section(relogin, '@MainActor\nenum DYRelogin', '\nstruct DYReloginSheet')
 verify_method = section(relogin, '    @MainActor private func verify()', '\n}\n\nextension View').replace('private func verify', 'func verify')
-send_method = section(feed, '    private func send() async {', '    private func row(').replace('private func send()', 'func send()')
+send_method = section(feed, '    /// 点发送：先把评论放进列表', '    @ViewBuilder\n    private func row(').replace('private func ', 'func ')
 messages = (root/'DouDuo/DouyinMessages.swift').read_text()
 reply_method = section(messages, '    private func sendReply() async {', '    private func showToast(').replace('private func sendReply()', 'func sendReply()')
 # View structs permit implicit self; the harness stores their @State equivalents in a class.
 send_method = send_method.replace('DYRelogin.start { showRelogin = true }', 'DYRelogin.start { [self] in showRelogin = true }')
+pending_src = (root/'DouDuo/DYCommentPending.swift').read_text().replace('import Foundation','')
 reply_method = reply_method.replace('DYRelogin.start { showRelogin = true }', 'DYRelogin.start { [self] in showRelogin = true }')
 response_match = re.search(r'private struct DYPublishResp[^\n]+', extras)
 once_flag = re.search(r'@MainActor final class DYOnceFlag[^\n]+', extras)[0]
@@ -25,10 +26,11 @@ assert response_match
 response = response_match[0]
 swift = r'''
 import Foundation
-struct DYImageXUploadResult { let uri: String; let width: Int; let height: Int; let format: String }
-struct DYUser { let name: String; let secUid: String; let uid: String }
+struct DYImageXUploadResult: Equatable { let uri: String; let width: Int; let height: Int; let format: String }
+struct DYUser { let name: String; let secUid: String; let uid: String; var avatar: String? = nil }
 enum DYError: Error { case bad(String) }
 struct DYLoginExpired: Error {}
+struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
 @MainActor enum DYLiveModel { static var lines = [String](); static func log(_ s: String) { lines.append(s) } }
 @MainActor final class DYAccountStore { static let shared = DYAccountStore(); var clears = 0, remembers = 0; func signOut() async { clears += 1 }; func remember(_ u: DYUser) async { remembers += 1 } }
 @MainActor final class DouyinBridge {
@@ -38,14 +40,15 @@ struct DYLoginExpired: Error {}
  var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
  func ensureWriteReady() async -> Bool { ready }
  func reload() {}
- func uploadCommentImage(_ data: Data, fileName: String, measured: Int) async throws -> DYImageXUploadResult { DYImageXUploadResult(uri:"private",width:1,height:1,format:"jpeg") }
+ var uploads = 0
+ func uploadCommentImage(_ data: Data, fileName: String, measured: DYImageXUploadResult) async throws -> DYImageXUploadResult { uploads += 1; return DYImageXUploadResult(uri:"private",width:1,height:1,format:"jpeg") }
  func selfProfile() async throws -> DYUser { guard let profile else { throw DYError.bad("missing") }; return profile }
  func call(_ s: String, args: [String:Any], attempts: Int) async throws -> Data { writes += 1; try? await Task.sleep(for:.milliseconds(150)); return Data(payload.utf8) }
  func fetchComments(_ a: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { if readDelayMs > 0 { try? await Task.sleep(for:.milliseconds(readDelayMs)) }; return (tops,0,false) }
  func fetchReplies(_ a: String, commentID: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { readFloors.append(commentID); return (floors[commentID] ?? [],0,false) }
 '''+methods+r'''
 }
-'''+models+'\n'+response+'\n'+once_flag+'\n'+recovery+r'''
+'''+models+'\n'+response+'\n'+once_flag+'\n'+recovery+'\n'+pending_src+r'''
 @MainActor final class RecoveryScreen {
  let bridge: DouyinBridge
  var busy = false, message = ""
@@ -54,14 +57,15 @@ struct DYLoginExpired: Error {}
  func onVerified(_ ok: Bool) { verified = ok }
 '''+verify_method+r'''
 }
-struct DraftImage { let data = Data(); let fileName = "image"; let measured = 1 }
 struct Video { let id = "video" }
 struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: String? = "222"; let parentCid: String? = "111" }
 @MainActor final class Composer {
  let bridge: DouyinBridge
  let aweme = Video()
  var draft = " exact text ", replyDraft = " exact reply ", imageLoading = false, sending = false, replySending = false
- var imageDraft: DraftImage? = DraftImage(), imageUploaded: DYImageXUploadResult?
+ var imageDraft: DYCommentImageDraft? = DYCommentImageDraft(), imageUploaded: DYImageXUploadResult?
+ var pending = [String: DYPendingSend](), mySec: String? = "self", myName: String? = "same", myAvatar: String? = nil
+ var currentDraftKey: String { "test-draft" }
  var replyTo: DYComment?, replyParent: String? = "111", inputFocused = true, replyFocused = true, showRelogin = false
  var items = [DYComment](), replies = [String:[DYComment]](), total = 0, replied = Set<String>()
  var sendErr: String?, replyErr: String?, replying: Notice? = Notice()
@@ -133,11 +137,27 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   check(presented && DYAccountStore.shared.clears==0,"code8 recovery preserves login without explicit consent")
   let composer=Composer(bridge("8")); composer.replyTo=candidate()
   await composer.send()
-  check(composer.draft==" exact text " && composer.imageDraft != nil && composer.imageUploaded != nil && composer.replyTo != nil && composer.replyParent=="111" && composer.showRelogin,"production comment composer keeps text, image, upload, and reply target on code8")
+  let held=composer.pending.values.first
+  check(composer.pending.count==1 && held?.text=="exact text" && held?.imageDraft != nil && held?.uploaded != nil && held?.top=="111" && composer.showRelogin && composer.bridge.writes==1,"code8 keeps the comment (text, image, upload, reply target) in place for retry, no auto resend")
+  if case .failed = held?.state { check(true,"code8 marks the local comment as failed") } else { check(false,"code8 marks the local comment as failed") }
+  let lid=composer.pending.keys.first!
+  composer.bridge.payload="{\"status\":200,\"code\":0,\"comment\":{\"id\":\"999\",\"text\":\"exact text\",\"name\":\"same\",\"digg\":0,\"time\":1,\"replies\":0}}"
+  await composer.deliver(lid)
+  check(composer.pending.isEmpty && composer.replies["111"]?.first?.id=="999" && composer.bridge.uploads==1 && composer.bridge.writes==2,"retry replaces the local row with the server comment and does not re-upload the image")
+  let ok=Composer(bridge("0","555")); ok.replyParent=nil; ok.imageDraft=nil
+  await ok.send()
+  check(ok.items.first?.id=="555" && ok.pending.isEmpty && ok.draft.isEmpty && ok.total==1,"confirmed send swaps the optimistic row for the real comment")
+  let failing=Composer(bridge()); failing.replyParent=nil; failing.imageDraft=nil
+  failing.bridge.payload="{\"status\":200,\"code\":5,\"msg\":\"rejected\",\"comment\":null}"
+  await failing.send(); let fid=failing.pending.keys.first ?? ""
+  failing.editLocal(fid)
+  check(failing.pending.isEmpty && failing.items.isEmpty && failing.draft=="exact text","edit returns a rejected comment to the composer and removes the row")
   let noticeComposer=Composer(bridge("8")); await noticeComposer.sendReply()
   check(noticeComposer.replyDraft==" exact reply " && noticeComposer.replying != nil && noticeComposer.showRelogin && noticeComposer.replied.isEmpty,"production notice reply keeps draft and target on code8")
-  let unknownComposer=Composer(bridge()); await unknownComposer.send()
-  check(unknownComposer.draft==" exact text " && unknownComposer.imageDraft != nil && unknownComposer.items.isEmpty,"unknown result preserves composer and adds no fake comment")
+  let unknownComposer=Composer(bridge()); unknownComposer.replyParent=nil; await unknownComposer.send()
+  let u=unknownComposer.pending.values.first
+  var isUnknown=false; if case .unknown = u?.state { isUnknown=true }
+  check(isUnknown && u?.imageDraft != nil && unknownComposer.items.first.map { DYPendingSend.isLocal($0.id) } == true && unknownComposer.bridge.writes==1,"unknown result stays as an unconfirmed local row (never shown as sent), no auto resend")
   let recoveryBridge=bridge(); recoveryBridge.profile=nil
   let screen=RecoveryScreen(recoveryBridge); await screen.verify()
   check(!screen.verified && DYAccountStore.shared.remembers==0,"recovery callback rejects unreadable self profile regardless of old cookie")
@@ -155,12 +175,12 @@ with tempfile.TemporaryDirectory(prefix='comment-recovery-', dir=os.environ['TMP
     result = subprocess.run([str(p/'tests')])
     if result.returncode: raise SystemExit(result.returncode)
 # Supplemental UI wiring: only the confirmed-success path may clear composer state.
-for filename, marker, end, draft in [('DouyinFeedView.swift','} catch is DYLoginExpired','private func row','draft'),('DouyinMessages.swift','} catch is DYLoginExpired','private func showToast','replyDraft')]:
+for filename, marker, end, draft in [('DouyinFeedView.swift','} catch is DYLoginExpired','private func replaceLocal','draft'),('DouyinMessages.swift','} catch is DYLoginExpired','private func showToast','replyDraft')]:
     s=(root/'DouDuo'/filename).read_text(); block=section(s,marker,end)
     assert not re.search(r'\b'+draft+r'\s*=',block), 'recovery must preserve draft'
     assert 'clearCommentImage()' not in block and 'closeReply()' not in block
     assert '登录已失效' not in block
-assert 'DYLoginState.hasSession()' not in relogin, 'cookie presence cannot validate recovery'
+assert 'DYLoginState.hasSession()' not in verify_method, 'cookie presence cannot validate recovery'
 assert '.confirmationDialog(' in relogin, 'destructive cleanup requires explicit confirmation'
 assert 'DouyinWebScreen' in relogin, 'preserved-session validation must be reachable'
 print('PASS recovery UI wiring, draft retention, explicit cleanup consent')

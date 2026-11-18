@@ -2035,6 +2035,8 @@ struct DYNoticeListScreen: View {
             replyErr = "抖音拦下了这次回复（需要验证或暂时受限）；登录和草稿已保留，请选择恢复方式"
             replyFocused = false
             DYRelogin.start { showRelogin = true }
+        } catch let e as DYCommentUnconfirmed {
+            replyErr = e.message + "，草稿已保留，勿连续重发"
         } catch {
             replyErr = "发送失败：\(error.localizedDescription)"
         }

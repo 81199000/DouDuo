@@ -23,6 +23,9 @@ final class DDPlayback {
     private var stoppers: [UUID: () -> Void] = [:]
     private var starters: [UUID: () -> Void] = [:]
     private var sessionRetainers: [UUID: () -> Bool] = [:]
+    /// 播放器所在的遮罩层级：0 = 首页；从信息页/我的里点开的全屏播放器 = 打开时的遮罩数。
+    /// 遮罩数没超过这一层，说明它就是最上面那层，可以播（老板 11-18：信息里点开的视频要等十几秒才动）。
+    private var coverLevels: [UUID: Int] = [:]
     private var lock = NSLock()
     /// App 当前是否在前台：注册晚于切后台时（视频刚起播），要立刻停，不能接着响
     private(set) var appIsActive = true
@@ -30,6 +33,9 @@ final class DDPlayback {
     /// 转发等覆盖层还盖着。后台锁不能把它清掉，前台回调也不能在它消失前把直播拉起来。
     private var coverCount = 0
     var coverHold: Bool { coverCount > 0 }
+    var coverDepth: Int { coverCount }
+    /// 这一层的播放器现在是不是露在最上面
+    func isUncovered(level: Int) -> Bool { coverCount == 0 || (level > 0 && coverCount <= level) }
     @MainActor private var offlineLibraryPresentations: Set<UUID> = []
     @MainActor var offlineLibraryPresented: Bool { !offlineLibraryPresentations.isEmpty }
 
@@ -61,12 +67,16 @@ final class DDPlayback {
     static var bgPlay: Bool { UserDefaults.standard.bool(forKey: "douyin_bg_play_v1") }
 
     func register(_ id: UUID, stop: @escaping () -> Void, start: @escaping () -> Void,
-                  retainsAudioSession: (() -> Bool)? = nil, playsInsideCover: Bool = false) {
+                  retainsAudioSession: (() -> Bool)? = nil, playsInsideCover: Bool = false, coverLevel: Int = 0) {
         lock.lock(); defer { lock.unlock() }
         stoppers[id] = stop; starters[id] = start
+        coverLevels[id] = coverLevel
         if let retainsAudioSession { sessionRetainers[id] = retainsAudioSession }
         else { sessionRetainers[id] = nil }
-        let shouldStop = !appIsActive && !playsInsideCover
+        // 被遮罩挡住才停；自己就在最上层（信息页里点开的视频）时不停
+        let onTop = coverLevel > 0 && coverCount > 0 && coverCount <= coverLevel
+            && UIApplication.shared.applicationState == .active
+        let shouldStop = !appIsActive && !playsInsideCover && !onTop
         #if DEBUG
         ddWrite("DDBG register \(id.uuidString.prefix(4)) total=\(stoppers.count) appActive=\(appIsActive)")
         #endif
@@ -74,7 +84,7 @@ final class DDPlayback {
     }
     func unregister(_ id: UUID) {
         lock.lock(); defer { lock.unlock() }
-        stoppers[id] = nil; starters[id] = nil; sessionRetainers[id] = nil
+        stoppers[id] = nil; starters[id] = nil; sessionRetainers[id] = nil; coverLevels[id] = nil
         #if DEBUG
         ddWrite("DDBG unregister \(id.uuidString.prefix(4)) total=\(stoppers.count)")
         #endif
@@ -125,16 +135,27 @@ final class DDPlayback {
     func resumeAll() {
         guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .resume) else { return }
         appIsActive = true
-        guard coverCount == 0 else { return }
+        guard coverCount == 0 else { startPlayersOnTop(); return }
         startRegisteredPlayers()
     }
     /// 覆盖层消失。还在后台时只减计数；人已经回到前台才启动。
     func releaseCover() {
         guard coverCount > 0 else { return }
         coverCount -= 1
-        guard coverCount == 0, UIApplication.shared.applicationState == .active else { return }
+        guard UIApplication.shared.applicationState == .active else { return }
+        guard coverCount == 0 else { startPlayersOnTop(); return }
         appIsActive = true
         startRegisteredPlayers()
+    }
+    /// 还有遮罩时：只启动「就在最上层」的播放器（例如信息页里点开的视频关掉它自己的设置页后）
+    private func startPlayersOnTop() {
+        lock.lock()
+        let s = starters.filter { id, _ in let l = coverLevels[id] ?? 0; return l > 0 && coverCount <= l }.map(\.value)
+        lock.unlock()
+        guard !s.isEmpty else { return }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        s.forEach { $0() }
     }
     private func startRegisteredPlayers() {
         lock.lock(); let s = Array(starters.values); lock.unlock()
@@ -322,6 +343,7 @@ struct PlayerPage: View {
     @Environment(\.dyOfflineVideoPlayback) private var offlineVideoContext
     @Environment(\.duoCleanScreen) private var cleanScreen
     @Environment(\.duoContentInsets) private var chromeInsets
+    @Environment(\.ddCoverLevel) private var coverLevel
     let id: String
     let url: URL
     let knownDuration: Double
@@ -679,7 +701,7 @@ struct PlayerPage: View {
             let playsInsideCover = offlineContext?.inLibrary == true && UIApplication.shared.applicationState == .active
             DDPlayback.shared.register(playbackID, stop: { pauseForBackground() }, start: { resumeAfterBackground() },
                                        retainsAudioSession: { !DDPlayback.shared.coverHold && pictureInPicture.keepsPlaybackOnExit },
-                                       playsInsideCover: playsInsideCover)
+                                       playsInsideCover: playsInsideCover, coverLevel: coverLevel)
         }
         .onDisappear {
             playbackIsActive = false
@@ -705,7 +727,7 @@ struct PlayerPage: View {
             // 被信息页/我的/设置等盖住时不许自己起播：以前每个播放器都直接监听回前台并恢复，
             // 绕过了 DDPlayback 的遮罩计数 → 停在信息页切出去再回来，外面的视频照样出声。
             // 遮罩期间交给 DDPlayback.releaseCover() 在真正回到首页时统一恢复。
-            guard !DDPlayback.shared.coverHold || offlineContext?.inLibrary == true else {
+            guard DDPlayback.shared.isUncovered(level: coverLevel) || offlineContext?.inLibrary == true else {
                 DYLiveModel.log("DDRESUME skip id=\(id.suffix(6)) cover")
                 return
             }
