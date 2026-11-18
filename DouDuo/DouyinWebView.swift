@@ -497,6 +497,8 @@ struct DouyinWebContainer: UIViewRepresentable {
             // 长按消息气泡 → 通知 App 弹「删除这条消息」
             cfg.userContentController.addUserScript(
                 WKUserScript(source: DYChatMessageMenu.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            // 仅 DEBUG：只读记录私信网页的数据来源与消息状态字段（DDIMPROBE），不改网页行为
+            DYIMProbe.install(in: cfg)
         }
         // 网页 → App 消息通道
         cfg.userContentController.add(DDAppMessageHandler(model), name: "ddMsg")
