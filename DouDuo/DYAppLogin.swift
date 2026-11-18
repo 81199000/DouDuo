@@ -50,6 +50,9 @@ struct DYAppLoginScreen: View {
         }
         .onChange(of: page.loggedIn) { _, ok in if ok { dismiss() } }
         .onChange(of: page.askScan) { _, ask in if ask { mode = .qr } }
+        // 登录页里换 cookie 是预期内的，登录守护别弹
+        .onAppear { DYSessionWatch.shared.loginScreenOpen = true }
+        .onDisappear { DYSessionWatch.shared.loginScreenOpen = false }
     }
 
     private var form: some View {
