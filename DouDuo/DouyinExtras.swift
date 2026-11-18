@@ -911,13 +911,19 @@ struct DYGrid: View {
     /// 长按格子出的移除项（例如「移出稍后再看」）。两个都给了才有长按菜单。
     var removeTitle: String? = nil
     var onRemove: ((DYAweme) -> Void)? = nil
+    /// 作者主页：刚刚看过的那条（同抖音：格子上标「刚刚看过」，不在屏上时底部给一键定位）
+    var focusID: String? = nil
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
+    @State private var focusVisible = false
 
     @ViewBuilder
     private func gridButton(_ i: Int, _ a: DYAweme) -> some View {
         let button = Button { onOpen(i) } label: { cell(a) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.grid.item.\(a.id)")
+            .id(a.id)
+            .onAppear { if a.id == focusID { focusVisible = true } }
+            .onDisappear { if a.id == focusID { focusVisible = false } }
         if let onRemove, let removeTitle {
             button.contextMenu {
                 Button(removeTitle, systemImage: "minus.circle", role: .destructive) { onRemove(a) }
@@ -932,6 +938,7 @@ struct DYGrid: View {
         // 底部哨兵只在真正滚进可视区时才翻页：ScrollView 的非惰性子视图会立刻 onAppear，
         // 直接 onAppear 会一页接一页把作者作品全拉下来（2026-11-07 实测）。
         GeometryReader { outer in
+          ScrollViewReader { proxy in
             ScrollView {
                 LazyVGrid(columns: cols, spacing: 2) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { i, a in
@@ -959,6 +966,25 @@ struct DYGrid: View {
             .onPreferenceChange(DYBottomYKey.self) { y in
                 if y < outer.size.height - 16 { onLoadMore() }
             }
+            .overlay(alignment: .bottom) {
+                if let focusID, !focusVisible, items.contains(where: { $0.id == focusID }) {
+                    Button {
+                        withAnimation(.snappy) { proxy.scrollTo(focusID, anchor: .center) }
+                        DYLiveModel.log("DDAUTHOR jump-to-recent id=\(focusID)")
+                    } label: {
+                        Label("定位到刚刚看过", systemImage: "scope")
+                            .font(.footnote.weight(.semibold))
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityIdentifier("douyin.author.jumpRecent")
+                }
+            }
+            .animation(.snappy, value: focusVisible)
+          }
         }
     }
 
@@ -970,6 +996,22 @@ struct DYGrid: View {
                     placeholder: { Color.white.opacity(0.06) }
             }
             .clipped()
+            .overlay {
+                if a.id == focusID {
+                    Rectangle().strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if a.id == focusID {
+                    Text("刚刚看过")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Color.black.opacity(0.6), in: .rect(cornerRadius: 4))
+                        .padding(5)
+                        .accessibilityIdentifier("douyin.grid.recent")
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 if !a.images.isEmpty {
                     Image(systemName: "photo.on.rectangle").font(.caption).foregroundStyle(.white).padding(6)
@@ -2041,7 +2083,10 @@ struct DYAuthorScreen: View {
     let onWeb: (URL) -> Void
     var onClose: (() -> Void)? = nil
     var onWorkPresentationChange: ((Bool) -> Void)? = nil
+    /// 刚刚看过的作品 ID；不传就取打开主页那一刻正在播的视频（只有它确实是这个作者的作品才会标出来）
+    var focusAwemeID: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var recentID: String?
     @State private var user: DYUser?
     @State private var err: String?
     @State private var posts: [DYAweme] = []
@@ -2087,7 +2132,7 @@ struct DYAuthorScreen: View {
             DYGrid(items: posts, hasMore: hasMore, loading: loading, error: postErr, onLoadMore: { requestMore() }, onOpen: { i in
                 onWorkPresentationChange?(true)
                 player = DYAuthorPlay(playback: DYListPlayback(items: posts, start: i))
-            })
+            }, focusID: recentID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("douyin.author.works")
         }
@@ -2120,7 +2165,12 @@ struct DYAuthorScreen: View {
         } message: {
             Text(blocked ? "解除拉黑后，对方可以搜索到你，可以给你发私信" : "拉黑后，对方将无法搜索到你，也不能给你发私信")
         }
-        .fullScreenCover(item: $player, onDismiss: { onWorkPresentationChange?(false) }) { p in
+        .fullScreenCover(item: $player, onDismiss: {
+            onWorkPresentationChange?(false)
+            // 从主页点开作品看完回来：「刚刚看过」换成最后停留的那条
+            let last = DDNowPlaying.id
+            if !last.isEmpty, posts.contains(where: { $0.id == last }) { recentID = last }
+        }) { p in
             DYListPlayer(bridge: bridge, title: author.name.isEmpty ? "作品" : author.name, playback: p.playback,
                          loadMore: { await loadPosts() }, onAuthor: { _ in })
         }
@@ -2142,7 +2192,27 @@ struct DYAuthorScreen: View {
             }
             #endif
             _ = await loadPosts()
+            await locateRecent(s)
         }
+    }
+
+    /// 同抖音：刚刚看过的作品不在第一页时继续往下翻，直到翻到它（先核实它确实是这个作者的，别白翻）
+    private func locateRecent(_ sec: String) async {
+        let candidate = focusAwemeID ?? (DDNowPlaying.id.isEmpty ? nil : DDNowPlaying.id)
+        guard let id = candidate, !id.isEmpty else { return }
+        if posts.contains(where: { $0.id == id }) { recentID = id; DYLiveModel.log("DDAUTHOR recent found page=1 id=\(id)"); return }
+        guard hasMore, let item = try? await bridge.awemeDetail(id), item.author.secUid == sec else { return }
+        for page in 2...30 {
+            guard hasMore, !Task.isCancelled else { break }
+            while loading { try? await Task.sleep(for: .milliseconds(120)) }
+            _ = await loadPosts()
+            if posts.contains(where: { $0.id == id }) {
+                recentID = id
+                DYLiveModel.log("DDAUTHOR recent found page=\(page) id=\(id)")
+                return
+            }
+        }
+        DYLiveModel.log("DDAUTHOR recent not found id=\(id) n=\(posts.count)")
     }
 
     private func close() { if let onClose { onClose() } else { dismiss() } }
