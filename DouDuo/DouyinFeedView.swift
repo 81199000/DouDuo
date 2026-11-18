@@ -4497,6 +4497,64 @@ enum DYFormat {
 
 // MARK: - 评论
 
+private struct DYHorizontalCommentCloseButton: UIViewRepresentable {
+    let tint: UIColor
+    let onClose: () -> Void
+
+    final class Anchor: UIView {
+        let button = UIButton(type: .system)
+        var onClose: (() -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            button.setImage(UIImage(systemName: "xmark",
+                                    withConfiguration: UIImage.SymbolConfiguration(textStyle: .subheadline, scale: .medium)),
+                            for: .normal)
+            button.accessibilityLabel = "关闭评论"
+            button.accessibilityIdentifier = "douyin.comments.close"
+            button.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            positionButton()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            positionButton()
+        }
+
+        func positionButton() {
+            guard let window else {
+                button.removeFromSuperview()
+                return
+            }
+            // The split panel can draw above its host's tappable bounds.
+            // Keep the visual anchor in the header and receive touches at window level.
+            if button.superview !== window { window.addSubview(button) }
+            button.frame = convert(bounds, to: window)
+        }
+    }
+
+    func makeUIView(context: Context) -> Anchor {
+        Anchor(frame: .zero)
+    }
+
+    func updateUIView(_ anchor: Anchor, context: Context) {
+        anchor.onClose = onClose
+        anchor.button.tintColor = tint
+        anchor.positionButton()
+    }
+
+    static func dismantleUIView(_ anchor: Anchor, coordinator: ()) {
+        anchor.button.removeFromSuperview()
+    }
+}
+
 struct DYCommentPanel: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -4653,9 +4711,17 @@ struct DYCommentPanel: View {
             Group {
                 if horizontalStatus && !showsCaption {
                     HStack(spacing: 4) {
-                        closeButton
-                        commentTitle
-                        Spacer(minLength: 0)
+                        if let onClose {
+                            DYHorizontalCommentCloseButton(tint: UIColor(Color.themeTextPrimary), onClose: onClose)
+                                .frame(width: 44, height: 44)
+                        }
+                        HStack(spacing: 0) {
+                            commentTitle
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                        .modifier(DYPanelDismissGesture(allowsSwipeRight: true, onClose: onClose))
                     }
                     .frame(minHeight: max(44, DYDuoMetrics.windowSafeTop))
                 } else {
@@ -4678,7 +4744,8 @@ struct DYCommentPanel: View {
         }
         .foregroundStyle(.themeTextPrimary)
         .contentShape(Rectangle())
-        .modifier(DYPanelDismissGesture(allowsSwipeRight: true, onClose: onClose))
+        .modifier(DYPanelDismissGesture(allowsSwipeRight: true,
+                                        onClose: horizontalStatus && !showsCaption ? nil : onClose))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.comments.header")
     }
