@@ -741,6 +741,8 @@ struct DYMessagesScreen: View {
         .onAppear { chatSurfaceActive = true }
         .onDisappear {
             chatSurfaceActive = false
+            // 聊天网页关掉后还常驻（下次秒开）：里面正在放的视频/语音必须停，否则退出信息页还在出声
+            DYChatMedia.silence(chatModel.web, reason: "messages-close")
             DYMessageCache.shared.retainChat()
         }
     }
@@ -1320,6 +1322,7 @@ struct DYMessagesScreen: View {
         let wasStranger = cache.selectedChat?.stranger == true
         cache.selectedChat = nil
         chatModel.web?.endEditing(true)
+        DYChatMedia.silence(chatModel.web, reason: "chat-back")
         Task {
             if let web = chatModel.web {
                 // 网页切回列表之前，把刚看的聊天画面（含最新消息）截下来，下次进这条会话直接铺
@@ -1885,7 +1888,7 @@ struct DYNoticeListScreen: View {
         }
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
-                         onAuthor: { author = $0.author }, commentFocus: p.focus)
+                         onAuthor: { author = $0.author }, commentFocus: p.focus, hardStopOnDismiss: true)
         }
         .safeAreaInset(edge: .bottom) { if replying != nil { replyBar.padding(.bottom, replyKeyboardInset) } }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
@@ -3668,5 +3671,17 @@ struct DYForwardMenu: View {
         let b = builtAt > 0 ? Int((builtAt - tapAt) * 1000) : -1
         DYLiveModel.log("DDMSGOPEN tap→built=\(b)ms tap→appear=\(Int((CACurrentMediaTime() - tapAt) * 1000))ms")
         tapAt = 0
+    }
+}
+
+
+/// 常驻聊天网页里的视频、语音：离开会话或关掉信息页时一律停掉（网页自己放的视频不归原生播放器管）。
+@MainActor enum DYChatMedia {
+    static let pauseJS = "document.querySelectorAll('video,audio').forEach(m=>{try{m.pause()}catch(e){}});true"
+    static func silence(_ web: WKWebView?, reason: String) {
+        guard let web else { return }
+        web.pauseAllMediaPlayback { }
+        web.evaluateJavaScript(pauseJS) { _, _ in }
+        DYLiveModel.log("DDCHATMEDIA pause reason=\(reason)")
     }
 }
