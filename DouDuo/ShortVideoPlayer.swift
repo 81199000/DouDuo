@@ -132,6 +132,17 @@ final class DDPlayback {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
+
+    /// 仅在画中画握手结束的真正后台复核现有音频所有者。
+    @MainActor func releaseAudioSessionIfIdleInBackground() {
+        guard !appIsActive, UIApplication.shared.applicationState == .background, !Self.bgPlay else { return }
+        lock.lock()
+        let retainers = Array(sessionRetainers.values)
+        lock.unlock()
+        guard !retainers.contains(where: { $0() }) else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
     func resumeAll() {
         guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .resume) else { return }
         appIsActive = true
