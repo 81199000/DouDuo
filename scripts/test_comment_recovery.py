@@ -31,6 +31,7 @@ struct DYUser { let name: String; let secUid: String; let uid: String; var avata
 enum DYError: Error { case bad(String) }
 struct DYLoginExpired: Error {}
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
+@MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
 @MainActor enum DYLiveModel { static var lines = [String](); static func log(_ s: String) { lines.append(s) } }
 @MainActor final class DYAccountStore { static let shared = DYAccountStore(); var clears = 0, remembers = 0; func signOut() async { clears += 1 }; func remember(_ u: DYUser) async { remembers += 1 } }
 @MainActor final class DouyinBridge {
@@ -39,6 +40,7 @@ struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image
  var profile: DYUser? = DYUser(name: "same", secUid: "self", uid: "100")
  var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
  func ensureWriteReady() async -> Bool { ready }
+ func publishViaWebUI(_ a: String, text: String, replyID: String?, replyToReplyID: String?, op: String) async throws -> DYComment? { nil }
  func reload() {}
  var uploads = 0
  func uploadCommentImage(_ data: Data, fileName: String, measured: DYImageXUploadResult) async throws -> DYImageXUploadResult { uploads += 1; return DYImageXUploadResult(uri:"private",width:1,height:1,format:"jpeg") }

@@ -30,6 +30,8 @@ struct DYSettingsScreen: View {
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @AppStorage(DYDMNotificationSettings.notifyKey) private var dmNotifications = false
     @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
+    @State private var showNotes = false
+    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = true
     @State private var clearing = false
     @State private var cacheNote: String?
 
@@ -146,8 +148,10 @@ struct DYSettingsScreen: View {
                 Section {
                     Toggle("点评论回复时自动弹出键盘", isOn: $replyAutoKeyboard)
                         .accessibilityIdentifier("douyin.comment.autoKeyboard")
+                    Toggle("用网页评论框发送", isOn: $commentViaWebUI)
+                        .accessibilityIdentifier("douyin.comment.webUI")
                 } header: { Text("评论") } footer: {
-                    Text("关掉后点名字只进入「回复 @某人」，点输入框才弹键盘。无论开关：往下拖评论列表、点输入框旁的键盘按钮、或再点一次同一条评论，都能收起键盘。")
+                    Text("关掉后点名字只进入「回复 @某人」，点输入框才弹键盘。无论开关：往下拖评论列表、点输入框旁的键盘按钮、或再点一次同一条评论，都能收起键盘。\n「用网页评论框发送」：文字评论和回复在后台打开这条视频的抖音网页，填进它的评论框再点它的发送，和在网页上手动发一样，被风控拦下、顺带掉登录的概率更低，但每条要多等几秒。带图评论仍按原方式发。")
                 }
                 Section {
                     Toggle("应用内私信通知", isOn: $dmNotifications)
@@ -175,6 +179,15 @@ struct DYSettingsScreen: View {
                 Section("关于") {
                     LabeledContent("当前版本", value: DDAppVersion.display)
                         .accessibilityIdentifier("douyin.about.version")
+                    Button {
+                        showNotes = true
+                    } label: {
+                        Label("本版更新内容", systemImage: "sparkles")
+                    }
+                    .accessibilityIdentifier("douyin.about.notes")
+                    .sheet(isPresented: $showNotes) {
+                        DDReleaseNotesSheet(mode: .whatsNew(DDUpdateChecker.currentVersion))
+                    }
                     Button {
                         UIApplication.shared.open(DDUpdateChecker.repoURL)
                     } label: {
