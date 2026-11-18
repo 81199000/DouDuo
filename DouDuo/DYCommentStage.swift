@@ -46,38 +46,38 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                                           allowsResident: !showSearch && !isLive,
                                           paneFraction: showsAuthorPane ? 0.5 : nil,
                                           keepsSideBySide: showsAuthorPane && (authorPane?.workOpen ?? false))
-        let w = geo.size.width, h = geo.size.height
-
-        return ZStack(alignment: .topLeading) {
-            feed()
-                .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
-                .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
-            if layout.showsPane {
-                Group {
-                    if showsAuthorPane {
-                        author()
-                            .padding(.trailing, layout.trailingInset)
-                    } else if let cur = aweme {
-                        DYCommentPanel(bridge: bridge, aweme: cur,
-                                       onClose: layout.resident && !showsCaption ? nil : { showComments = false },
-                                       fillsPane: true,
-                                       trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
-                                       horizontalStatus: horizontalCommentStatus)
-                            .id(cur.id)
+        // 评论栏挂在视频容器的覆盖层上（同 PR #54）：视频容器身份不变，评论栏不再和视频在同一个 ZStack 里抢层级
+        //（11-18 真机：极简内屏横屏右栏纯黑，评论没画出来）
+        return feed()
+            .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
+            .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .overlay(alignment: .topLeading) {
+                if layout.showsPane {
+                    Group {
+                        if showsAuthorPane {
+                            author()
+                                .padding(.trailing, layout.trailingInset)
+                        } else if let cur = aweme {
+                            DYCommentPanel(bridge: bridge, aweme: cur,
+                                           onClose: layout.resident && !showsCaption ? nil : { showComments = false },
+                                           fillsPane: true,
+                                           trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
+                                           horizontalStatus: horizontalCommentStatus)
+                                .id(cur.id)
+                        }
                     }
+                    .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
+                    .frame(width: layout.paneSize.width, height: layout.paneSize.height)
+                    .clipped()
+                    .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen)
+                    .overlay(alignment: .leading) {
+                        if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
+                    }
+                    .padding(.leading, layout.paneOrigin.x)
+                    .padding(.top, layout.paneOrigin.y)
                 }
-                .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
-                .frame(width: layout.paneSize.width, height: layout.paneSize.height)
-                .clipped()
-                .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen)
-                .overlay(alignment: .leading) {
-                    if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
-                }
-                .padding(.leading, layout.paneOrigin.x)
-                .padding(.top, layout.paneOrigin.y)
             }
-        }
-        .frame(width: w, height: h, alignment: .topLeading)
         .onChange(of: layout.resident, initial: true) { _, resident in
             onLayout(resident, layout.resident && layout.sideBySide)
         }
