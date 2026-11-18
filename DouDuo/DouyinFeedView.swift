@@ -297,6 +297,16 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                     }
                 }
                 #endif
+                #if DEBUG
+                if let aw = ProcessInfo.processInfo.environment["DOUDUO_COMPOSER_PROBE"], !aw.isEmpty, self.startURL.host == "www.douyin.com", !Self.composerProbeStarted {
+                    Self.composerProbeStarted = true
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        let r = await DYWebComposer.shared.probe(awemeID: aw, host: self.web.superview)
+                        DYLiveModel.log("DDCOMPOSERPROBE \(r)")
+                    }
+                }
+                #endif
                 let hooked = await self.waitWriteHooks(seconds: 10)
                 let state = await self.writeHookState()
                 self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in
@@ -308,6 +318,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     #if DEBUG
     private static var hookProbeStarted = false
+    private static var composerProbeStarted = false
     #endif
 
     /// 页面安全 SDK 是否已同时接管 XHR 和 fetch（写接口签名靠它）
@@ -416,6 +427,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     }
     /// 自己的 sec_uid（拉「喜欢」列表要用）
     var selfSecCache: String?
+
+    /// 后台「真人方式」评论页也用同一份：只要评论区，不要视频声音和全屏
+    static var composerNoMediaJS: String { noMediaJS }
 
     private static let noMediaJS = """
     (() => {
@@ -1513,7 +1527,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var myUser: DYUser?
     @State private var authorTarget: DYAweme.Author?
     @Environment(\.horizontalSizeClass) private var hSize
-    @State private var pendingUpdate: DDUpdate?
     @State private var showMessages = false
     /// 从模块菜单「我的」打开信息页时直接停在「我的」
     @State private var messagesStartOnMine = false
@@ -1869,22 +1882,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
-        .task {
-            // 启动查一次新版本；关掉后同一版本不再提示
-            if let u = await DDUpdateChecker.check() { pendingUpdate = u }
-        }
-        .alert("有新版本", isPresented: Binding(get: { pendingUpdate != nil }, set: { if !$0 { if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }; pendingUpdate = nil } })) {
-            Button("去 GitHub 更新") {
-                if let u = pendingUpdate { DDUpdateChecker.dismiss(u); DDUpdateChecker.open(u) }
-                pendingUpdate = nil
-            }
-            Button("关闭", role: .cancel) {
-                if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }
-                pendingUpdate = nil
-            }
-        } message: {
-            Text("新版本 \(pendingUpdate?.version ?? "")（当前 \(DDUpdateChecker.currentVersion)）\n去 GitHub 下载新版，重新签名安装即可，登录态会保留。")
-        }
+        // 启动查新版本 / 刚升级完显示一次本次更新内容
+        .modifier(DDReleaseNotesModifier())
     }
 
     @ViewBuilder
@@ -2780,7 +2779,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @State private var restoredTabPauseApplied = false
     @StateObject private var followList = DYPagedModelHolder()
     @State private var followCurrentID: String?
-    @State private var pendingUpdate: DDUpdate?
     private var showMessages: Bool {
         get { mainTab == .messages }
         nonmutating set { mainTab = newValue ? .messages : .home }
@@ -3041,22 +3039,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if !open { Task { await refreshNoticeUnread() } }
         }
         .modifier(DYDMBannerModifier(messagesVisible: showMessages, openMessages: { showMessages = true }))
-        .task {
-            // 启动查一次新版本；关掉后同一版本不再提示
-            if let u = await DDUpdateChecker.check() { pendingUpdate = u }
-        }
-        .alert("有新版本", isPresented: Binding(get: { pendingUpdate != nil }, set: { if !$0 { if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }; pendingUpdate = nil } })) {
-            Button("去 GitHub 更新") {
-                if let u = pendingUpdate { DDUpdateChecker.dismiss(u); DDUpdateChecker.open(u) }
-                pendingUpdate = nil
-            }
-            Button("关闭", role: .cancel) {
-                if let u = pendingUpdate { DDUpdateChecker.dismiss(u) }
-                pendingUpdate = nil
-            }
-        } message: {
-            Text("新版本 \(pendingUpdate?.version ?? "")（当前 \(DDUpdateChecker.currentVersion)）\n去 GitHub 下载新版，重新签名安装即可，登录态会保留。")
-        }
+        // 启动查新版本 / 刚升级完显示一次本次更新内容
+        .modifier(DDReleaseNotesModifier())
     }
 
     private var systemTabs: some View {
