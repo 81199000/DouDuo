@@ -62,9 +62,17 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 - [x] 推荐流横竖选片（老板 2026-11-17）：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
 - [x] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）：四种模式同一套经典评论几何（`playerLayout`），删掉非经典的 `upstreamBody`；只有菜单（经典系统导航栏 / 原生按钮）和简介面板按模式分。回归 `testListPlayerCommentsMatchFeedInEveryMode`、`testStandaloneCommentsRespectLayout`
 
-## 模拟器测 Duo 各姿态
+## 验证分档（按改动大小，不默认跑模拟器）
 
-Xcode 27 模拟器窗口（DeviceHub）底栏右侧四个按钮：旋转 / 外屏 / 半折叠 / 展开。脚本里切换见 skill `douduo-app-development`「模拟器切 Duo 姿态」。外屏截图 `--display=1`，内屏 `--display=3`。内屏 / 半折的问题先在模拟器复现，别拿真机当测试机。
+| 改动 | 怎么验 |
+| --- | --- |
+| 小改动：文案、条件判断、单处布局、呈现层级 | 读代码定位 → 改 → 编译 `BUILD SUCCEEDED` + `scripts/test_*.py/.js` → Release 装真机验。**不开模拟器、不跑 UI 测试。** |
+| 影响多种模式或多种姿态的布局改动 | 同上，外加只在**受影响的那一两种**模式/姿态上看一次；不跑「四模式 × 全姿态」全表。 |
+| 跨模式的重构、合并别人的大改动、发版 | 编译 + 全部脚本测试；UI 测试只挑与改动同区域的几个，不跑整组。 |
+
+- 真机是默认验收端：编译通过的包直接装机，有问题拉 `Documents/ddlog.txt` 定位，不回模拟器复现。
+- 模拟器只在明确需要时用：真机条件不具备、或需要截某个姿态的坐标做对比。用完 `xcrun simctl shutdown all`。
+- 不再要求：每个改动跑全姿态 × 四模式、修 bug 先写 UI 测试并在旧代码上跑红、重构前后整组 UI 测试比基线、改完先截多台模拟器再装机。
 
 ## 改动前自检
 
@@ -74,4 +82,4 @@ grep -nE "private func (advance|applyHashtagFilter|dislike|focusCurrent|openSear
 # 应该没有输出（这些只在 DYRecommendFeedHost.swift 里）
 ```
 
-UI 回归至少四种模式各跑一遍：`testHashtagClassicFlow`、`testHashtagDefaultFlow`、`testSearchClassicLayout`、`testSearchDefaultLayout`、`testAutoNextAfterSeek`、`testPagingSpeedClassicLayout`、`testChromeModeClassicHasTopTabsAndSearchOnRail`、`testChromeModeRailMovesSearchIntoModuleMenu`。
+需要跑 UI 回归时（见上面「验证分档」第三档），从这组里挑与改动同区域的：`testHashtagClassicFlow`、`testHashtagDefaultFlow`、`testSearchClassicLayout`、`testSearchDefaultLayout`、`testAutoNextAfterSeek`、`testPagingSpeedClassicLayout`、`testChromeModeClassicHasTopTabsAndSearchOnRail`、`testChromeModeRailMovesSearchIntoModuleMenu`。
