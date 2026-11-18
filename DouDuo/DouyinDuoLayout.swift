@@ -434,7 +434,7 @@ struct DYPanelDismissGesture: ViewModifier {
                     (dy > 70 || (dy > 20 && value.predictedEndTranslation.height > 150))
                 if right || down { onClose() }
                 else { sheetDrag?.finish(false) }
-            })
+            }, including: onClose == nil ? .none : .all)
     }
 }
 
@@ -812,8 +812,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
                     .environment(\.duoCleanScreen, cleanScreen)
                     .environment(\.dyCommentsOpen, showsComments || layout.showsPane)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
-                    // 侧栏评论时裁边：播放器环境光底铺满整屏，会盖住右侧评论栏（同推荐页 DYCommentStage）
-                    .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
+                    .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
@@ -839,6 +838,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
                                          isClean: cleanScreen, onToggleClean: { cleanScreen.toggle() },
                                          onBack: onBack, backIdentifier: backIdentifier)
                         .id(horizontalCommentStatus || hidesCommentStatus)
+                        .frame(width: layout.videoSize.width)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .modifier(DYStandaloneBarPolicy(classic: usesClassicLayout))
