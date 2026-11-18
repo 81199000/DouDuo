@@ -116,6 +116,9 @@ struct DYComment: Identifiable, Decodable, Equatable {
     var pinned: [DYComment]? = nil
     /// 楼中楼被 insert_ids 直接顶到一级列表时，它所属的一级评论 cid（回复它要用）
     var parent: String? = nil
+    /// 稳定作者 UID 与精确被回复目标；缺字段时不得猜测送达。
+    var uid: String? = nil
+    var replyTo: String? = nil
 }
 
 /// 评论里的一张图：缩略图用于列表，原图用于点开全屏
@@ -875,7 +878,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const urls = new Set(streams);
       return Object.fromEntries(Object.entries(su.flv_pull_url || {}).filter(([_, u]) => urls.has(u)));
     };
-    const req = (method, path, body) => new Promise(ok => {
+    const req = (method, path, body, headers = {}) => new Promise(ok => {
       const x = new XMLHttpRequest();
       let done = false;
       const fin = r => { if (!done) { done = true; ok(r) } };
@@ -884,8 +887,11 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       // 硬超时：页面安全 SDK 会接管 XHR，部分接口它压着不放、x.timeout 也不触发 → Promise 永远挂死
       setTimeout(() => { try { x.abort() } catch (e) {} fin({ s: -3, t: '' }) }, 14000);
       x.open(method, path); x.withCredentials = true;
-      x.setRequestHeader('Accept', 'application/json, text/plain, */*');
-      if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      const extraHeaders = Object.entries(headers || {});
+      const hasHeader = name => extraHeaders.some(([key]) => key.toLowerCase() === name);
+      if (!hasHeader('accept')) x.setRequestHeader('Accept', 'application/json, text/plain, */*');
+      if (method === 'POST' && !hasHeader('content-type')) x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      for (const [name, value] of extraHeaders) x.setRequestHeader(name, String(value));
       x.onload = () => fin({ s: x.status, t: x.responseText, u: String(x.responseURL || '') }); x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
@@ -1020,11 +1026,15 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const an = ddImg(s.animate_url) || st;
       return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
     };
+    const ddStableID = v => typeof v === 'string' ? (v && v !== '0' ? v : null) : Number.isSafeInteger(v) && v > 0 ? String(v) : null;
+    const ddCommentID = c => [c.cid, c.user && c.user.uid, c.reply_id, c.reply_to_reply_id].some(v => typeof v === 'number' && !Number.isSafeInteger(v)) ? '' : ddStableID(c.cid) || '';
     const one = c => ({
-      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
+      id: ddCommentID(c), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || 0, replies: c.reply_comment_total || 0, ip: c.ip_label || null, userDigged: c.user_digged ? 1 : 0,
       images: ddImages(c), sticker: ddSticker(c),
-      parent: (c.reply_id && String(c.reply_id) !== '0') ? String(c.reply_id) : null
+      parent: ddStableID(c.reply_id),
+      uid: ddStableID(c.user && c.user.uid),
+      replyTo: ddStableID(c.reply_to_reply_id)
     });
     // insert_ids 定位楼中楼时，那条回复挂在一级评论的 reply_comment 里
     const items = (d.comments || []).map(c => Object.assign(one(c), (ins && c.reply_comment && c.reply_comment.length) ? { pinned: c.reply_comment.map(r => Object.assign(one(r), { replies: 0 })) } : {}));
@@ -4667,7 +4677,7 @@ struct DYCommentPanel: View {
         }
         .accessibilityValue(usesClassicComments ? "经典评论" : "上游评论")
         .dyReloginSheet(isPresented: $showRelogin, bridge: bridge) { ok in
-            sendErr = ok ? "已重新登录，再点一次发送" : "还没登录，登录后才能发评论"
+            sendErr = ok ? "已核验账号资料；评论权限未确认，草稿已保留，请勿连续重发" : "未完成账号核验；原登录和草稿未自动清理"
         }
     }
 
@@ -5182,7 +5192,7 @@ struct DYCommentPanel: View {
             inputFocused = false
         } catch is DYLoginExpired {
             // 草稿留着：重新登录后再点一次发送
-            sendErr = "登录已失效（能浏览但发不了评论），正在打开登录…"
+            sendErr = "本次评论被要求验证（code 8）；登录和草稿已保留，请选择恢复方式"
             inputFocused = false
             DYRelogin.start { showRelogin = true }
         } catch {
