@@ -2032,7 +2032,7 @@ struct DYNoticeListScreen: View {
             showToast("已回复")
         } catch is DYLoginExpired {
             // 回复框和草稿留着：重新登录后再点一次发送
-            replyErr = "本次回复被要求验证（code 8）；登录和草稿已保留，请选择恢复方式"
+            replyErr = "抖音拦下了这次回复（需要验证或暂时受限）；登录和草稿已保留，请选择恢复方式"
             replyFocused = false
             DYRelogin.start { showRelogin = true }
         } catch {

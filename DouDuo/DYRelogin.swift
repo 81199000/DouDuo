@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 单个评论接口 code 8 只说明这次写入要求验证，不证明整个账号会话已失效。
 struct DYLoginExpired: LocalizedError {
-    var errorDescription: String? { "本次评论被要求验证（code 8）；登录和草稿已保留" }
+    var errorDescription: String? { "抖音拦下了这次评论（需要验证或暂时受限）；登录和草稿已保留" }
 }
 
 @MainActor
@@ -39,7 +39,7 @@ private struct DYCommentRecoveryScreen: View {
     @State private var showLogin = false
     @State private var confirmCleanup = false
     @State private var busy = false
-    @State private var message = "本次评论被抖音要求验证，不等于整个登录已过期。原登录与草稿已保留，不会自动重发。"
+    @State private var message = "抖音拦下了这次评论（要求验证或暂时受限），不等于整个登录已过期。原登录与草稿已保留，不会自动重发。可先打开网页版看看有没有验证提示，或歇几分钟再发。"
 
     var body: some View {
         NavigationStack {
