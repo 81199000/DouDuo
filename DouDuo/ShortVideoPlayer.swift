@@ -415,6 +415,7 @@ struct PlayerPage: View {
     }
 
     @State private var player: AVPlayer?
+    @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     @StateObject private var pictureInPicture = DYPictureInPicture()
     @State private var imgGen: AVAssetImageGenerator?
     @State private var duration: Double = 0
@@ -761,6 +762,10 @@ struct PlayerPage: View {
             guard let p = player, vlc == nil else { return }
             bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
         }
+        .onChange(of: autoPiP) { _, _ in
+            guard let p = player, vlc == nil else { return }
+            bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
+        }
         .onChange(of: rateBoost) { _, on in boost?.boosting = on }
         .onChange(of: current) { _, _ in pushRailProgress() }
         .onChange(of: seeking) { _, _ in pushRailProgress() }
@@ -863,7 +868,8 @@ struct PlayerPage: View {
                 ZStack {
                     VideoSurface(player: player, fillWidth: fillsVideoPlane, onReady: { if !firstFrame { firstFrame = true }; DYReadiness.mark(id) },
                                  pictureInPicture: pictureInPicture,
-                                 pictureInPictureEnabled: cleanScreen && isActive,
+                                 pictureInPictureEnabled: DYAutoPiP.shortVideoWantsAutomaticPiP(
+                                     preference: autoPiP, cleanScreen: cleanScreen, isActive: isActive),
                                  onPictureInPictureClose: {
                                      userPaused = true
                                      pauseInlineForBackground()
@@ -1160,8 +1166,9 @@ struct PlayerPage: View {
                 seamAudio.loopToZero(rate: playRate, muted: muted)
             }
         }
-        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted, useEngine: !cleanScreen && DDSeamlessController.engineWanted,
-                       engineHandoff: !cleanScreen)
+        let nativeAudio = DYAutoPiP.requiresNativeAudio(preference: autoPiP, cleanScreen: cleanScreen)
+        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted,
+                       useEngine: !nativeAudio && DDSeamlessController.engineWanted, engineHandoff: !nativeAudio)
     }
 
     private func setup(prepared: AVPlayer? = nil) {
