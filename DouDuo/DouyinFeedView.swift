@@ -212,7 +212,7 @@ enum DYError: LocalizedError {
 @MainActor
 final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var ready = false
-    /// 只在 `reload` 推进。界面用它清掉上一账号的关注直播，不代表登录态本身。
+    /// 网页重载或登录失效时推进。界面用它清掉上一账号的关注直播，不代表登录态本身。
     @Published private(set) var followSession = 0
     @Published private(set) var authorFollowStates: [String: Bool] = [:]
 
@@ -258,11 +258,15 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         }
         #endif
         authorFollowStates = [:]
-        followSessionCache.invalidate()
-        followSession = followSessionCache.generation
+        invalidateFollowSession()
         ready = false
         web.load(URLRequest(url: startURL))
         liveContext?.reload()
+    }
+
+    func invalidateFollowSession() {
+        followSessionCache.invalidate()
+        followSession = followSessionCache.generation
     }
 
     /// 直播专区请求在 live.douyin.com 的网页 SDK 中发出，共享真实登录态，避免跨域签名/请求被拒。
@@ -689,6 +693,31 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             followSessionCache.noteNotLoggedIn(generation: generation, epoch: epoch)
         }
         return scopedFollowResult(result, generation: generation, epoch: epoch)
+    }
+
+    /// 共用房间详情的解析和请求上下文。精选试播只消费本次结果，不改变关注列表的登录或缓存状态。
+    func resolveLivePlaybackRoom(webRid: String) async -> DYLiveRoom? {
+        let session = followSession
+        let result = await performFollowRoom(webRid)
+        guard session == followSession, result.kind == .rooms else { return nil }
+        return result.items.first
+    }
+
+    // 已送给 WebKit 的 XHR 可能在 Swift 任务取消后才返回。槽位一直占用到实际返回。
+    private var featuredPrefetchBusy = false
+
+    func prefetchFeaturedPiP(_ input: DYFeaturedPiPInput) -> Task<DYFeaturedPiPMetadata?, Never>? {
+        guard ready, !featuredPrefetchBusy else { return nil }
+        let session = followSession
+        featuredPrefetchBusy = true
+        return Task { @MainActor in
+            defer { featuredPrefetchBusy = false }
+            guard !Task.isCancelled, ready, session == followSession else { return nil }
+            let room = await resolveLivePlaybackRoom(webRid: input.webRid)
+            guard !Task.isCancelled, session == followSession,
+                  let url = room.flatMap(input.replacement) else { return nil }
+            return DYFeaturedPiPMetadata(url: url, receivedAt: ProcessInfo.processInfo.systemUptime)
+        }
     }
 
     private var followLiveTask: Task<DYFollowLiveResult, Never>?
@@ -1800,11 +1829,15 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
+        .onReceive(NotificationCenter.default.publisher(for: .dySessionLost)) { _ in
+            live.sessionDidExpire(bridge, reload: tab == .live)
+        }
         .onDisappear { live.stop(); preloader.clear() }
     }
 
     /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
     private func reloadAfterLogin() {
+        live.invalidateFollowLive()
         live.reset()
         reloadRecommendationsAfterLogin()
         if tab == .live { Task { await live.load(bridge, reset: true) } }
@@ -2837,6 +2870,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
 
     /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
     private func reloadAfterLogin() {
+        live.invalidateFollowLive()
         live.reset()
         followList.resetModel(); followCurrentID = nil
         reloadRecommendationsAfterLogin()
@@ -2997,6 +3031,9 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
+        .onReceive(NotificationCenter.default.publisher(for: .dySessionLost)) { _ in
+            live.sessionDidExpire(bridge, reload: tab == .live)
+        }
         .onDisappear { live.stop(); preloader.clear() }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: {
