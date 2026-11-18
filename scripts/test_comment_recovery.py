@@ -58,7 +58,8 @@ struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image
 '''+verify_method+r'''
 }
 struct Video { let id = "video" }
-struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: String? = "222"; let parentCid: String? = "111" }
+struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: String? = "222"; let parentCid: String? = "111"
+  var threadParent: String? { guard let p = parentCid, !p.isEmpty, p != awemeID, p != cid else { return nil }; return p } }
 @MainActor final class Composer {
  let bridge: DouyinBridge
  let aweme = Video()

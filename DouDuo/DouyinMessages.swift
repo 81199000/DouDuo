@@ -2028,8 +2028,8 @@ struct DYNoticeListScreen: View {
         defer { replySending = false }
         do {
             // 一级评论：reply_id = 它；楼中楼：reply_id = 一级评论、reply_to_reply_id = 这条（网页同款）
-            _ = try await bridge.publishComment(aweme, text: text, replyID: n.parentCid ?? cid,
-                                                replyToReplyID: n.parentCid == nil ? nil : cid)
+            _ = try await bridge.publishComment(aweme, text: text, replyID: n.threadParent ?? cid,
+                                                replyToReplyID: n.threadParent == nil ? nil : cid)
             replied.insert(n.id)
             closeReply()
             showToast("已回复")
