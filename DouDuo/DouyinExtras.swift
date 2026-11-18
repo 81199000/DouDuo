@@ -395,6 +395,21 @@ extension DouyinBridge {
         return matches.count == 1 ? matches.first : nil
     }
 
+    /// 发完回复后核对：在那条一级评论的回复里翻前 3 页找这条 id。nil = 读不到，核对不了。
+    func replyIsVisible(_ awemeID: String, thread: String, id: String) async -> Bool? {
+        var cursor = 0
+        for attempt in 0..<2 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(2)); cursor = 0 }
+            for _ in 0..<3 {
+                guard let page = try? await fetchReplies(awemeID, commentID: thread, cursor: cursor) else { return nil }
+                if page.items.contains(where: { $0.id == id }) { return true }
+                guard page.hasMore, !page.items.isEmpty else { break }
+                cursor = page.cursor
+            }
+        }
+        return false
+    }
+
     /// 删除评论（自己发的，或自己作品下的）。只在用户确认之后调用，不重试。
     func deleteComment(_ cid: String) async throws -> DYActionResult {
         await ensureWriteReady()
@@ -462,6 +477,9 @@ extension DouyinBridge {
     const hooked = (f) => { try { return !/native code/.test(f().toString()); } catch (e) { return 'na'; } };
     const diagnostic = 'kind=' + kind + ' chars=' + raw.length + ' keys=' + keys + ' ident=' + (haveIdent || 'none')
       + ' sdk=' + sdk + ' signed=' + signed + ' img=' + hasImage + ' imgBack=' + ((d.comment && d.comment.image_list) || []).length
+      // 只记 id：请求挂在哪条下面、抖音实际挂到哪条下面、评论状态（判断「发出了却看不到」）
+      + ' req=' + (typeof reply === 'string' && reply ? reply : '0') + '/' + (typeof replyTo === 'string' && replyTo ? replyTo : '0')
+      + ' got=' + (d.comment ? String(d.comment.reply_id ?? '-') + '/' + String(d.comment.reply_to_reply_id ?? '-') + ' st=' + String(d.comment.status ?? '-') : '-')
       + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
       + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'

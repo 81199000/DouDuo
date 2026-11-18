@@ -2028,11 +2028,23 @@ struct DYNoticeListScreen: View {
         defer { replySending = false }
         do {
             // 一级评论：reply_id = 它；楼中楼：reply_id = 一级评论、reply_to_reply_id = 这条（网页同款）
-            _ = try await bridge.publishComment(aweme, text: text, replyID: n.threadParent ?? cid,
-                                                replyToReplyID: n.threadParent == nil ? nil : cid)
+            let thread = n.threadParent ?? cid
+            let sent = try await bridge.publishComment(aweme, text: text, replyID: thread,
+                                                       replyToReplyID: n.threadParent == nil ? nil : cid)
             replied.insert(n.id)
             closeReply()
-            showToast("已回复")
+            showToast("已发出，正在核对评论区…")
+            // 抖音回了成功也可能看不到（挂错楼 / 被折叠）：回头真去那条评论的回复里找，找不到就照实说
+            let visible = await bridge.replyIsVisible(aweme, thread: thread, id: sent.id)
+            DYLiveModel.log("DDNOTICEREPLY visible=\(visible.map { $0 ? "yes" : "no" } ?? "unknown") thread=\(thread) id=\(sent.id)")
+            switch visible {
+            case true?: showToast("已回复，评论区可见")
+            case false?:
+                replied.remove(n.id)
+                replyErr = "抖音收下了，但这条回复在评论区里找不到（可能被折叠或仅自己可见）。可以点视频进评论区核对。"
+                replying = n
+            case nil: showToast("已发出，评论区暂时核对不了")
+            }
         } catch is DYLoginExpired {
             // 回复框和草稿留着：重新登录后再点一次发送
             replyErr = "抖音拦下了这次回复（需要验证或暂时受限）；登录和草稿已保留，请选择恢复方式"
