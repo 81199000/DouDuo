@@ -19,6 +19,7 @@ struct DYSettingsScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     // 播放
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
@@ -109,10 +110,12 @@ struct DYSettingsScreen: View {
                         ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
                     }
                     .accessibilityIdentifier("settings.ambient")
+                    Toggle("离开应用时自动画中画", isOn: $autoPiP)
+                        .accessibilityIdentifier("settings.autoPip")
                 } header: {
                     Text("播放")
                 } footer: {
-                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色跟随外观。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。")
+                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色跟随外观。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。打开后，离开 DouDou 时，当前短视频会尝试进入系统画中画。清屏时的画中画保持原样，后台播放仍按原开关。")
                 }
 
                 Section {

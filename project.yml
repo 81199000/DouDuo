@@ -64,6 +64,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      - path: DouDuo/DYAutoPiP.swift
       - path: DouDuo/DYVideoFit.swift
       - path: DouDuo/DYShareLinkParse.swift
       - path: DouDuoTests
