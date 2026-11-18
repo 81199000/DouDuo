@@ -1852,7 +1852,7 @@ struct DYNoticeListScreen: View {
         .overlay { if opening { ProgressView().tint(.primary) } }
         .background(Color.ddBackground.ignoresSafeArea())
         .dyReloginSheet(isPresented: $showRelogin, bridge: bridge) { ok in
-            replyErr = ok ? "已重新登录，再点一次发送" : "还没登录，登录后才能回复"
+            replyErr = ok ? "已核验账号资料；评论权限未确认，草稿已保留，请勿连续重发" : "未完成账号核验；原登录和草稿未自动清理"
         }
 
         .foregroundStyle(Color.primary)
@@ -2032,7 +2032,7 @@ struct DYNoticeListScreen: View {
             showToast("已回复")
         } catch is DYLoginExpired {
             // 回复框和草稿留着：重新登录后再点一次发送
-            replyErr = "登录已失效（能浏览但发不了评论），正在打开登录…"
+            replyErr = "本次回复被要求验证（code 8）；登录和草稿已保留，请选择恢复方式"
             replyFocused = false
             DYRelogin.start { showRelogin = true }
         } catch {

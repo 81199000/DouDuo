@@ -276,58 +276,91 @@ extension DouyinBridge {
         let args: [String: Any] = ["id": awemeID, "text": text, "reply": replyID ?? "0", "replyTo": replyToReplyID ?? "0",
                                    "imgUri": image?.uri ?? "", "imgW": String(image?.width ?? 0),
                                    "imgH": String(image?.height ?? 0), "imgFmt": image?.format ?? ""]
+        let operationID = UUID().uuidString
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=prepare")
+        guard await ensureWriteReady() else {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=not-ready")
+            throw DYError.bad("评论签名页尚未就绪，未发送；草稿已保留")
+        }
+        // 在写入前获取本次身份；无法获取时可发一次，但不能把列表里的其他评论当作确认。
+        let identity = try? await selfProfile()
         let sentAt = Date().timeIntervalSince1970
-        await ensureWriteReady()
-        let d = try await call(Self.publishJS, args: args, attempts: 1)
-        let r = try JSONDecoder().decode(DYPublishResp.self, from: d)
-        DYLiveModel.log("DDSEND comment status=\(r.status) code=\(r.code ?? -1) msg=\(r.msg ?? "-") diag=\(r.diagnostic ?? "-")")
-        // code 8：抖音不认这份登录。真机常见「能看不能写」的半失效登录（资料、作品照常读，评论被拒，老板 11-18），
-        // 让界面直接弹登录页重新登录，不再叫用户自己去「我的」找入口（那里显示已登录，根本没有「去登录」）
-        if r.code == 8 { throw DYLoginExpired() }
-        if r.status == 200, (r.code ?? 0) == 0, let c = r.comment {
-            // 回执里没带图片地址时，去评论列表里把这条带图的找回来，不然本地显示成一条空评论
-            if image != nil, (c.images ?? []).isEmpty,
-               let mine = await findMySentComment(awemeID, text: text, replyID: replyID, imageSentAt: sentAt) { return mine }
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=submit")
+        let d: Data
+        do { d = try await call(Self.publishJS, args: args, attempts: 1) }
+        catch {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=transport-unknown")
+            throw DYError.bad("评论结果未确认，草稿已保留；请先查看评论，勿连续重发")
+        }
+        guard let r = try? JSONDecoder().decode(DYPublishResp.self, from: d) else {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=decode-unknown")
+            throw DYError.bad("评论回执无法识别，草稿已保留；请先查看评论，勿连续重发")
+        }
+        // 服务端文案、正文、账号标识与响应全文不入日志。
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=response status=\(r.status) code=\(r.code.map(String.init) ?? "nil")")
+        if r.status == -4 {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=not-ready-js")
+            throw DYError.bad("评论签名页尚未就绪，未发送；草稿已保留")
+        }
+        if r.code == 8 {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=verification-required")
+            throw DYLoginExpired()
+        }
+        if r.status == 200, r.code == 0, let c = r.comment, Self.isServerCommentID(c.id) {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=acknowledged")
             return c
         }
-        // 网页评论框的两个明确失败码：19 = 评论功能受限，3002575 = 健康分
-        if r.code == 19 { throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "由于违反社区规定，评论功能受限") }
-        if r.code == 3002575 { throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "发布失败，账号健康分受限") }
-        if r.code == 50015 || (r.msg ?? "").contains("不支持") || (r.msg ?? "").contains("关闭") { throw DYError.bad(r.msg!) }
-        // 空响应/403 不代表没发出去：抖音常已写入但不回执，先去评论/楼中楼里核对，避免用户重复发送
-        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID, imageSentAt: image == nil ? nil : sentAt) {
-            DYLiveModel.log("DDSEND verified-posted cid=\(mine.id) aweme=\(awemeID)")
+        // 明确业务拒绝不回查为成功，也不重试写请求。
+        if let code = r.code, code != 0 {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=rejected")
+            throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "评论被拒绝（\(code)），草稿已保留")
+        }
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=reconcile")
+        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID,
+                                             replyToReplyID: replyToReplyID, imageSentAt: sentAt,
+                                             identity: identity, hasImage: image != nil) {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=verified")
             return mine
         }
-        throw DYError.bad("抖音没给回执，评论里也没查到这条（HTTP \(r.status) / \(r.diagnostic ?? "-")）。可能被风控限制，歇一会儿再试，别连续重发")
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=unknown")
+        throw DYError.bad("评论结果未确认，草稿已保留；请先查看对应评论或回复，勿连续重发")
     }
 
-    /// 发送后核对：楼中楼查这一级评论的回复，一级评论查最新评论；按「我的昵称 + 正文开头」匹配
-    /// imageSentAt 非空 = 这条带图：还要求评论里有图、时间不早于发送前两分钟；纯图评论没有正文可比，必须认得出是我发的
-    private func findMySentComment(_ awemeID: String, text: String, replyID: String?, imageSentAt: Double? = nil) async -> DYComment? {
-        let norm = { (s: String) in s.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression) }
-        let want = norm(text)
-        guard !want.isEmpty || imageSentAt != nil else { return nil }
-        let me = (try? await selfProfile())?.name ?? ""
-        if want.isEmpty, me.isEmpty { return nil }
-        func match(_ items: [DYComment]) -> DYComment? {
-            items.first { c in
-                let t = norm(c.text)
-                let head = String(want.prefix(12))
-                let textOK = want.isEmpty ? t.isEmpty : (t == want || t.hasPrefix(head) || want.hasPrefix(String(t.prefix(12))))
-                let imageOK = imageSentAt.map { !(c.images ?? []).isEmpty && c.time >= $0 - 120 } ?? true
-                return textOK && imageOK && (me.isEmpty || c.name == me)
-            }
+    private static func isServerCommentID(_ id: String) -> Bool {
+        !id.isEmpty && id != "0" && id.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+    }
+
+    /// 仅核对本次身份、本次发送时间、精确正文和目标楼层；证据不足就是未知。
+    /// 图片本身无法精确比对，纯图不作列表确认。最多只读本次目标楼层，不跨楼搜索。
+    private func findMySentComment(_ awemeID: String, text: String, replyID: String?, replyToReplyID: String?,
+                                   imageSentAt sentAt: Double, identity: DYUser?, hasImage: Bool) async -> DYComment? {
+        guard !text.isEmpty, let me = identity, !me.secUid.isEmpty || !me.uid.isEmpty else { return nil }
+        let parent = replyID.flatMap { $0.isEmpty || $0 == "0" ? nil : $0 }
+        let target = replyToReplyID.flatMap { $0.isEmpty || $0 == "0" ? nil : $0 }
+        let items: [DYComment]
+        if let parent {
+            guard let page = try? await fetchReplies(awemeID, commentID: parent, cursor: 0) else { return nil }
+            items = page.items
+        } else {
+            guard target == nil, let page = try? await fetchComments(awemeID, cursor: 0) else { return nil }
+            items = page.items
         }
-        if let rid = replyID, !rid.isEmpty, rid != "0",
-           let p = try? await fetchReplies(awemeID, commentID: rid, cursor: 0), let m = match(p.items) { return m }
-        if let p = try? await fetchComments(awemeID, cursor: 0) {
-            if let m = match(p.items) { return m }
-            for c in p.items where c.replies > 0 {
-                if let q = try? await fetchReplies(awemeID, commentID: c.id, cursor: 0), let m = match(q.items) { return m }
-            }
+        let now = Date().timeIntervalSince1970
+        let matches = items.filter { c in
+            // 若双方都有同类 ID，任何冲突都拒绝；至少要有一组稳定 ID 相等。
+            let secMatches = !me.secUid.isEmpty && c.sec?.isEmpty == false && c.sec == me.secUid
+            let uidMatches = !me.uid.isEmpty && c.uid?.isEmpty == false && c.uid == me.uid
+            if !me.secUid.isEmpty, let sec = c.sec, !sec.isEmpty, sec != me.secUid { return false }
+            if !me.uid.isEmpty, let uid = c.uid, !uid.isEmpty, uid != me.uid { return false }
+            // 不给时间向前容差；服务端只有秒级时间而无法排除发送前旧评论时，宁可保持未知。
+            guard secMatches || uidMatches, Self.isServerCommentID(c.id), c.text == text,
+                  c.time >= sentAt, c.time <= now,
+                  !hasImage || !(c.images ?? []).isEmpty else { return false }
+            let actualParent = c.parent.flatMap { $0.isEmpty || $0 == "0" ? nil : $0 }
+            let actualTarget = c.replyTo.flatMap { $0.isEmpty || $0 == "0" ? nil : $0 }
+            return actualParent == parent && actualTarget == target
         }
-        return nil
+        return matches.count == 1 ? matches.first : nil
     }
 
     /// 删除评论（自己发的，或自己作品下的）。只在用户确认之后调用，不重试。
@@ -364,7 +397,7 @@ extension DouyinBridge {
       const o = cmapImg(x.origin_url) || m;
       return m ? { thumb: m.u, full: o.u, w: o.w || m.w, h: o.h || m.h } : null;
     }).filter(Boolean);
-    const cmap = c => c ? ({ id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
+    const cmap = c => c ? ({ id: typeof c.cid === 'string' ? c.cid : Number.isSafeInteger(c.cid) ? String(c.cid) : '', text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null,
       images: cmapImages(c) }) : null;
     """#
@@ -387,6 +420,7 @@ extension DouyinBridge {
     }
     // 等安全 SDK 挂钩完成再发；x-secsdk-csrf-token: DOWNGRADE 是网页版写接口的 CSRF 降档标记
     const sdk = typeof sdkReady === 'function' ? await sdkReady(6000) : false;
+    if (!sdk) return JSON.stringify({ status: -4, code: null, msg: '评论签名页尚未就绪，未发送；草稿已保留', comment: null, danmakuID: null, diagnostic: 'sdk=false phase=not-ready' });
     const r = await req('POST', '/aweme/v1/web/comment/publish?' + P, body.toString(), { 'x-secsdk-csrf-token': 'DOWNGRADE' });
     const raw = r.t || '', parsed = parse(raw), d = parsed || {};
     const kind = !raw.trim() ? 'empty' : parsed !== null ? 'json' : /^\s*</.test(raw) ? 'html' : 'other';
@@ -583,10 +617,15 @@ extension DouyinBridge {
       const an = ddImg(s.animate_url) || st;
       return { thumb: st.u, full: an.u, w: s.width || st.w, h: s.height || st.h };
     };
+    const ddStableID = v => typeof v === 'string' ? (v && v !== '0' ? v : null) : Number.isSafeInteger(v) && v > 0 ? String(v) : null;
+    const ddCommentID = c => [c.cid, c.user && c.user.uid, c.reply_id, c.reply_to_reply_id].some(v => typeof v === 'number' && !Number.isSafeInteger(v)) ? '' : ddStableID(c.cid) || '';
     const items = (d.comments || []).map(c => ({
-      id: String(c.cid), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
+      id: ddCommentID(c), text: c.text || '', name: (c.user && c.user.nickname) || '', sec: (c.user && c.user.sec_uid) || null, avatar: c.user && first(c.user.avatar_thumb),
       digg: c.digg_count || 0, time: c.create_time || 0, replies: 0, ip: c.ip_label || null,
-      images: ddImages(c), sticker: ddSticker(c) }));
+      images: ddImages(c), sticker: ddSticker(c),
+      uid: ddStableID(c.user && c.user.uid),
+      parent: ddStableID(c.reply_id),
+      replyTo: ddStableID(c.reply_to_reply_id) }));
     return JSON.stringify({ status: r.s, items, cursor: d.cursor || 0, hasMore: !!d.has_more, msg: null });
     """#
 }
