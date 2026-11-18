@@ -198,7 +198,7 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     const capture = (u, http, body) => { if (!isPublish(u) || done) return; let d = null; try { d = JSON.parse(body); } catch (e) {} done = true; resolveAck({ http, d, raw: (body || '').length }); };
     const P = XMLHttpRequest.prototype, oldOpen = P.open, oldSend = P.send, oldFetch = window.fetch;
     function wOpen(m, u, ...a) { this.__ddUrl = u; return oldOpen.call(this, m, u, ...a); }
-    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { try { capture(this.responseURL || this.__ddUrl, this.status, this.responseText); } catch (e) {} }, { once: true }); } return oldSend.apply(this, a); }
+    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { let body = ''; try { body = (this.responseType === '' || this.responseType === 'text') ? this.responseText : (this.responseType === 'json' ? JSON.stringify(this.response) : ''); } catch (e) {} capture(this.responseURL || this.__ddUrl, this.status, body); }, { once: true }); } return oldSend.apply(this, a); }
     async function wFetch(input, ...a) { const u = typeof input === 'string' ? input : (input && input.url); if (isPublish(u)) started = true; const r = await oldFetch.call(this, input, ...a); if (isPublish(u)) { try { capture(u, r.status, await r.clone().text()); } catch (e) {} } return r; }
     let ed = null;
     try {
@@ -219,10 +219,13 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
         }
         if (!item) return out('not-found', 'reply-target', { msg: '网页评论区里没找到要回复的那条' });
         item.scrollIntoView({ block: 'center' });
-        const btn = leaf(item, /^回复$/);
+        // 「回复」那格里有图标（children 不为 0），并且只在鼠标悬停时才显出来；取最里层、本条自己的（不是楼中楼的）
+        const own = e => e.closest('[data-e2e="comment-item"]') === item;
+        const cands = [...item.querySelectorAll('span,div,button,p')].filter(e => own(e) && (e.innerText || e.textContent || '').trim() === '回复');
+        const btn = cands.find(e => ![...e.querySelectorAll('span,div,button,p')].some(c => (c.innerText || c.textContent || '').trim() === '回复')) || null;
         if (!btn) return out('not-found', 'reply-button', { msg: '那条评论没有「回复」' });
         btn.click();
-        for (let i = 0; i < 16 && !ed; i++) { await sleep(200); ed = [...item.querySelectorAll('.public-DraftEditor-content')].find(vis) || null; }
+        for (let i = 0; i < 16 && !ed; i++) { await sleep(200); ed = [...item.querySelectorAll('.public-DraftEditor-content')].find(e => e.closest('[data-e2e="comment-item"]') === item || vis(e)) || null; }
       } else {
         const holder = document.querySelector('.comment-input-inner-container');
         if (holder && !holder.closest('[data-e2e="comment-item"]')) holder.click();

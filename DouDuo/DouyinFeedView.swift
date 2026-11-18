@@ -5544,7 +5544,12 @@ struct DYCommentPanel: View {
             return
         }
         let head = page.first(where: { $0.id == top })
-        DYLiveModel.log("DDFOCUS hit aweme=\(f.awemeID) cid=\(f.cid) parent=\(f.parentCid ?? "-") target=\(target) pinned=\(head?.pinned?.count ?? 0)")
+        DYLiveModel.log("DDFOCUS hit aweme=\(f.awemeID) cid=\(f.cid) parent=\(f.parentCid ?? "-") target=\(target) pinned=\(head?.pinned?.count ?? 0) reply=\(f.startReply ? 1 : 0)")
+        if f.startReply, let c = page.first(where: { $0.id == target }) ?? replies[top]?.first(where: { $0.id == target }) {
+            replyTo = c
+            replyParent = target == top ? nil : top
+            inputFocused = true
+        }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             highlight = target

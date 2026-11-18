@@ -287,6 +287,16 @@ extension DouyinBridge {
             if o.code == 8 { throw DYLoginExpired() }
             throw DYError.bad(o.msg?.isEmpty == false ? o.msg! : "评论被拒绝（\(o.code ?? -1)），草稿已保留")
         case "unconfirmed":
+            // 已点发送但回执读不到：和接口方式一样，限时回评论区找自己刚发的这条
+            let identity = try? await selfProfile()
+            if let mine = await Self.firstWithin(Self.reconcileTimeout, { [weak self] in
+                await self?.findMySentComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                              imageSentAt: Date().timeIntervalSince1970 - 30, identity: identity, hasImage: false)
+            }) {
+                DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-verified")
+                return mine
+            }
+            DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-reconcile-miss")
             throw DYCommentUnconfirmed(message: o.msg ?? "结果未确认，可能已发出；先刷新评论区核对")
         case "logged-out":
             throw DYLoginExpired()
