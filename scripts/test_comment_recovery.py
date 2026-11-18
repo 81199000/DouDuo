@@ -20,6 +20,7 @@ reply_method = section(messages, '    private func sendReply() async {', '    pr
 send_method = send_method.replace('DYRelogin.start { showRelogin = true }', 'DYRelogin.start { [self] in showRelogin = true }')
 reply_method = reply_method.replace('DYRelogin.start { showRelogin = true }', 'DYRelogin.start { [self] in showRelogin = true }')
 response_match = re.search(r'private struct DYPublishResp[^\n]+', extras)
+once_flag = re.search(r'@MainActor final class DYOnceFlag[^\n]+', extras)[0]
 assert response_match
 response = response_match[0]
 swift = r'''
@@ -34,17 +35,17 @@ struct DYLoginExpired: Error {}
  static let publishJS = "publish"
  var ready = true, writes = 0
  var profile: DYUser? = DYUser(name: "same", secUid: "self", uid: "100")
- var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String]()
+ var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
  func ensureWriteReady() async -> Bool { ready }
  func reload() {}
  func uploadCommentImage(_ data: Data, fileName: String, measured: Int) async throws -> DYImageXUploadResult { DYImageXUploadResult(uri:"private",width:1,height:1,format:"jpeg") }
  func selfProfile() async throws -> DYUser { guard let profile else { throw DYError.bad("missing") }; return profile }
  func call(_ s: String, args: [String:Any], attempts: Int) async throws -> Data { writes += 1; try? await Task.sleep(for:.milliseconds(150)); return Data(payload.utf8) }
- func fetchComments(_ a: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { (tops,0,false) }
+ func fetchComments(_ a: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { if readDelayMs > 0 { try? await Task.sleep(for:.milliseconds(readDelayMs)) }; return (tops,0,false) }
  func fetchReplies(_ a: String, commentID: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { readFloors.append(commentID); return (floors[commentID] ?? [],0,false) }
 '''+methods+r'''
 }
-'''+models+'\n'+response+'\n'+recovery+r'''
+'''+models+'\n'+response+'\n'+once_flag+'\n'+recovery+r'''
 @MainActor final class RecoveryScreen {
  let bridge: DouyinBridge
  var busy = false, message = ""
@@ -112,6 +113,19 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   check(!(await accepted(oldImage,image:image)),"old image comment cannot reconcile")
   let pureImage=bridge(); var pure=candidate(text:""); pure.images=c.images; pureImage.tops=[pure]
   check(!(await accepted(pureImage,text:"",image:image)),"pure image ambiguous reconciliation stays unknown")
+  // 回查读接口被压住时，界面必须在时限内结束，不能一直转圈
+  DouyinBridge.reconcileTimeout = 0.3
+  let slow=bridge(); slow.readDelayMs=3000; slow.tops=[candidate()]
+  let t0=Date(); let slowAccepted=await accepted(slow)
+  check(!slowAccepted && Date().timeIntervalSince(t0) < 1.5 && slow.writes==1,"stalled reconcile ends within timeout as unknown, no resend")
+  DouyinBridge.reconcileTimeout = 8
+  // 403 空响应且回查无果：按被拦截处理（进入恢复选择），不清登录、不重发
+  let blocked=DouyinBridge(); blocked.payload="{\"status\":403,\"code\":null,\"comment\":null}"
+  var blockedIsRecovery=false
+  do { _ = try await blocked.publishComment("video",text:"exact text") } catch is DYLoginExpired { blockedIsRecovery=true } catch {}
+  check(blockedIsRecovery && blocked.writes==1 && DYAccountStore.shared.clears==0,"403 empty response routes to recovery without retry or sign-out")
+  let blockedButPosted=DouyinBridge(); blockedButPosted.payload=blocked.payload; blockedButPosted.tops=[candidate()]
+  check(await accepted(blockedButPosted),"403 that actually posted is still confirmed by strict reconcile")
   let rejected=bridge("8"); check(!(await accepted(rejected)) && rejected.writes==1,"code8 rejected without retry")
   var presented=false
   DYRelogin.start { presented=true }

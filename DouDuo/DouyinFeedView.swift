@@ -5192,7 +5192,7 @@ struct DYCommentPanel: View {
             inputFocused = false
         } catch is DYLoginExpired {
             // 草稿留着：重新登录后再点一次发送
-            sendErr = "本次评论被要求验证（code 8）；登录和草稿已保留，请选择恢复方式"
+            sendErr = "抖音拦下了这次评论（需要验证或暂时受限）；登录和草稿已保留，请选择恢复方式"
             inputFocused = false
             DYRelogin.start { showRelogin = true }
         } catch {

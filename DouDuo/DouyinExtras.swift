@@ -88,6 +88,9 @@ private struct DYListPage: Decodable { let status: Int; let items: [DYAweme]; le
 private struct DYDanmakuPage: Decodable { let status: Int; let items: [DYDanmaku] }
 
 private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let msg: String? }
+/// 一次性结束标记（firstWithin 用：结果和超时谁先到算谁）
+@MainActor final class DYOnceFlag { var done = false; init() {} }
+
 private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String? }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
@@ -297,7 +300,7 @@ extension DouyinBridge {
             throw DYError.bad("评论回执无法识别，草稿已保留；请先查看评论，勿连续重发")
         }
         // 服务端文案、正文、账号标识与响应全文不入日志。
-        DYLiveModel.log("DDSEND comment op=\(operationID) phase=response status=\(r.status) code=\(r.code.map(String.init) ?? "nil")")
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=response status=\(r.status) code=\(r.code.map(String.init) ?? "nil") diag=\(r.diagnostic ?? "-")")
         if r.status == -4 {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=not-ready-js")
             throw DYError.bad("评论签名页尚未就绪，未发送；草稿已保留")
@@ -315,15 +318,44 @@ extension DouyinBridge {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=rejected")
             throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "评论被拒绝（\(code)），草稿已保留")
         }
+        // 回查有总时限：读接口在风控期间可能被安全 SDK 压住十几秒，界面不能一直转圈（老板 11-18 实测卡约 30 秒）。
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=reconcile")
-        if let mine = await findMySentComment(awemeID, text: text, replyID: replyID,
-                                             replyToReplyID: replyToReplyID, imageSentAt: sentAt,
-                                             identity: identity, hasImage: image != nil) {
+        let started = Date()
+        let mine = await Self.firstWithin(Self.reconcileTimeout) { [weak self] in
+            await self?.findMySentComment(awemeID, text: text, replyID: replyID,
+                                          replyToReplyID: replyToReplyID, imageSentAt: sentAt,
+                                          identity: identity, hasImage: image != nil)
+        }
+        if let mine {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=verified")
             return mine
         }
-        DYLiveModel.log("DDSEND comment op=\(operationID) phase=unknown")
+        let waited = Int(Date().timeIntervalSince(started) * 1000)
+        // 403 空响应：签名完整仍被拒，属于抖音对这次写入的拦截（常伴随验证要求），引导去网页版处理，不自动重发
+        if r.status == 403 {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=blocked-403 waitedMs=\(waited)")
+            throw DYLoginExpired()
+        }
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=unknown waitedMs=\(waited)")
         throw DYError.bad("评论结果未确认，草稿已保留；请先查看对应评论或回复，勿连续重发")
+    }
+
+    /// 发送后回查的总时限（秒）。超时按「结果未知」处理，不当成功、不重发。
+    static var reconcileTimeout: Double = 8
+
+    /// 在时限内取结果：到点直接返回 nil，后台那次读取自己跑完即丢弃（WebView 里的 JS 调用无法取消）。
+    static func firstWithin<T>(_ seconds: Double, _ work: @escaping @MainActor () async -> T?) async -> T? {
+        let once = DYOnceFlag()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            Task { @MainActor in
+                let v = await work()
+                if !once.done { once.done = true; cont.resume(returning: v) }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                if !once.done { once.done = true; cont.resume(returning: nil) }
+            }
+        }
     }
 
     private static func isServerCommentID(_ id: String) -> Bool {
