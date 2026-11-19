@@ -536,6 +536,7 @@ struct DouyinWebContainer: UIViewRepresentable {
         let cfg = WKWebViewConfiguration()
         DDWebAppearance.install(in: cfg)
         cfg.websiteDataStore = .default()            // 登录态持久化
+        DYKeyStateProbe.install(in: cfg, tag: isChat ? "chat" : "web")
         #if DEBUG
         if DYMessageFixture.enabled && isChat { cfg.websiteDataStore = .nonPersistent() }
         #endif
