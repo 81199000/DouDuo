@@ -195,11 +195,19 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     let resolveAck, started = false, done = false;
     const ack = new Promise(r => { resolveAck = r; });
     const isPublish = u => { try { return /\/aweme\/v1\/web\/comment\/publish/.test(new URL(u, location.href).pathname); } catch (e) { return false; } };
-    const capture = (u, http, body) => { if (!isPublish(u) || done) return; let d = null; try { d = JSON.parse(body); } catch (e) {} done = true; resolveAck({ http, d, raw: (body || '').length }); };
+    // 只记「有没有」这几个响应头，不记值：官方网页版靠它们决定要不要弹验证（滑块/短信）再重发
+    const hdrFlags = names => { const h = ' ' + String(names || '').toLowerCase() + ' ';
+      const has = n => h.includes(' ' + n + ':') || h.includes(' ' + n + ' ') || h.includes('\n' + n + ':');
+      return 'vp=' + (has('x-tt-verify-passport-decision') ? 1 : 0) + ' bt=' + (has('bdturing-verify') ? 1 : 0)
+        + ' vc=' + (has('x-vc-bdturing-parameters') ? 1 : 0) + ' tg=' + (has('bd-ticket-guard-result') ? 1 : 0)
+        + ' tgs=' + (has('bd-ticket-guard-server-data') ? 1 : 0); };
+    const capture = (u, http, body, hdr) => { if (!isPublish(u) || done) return; let d = null; try { d = JSON.parse(body); } catch (e) {} done = true; resolveAck({ http, d, raw: (body || '').length, hdr: hdrFlags(hdr), shark: !!(d && d.data && d.data.shark_decision_conf) }); };
+    // 页面上有没有弹出验证框（只看有没有，不读内容）
+    const captchaShown = () => !!document.querySelector('iframe[src*="verify"], [id*="captcha"], [class*="captcha"], [class*="second-verify"], [class*="verify-bar"], [id*="verify-bar"]');
     const P = XMLHttpRequest.prototype, oldOpen = P.open, oldSend = P.send, oldFetch = window.fetch;
     function wOpen(m, u, ...a) { this.__ddUrl = u; return oldOpen.call(this, m, u, ...a); }
-    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { let body = ''; try { body = (this.responseType === '' || this.responseType === 'text') ? this.responseText : (this.responseType === 'json' ? JSON.stringify(this.response) : ''); } catch (e) {} capture(this.responseURL || this.__ddUrl, this.status, body); }, { once: true }); } return oldSend.apply(this, a); }
-    async function wFetch(input, ...a) { const u = typeof input === 'string' ? input : (input && input.url); if (isPublish(u)) started = true; const r = await oldFetch.call(this, input, ...a); if (isPublish(u)) { try { capture(u, r.status, await r.clone().text()); } catch (e) {} } return r; }
+    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { let body = ''; try { body = (this.responseType === '' || this.responseType === 'text') ? this.responseText : (this.responseType === 'json' ? JSON.stringify(this.response) : ''); } catch (e) {} let names = ''; try { names = '\n' + (this.getAllResponseHeaders() || ''); } catch (e) {} capture(this.responseURL || this.__ddUrl, this.status, body, names); }, { once: true }); } return oldSend.apply(this, a); }
+    async function wFetch(input, ...a) { const u = typeof input === 'string' ? input : (input && input.url); if (isPublish(u)) started = true; const r = await oldFetch.call(this, input, ...a); if (isPublish(u)) { try { let names = ''; try { r.headers.forEach((v, k) => { names += '\n' + k + ':'; }); } catch (e) {} capture(u, r.status, await r.clone().text(), names); } catch (e) {} } return r; }
     let ed = null;
     try {
       // 1. 评论区
@@ -253,7 +261,11 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
         return out('unconfirmed', 'ack-timeout', { msg: '已点发送，但没等到抖音回执；可能已发出，先刷新评论区核对' });
       }
       const d = r.d || {}, c = d.comment;
-      const diag = 'via=web-ui ms=' + (Date.now() - t0) + ' http=' + r.http + ' chars=' + r.raw + ' got=' + (c ? String(c.reply_id ?? '-') + '/' + String(c.reply_to_reply_id ?? '-') + ' st=' + String(c.status ?? '-') : '-');
+      // 空回执时多等一下，看页面有没有自己弹出验证框
+      let cap = captchaShown();
+      if (!cap && !c) { await sleep(1500); cap = captchaShown(); }
+      const diag = 'via=web-ui ms=' + (Date.now() - t0) + ' http=' + r.http + ' chars=' + r.raw + ' ' + r.hdr + ' shark=' + (r.shark ? 1 : 0) + ' cap=' + (cap ? 1 : 0)
+        + ' code=' + String(d.status_code ?? '-') + ' got=' + (c ? String(c.reply_id ?? '-') + '/' + String(c.reply_to_reply_id ?? '-') + ' st=' + String(c.status ?? '-') : '-');
       const id = c ? (typeof c.cid === 'string' ? c.cid : (c.cid_str || (Number.isSafeInteger(c.cid) ? String(c.cid) : ''))) : '';
       const comment = c && id ? { id, text: c.text || text, name: (c.user && c.user.nickname) || '', avatar: null, sec: (c.user && c.user.sec_uid) || null,
         digg: 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null,
