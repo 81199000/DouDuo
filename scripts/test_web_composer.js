@@ -2,7 +2,12 @@
 // 「网页评论框发送」回归：从生产 Swift 抽 DYWebComposer.sendJS，在仿抖音 Draft 评论框的假页面里跑。
 // 不连网、不碰真抖音：发送按钮点下去走的是本地假 fetch。
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
-const { JSDOM } = require('~/node_modules/jsdom');
+const { JSDOM } = (() => {
+  const tries = [process.env.DOUDUO_JSDOM, 'jsdom', '~/node_modules/jsdom',
+                 '~/node_modules/.pnpm/jsdom@27.4.0/node_modules/jsdom'].filter(Boolean);
+  for (const t of tries) { try { return require(t); } catch (e) {} }
+  throw new Error('jsdom not found; set DOUDUO_JSDOM');
+})();
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYWebComposer.swift'), 'utf8');
 const m = src.match(/static let sendJS = #"""\n([\s\S]*?)\n\s*"""#/);
 assert.ok(m, 'production sendJS required');
