@@ -45,9 +45,14 @@ def main():
         print("发行版已存在", rel["id"])
 
     if ipa["name"] not in [a.get("name") for a in rel.get("assets", [])]:
-        d = pathlib.Path(tempfile.mkdtemp())
-        gh("release", "download", tag, "-R", GH, "-p", ipa["name"], "-D", str(d))
-        data = (d / ipa["name"]).read_bytes()
+        # 本机刚打好的包和 GitHub 上那份大小一致就直接用，省一次下载（家里网络从 GitHub 拉大文件常中途断）
+        local = pathlib.Path(__file__).resolve().parent.parent / "build" / ipa["name"]
+        if local.exists() and local.stat().st_size == ipa["size"]:
+            data = local.read_bytes()
+        else:
+            d = pathlib.Path(tempfile.mkdtemp())
+            gh("release", "download", tag, "-R", GH, "-p", ipa["name"], "-D", str(d))
+            data = (d / ipa["name"]).read_bytes()
         b = uuid.uuid4().hex
         payload = (f"--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{ipa['name']}\"\r\n"
                    f"Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{b}--\r\n".encode()
