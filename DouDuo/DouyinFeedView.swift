@@ -2445,17 +2445,17 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             } else {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
-                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
-                    page(for: item)
+                            userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item, isCurrentItem in
+                    page(for: item, isCurrentItem: isCurrentItem)
                 }
             }
         }
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
-    private func page(for item: DYAweme) -> some View {
+    private func page(for item: DYAweme, isCurrentItem: Bool) -> some View {
         let extras = AnyView(moreExtrasMenu(item))
-        let active = item.id == currentID && web == nil && tab == .recommend && !overlayOpen && !showSettings
+        let active = isCurrentItem && web == nil && tab == .recommend && !overlayOpen && !showSettings
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
@@ -3607,16 +3607,16 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
-                            pageAxes: [.horizontal, .vertical]) { item in
-                    page(for: item, audible: audible, interactive: interactive)
+                            pageAxes: [.horizontal, .vertical]) { item, isCurrentItem in
+                    page(for: item, isCurrentItem: isCurrentItem, audible: audible, interactive: interactive)
                 }
             }
         }
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
-    private func page(for item: DYAweme, audible: Bool, interactive: Bool) -> some View {
-        let active = audible && item.id == currentID && web == nil && !overlayOpen && !showSettings
+    private func page(for item: DYAweme, isCurrentItem: Bool, audible: Bool, interactive: Bool) -> some View {
+        let active = audible && isCurrentItem && web == nil && !overlayOpen && !showSettings
         return DYVideoPage(item: item,
                            isCurrent: active,
                            insets: insets,
