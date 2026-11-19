@@ -72,7 +72,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                 .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
                 .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                 .clipped()
-                .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen)
+                .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen, videoHeight: layout.videoSize.height)
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                 }
