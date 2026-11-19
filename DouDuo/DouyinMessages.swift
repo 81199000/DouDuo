@@ -1996,8 +1996,16 @@ struct DYNoticeListScreen: View {
                         .accessibilityIdentifier("douyin.notice.reply.cancel")
                 }
             }
-            if let e = replyErr { Text(e).font(.caption2).foregroundStyle(.red).accessibilityIdentifier("douyin.notice.reply.err")
-                .onReceive(bridge.$signReady) { ok in if ok, replyErr == DYCommentPanel.waitSignText { replyErr = nil } } }
+            if replyErr == DYCommentPanel.waitSignText {
+                DYSignWaitHint(bridge: bridge, color: .red).accessibilityIdentifier("douyin.notice.reply.err")
+                    .onReceive(bridge.$signReady) { ok in
+                        guard ok else { return }
+                        replyErr = DYCommentPanel.signDoneText
+                        Task { @MainActor in try? await Task.sleep(for: .seconds(3)); if replyErr == DYCommentPanel.signDoneText { replyErr = nil } }
+                    }
+            } else if let e = replyErr {
+                Text(e).font(.caption2).foregroundStyle(e == DYCommentPanel.signDoneText ? .green : .red).accessibilityIdentifier("douyin.notice.reply.err")
+            }
             HStack(spacing: 8) {
                 TextField("回复评论…", text: $replyDraft, axis: .vertical)
                     .lineLimit(1...4)

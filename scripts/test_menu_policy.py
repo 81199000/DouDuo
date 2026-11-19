@@ -45,6 +45,16 @@ class MenuPolicyTests(unittest.TestCase):
                       "shortRatio", "isShort(", "wantedShort"):
             self.assertNotIn(token, FEED)
 
+    def test_module_menu_has_messages_and_mine_entries(self):
+        menu = block(FEED, "private func minimalModuleButton")
+        tail = menu.split('minimalMenuRow("搜索"', 1)[1]
+        self.assertIn('minimalMenuRow("信息"', tail)
+        self.assertIn('"douyin.module.messages"', tail)
+        self.assertIn('minimalMenuRow("我的"', tail)
+        info = tail.split('minimalMenuRow("信息"', 1)[1].split('minimalMenuRow("我的"', 1)[0]
+        self.assertIn("messagesStartOnMine = false; showMessages = true", info)
+        self.assertIn("noticeUnread > 0", info)
+
     def test_live_module_menu_actions_follow_the_selected_module(self):
         menu = block(FEED, "private func minimalModuleButton")
         live = menu.split("if tab == .live", 1)[1]
@@ -104,10 +114,11 @@ class MenuPolicyTests(unittest.TestCase):
         tabs = block(FEED, "enum DYTab:")
         for title in ("关注", "推荐", "直播"):
             self.assertIn('"' + title + '"', tabs)
-        self.assertNotIn('Text("信息")', top)
+        # 老板 2026-11-19：顶栏「信息」要有字，点它进信息页
+        self.assertIn('Text("信息")', top)
+        self.assertIn("showMessages = true", top)
         self.assertNotIn("myUser?.name", top)
         self.assertNotIn("showName", top)
-        self.assertIn('Image(systemName: "bubble.left.and.bubble.right")', top)
         self.assertIn("noticeUnread > 0", top)
         self.assertIn("theme.status.danger", top)
         self.assertEqual(top.count(".frame(minWidth: 44, minHeight: 44)"), 2)
