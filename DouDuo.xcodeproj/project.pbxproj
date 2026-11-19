@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		048E8F57A5AF2A24EAF5087C /* DYShareLinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EBC24E22E6E1F086E8D31C5 /* DYShareLinkTests.swift */; };
+		065AE3AEC98F2839DD0FB364 /* DYSignGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C41CFF8DFF40A68B9BA4DAE /* DYSignGateTests.swift */; };
 		0A1C42DF0EF2C77EABF5F7F0 /* DouyinMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016E32A4CC2CC36574CF1639 /* DouyinMessages.swift */; };
 		0AF6EA39F458FD381966460A /* DYStorageRing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4EB949397190E39BDFDD1D0 /* DYStorageRing.swift */; };
 		0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */; };
@@ -207,6 +208,7 @@
 		67D760242AE376C515972D58 /* PlayerGestureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureView.swift; sourceTree = "<group>"; };
 		68F4E1542F53FF3D9DF55FEF /* DYOfflineDownloadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloadScreen.swift; sourceTree = "<group>"; };
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
+		6C41CFF8DFF40A68B9BA4DAE /* DYSignGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSignGateTests.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
 		6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardFeedback.swift; sourceTree = "<group>"; };
 		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
@@ -476,6 +478,7 @@
 				A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */,
 				26628003EB3A42ADD3566C56 /* DYMessageRailProbeTests.swift */,
 				1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */,
+				6C41CFF8DFF40A68B9BA4DAE /* DYSignGateTests.swift */,
 				DA875BBA0C9458DB22434032 /* DYVerifyFlowTests.swift */,
 			);
 			path = DouDuoUITests;
@@ -606,6 +609,7 @@
 			files = (
 				C86AF019E8B651B0C38BC238 /* DYMessageRailProbeTests.swift in Sources */,
 				19ECC8D42A077E8652DD8714 /* DYRelationsPagingTests.swift in Sources */,
+				065AE3AEC98F2839DD0FB364 /* DYSignGateTests.swift in Sources */,
 				52AB956959B066B84FC9BE31 /* DYVerifyFlowTests.swift in Sources */,
 				0C79A7F48133EC2BB889BB94 /* DouDuoUITests.swift in Sources */,
 			);
