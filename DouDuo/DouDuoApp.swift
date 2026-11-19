@@ -105,6 +105,10 @@ struct DouDuoApp: App {
         Task { @MainActor in
             DYLogoutBlock.prepare()
             DYKeyStateProbe.log = { DYLiveModel.log($0) }
+            DYPassportVerify.log = { DYLiveModel.log($0) }
+            #if DEBUG
+            DYPassportVerify.runDemoIfRequested()
+            #endif
             DYSessionWatch.shared.start()
         }
     }
