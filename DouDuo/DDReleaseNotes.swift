@@ -97,7 +97,7 @@ struct DDReleaseNotesSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if case .update = mode {
-                        Text("新版本 \(version)（当前 \(DDUpdateChecker.currentVersion)）。去 GitHub 下载新版，重新签名安装即可，登录态会保留。")
+                        Text("新版本 \(version)（当前 \(DDUpdateChecker.currentVersion)）。打开电脑上的一键签就会自动装上新版，登录态会保留。")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .padding(.bottom, 4)
                     }
