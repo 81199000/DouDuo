@@ -824,7 +824,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
                         .id(aweme.id)
                         .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                         .clipped()
-                        .dyDeskLight(layout.resident && !layout.sideBySide)
+                        .dyDeskLight(layout.resident && !layout.sideBySide, videoHeight: layout.videoSize.height)
                         .overlay(alignment: .leading) {
                             if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
                         }
