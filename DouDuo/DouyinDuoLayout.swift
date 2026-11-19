@@ -54,10 +54,10 @@ enum DYDuoMetrics {
 
     /// Full-bleed media and sheets deliberately extend past SwiftUI's safe
     /// area. Their controls still clear the physical home-indicator region.
-    static var windowBottomInset: CGFloat {
-        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
-    }
+    /// 同 windowSafeTop：读缓存，别在 body 里同步问窗口。
+    static var windowBottomInset: CGFloat { MainActor.assumeIsolated { DYWindowInsets.shared.read().bottom } }
+    static var windowLeftInset: CGFloat { MainActor.assumeIsolated { DYWindowInsets.shared.read().left } }
+    static var windowRightInset: CGFloat { MainActor.assumeIsolated { DYWindowInsets.shared.read().right } }
 
     static func bottomSafeAreaExtension(in geo: GeometryProxy) -> CGFloat {
         let inset = geo.safeAreaInsets.bottom
@@ -98,10 +98,10 @@ enum DYDuoMetrics {
     }()
 
     /// 窗口顶部安全区（状态栏 / 灵动岛高度）。播放页整层忽略了安全区，GeometryProxy 量到的 top 为 0，只能读窗口。
-    @MainActor static var windowSafeTop: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 0
-    }
+    /// ⚠️ 返回缓存值，**不能在 body 里同步读 keyWindow.safeAreaInsets**：那会让 UIKit 在 SwiftUI 刷新途中重新布局，
+    /// 触发 AttributeGraph「Cycle detected」，之后推荐页再也不刷新（1.6.2/1.6.3 普通 iPhone 默认界面：开头不播、
+    /// 滑几条就滑不动、点关注/直播没反应；Duo 走另一个分支不读它所以没事）。新值异步写回，用到的视图自动重画。
+    @MainActor static var windowSafeTop: CGFloat { DYWindowInsets.shared.read().top }
 
     /// A system split or floating window can still receive the display's
     /// active hinge region. Only use it to lay out an app occupying the display.
@@ -954,6 +954,39 @@ struct DYHingeStateRoot: ViewModifier {
                 }
         } else {
             content
+        }
+    }
+}
+
+
+/// 窗口安全区缓存：body 只读缓存；真正去窗口取值放到下一轮主线程，有变化才写回（触发重画）。
+@MainActor @Observable
+final class DYWindowInsets {
+    static let shared = DYWindowInsets()
+    private(set) var insets = UIEdgeInsets.zero
+    @ObservationIgnored private var pending = false
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        let nc = NotificationCenter.default
+        for name in [UIDevice.orientationDidChangeNotification, UIScene.didActivateNotification,
+                     UIApplication.didBecomeActiveNotification] {
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { DYWindowInsets.shared.scheduleRefresh() }
+            })
+        }
+    }
+
+    func read() -> UIEdgeInsets { scheduleRefresh(); return insets }
+
+    private func scheduleRefresh() {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.async { [self] in
+            pending = false
+            let v = UIApplication.shared.connectedScenes
+                .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets ?? .zero
+            if v != insets { insets = v }
         }
     }
 }
