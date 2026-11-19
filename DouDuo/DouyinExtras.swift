@@ -531,6 +531,10 @@ extension DouyinBridge {
       // 只记 id：请求挂在哪条下面、抖音实际挂到哪条下面、评论状态（判断「发出了却看不到」）
       + ' req=' + (typeof reply === 'string' && reply ? reply : '0') + '/' + (typeof replyTo === 'string' && replyTo ? replyTo : '0')
       + ' got=' + (d.comment ? String(d.comment.reply_id ?? '-') + '/' + String(d.comment.reply_to_reply_id ?? '-') + ' st=' + String(d.comment.status ?? '-') : '-')
+      // 只记验证相关响应头「有没有」，不记值（官方网页版靠它们弹滑块/短信验证后重发）
+      + (() => { const h = String(r.h || '').toLowerCase(); const f = n => h.includes('\n' + n + ':') ? 1 : 0;
+          return ' vp=' + f('x-tt-verify-passport-decision') + ' bt=' + f('bdturing-verify') + ' vc=' + f('x-vc-bdturing-parameters')
+            + ' tg=' + f('bd-ticket-guard-result') + ' shark=' + ((d.data && d.data.shark_decision_conf) ? 1 : 0); })()
       + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
       + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
