@@ -1166,7 +1166,7 @@ struct PlayerPage: View {
                 seamAudio.loopToZero(rate: playRate, muted: muted)
             }
         }
-        let nativeAudio = DYAutoPiP.requiresNativeAudio(preference: autoPiP, cleanScreen: cleanScreen)
+        let nativeAudio = DYAutoPiP.bindsNativeAudio(preference: autoPiP, cleanScreen: cleanScreen)
         seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted,
                        useEngine: !nativeAudio && DDSeamlessController.engineWanted, engineHandoff: !nativeAudio)
     }
@@ -1485,7 +1485,12 @@ struct PlayerPage: View {
     private func pauseForBackground() {
         let behindOfflineLibrary = DDPlayback.shared.offlineLibraryPresented && offlineContext?.inLibrary != true
         if behindOfflineLibrary, DDRemoteOwner.instance == playbackID { clearRemote() }
-        if !behindOfflineLibrary && !DDPlayback.shared.coverHold && pictureInPicture.keepsPlaybackOnExit { return }
+        if !behindOfflineLibrary && !DDPlayback.shared.coverHold && pictureInPicture.keepsPlaybackOnExit {
+            // 要进系统画中画：前台变速时声音可能交给了独立引擎，小窗只认 AVPlayer 原生声音 → 先交回再离开。
+            // 这里由 DDPlayback.pauseAll 在停引擎之前调用，交回后引擎停了也不影响原生声音。
+            seamAudio.returnToNativeAudio(reason: "pip-exit")
+            return
+        }
         if !behindOfflineLibrary && DDPlayback.bgPlay { return }
         pauseInlineForBackground()
     }
