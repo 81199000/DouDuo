@@ -52,6 +52,9 @@ struct DYCommentStage<Feed: View, Author: View>: View {
             feed()
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
+                // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）会铺满整屏宽，盖住右侧评论栏
+                //（内屏横屏评论纯黑的根因；dd405e6 拿掉这个裁边后 11-18 晚复发，老板 11-19 指出之前修过）。
+                .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
             if layout.showsPane {
                 Group {
                     if showsAuthorPane {
@@ -119,4 +122,12 @@ extension EnvironmentValues {
     @Entry var dyCommentsOpen = false
     /// 侧栏评论打开时限制画面和环境光的安全区扩展，保持播放器视图身份。
     @Entry var dyRestrictsPlaybackToPane = false
+}
+
+/// 只在 on 时裁边。
+/// ⚠️ 已知（议题 #52-2）：两个分支是两种视图类型，内屏横屏开关评论会重建播放器，进度倒退几秒。
+/// 别改成常挂超大 clipShape / mask（95ef04d 真机评论区黑屏，已回滚），也别整个拿掉（dd405e6 拿掉后评论纯黑）。
+struct DDClipIf: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View { if on { content.clipped() } else { content } }
 }
