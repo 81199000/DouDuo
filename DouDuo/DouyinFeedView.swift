@@ -1590,6 +1590,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// App 内登录页（关注页「登录」等入口）
     @State private var showAppLogin = false
     @State private var showSettings = false
+    @State private var settingsCoverID = UUID()
     @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
@@ -1880,7 +1881,11 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onDisappear { live.stop(); preloader.clear() }
+        .onDisappear {
+            live.stop()
+            preloader.clear()
+            DDPlayback.shared.endSettingsCover(settingsCoverID)
+        }
     }
 
     /// 登录页 / 网页关掉后：重开签名页重新读登录态，再刷推荐，推荐流跟着账号走
@@ -1897,7 +1902,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: {
-            DDPlayback.shared.releaseCover()
+            DDPlayback.shared.endSettingsCover(settingsCoverID)
             if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
         }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
@@ -1906,7 +1911,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
                 // 老板要求：进设置页视频也停（以前只有信息页停）
-                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
+                .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
@@ -2830,6 +2835,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     /// App 内登录页（关注页「登录」等入口）
     @State private var showAppLogin = false
     @State private var showSettings = false
+    @State private var settingsCoverID = UUID()
     @State var tab: DYTab = {
         let e = ProcessInfo.processInfo.environment
         if e["DOUDUO_STARTLIVE"] == "1" { return .live }
@@ -3081,10 +3087,14 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onDisappear { live.stop(); preloader.clear() }
+        .onDisappear {
+            live.stop()
+            preloader.clear()
+            DDPlayback.shared.endSettingsCover(settingsCoverID)
+        }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: {
-            DDPlayback.shared.releaseCover()
+            DDPlayback.shared.endSettingsCover(settingsCoverID)
             if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
         }) {
             DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
@@ -3093,7 +3103,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
                 // 老板要求：进设置页视频也停（以前只有信息页停）
-                .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
+                .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }
         }
         .fullScreenCover(item: $web, onDismiss: {
             // 网页里可能登录 / 过了验证：重开签名页，先重新读登录态，再刷推荐
