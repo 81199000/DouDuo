@@ -1365,7 +1365,7 @@ struct DYListPlayer: View {
         @Bindable var playback = playback
         if offlineLibrary {
             DYFeedPager(items: playback.items, currentID: $playback.currentID, scrollID: $scrollPos,
-                        userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item in
+                        userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item, _ in
                 page(item, insets: insets)
             }
             .accessibilityElement(children: .contain)
