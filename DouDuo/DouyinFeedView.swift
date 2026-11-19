@@ -3679,11 +3679,7 @@ struct DYUpstreamVideoPage: View {
     // Full-bleed ancestors may report zero safe-area insets. Read the app's
     // foreground key window as a fallback, never a guessed device/rail width.
     private var systemColumnInset: CGFloat {
-        let windowInset = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.right ?? 0
+        let windowInset = DYDuoMetrics.windowRightInset   // 缓存值，body 里别同步问窗口（AttributeGraph 环）
         return max(insets.trailing, windowInset)
     }
     @Environment(\.dyCommentsOpen) private var commentsOpen
@@ -4178,10 +4174,7 @@ struct DYClassicVideoPage: View {
     }
     private var contentInsets: EdgeInsets {
         guard systemBars else { return EdgeInsets() }
-        let left = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows).first(where: \.isKeyWindow)?.safeAreaInsets.left ?? 0
+        let left = DYDuoMetrics.windowLeftInset   // 缓存值，body 里别同步问窗口（AttributeGraph 环）
         // The 24 pt edge tuck is for the trailing Duo column. Restore the
         // complete system bottom inset when tabs become horizontal in portrait.
         let bottom = verticalBarEdge == nil && !inlineNavigation ? min(insets.bottom, 24) : 0
