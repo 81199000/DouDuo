@@ -2,6 +2,68 @@ import XCTest
 
 /// DouDuo 核心流程：推荐流加载 → 视频在走 → 上滑切下一条 → 左滑作者/右滑关注 → 点作者进主页 → 能返回原生页
 final class DouDuoUITests: XCTestCase {
+    func testShortVideoAutoPiPSettingPersists() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE": "rail", "DOUDUO_HASHTAG_FIXTURE": "1"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                               "-duoduomain_tab_v1", "首页", "-douduo_dismissed_update_v1", "9.9.9"]
+        addTeardownBlock { app.terminate() }
+        let form = app.collectionViews.matching(NSPredicate(format: "identifier != %@", "douyin.gallery")).firstMatch
+        func visibleToggle() -> XCUIElement {
+            let toggle = app.switches["settings.autoPip"]
+            if !toggle.exists { form.swipeDown() }
+            for _ in 0..<12 {
+                if toggle.exists, toggle.isHittable,
+                   toggle.frame.minY > form.frame.minY + 100,
+                   toggle.frame.maxY < form.frame.maxY - 60 { return toggle }
+                let upward = !toggle.exists || toggle.frame.minY >= form.frame.minY + 100
+                let start = form.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.65 : 0.35))
+                let end = form.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
+                start.press(forDuration: 0.05, thenDragTo: end)
+            }
+            XCTFail("PiP setting did not become fully visible")
+            return toggle
+        }
+        func openSetting() throws -> XCUIElement {
+            let more = app.buttons.matching(identifier: "douyin.more")
+            XCTAssertTrue(more.firstMatch.waitForExistence(timeout: 20))
+            let button = try XCTUnwrap(more.allElementsBoundByIndex.first { !$0.frame.isEmpty })
+            button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let settings = app.buttons["设置"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            settings.tap()
+            XCTAssertTrue(form.waitForExistence(timeout: 5))
+            return visibleToggle()
+        }
+        func set(_ toggle: XCUIElement, to value: String) {
+            if toggle.value as? String != value {
+                let control = toggle.switches.firstMatch
+                if control.exists { control.tap() }
+                else { toggle.tap() }
+            }
+            // Reacquire after SwiftUI updates the form in response to AppStorage.
+            let updated = visibleToggle()
+            XCTAssertTrue(waitUntil(timeout: 5) { updated.exists && updated.value as? String == value },
+                          "Requested \(value); \(updated.debugDescription)")
+        }
+        app.launch()
+        let toggle = try openSetting()
+        // Establish OFF without depending on a previous simulator session.
+        set(toggle, to: "0")
+        attach(app, "short-video-pip-setting-off")
+        set(toggle, to: "1")
+        attach(app, "short-video-pip-setting-on")
+        app.terminate()
+        app.launch()
+        let persisted = try openSetting()
+        XCTAssertEqual(persisted.value as? String, "1")
+        set(persisted, to: "0")
+        app.terminate()
+        app.launch()
+        XCTAssertEqual(try openSetting().value as? String, "0")
+    }
+
     func testMessageAppearanceLight() throws { try verifyMessageAppearance("light") }
     func testMessageAppearanceDark() throws { try verifyMessageAppearance("dark") }
 
