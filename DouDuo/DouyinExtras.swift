@@ -91,7 +91,7 @@ private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment];
 /// 一次性结束标记（firstWithin 用：结果和超时谁先到算谁）
 @MainActor final class DYOnceFlag { var done = false; init() {} }
 
-private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String? }
+private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String?; var verify: String? = nil }
 private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 
@@ -338,8 +338,34 @@ extension DouyinBridge {
         }
         // 在写入前获取本次身份；无法获取时可发一次，但不能把列表里的其他评论当作确认。
         let identity = try? await selfProfile()
+        do {
+            return try await publishViaAPI(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                           image: image, args: args, identity: identity, operationID: operationID, phase: "submit")
+        } catch let v as DYCommentNeedsVerify {
+            // 官方网页版同款：抖音要求身份验证 → 弹官方验证 → 通过后把同一条再发一次（只一次，不循环）
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=verify-required")
+            switch await DYPassportVerify.run(decision: v.decision) {
+            case .passed:
+                do {
+                    return try await publishViaAPI(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                                   image: image, args: args, identity: identity, operationID: operationID, phase: "resubmit")
+                } catch is DYCommentNeedsVerify {
+                    DYLiveModel.log("DDSEND comment op=\(operationID) phase=verify-again")
+                    throw DYError.bad("验证通过了，但抖音仍要求验证，这条没发出去；草稿已保留，稍后再试")
+                }
+            case .cancelled:
+                throw DYError.bad("已取消身份验证，这条没发出去；草稿已保留")
+            case .failed(let why):
+                throw DYError.bad("身份验证没完成（\(why)），这条没发出去；草稿已保留")
+            }
+        }
+    }
+
+    /// 接口方式发一次。抖音要求身份验证且确认没收下时抛 DYCommentNeedsVerify（由上层弹验证后重发一次）。
+    private func publishViaAPI(_ awemeID: String, text: String, replyID: String?, replyToReplyID: String?, image: DYImageXUploadResult?,
+                               args: [String: Any], identity: DYUser?, operationID: String, phase: String) async throws -> DYComment {
         let sentAt = Date().timeIntervalSince1970
-        DYLiveModel.log("DDSEND comment op=\(operationID) phase=submit")
+        DYLiveModel.log("DDSEND comment op=\(operationID) phase=\(phase)")
         let d: Data
         do { d = try await call(Self.publishJS, args: args, attempts: 1) }
         catch {
@@ -382,6 +408,11 @@ extension DouyinBridge {
             return mine
         }
         let waited = Int(Date().timeIntervalSince(started) * 1000)
+        // 空回执 + 要求身份验证，且回查确认评论区里没有这条：确定没收下，交给上层弹验证
+        if let decision = r.verify, !decision.isEmpty, r.comment == nil {
+            DYLiveModel.log("DDSEND comment op=\(operationID) phase=needs-verify waitedMs=\(waited)")
+            throw DYCommentNeedsVerify(decision: decision)
+        }
         // 403 空响应：签名完整仍被拒，属于抖音对这次写入的拦截（常伴随验证要求），引导去网页版处理，不自动重发
         if r.status == 403 {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=blocked-403 waitedMs=\(waited)")
@@ -531,13 +562,21 @@ extension DouyinBridge {
       // 只记 id：请求挂在哪条下面、抖音实际挂到哪条下面、评论状态（判断「发出了却看不到」）
       + ' req=' + (typeof reply === 'string' && reply ? reply : '0') + '/' + (typeof replyTo === 'string' && replyTo ? replyTo : '0')
       + ' got=' + (d.comment ? String(d.comment.reply_id ?? '-') + '/' + String(d.comment.reply_to_reply_id ?? '-') + ' st=' + String(d.comment.status ?? '-') : '-')
+      // 只记验证相关响应头「有没有」，不记值（官方网页版靠它们弹滑块/短信验证后重发）
+      + (() => { const h = String(r.h || '').toLowerCase(); const f = n => h.includes('\n' + n + ':') ? 1 : 0;
+          return ' vp=' + f('x-tt-verify-passport-decision') + ' bt=' + f('bdturing-verify') + ' vc=' + f('x-vc-bdturing-parameters')
+            + ' tg=' + f('bd-ticket-guard-result') + ' shark=' + ((d.data && d.data.shark_decision_conf) ? 1 : 0)
+            + ' tgr=' + (() => { const m = h.match(/\nbd-ticket-guard-result:\s*([^\r\n]*)/); if (!m) return '-'; const v = m[1].trim(); return /^-?\d{1,6}$/.test(v) ? v : 'x'; })(); })()
       + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
       + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'
       : kind === 'html' ? '抖音返回了网页而非评论结果，请在网页版查看是否有验证提示'
       : '未收到有效的评论确认结果，请勿连续重发';
     const msg = d.status_msg || ((!d.comment || d.status_code !== 0 || r.s !== 200) ? fallback : null);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null, diagnostic });
+    // 抖音要求身份验证时把头的原值交回 App（只在内存里转给官方验证组件，不进日志）
+    const vm = String(r.h || '').match(/\nx-tt-verify-passport-decision:\s*([^\r\n]*)/i);
+    const verify = !d.comment && vm && vm[1].trim() ? vm[1].trim() : null;
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg, comment: cmap(d.comment), danmakuID: null, diagnostic, verify });
     """#
 
     static let deleteCommentJS = #"""

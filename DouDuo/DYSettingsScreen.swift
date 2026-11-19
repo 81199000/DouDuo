@@ -31,7 +31,7 @@ struct DYSettingsScreen: View {
     @AppStorage(DYDMNotificationSettings.notifyKey) private var dmNotifications = false
     @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
     @State private var showNotes = false
-    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = true
+    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
     @State private var clearing = false
     @State private var cacheNote: String?
 
@@ -40,6 +40,46 @@ struct DYSettingsScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                // 排序（老板 11-19 要求重排）：最常调的在上，偶尔用的在下。
+                // 1 界面  2 播放与弹幕  3 推荐与内容  4 评论与私信  5 缓存与离线  6 账号  7 关于
+                Section {
+                    Picker("外观", selection: $appearance) {
+                        ForEach(DDAppearance.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("settings.appearance")
+                    Picker("界面模式", selection: $chromeMode) {
+                        ForEach(DDChromeMode.availableCases) { m in
+                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.chrome")
+                } header: {
+                    Text("界面")
+                }
+
+                Section {
+                    Picker("环境光", selection: $ambientLevel) {
+                        ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
+                    }
+                    .accessibilityIdentifier("settings.ambient")
+                    Toggle("显示弹幕", isOn: $danmakuEnabled).accessibilityIdentifier("douyin.danmaku.enabled")
+                    Picker("弹幕密度", selection: $density) {
+                        ForEach(DYDanmakuPolicy.Density.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .disabled(!danmakuEnabled)
+                    .accessibilityIdentifier("douyin.danmaku.density")
+                    Toggle("10 秒内重复弹幕去重", isOn: $deduplicate)
+                        .disabled(!danmakuEnabled)
+                        .accessibilityIdentifier("douyin.danmaku.deduplicate")
+                } header: {
+                    Text("播放与弹幕")
+                } footer: {
+                    Text("环境光：视频没铺满时，四周跟着画面颜色变化。弹幕显示在屏幕上方 1/3。倍速、静音、听书、自动连播、铺满宽度、发弹幕在播放页菜单里。")
+                }
+
                 Section {
                     Button {
                         dismiss()
@@ -48,8 +88,36 @@ struct DYSettingsScreen: View {
                         Label("刷新推荐", systemImage: "arrow.clockwise")
                     }
                     .accessibilityIdentifier("settings.refresh")
+                    NavigationLink {
+                        DYHashtagFilterScreen(currentTags: [], embedded: true)
+                    } label: {
+                        LabeledContent("按标签过滤视频") {
+                            let n = DYHashtagFilter(rawValue: blockedHashtags).tags.count
+                            Text(n == 0 ? "未设置" : "已屏蔽 \(n) 个")
+                        }
+                    }
+                    .accessibilityIdentifier("douyin.hashtags.manage")
+                    Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
+                } header: {
+                    Text("推荐与内容")
                 } footer: {
-                    Text("换一批推荐，当前在看的这条保留。")
+                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。")
+                }
+
+                Section {
+                    Toggle("点回复时自动弹出键盘", isOn: $replyAutoKeyboard)
+                        .accessibilityIdentifier("douyin.comment.autoKeyboard")
+                    Toggle("用网页评论框发送", isOn: $commentViaWebUI)
+                        .accessibilityIdentifier("douyin.comment.webUI")
+                    Toggle("应用内私信通知", isOn: $dmNotifications)
+                        .accessibilityIdentifier("settings.dm.notify")
+                    Toggle("通知里显示会话名称与头像", isOn: $dmDetail)
+                        .disabled(!dmNotifications)
+                        .accessibilityIdentifier("settings.dm.detail")
+                } header: {
+                    Text("评论与私信")
+                } footer: {
+                    Text("网页评论框：文字评论和回复填进抖音网页自己的评论框再点发送，和手动发一样，每条多等几秒；带图评论仍按原方式发。")
                 }
 
                 Section {
@@ -85,87 +153,10 @@ struct DYSettingsScreen: View {
                     .disabled(clearing)
                     .accessibilityIdentifier("settings.cache.clear")
                 } header: {
-                    Text("缓存")
-                }
-
-                Section("界面") {
-                    Picker("外观", selection: $appearance) {
-                        ForEach(DDAppearance.allCases) { mode in
-                            Text(mode.title).tag(mode.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.appearance")
-                    Picker("界面模式", selection: $chromeMode) {
-                        ForEach(DDChromeMode.availableCases) { m in
-                            Label(m.title, systemImage: m.symbol).tag(m.rawValue)
-                        }
-                    }
-                    .accessibilityIdentifier("settings.chrome")
+                    Text("缓存与离线")
                 }
 
                 Section {
-                    Picker("环境光", selection: $ambientLevel) {
-                        ForEach(DYVideoAmbient.levels, id: \.self) { Text(DYVideoAmbient.title($0)).tag($0) }
-                    }
-                    .accessibilityIdentifier("settings.ambient")
-                } header: {
-                    Text("播放")
-                } footer: {
-                    Text("环境光：视频没铺满时，四周跟着画面颜色实时变化，底色跟随外观。倍速、静音、听书、自动连播、铺满宽度在播放页菜单里直接切换。")
-                }
-
-                Section {
-                    NavigationLink {
-                        DYHashtagFilterScreen(currentTags: [], embedded: true)
-                    } label: {
-                        LabeledContent("按标签过滤视频") {
-                            let n = DYHashtagFilter(rawValue: blockedHashtags).tags.count
-                            Text(n == 0 ? "未设置" : "已屏蔽 \(n) 个")
-                        }
-                    }
-                    .accessibilityIdentifier("douyin.hashtags.manage")
-                    Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
-                } header: {
-                    Text("内容偏好")
-                } footer: {
-                    Text("推荐按抖音推荐顺序播放；横着看且开启「只放横屏内容」时跳过竖屏视频。标签过滤只作用于推荐页。")
-                }
-
-                Section {
-                    Toggle("显示弹幕", isOn: $danmakuEnabled).accessibilityIdentifier("douyin.danmaku.enabled")
-                    Picker("弹幕密度", selection: $density) {
-                        ForEach(DYDanmakuPolicy.Density.allCases) { Text($0.title).tag($0.rawValue) }
-                    }
-                    .accessibilityIdentifier("douyin.danmaku.density")
-                    Toggle("10 秒内重复去重", isOn: $deduplicate).accessibilityIdentifier("douyin.danmaku.deduplicate")
-                } header: {
-                    Text("弹幕")
-                } footer: {
-                    Text("显示区域：屏幕上方 1/3。发弹幕在「更多」里。")
-                }
-
-                Section {
-                    Toggle("点评论回复时自动弹出键盘", isOn: $replyAutoKeyboard)
-                        .accessibilityIdentifier("douyin.comment.autoKeyboard")
-                    Toggle("用网页评论框发送", isOn: $commentViaWebUI)
-                        .accessibilityIdentifier("douyin.comment.webUI")
-                } header: { Text("评论") } footer: {
-                    Text("关掉后点名字只进入「回复 @某人」，点输入框才弹键盘。无论开关：往下拖评论列表、点输入框旁的键盘按钮、或再点一次同一条评论，都能收起键盘。\n「用网页评论框发送」：文字评论和回复在后台打开这条视频的抖音网页，填进它的评论框再点它的发送，和在网页上手动发一样，被风控拦下、顺带掉登录的概率更低，但每条要多等几秒。带图评论仍按原方式发。")
-                }
-                Section {
-                    Toggle("应用内私信通知", isOn: $dmNotifications)
-                        .accessibilityIdentifier("settings.dm.notify")
-                    Toggle("显示会话名称与头像", isOn: $dmDetail)
-                        .disabled(!dmNotifications)
-                        .accessibilityIdentifier("settings.dm.detail")
-                } header: {
-                    Text("私信")
-                } footer: {
-                    Text("使用 DouDou 期间收到新私信活动时显示提醒。显示会话名称与头像关闭后仅显示匿名私信提醒。")
-                }
-
-                Section("账号") {
                     Button {
                         dismiss()
                         // 先收起设置页再弹网页，避免两层全屏叠在一起
@@ -174,9 +165,11 @@ struct DYSettingsScreen: View {
                         Label("网页版 / 登录", systemImage: "safari")
                     }
                     .accessibilityIdentifier("settings.web")
+                } header: {
+                    Text("账号")
                 }
 
-                Section("关于") {
+                Section {
                     LabeledContent("当前版本", value: DDAppVersion.display)
                         .accessibilityIdentifier("douyin.about.version")
                     Button {
@@ -194,6 +187,8 @@ struct DYSettingsScreen: View {
                         Label("开源仓库", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
                     .accessibilityIdentifier("douyin.about")
+                } header: {
+                    Text("关于")
                 }
             }
             .scrollContentBackground(.hidden)

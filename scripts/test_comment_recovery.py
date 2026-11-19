@@ -30,14 +30,22 @@ struct DYImageXUploadResult: Equatable { let uri: String; let width: Int; let he
 struct DYUser { let name: String; let secUid: String; let uid: String; var avatar: String? = nil }
 enum DYError: Error { case bad(String) }
 struct DYLoginExpired: Error {}
+struct DYCommentNeedsVerify: Error { let decision: String }
+@MainActor enum DYPassportVerify { enum Outcome: Equatable { case passed, failed(String), cancelled }
+ static var next: Outcome = .cancelled; static var runs = 0, lastDecision = ""
+ static func run(decision: String) async -> Outcome { runs += 1; lastDecision = decision; return next } }
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
 @MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
+enum DYCommentPanel { static let waitSignText = "等待签名完成才可以发送评论" }
 @MainActor enum DYLiveModel { static var lines = [String](); static func log(_ s: String) { lines.append(s) } }
 @MainActor final class DYAccountStore { static let shared = DYAccountStore(); var clears = 0, remembers = 0; func signOut() async { clears += 1 }; func remember(_ u: DYUser) async { remembers += 1 } }
 @MainActor final class DouyinBridge {
  static let publishJS = "publish"
  var ready = true, writes = 0
+ var signReady = true, prepared = 0
+ func prepareSigning() async { prepared += 1 }
  var profile: DYUser? = DYUser(name: "same", secUid: "self", uid: "100")
+ var payloads = [String]()  // 依次返回；用完后回落到 payload
  var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
  func ensureWriteReady() async -> Bool { ready }
  func publishViaWebUI(_ a: String, text: String, replyID: String?, replyToReplyID: String?, op: String) async throws -> DYComment? { nil }
@@ -45,7 +53,7 @@ struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image
  var uploads = 0
  func uploadCommentImage(_ data: Data, fileName: String, measured: DYImageXUploadResult) async throws -> DYImageXUploadResult { uploads += 1; return DYImageXUploadResult(uri:"private",width:1,height:1,format:"jpeg") }
  func selfProfile() async throws -> DYUser { guard let profile else { throw DYError.bad("missing") }; return profile }
- func call(_ s: String, args: [String:Any], attempts: Int) async throws -> Data { writes += 1; try? await Task.sleep(for:.milliseconds(150)); return Data(payload.utf8) }
+ func call(_ s: String, args: [String:Any], attempts: Int) async throws -> Data { writes += 1; try? await Task.sleep(for:.milliseconds(150)); return Data((payloads.isEmpty ? payload : payloads.removeFirst()).utf8) }
  func fetchComments(_ a: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { if readDelayMs > 0 { try? await Task.sleep(for:.milliseconds(readDelayMs)) }; return (tops,0,false) }
  func fetchReplies(_ a: String, commentID: String, cursor: Int) async throws -> (items:[DYComment], cursor:Int, hasMore:Bool) { readFloors.append(commentID); return (floors[commentID] ?? [],0,false) }
 '''+methods+r'''
@@ -92,6 +100,22 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   func accepted(_ b: DouyinBridge, text: String = "exact text", reply: String? = nil, to: String? = nil, image: DYImageXUploadResult? = nil) async -> Bool {
    do { _ = try await b.publishComment("video",text:text,replyID:reply,replyToReplyID:to,image:image); return true } catch { return false }
   }
+  // 抖音要求身份验证（空回执 + 头）：弹官方验证；通过则同一条只重发一次
+  let needVerify = "{\"status\":200,\"code\":null,\"comment\":null,\"verify\":\"{\\\"verify_from\\\":\\\"verify_center\\\"}\"}"
+  let okAck = "{\"status\":200,\"code\":0,\"comment\":{\"id\":\"777\",\"text\":\"exact text\",\"name\":\"same\",\"digg\":0,\"time\":1,\"replies\":0}}"
+  let v1=bridge(); v1.payloads=[needVerify, okAck]; DYPassportVerify.next = .passed; DYPassportVerify.runs = 0
+  let v1ok=await accepted(v1)
+  check(v1ok && v1.writes==2 && DYPassportVerify.runs==1 && DYPassportVerify.lastDecision.contains("verify_center"),"verify required → official verify once → passed → exactly one resend")
+  let v2=bridge(); v2.payloads=[needVerify, okAck]; DYPassportVerify.next = .cancelled; DYPassportVerify.runs = 0
+  let v2ok=await accepted(v2)
+  check(!v2ok && v2.writes==1 && DYPassportVerify.runs==1,"verify cancelled → no resend")
+  let v3=bridge(); v3.payloads=[needVerify, needVerify, okAck]; DYPassportVerify.next = .passed; DYPassportVerify.runs = 0
+  let v3ok=await accepted(v3)
+  check(!v3ok && v3.writes==2 && DYPassportVerify.runs==1,"verify passed but asked again → stop, no loop")
+  let v4=bridge(); v4.payloads=[needVerify]; DYPassportVerify.next = .failed("x"); DYPassportVerify.runs = 0
+  let v4ok=await accepted(v4)
+  check(!v4ok && v4.writes==1,"verify failed → no resend")
+  check(!DYLiveModel.lines.contains { $0.contains("verify_center") },"verify decision never written to log")
   let unready=bridge("0","123"); unready.ready=false
   let unreadyAccepted=await accepted(unready)
   check(!unreadyAccepted && unready.writes==0,"native not-ready blocks every write")
@@ -147,6 +171,12 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   composer.bridge.payload="{\"status\":200,\"code\":0,\"comment\":{\"id\":\"999\",\"text\":\"exact text\",\"name\":\"same\",\"digg\":0,\"time\":1,\"replies\":0}}"
   await composer.deliver(lid)
   check(composer.pending.isEmpty && composer.replies["111"]?.first?.id=="999" && composer.bridge.uploads==1 && composer.bridge.writes==2,"retry replaces the local row with the server comment and does not re-upload the image")
+  // 签名没完成：点发送什么都不发、不放本地行、草稿原样，提示「等待签名完成才可以发送评论」并去准备签名
+  let unsigned=Composer(bridge("0","555")); unsigned.replyParent=nil; unsigned.imageDraft=nil; unsigned.bridge.signReady=false
+  await unsigned.send(); try? await Task.sleep(for:.milliseconds(20))
+  check(unsigned.bridge.writes==0 && unsigned.pending.isEmpty && unsigned.items.isEmpty && unsigned.draft==" exact text " && unsigned.sendErr=="等待签名完成才可以发送评论" && unsigned.bridge.prepared==1,"unsigned send blocked before any write, draft kept, wait hint shown")
+  unsigned.bridge.signReady=true; await unsigned.send()
+  check(unsigned.bridge.writes==1 && unsigned.items.first?.id=="555","after signing completes the same draft sends once")
   let ok=Composer(bridge("0","555")); ok.replyParent=nil; ok.imageDraft=nil
   await ok.send()
   check(ok.items.first?.id=="555" && ok.pending.isEmpty && ok.draft.isEmpty && ok.total==1,"confirmed send swaps the optimistic row for the real comment")
@@ -155,6 +185,8 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   await failing.send(); let fid=failing.pending.keys.first ?? ""
   failing.editLocal(fid)
   check(failing.pending.isEmpty && failing.items.isEmpty && failing.draft=="exact text","edit returns a rejected comment to the composer and removes the row")
+  let unsignedNotice=Composer(bridge("0","777")); unsignedNotice.bridge.signReady=false; await unsignedNotice.sendReply(); try? await Task.sleep(for:.milliseconds(20))
+  check(unsignedNotice.bridge.writes==0 && unsignedNotice.replyDraft==" exact reply " && unsignedNotice.replyErr=="等待签名完成才可以发送评论" && unsignedNotice.replied.isEmpty,"unsigned notice reply blocked before any write, draft kept, wait hint shown")
   let noticeComposer=Composer(bridge("8")); await noticeComposer.sendReply()
   check(noticeComposer.replyDraft==" exact reply " && noticeComposer.replying != nil && noticeComposer.showRelogin && noticeComposer.replied.isEmpty,"production notice reply keeps draft and target on code8")
   let unknownComposer=Composer(bridge()); unknownComposer.replyParent=nil; await unknownComposer.send()

@@ -16,7 +16,8 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     /// 是否走「真人方式」。默认开；设置里可关（关掉回到直接调接口）。
     static let enabledKey = "douduo_comment_via_web_ui_v1"
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+        // 11-19：网页评论框发送 403 后抖音同时作废登录（真机 12:11），查清前默认关，走原接口
+        get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
@@ -40,6 +41,7 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
         cfg.userContentController.addUserScript(WKUserScript(source: DouyinBridge.composerNoMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         DYTrustLogin.install(in: cfg)
         DYLogoutBlock.install(in: cfg)
+        DYKeyStateProbe.install(in: cfg, tag: "composer")
         // 桌面宽度：抖音视频详情页在宽屏下评论区常驻右侧，评论框一直在
         let w = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 860), configuration: cfg)
         w.customUserAgent = DouyinWeb.userAgent
@@ -195,11 +197,36 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     let resolveAck, started = false, done = false;
     const ack = new Promise(r => { resolveAck = r; });
     const isPublish = u => { try { return /\/aweme\/v1\/web\/comment\/publish/.test(new URL(u, location.href).pathname); } catch (e) { return false; } };
-    const capture = (u, http, body) => { if (!isPublish(u) || done) return; let d = null; try { d = JSON.parse(body); } catch (e) {} done = true; resolveAck({ http, d, raw: (body || '').length }); };
-    const P = XMLHttpRequest.prototype, oldOpen = P.open, oldSend = P.send, oldFetch = window.fetch;
+    // 只记「有没有」这几个响应头，不记值：官方网页版靠它们决定要不要弹验证（滑块/短信）再重发
+    const hdrFlags = names => { const h = ' ' + String(names || '').toLowerCase() + ' ';
+      const has = n => h.includes(' ' + n + ':') || h.includes(' ' + n + ' ') || h.includes('\n' + n + ':');
+      return 'vp=' + (has('x-tt-verify-passport-decision') ? 1 : 0) + ' bt=' + (has('bdturing-verify') ? 1 : 0)
+        + ' vc=' + (has('x-vc-bdturing-parameters') ? 1 : 0) + ' tg=' + (has('bd-ticket-guard-result') ? 1 : 0)
+        + ' tgs=' + (has('bd-ticket-guard-server-data') ? 1 : 0); };
+    // 抖音登录凭证校验的结论码（bd-ticket-guard-result / sec-result）：只收短数字，别的记 x
+    const code = (raw, name) => { const m = String(raw || '').match(new RegExp('(?:^|\\n)' + name + ':\\s*([^\\r\\n]*)', 'i')); if (!m) return '-'; const v = m[1].trim(); return /^-?\d{1,6}$/.test(v) ? v : 'x'; };
+    const capture = (u, http, body, hdr) => { if (!isPublish(u) || done) return; let d = null; try { d = JSON.parse(body); } catch (e) {} done = true;
+      resolveAck({ http, d, raw: (body || '').length, hdr: hdrFlags(hdr) + ' tgr=' + code(hdr, 'bd-ticket-guard-result') + ' tgsr=' + code(hdr, 'bd-ticket-guard-sec-result'),
+        shark: !!(d && d.data && d.data.shark_decision_conf), signed: /[?&]a_bogus=/.test(String(u || '')) }); };
+    // 发出去的评论请求带了哪些头：只记名字（登录凭证签名那几个头 + 常规头），不记值
+    let reqHdrs = new Set();
+    const noteHdr = n => { n = String(n || '').toLowerCase(); if (/^(bd-ticket-guard-[a-z-]+|x-secsdk-[a-z-]+|x-tt-[a-z-]+|content-type)$/.test(n)) reqHdrs.add(n.replace('bd-ticket-guard-', 'tg:')); };
+    const hdrNames = () => [...reqHdrs].sort().join(',') || 'none';
+    // 本页的登录凭证密钥状态（只记有没有 + 短哈希，用来比对各后台页是不是同一套）
+    const h8 = v => { if (v == null || v === '') return '-'; v = String(v); let h = 0x811c9dc5; for (let i = 0; i < v.length; i++) { h ^= v.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return ('0000000' + h.toString(16)).slice(-8); };
+    const keyState = () => { let ls = {}; try { ls = window.localStorage || {}; } catch (e) {}
+      const g = k => { try { return ls.getItem ? ls.getItem(k) : null; } catch (e) { return null; } };
+      const ck = n => { const m = (document.cookie || '').match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? m[1] : null; };
+      const crypt = g('security-sdk/s_sdk_crypt_sdk'), cert = g('security-sdk/s_sdk_cert_key'), sign = g('security-sdk/s_sdk_sign_data_key/web_protect');
+      return 'keys=' + (crypt ? 1 : 0) + (cert ? 1 : 0) + (sign ? 1 : 0) + ' kh=' + h8(crypt) + ' ch=' + h8(ck('bd_ticket_guard_client_data')) + ' wd=' + (ck('bd_ticket_guard_client_web_domain') ? 1 : 0); };
+    // 页面上有没有弹出验证框（只看有没有，不读内容）
+    const captchaShown = () => !!document.querySelector('iframe[src*="verify"], [id*="captcha"], [class*="captcha"], [class*="second-verify"], [class*="verify-bar"], [id*="verify-bar"]');
+    const P = XMLHttpRequest.prototype, oldOpen = P.open, oldSend = P.send, oldSetHdr = P.setRequestHeader, oldFetch = window.fetch;
     function wOpen(m, u, ...a) { this.__ddUrl = u; return oldOpen.call(this, m, u, ...a); }
-    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { let body = ''; try { body = (this.responseType === '' || this.responseType === 'text') ? this.responseText : (this.responseType === 'json' ? JSON.stringify(this.response) : ''); } catch (e) {} capture(this.responseURL || this.__ddUrl, this.status, body); }, { once: true }); } return oldSend.apply(this, a); }
-    async function wFetch(input, ...a) { const u = typeof input === 'string' ? input : (input && input.url); if (isPublish(u)) started = true; const r = await oldFetch.call(this, input, ...a); if (isPublish(u)) { try { capture(u, r.status, await r.clone().text()); } catch (e) {} } return r; }
+    function wSetHdr(n, v) { if (isPublish(this.__ddUrl)) noteHdr(n); return oldSetHdr.call(this, n, v); }
+    function wSend(...a) { if (isPublish(this.__ddUrl)) { started = true; this.addEventListener('loadend', () => { let body = ''; try { body = (this.responseType === '' || this.responseType === 'text') ? this.responseText : (this.responseType === 'json' ? JSON.stringify(this.response) : ''); } catch (e) {} let names = ''; try { names = '\n' + (this.getAllResponseHeaders() || ''); } catch (e) {} capture(this.responseURL || this.__ddUrl, this.status, body, names); }, { once: true }); } return oldSend.apply(this, a); }
+    async function wFetch(input, ...a) { const u = typeof input === 'string' ? input : (input && input.url); if (isPublish(u)) { started = true;
+      try { const hs = [input && input.headers, a[0] && a[0].headers]; for (const h of hs) { if (!h) continue; if (typeof h.forEach === 'function' && !Array.isArray(h)) h.forEach((v, k) => noteHdr(k)); else if (Array.isArray(h)) h.forEach(p => noteHdr(p[0])); else Object.keys(h).forEach(noteHdr); } } catch (e) {} } const r = await oldFetch.call(this, input, ...a); if (isPublish(u)) { try { let names = ''; try { r.headers.forEach((v, k) => { names += '\n' + k + ':' + (/^bd-ticket-guard-(sec-)?result$/i.test(k) ? ' ' + v : ''); }); } catch (e) {} capture(u, r.status, await r.clone().text(), names); } catch (e) {} } return r; }
     let ed = null;
     try {
       // 1. 评论区
@@ -244,7 +271,8 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
       const icons = right ? [...right.querySelectorAll('span,div')].filter(e => vis(e) && clickable(e)) : [];
       const send = icons.length ? icons[icons.length - 1] : null;
       if (!send) { setText(ed, ''); return out('not-ready', 'send-button', { msg: '网页上没找到发送按钮' }); }
-      P.open = wOpen; P.send = wSend; window.fetch = wFetch;
+      const ks0 = keyState();
+      P.open = wOpen; P.send = wSend; P.setRequestHeader = wSetHdr; window.fetch = wFetch;
       const t0 = Date.now();
       send.click();
       const r = await Promise.race([ack, sleep(12000).then(() => null)]);
@@ -253,7 +281,13 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
         return out('unconfirmed', 'ack-timeout', { msg: '已点发送，但没等到抖音回执；可能已发出，先刷新评论区核对' });
       }
       const d = r.d || {}, c = d.comment;
-      const diag = 'via=web-ui ms=' + (Date.now() - t0) + ' http=' + r.http + ' chars=' + r.raw + ' got=' + (c ? String(c.reply_id ?? '-') + '/' + String(c.reply_to_reply_id ?? '-') + ' st=' + String(c.status ?? '-') : '-');
+      // 空回执时多等一下，看页面有没有自己弹出验证框
+      let cap = captchaShown();
+      if (!cap && !c) { await sleep(1500); cap = captchaShown(); }
+      const ks1 = keyState();
+      const diag = 'via=web-ui ms=' + (Date.now() - t0) + ' http=' + r.http + ' chars=' + r.raw + ' ' + r.hdr + ' shark=' + (r.shark ? 1 : 0) + ' cap=' + (cap ? 1 : 0)
+        + ' signed=' + (r.signed ? 1 : 0) + ' reqHdrs=' + hdrNames() + ' ' + ks0 + (ks1 !== ks0 ? ' after:' + ks1.replace(/ /g, '/') : '')
+        + ' code=' + String(d.status_code ?? '-') + ' got=' + (c ? String(c.reply_id ?? '-') + '/' + String(c.reply_to_reply_id ?? '-') + ' st=' + String(c.status ?? '-') : '-');
       const id = c ? (typeof c.cid === 'string' ? c.cid : (c.cid_str || (Number.isSafeInteger(c.cid) ? String(c.cid) : ''))) : '';
       const comment = c && id ? { id, text: c.text || text, name: (c.user && c.user.nickname) || '', avatar: null, sec: (c.user && c.user.sec_uid) || null,
         digg: 0, time: c.create_time || Math.floor(Date.now() / 1000), replies: 0, ip: c.ip_label || null,
@@ -266,6 +300,7 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     } finally {
       if (P.open === wOpen) P.open = oldOpen;
       if (P.send === wSend) P.send = oldSend;
+      if (P.setRequestHeader === wSetHdr) P.setRequestHeader = oldSetHdr;
       if (window.fetch === wFetch) window.fetch = oldFetch;
       window.__ddComposing = false;
     }
