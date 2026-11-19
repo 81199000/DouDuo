@@ -36,11 +36,14 @@ struct DYCommentNeedsVerify: Error { let decision: String }
  static func run(decision: String) async -> Outcome { runs += 1; lastDecision = decision; return next } }
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
 @MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
+enum DYCommentPanel { static let waitSignText = "等待签名完成才可以发送评论" }
 @MainActor enum DYLiveModel { static var lines = [String](); static func log(_ s: String) { lines.append(s) } }
 @MainActor final class DYAccountStore { static let shared = DYAccountStore(); var clears = 0, remembers = 0; func signOut() async { clears += 1 }; func remember(_ u: DYUser) async { remembers += 1 } }
 @MainActor final class DouyinBridge {
  static let publishJS = "publish"
  var ready = true, writes = 0
+ var signReady = true, prepared = 0
+ func prepareSigning() async { prepared += 1 }
  var profile: DYUser? = DYUser(name: "same", secUid: "self", uid: "100")
  var payloads = [String]()  // 依次返回；用完后回落到 payload
  var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
@@ -168,6 +171,12 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   composer.bridge.payload="{\"status\":200,\"code\":0,\"comment\":{\"id\":\"999\",\"text\":\"exact text\",\"name\":\"same\",\"digg\":0,\"time\":1,\"replies\":0}}"
   await composer.deliver(lid)
   check(composer.pending.isEmpty && composer.replies["111"]?.first?.id=="999" && composer.bridge.uploads==1 && composer.bridge.writes==2,"retry replaces the local row with the server comment and does not re-upload the image")
+  // 签名没完成：点发送什么都不发、不放本地行、草稿原样，提示「等待签名完成才可以发送评论」并去准备签名
+  let unsigned=Composer(bridge("0","555")); unsigned.replyParent=nil; unsigned.imageDraft=nil; unsigned.bridge.signReady=false
+  await unsigned.send(); try? await Task.sleep(for:.milliseconds(20))
+  check(unsigned.bridge.writes==0 && unsigned.pending.isEmpty && unsigned.items.isEmpty && unsigned.draft==" exact text " && unsigned.sendErr=="等待签名完成才可以发送评论" && unsigned.bridge.prepared==1,"unsigned send blocked before any write, draft kept, wait hint shown")
+  unsigned.bridge.signReady=true; await unsigned.send()
+  check(unsigned.bridge.writes==1 && unsigned.items.first?.id=="555","after signing completes the same draft sends once")
   let ok=Composer(bridge("0","555")); ok.replyParent=nil; ok.imageDraft=nil
   await ok.send()
   check(ok.items.first?.id=="555" && ok.pending.isEmpty && ok.draft.isEmpty && ok.total==1,"confirmed send swaps the optimistic row for the real comment")
@@ -176,6 +185,8 @@ struct Notice { let id = "notice"; let awemeID: String? = "video"; let cid: Stri
   await failing.send(); let fid=failing.pending.keys.first ?? ""
   failing.editLocal(fid)
   check(failing.pending.isEmpty && failing.items.isEmpty && failing.draft=="exact text","edit returns a rejected comment to the composer and removes the row")
+  let unsignedNotice=Composer(bridge("0","777")); unsignedNotice.bridge.signReady=false; await unsignedNotice.sendReply(); try? await Task.sleep(for:.milliseconds(20))
+  check(unsignedNotice.bridge.writes==0 && unsignedNotice.replyDraft==" exact reply " && unsignedNotice.replyErr=="等待签名完成才可以发送评论" && unsignedNotice.replied.isEmpty,"unsigned notice reply blocked before any write, draft kept, wait hint shown")
   let noticeComposer=Composer(bridge("8")); await noticeComposer.sendReply()
   check(noticeComposer.replyDraft==" exact reply " && noticeComposer.replying != nil && noticeComposer.showRelogin && noticeComposer.replied.isEmpty,"production notice reply keeps draft and target on code8")
   let unknownComposer=Composer(bridge()); unknownComposer.replyParent=nil; await unknownComposer.send()

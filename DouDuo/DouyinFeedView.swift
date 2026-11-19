@@ -212,6 +212,11 @@ enum DYError: LocalizedError {
 @MainActor
 final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var ready = false
+    /// 签名完成：签名页已加载、安全 SDK 已接管 XHR+fetch、本页登录凭证已刷新（/passport/token/beat/web）。
+    /// 老板 2026-11-19：刚启动 5 秒就发评论 → 403(凭证校验 1101) 并被抖音作废登录；没完成前不许发评论。
+    @Published private(set) var signReady = false
+    private var signGen = 0
+    private var signPreparing = false
     /// 只在 `reload` 推进。界面用它清掉上一账号的关注直播，不代表登录态本身。
     @Published private(set) var followSession = 0
     @Published private(set) var authorFollowStates: [String: Bool] = [:]
@@ -243,6 +248,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         DYTrustLogin.install(in: cfg)   // 签名页上弹「是否保存登录信息？」也默认点「保存」
         DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
         DYKeyStateProbe.install(in: cfg, tag: "signer")
+        cfg.userContentController.addUserScript(WKUserScript(source: Self.beatWatchJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
@@ -255,6 +261,13 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         // Layout fixtures must not bootstrap the live website or share its request budget.
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
             ready = true
+            // UI 测试：DOUDUO_SIGN_DELAY=<秒> 模拟签名还没完成，到点自动完成
+            if let d = ProcessInfo.processInfo.environment["DOUDUO_SIGN_DELAY"].flatMap(Double.init), d > 0 {
+                signReady = false
+                Task { @MainActor in try? await Task.sleep(for: .seconds(d)); self.signReady = true; DYLiveModel.log("DDSIGN ready fixture") }
+            } else {
+                signReady = true
+            }
             return
         }
         #endif
@@ -262,6 +275,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         followSessionCache.invalidate()
         followSession = followSessionCache.generation
         ready = false
+        markSignPending()
         web.load(URLRequest(url: startURL))
         liveContext?.reload()
     }
@@ -308,8 +322,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                     }
                 }
                 #endif
+                let gen = self.signGen
                 let hooked = await self.waitWriteHooks(seconds: 10)
                 let state = await self.writeHookState()
+                if hooked { await self.finishSigning(gen: gen) }
                 self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in
                     DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil") hooked=\(hooked) \(state) \(self.startURL.host ?? "")")
                 }
@@ -321,6 +337,47 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     private static var hookProbeStarted = false
     private static var composerProbeStarted = false
     #endif
+
+    /// 记下本页登录凭证刷新（/passport/token/beat/web）完成的时间。只读 Resource Timing，不碰 XHR/fetch
+    /// （否则会干扰「SDK 是否接管」的判断），不记 URL 参数和内容。
+    static let beatWatchJS = #"""
+    (() => { try { window.__ddBeatAt = 0;
+      const seen = l => { for (const e of l) if (/\/passport\/token\/beat\/web/.test(e.name) && e.responseEnd > 0) window.__ddBeatAt = Date.now(); };
+      new PerformanceObserver(x => seen(x.getEntries())).observe({ type: 'resource', buffered: true }); } catch (e) {} })();
+    """#
+
+    private func markSignPending() {
+        signGen += 1
+        if signReady { signReady = false }
+    }
+
+    /// 签名 SDK 挂好后，再等本页登录凭证刷新完（最多 12 秒，没等到也放行并记日志）
+    private func finishSigning(gen: Int) async {
+        guard startURL.host == "www.douyin.com", gen == signGen, !signReady else { return }
+        let t0 = Date()
+        var beat = false
+        while Date().timeIntervalSince(t0) < 12, gen == signGen {
+            let at = (try? await web.evaluateJavaScript("window.__ddBeatAt || 0")) as? Double ?? 0
+            if at > 0 { beat = true; break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        guard gen == signGen else { return }
+        if beat { try? await Task.sleep(nanoseconds: 500_000_000) }  // 给 SDK 一点时间把新凭证落盘
+        guard gen == signGen, !signReady else { return }
+        signReady = true
+        DYLiveModel.log("DDSIGN ready beat=\(beat ? 1 : 0) waitMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
+    }
+
+    /// 用户点发送时签名还没完成：在后台把签名页准备好（挂钩没装上就重开），完成后 signReady 变 true
+    func prepareSigning() async {
+        guard !signReady, !signPreparing else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        signPreparing = true
+        defer { signPreparing = false }
+        if await ensureWriteReady() { await finishSigning(gen: signGen) }
+    }
 
     /// 页面安全 SDK 是否已同时接管 XHR 和 fetch（写接口签名靠它）
     private static let hookStateJS = #"""
@@ -357,6 +414,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             DYLiveModel.log("DDSEND rearm round=\(round) state=\(await writeHookState())")
             // 只重开签名页本身：不动直播页、不清关注缓存（reload() 会让界面以为换了账号）
             ready = false
+            markSignPending()
             web.load(URLRequest(url: startURL))
             await waitReady()
             if await waitWriteHooks(seconds: 8) {
@@ -4842,6 +4900,7 @@ struct DYCommentPanel: View {
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
         .onDisappear { saveCommentPosition() }
+        .onReceive(bridge.$signReady) { ok in if ok, sendErr == Self.waitSignText { sendErr = nil } }
     }
 
     private var classicBody: some View {
@@ -4859,6 +4918,7 @@ struct DYCommentPanel: View {
                 DYRelatedSearchScreen(bridge: bridge, word: query.word)
             }
             .onDisappear { saveCommentPosition() }
+            .onReceive(bridge.$signReady) { ok in if ok, sendErr == Self.waitSignText { sendErr = nil } }
     }
 
     private var panelContent: some View {
@@ -5010,6 +5070,7 @@ struct DYCommentPanel: View {
             }
             if let e = sendErr {
                 Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
+                    .accessibilityIdentifier("douyin.comment.sendErr")
             }
             if imageLoading {
                 HStack(spacing: 8) {
@@ -5270,6 +5331,7 @@ struct DYCommentPanel: View {
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hasCommentContent, !sending, !imageLoading else { return }
+        guard bridge.signReady else { waitForSigning(); return }
         // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
         let top = replyParent ?? replyTo?.id
         let to = replyParent == nil ? nil : replyTo?.id
@@ -5287,8 +5349,18 @@ struct DYCommentPanel: View {
         await deliver(localID)
     }
 
+    static let waitSignText = "等待签名完成才可以发送评论"
+
+    /// 签名没完成：什么都不发、草稿原样留着，提示一句并在后台把签名准备好；完成后提示自动消失
+    private func waitForSigning() {
+        sendErr = Self.waitSignText
+        DYLiveModel.log("DDSIGN send-blocked waiting")
+        Task { await bridge.prepareSigning() }
+    }
+
     /// 真正发出去。只对这一条本地评论负责：成功换成服务器那条，失败/不明就地标在那一行上。
     private func deliver(_ localID: String) async {
+        guard bridge.signReady else { waitForSigning(); return }
         guard var job = pending[localID] else { return }
         job.state = .sending; pending[localID] = job
         sending = true
