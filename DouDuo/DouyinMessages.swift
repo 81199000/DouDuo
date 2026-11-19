@@ -3624,6 +3624,7 @@ private struct DYForwardWebContainer: UIViewRepresentable {
         })()
         """#, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         DYLogoutBlock.install(in: config)
+        DYKeyStateProbe.install(in: config, tag: "forward")
         let web = WKWebView(frame: .zero, configuration: config)
         web.customUserAgent = DouyinWeb.userAgent
         web.navigationDelegate = model; web.uiDelegate = model; model.web = web

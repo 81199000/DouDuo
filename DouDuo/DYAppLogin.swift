@@ -193,6 +193,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()   // 跟签名页 / 网页版共用登录态
         DYTrustLogin.install(in: cfg)       // 登录成功后的「是否保存登录信息？」默认点「保存」
+        DYKeyStateProbe.install(in: cfg, tag: "login")
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 420, height: 760), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()

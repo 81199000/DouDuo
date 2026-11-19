@@ -92,7 +92,42 @@ final class DYWebComposerWebKitTests: XCTestCase {
         let r = try await run(xhr: true, body: ok, headers: ["bd-ticket-guard-result": "0", "bd-ticket-guard-server-data": "SRV_LEAK"])
         let diag = try XCTUnwrap(r.out["diagnostic"] as? String); print("SIMPROBE ok-tg", r.out["state"]!, diag)
         XCTAssertEqual(r.out["state"] as? String, "sent")
-        XCTAssertTrue(diag.contains("vp=0 bt=0 vc=0 tg=1 tgs=1 shark=0 cap=0 code=0 got=0/0 st=7"), diag); XCTAssertFalse(diag.contains("SRV_LEAK"))
+        XCTAssertTrue(diag.contains("vp=0 bt=0 vc=0 tg=1 tgs=1 tgr=0 tgsr=- shark=0 cap=0"), diag); XCTAssertTrue(diag.contains("code=0 got=0/0 st=7"), diag); XCTAssertFalse(diag.contains("SRV_LEAK"))
+    }
+
+    func test403TicketGuardCodeAndSignedHeaderNames() async throws {
+        let r = try await run(xhr: true, status: 403, headers: ["bd-ticket-guard-result": "1003", "bd-ticket-guard-sec-result": "SEC_LEAK"])
+        let diag = try XCTUnwrap(r.out["diagnostic"] as? String); print("SIMPROBE 403-tg", r.out["state"]!, diag)
+        XCTAssertEqual(r.out["state"] as? String, "blocked")
+        XCTAssertTrue(diag.contains("tg=1 tgs=0 tgr=1003 tgsr=x"), diag); XCTAssertFalse(diag.contains("SEC_LEAK"))
+        XCTAssertTrue(diag.contains("reqHdrs=content-type"), diag)
+    }
+
+    func testFetch403TicketGuardCode() async throws {
+        let r = try await run(xhr: false, status: 403, headers: ["bd-ticket-guard-result": "1003"])
+        let diag = try XCTUnwrap(r.out["diagnostic"] as? String); print("SIMPROBE fetch-403", r.out["state"]!, diag)
+        XCTAssertTrue(diag.contains("tgr=1003"), diag)
+    }
+
+    func testKeyStateProbeHashesOnly() async throws {
+        let h = Handler()
+        let cfg = WKWebViewConfiguration(); cfg.setURLSchemeHandler(h, forURLScheme: "ddtest")
+        final class Sink: NSObject, WKScriptMessageHandler { var got: [String] = []
+            func userContentController(_ u: WKUserContentController, didReceive m: WKScriptMessage) { if let s = m.body as? String { got.append(s) } } }
+        let sink = Sink()
+        cfg.userContentController.addUserScript(WKUserScript(source: "localStorage.setItem('security-sdk/s_sdk_crypt_sdk','PRIV_MATERIAL');localStorage.setItem('security-sdk/s_sdk_cert_key','CERT_MATERIAL');",
+                                                             injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        cfg.userContentController.addUserScript(WKUserScript(source: DYKeyStateProbe.script(tag: "unit"), injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        cfg.userContentController.add(sink, name: DYKeyStateProbe.handlerName)
+        let w = WKWebView(frame: CGRect(x: 0, y: 0, width: 400, height: 300), configuration: cfg)
+        let win = UIWindow(frame: w.frame); win.addSubview(w); win.isHidden = false
+        w.load(URLRequest(url: URL(string: "ddtest://www.douyin.com/video/1")!))
+        for _ in 0..<120 where sink.got.isEmpty { try await Task.sleep(nanoseconds: 50_000_000) }
+        let s = try XCTUnwrap(sink.got.first); print("SIMPROBE keys", s)
+        XCTAssertTrue(s.hasPrefix("tag=unit when=t3 host=www.douyin.com"), s)
+        XCTAssertTrue(s.contains("keys=110 sdkN=2"), s)
+        XCTAssertNotNil(s.range(of: #"kh=[0-9a-f]{8} certh=[0-9a-f]{8} signh=-"#, options: .regularExpression), s)
+        XCTAssertFalse(s.contains("MATERIAL"))
     }
 
     func testPlainSuccessAllZero() async throws {
@@ -100,6 +135,6 @@ final class DYWebComposerWebKitTests: XCTestCase {
         let r = try await run(xhr: false, body: ok)
         let diag = try XCTUnwrap(r.out["diagnostic"] as? String); print("SIMPROBE ok", r.out["state"]!, diag)
         XCTAssertEqual(r.out["state"] as? String, "sent")
-        XCTAssertTrue(diag.contains("vp=0 bt=0 vc=0 tg=0 tgs=0 shark=0 cap=0"), diag)
+        XCTAssertTrue(diag.contains("vp=0 bt=0 vc=0 tg=0 tgs=0 tgr=- tgsr=- shark=0 cap=0"), diag)
     }
 }

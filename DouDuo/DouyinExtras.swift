@@ -534,7 +534,8 @@ extension DouyinBridge {
       // 只记验证相关响应头「有没有」，不记值（官方网页版靠它们弹滑块/短信验证后重发）
       + (() => { const h = String(r.h || '').toLowerCase(); const f = n => h.includes('\n' + n + ':') ? 1 : 0;
           return ' vp=' + f('x-tt-verify-passport-decision') + ' bt=' + f('bdturing-verify') + ' vc=' + f('x-vc-bdturing-parameters')
-            + ' tg=' + f('bd-ticket-guard-result') + ' shark=' + ((d.data && d.data.shark_decision_conf) ? 1 : 0); })()
+            + ' tg=' + f('bd-ticket-guard-result') + ' shark=' + ((d.data && d.data.shark_decision_conf) ? 1 : 0)
+            + ' tgr=' + (() => { const m = h.match(/\nbd-ticket-guard-result:\s*([^\r\n]*)/); if (!m) return '-'; const v = m[1].trim(); return /^-?\d{1,6}$/.test(v) ? v : 'x'; })(); })()
       + ' xhrHooked=' + hooked(() => XMLHttpRequest.prototype.send)
       + ' fetchHooked=' + hooked(() => window.fetch);
     const fallback = kind === 'empty' ? '抖音返回空响应，未能确认评论是否发送，请勿连续重发'

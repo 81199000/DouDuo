@@ -12,7 +12,7 @@ const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYWebComposer.swift'
 const m = src.match(/static let sendJS = #"""\n([\s\S]*?)\n\s*"""#/);
 assert.ok(m, 'production sendJS required');
 
-function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { status_code: 0, comment: { cid: 'c-new', text: 'x', reply_id: '0', reply_to_reply_id: '0' } } }), sendDoesNothing = false, viaXHR = false, captchaOnSend = false } = {}) {
+function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { status_code: 0, comment: { cid: 'c-new', text: 'x', reply_id: '0', reply_to_reply_id: '0' } } }), sendDoesNothing = false, viaXHR = false, captchaOnSend = false, hdrsOnSend = null, signedUrl = false } = {}) {
   const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only', url: 'https://www.douyin.com/video/a-1' });
   const w = dom.window, d = w.document;
   Object.defineProperty(w.HTMLElement.prototype, 'innerText', { get() { return this.textContent; }, configurable: true });
@@ -20,7 +20,7 @@ function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { stat
   w.HTMLElement.prototype.scrollIntoView = function () {};
   const calls = [];
   const hdrs = r => Object.entries(r.headers || {});
-  w.fetch = async (u) => { const r = respond(u); calls.push({ u, typed: lastTyped }); return { status: r.status, url: u, headers: { forEach: f => hdrs(r).forEach(([k, v]) => f(v, k)) }, clone: () => ({ text: async () => (r.body == null ? '' : JSON.stringify(r.body)) }) }; };
+  w.fetch = async (u, init) => { const r = respond(u); calls.push({ u, typed: lastTyped }); return { status: r.status, url: u, headers: { forEach: f => hdrs(r).forEach(([k, v]) => f(v, k)) }, clone: () => ({ text: async () => (r.body == null ? '' : JSON.stringify(r.body)) }) }; };
   // 官方网页版有的接口走 XHR：同样能拿到响应头
   class FakeXHR { constructor() { this.l = []; this.responseType = ''; } open(m, u) { this.u = u; } setRequestHeader() {} addEventListener(t, f) { if (t === 'loadend') this.l.push(f); }
     send() { const r = respond(this.u); calls.push({ u: this.u, typed: lastTyped }); this.status = r.status; this.responseURL = 'https://www.douyin.com' + this.u; this.responseText = r.body == null ? '' : JSON.stringify(r.body);
@@ -44,8 +44,9 @@ function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { stat
         if (name !== 'send' || sendDoesNothing) return;
         lastTyped = ed.textContent;
         const reply = bar.dataset.reply || '0', to = bar.dataset.to || '0';
-        const u = '/aweme/v1/web/comment/publish?reply_id=' + reply + '&reply_to_reply_id=' + to;
-        if (viaXHR) { const x = new w.XMLHttpRequest(); x.open('POST', u); x.send('a=1'); } else w.fetch(u);
+        const u = '/aweme/v1/web/comment/publish?reply_id=' + reply + '&reply_to_reply_id=' + to + (signedUrl ? '&a_bogus=SIG' : '');
+        if (viaXHR) { const x = new w.XMLHttpRequest(); x.open('POST', u); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+          for (const [k, v] of Object.entries(hdrsOnSend || {})) x.setRequestHeader(k, v); x.send('a=1'); } else w.fetch(u, { headers: hdrsOnSend || {} });
         if (captchaOnSend) setTimeout(() => { const c = el('div', 'captcha_verify_container'); d.body.appendChild(c); }, 200);
       });
       right.appendChild(s);
@@ -138,7 +139,27 @@ test('验证诊断：发送后页面弹出验证框 → cap=1', async () => {
 test('验证诊断：正常成功 → 全 0，并带评论状态', async () => {
   const p = page({ respond: () => ({ status: 200, body: { status_code: 0, comment: { cid: 'c9', status: 7, reply_id: '0', reply_to_reply_id: '0' } } }) });
   const r = await p.run('x', '', ''); assert.equal(r.state, 'sent');
-  assert.match(r.diagnostic, /vp=0 bt=0 vc=0 tg=0 tgs=0 shark=0 cap=0 code=0 got=0\/0 st=7/);
+  assert.match(r.diagnostic, /vp=0 bt=0 vc=0 tg=0 tgs=0 tgr=- tgsr=- shark=0 cap=0 signed=0 reqHdrs=none keys=000 kh=- ch=- wd=0 code=0 got=0\/0 st=7/);
+});
+test('凭证诊断：403 带校验结论码 → 记 tgr/tgsr 数字，非数字记 x，不泄露', async () => {
+  const p = page({ respond: () => ({ status: 403, body: null, headers: { 'bd-ticket-guard-result': '1003', 'bd-ticket-guard-sec-result': 'LEAK_TOKEN_abc' } }) });
+  const r = await p.run('x', '', ''); assert.equal(r.state, 'blocked');
+  assert.match(r.diagnostic, /tg=1 tgs=0 tgr=1003 tgsr=x/); assert.doesNotMatch(r.diagnostic, /LEAK_TOKEN/);
+});
+test('凭证诊断：记录发出的签名头名字与 a_bogus 有无，不记值', async () => {
+  const p = page({ viaXHR: true, hdrsOnSend: { 'bd-ticket-guard-client-data': 'CD_LEAK', 'bd-ticket-guard-version': '2', 'x-secsdk-csrf-token': 'CSRF_LEAK', 'Cookie-ish': 'nope' }, signedUrl: true });
+  const r = await p.run('x', '', ''); assert.equal(r.state, 'sent');
+  assert.match(r.diagnostic, /signed=1 reqHdrs=content-type,tg:client-data,tg:version,x-secsdk-csrf-token /);
+  assert.doesNotMatch(r.diagnostic, /CD_LEAK|CSRF_LEAK|cookie-ish/i);
+});
+test('凭证诊断：本页密钥状态只记有无与哈希', async () => {
+  const p = page();
+  p.w.localStorage.setItem('security-sdk/s_sdk_crypt_sdk', 'PRIVATE_KEY_MATERIAL');
+  p.w.localStorage.setItem('security-sdk/s_sdk_sign_data_key/web_protect', 'TICKET_MATERIAL');
+  p.w.document.cookie = 'bd_ticket_guard_client_data=CLIENTDATA_MATERIAL; path=/';
+  const r = await p.run('x', '', ''); assert.equal(r.state, 'sent');
+  assert.match(r.diagnostic, /keys=101 kh=[0-9a-f]{8} ch=[0-9a-f]{8} wd=0/);
+  assert.doesNotMatch(r.diagnostic, /MATERIAL/);
 });
 test('XHR 路径：发送后 XMLHttpRequest 原型恢复原样', async () => {
   const p = page({ viaXHR: true }); const P = p.w.XMLHttpRequest.prototype, o = P.open, s0 = P.send;

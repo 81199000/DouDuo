@@ -31,7 +31,7 @@ struct DYSettingsScreen: View {
     @AppStorage(DYDMNotificationSettings.notifyKey) private var dmNotifications = false
     @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
     @State private var showNotes = false
-    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = true
+    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
     @State private var clearing = false
     @State private var cacheNote: String?
 
