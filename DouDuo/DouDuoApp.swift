@@ -104,6 +104,11 @@ struct DouDuoApp: App {
         // 后台网页不许登出 + 登录被清掉时提示（老板 11-18：评论发不出就是被退出了，App 还没提示）
         Task { @MainActor in
             DYLogoutBlock.prepare()
+            DYKeyStateProbe.log = { DYLiveModel.log($0) }
+            DYPassportVerify.log = { DYLiveModel.log($0) }
+            #if DEBUG
+            DYPassportVerify.runDemoIfRequested()
+            #endif
             DYSessionWatch.shared.start()
         }
     }

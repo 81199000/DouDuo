@@ -212,6 +212,13 @@ enum DYError: LocalizedError {
 @MainActor
 final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var ready = false
+    /// 签名完成：签名页已加载、安全 SDK 已接管 XHR+fetch、本页登录凭证已刷新（/passport/token/beat/web）。
+    /// 老板 2026-11-19：刚启动 5 秒就发评论 → 403(凭证校验 1101) 并被抖音作废登录；没完成前不许发评论。
+    @Published private(set) var signReady = false
+    /// 这一轮签名从什么时候开始（倒计时用）
+    @Published private(set) var signStartedAt = Date()
+    private var signGen = 0
+    private var signPreparing = false
     /// 只在 `reload` 推进。界面用它清掉上一账号的关注直播，不代表登录态本身。
     @Published private(set) var followSession = 0
     @Published private(set) var authorFollowStates: [String: Bool] = [:]
@@ -242,6 +249,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         cfg.userContentController.addUserScript(WKUserScript(source: Self.noMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         DYTrustLogin.install(in: cfg)   // 签名页上弹「是否保存登录信息？」也默认点「保存」
         DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
+        DYKeyStateProbe.install(in: cfg, tag: "signer")
+        cfg.userContentController.addUserScript(WKUserScript(source: Self.beatWatchJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
@@ -254,6 +263,15 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         // Layout fixtures must not bootstrap the live website or share its request budget.
         if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" {
             ready = true
+            // UI 测试：DOUDUO_SIGN_DELAY=<秒> 模拟签名还没完成，到点自动完成
+            if let d = ProcessInfo.processInfo.environment["DOUDUO_SIGN_DELAY"].flatMap(Double.init), d > 0 {
+                signReady = false
+                signStartedAt = Date()
+                UserDefaults.standard.set(d, forKey: Self.signSecsKey)
+                Task { @MainActor in try? await Task.sleep(for: .seconds(d)); self.signReady = true; DYLiveModel.log("DDSIGN ready fixture") }
+            } else {
+                signReady = true
+            }
             return
         }
         #endif
@@ -261,6 +279,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         followSessionCache.invalidate()
         followSession = followSessionCache.generation
         ready = false
+        markSignPending()
         web.load(URLRequest(url: startURL))
         liveContext?.reload()
     }
@@ -307,8 +326,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                     }
                 }
                 #endif
+                let gen = self.signGen
                 let hooked = await self.waitWriteHooks(seconds: 10)
                 let state = await self.writeHookState()
+                if hooked { await self.finishSigning(gen: gen) }
                 self.web.evaluateJavaScript(Self.quietPageJS) { r, _ in
                     DYLiveModel.log("DDQUIET \(r.map { String(describing: $0) } ?? "nil") hooked=\(hooked) \(state) \(self.startURL.host ?? "")")
                 }
@@ -320,6 +341,64 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     private static var hookProbeStarted = false
     private static var composerProbeStarted = false
     #endif
+
+    /// 记下本页登录凭证刷新（/passport/token/beat/web）完成的时间。只读 Resource Timing，不碰 XHR/fetch
+    /// （否则会干扰「SDK 是否接管」的判断），不记 URL 参数和内容。
+    static let beatWatchJS = #"""
+    (() => { try { window.__ddBeatAt = 0;
+      const seen = l => { for (const e of l) if (/\/passport\/token\/beat\/web/.test(e.name) && e.responseEnd > 0) window.__ddBeatAt = Date.now(); };
+      new PerformanceObserver(x => seen(x.getEntries())).observe({ type: 'resource', buffered: true }); } catch (e) {} })();
+    """#
+
+    private func markSignPending() {
+        signGen += 1
+        signStartedAt = Date()
+        if signReady { signReady = false }
+    }
+
+    /// 实测的签名耗时（秒，平滑后），给「约 N 秒」用；没有记录时按 12 秒估
+    static let signSecsKey = "douduo_sign_secs_v1"
+    var signEstimateSecs: Double {
+        let v = UserDefaults.standard.double(forKey: Self.signSecsKey)
+        return v > 0 ? v : 12
+    }
+    /// 还要等几秒（至少 1；超过估计时返回 nil = 马上就好）
+    func signSecondsLeft(now: Date = Date()) -> Int? {
+        let left = signEstimateSecs - now.timeIntervalSince(signStartedAt)
+        return left > 0.5 ? Int(left.rounded(.up)) : nil
+    }
+
+    /// 签名 SDK 挂好后，再等本页登录凭证刷新完（最多 12 秒，没等到也放行并记日志）
+    private func finishSigning(gen: Int) async {
+        guard startURL.host == "www.douyin.com", gen == signGen, !signReady else { return }
+        let t0 = Date()
+        var beat = false
+        while Date().timeIntervalSince(t0) < 12, gen == signGen {
+            let at = (try? await web.evaluateJavaScript("window.__ddBeatAt || 0")) as? Double ?? 0
+            if at > 0 { beat = true; break }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        guard gen == signGen else { return }
+        if beat { try? await Task.sleep(nanoseconds: 500_000_000) }  // 给 SDK 一点时间把新凭证落盘
+        guard gen == signGen, !signReady else { return }
+        signReady = true
+        // 记下这次从开页到签名完成用了多久，下次的「约 N 秒」更准（新旧各半，限 3–30 秒）
+        let took = min(max(Date().timeIntervalSince(signStartedAt), 3), 30)
+        let old = UserDefaults.standard.double(forKey: Self.signSecsKey)
+        UserDefaults.standard.set(old > 0 ? (old + took) / 2 : took, forKey: Self.signSecsKey)
+        DYLiveModel.log("DDSIGN ready took=\(Int(took))s beat=\(beat ? 1 : 0) waitMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
+    }
+
+    /// 用户点发送时签名还没完成：在后台把签名页准备好（挂钩没装上就重开），完成后 signReady 变 true
+    func prepareSigning() async {
+        guard !signReady, !signPreparing else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_HASHTAG_FIXTURE"] == "1" { return }
+        #endif
+        signPreparing = true
+        defer { signPreparing = false }
+        if await ensureWriteReady() { await finishSigning(gen: signGen) }
+    }
 
     /// 页面安全 SDK 是否已同时接管 XHR 和 fetch（写接口签名靠它）
     private static let hookStateJS = #"""
@@ -356,6 +435,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             DYLiveModel.log("DDSEND rearm round=\(round) state=\(await writeHookState())")
             // 只重开签名页本身：不动直播页、不清关注缓存（reload() 会让界面以为换了账号）
             ready = false
+            markSignPending()
             web.load(URLRequest(url: startURL))
             await waitReady()
             if await waitWriteHooks(seconds: 8) {
@@ -907,7 +987,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       if (!hasHeader('accept')) x.setRequestHeader('Accept', 'application/json, text/plain, */*');
       if (method === 'POST' && !hasHeader('content-type')) x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
       for (const [name, value] of extraHeaders) x.setRequestHeader(name, String(value));
-      x.onload = () => fin({ s: x.status, t: x.responseText, u: String(x.responseURL || '') }); x.onerror = () => fin({ s: -1, t: '' });
+      x.onload = () => { let h = ''; try { h = '\n' + (x.getAllResponseHeaders() || ''); } catch (e) {} fin({ s: x.status, t: x.responseText, u: String(x.responseURL || ''), h }); }; x.onerror = () => fin({ s: -1, t: '' });
       x.send(body || null);
     });
     const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', pc_client_type: '1', pc_libra_divert: 'Mac',
@@ -2080,11 +2160,12 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 .accessibilityIdentifier("douyin.channel.\(t == .follow ? "follow" : t == .recommend ? "recommend" : "live")")
                 .accessibilityValue(t == .recommend && refreshing ? "正在刷新" : tab == t ? "已选择" : "")
             }
-            // 消息只留图标，未读红点仍独立显示。
+            // 「信息」：带字的入口（老板 2026-11-19 要加回来），跟 tab 同款字体；未读红点独立显示
             Button { showMessages = true } label: {
-                Image(systemName: "bubble.left.and.bubble.right")
+                Text("信息")
                     .font(.headline.weight(.medium))
                     .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
+                    .lineLimit(1).fixedSize()
                 .padding(.horizontal, hPad)
                 .padding(.vertical, 14)
                 .frame(minWidth: 44, minHeight: 44)
@@ -2099,7 +2180,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("消息")
+            .accessibilityLabel("信息")
             .accessibilityIdentifier("douyin.messages.top")
 
             // 「我的」：独立按钮（不属于 tab 切换）
@@ -2281,8 +2362,11 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
-                    // 信息与我的已合成一页：只留一个入口「我的」，未读红点挂在这里
-                    minimalMenuRow("我的", "person.crop.circle", badge: noticeUnread > 0, id: "douyin.module.mine") {
+                    // 老板 2026-11-19：「信息」入口加回来，点它直接进信息页；「我的」照旧进我的页（同一页的两个分栏）
+                    minimalMenuRow("信息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") {
+                        messagesStartOnMine = false; showMessages = true
+                    }
+                    minimalMenuRow("我的", "person.crop.circle", id: "douyin.module.mine") {
                         messagesStartOnMine = true; showMessages = true
                     }
                 }
@@ -4841,6 +4925,7 @@ struct DYCommentPanel: View {
             DYRelatedSearchScreen(bridge: bridge, word: query.word)
         }
         .onDisappear { saveCommentPosition() }
+        .onReceive(bridge.$signReady) { ok in signDone(ok) }
     }
 
     private var classicBody: some View {
@@ -4858,6 +4943,7 @@ struct DYCommentPanel: View {
                 DYRelatedSearchScreen(bridge: bridge, word: query.word)
             }
             .onDisappear { saveCommentPosition() }
+            .onReceive(bridge.$signReady) { ok in signDone(ok) }
     }
 
     private var panelContent: some View {
@@ -5007,8 +5093,13 @@ struct DYCommentPanel: View {
                         .buttonStyle(.plain).foregroundStyle(.themeTextSecondary)
                 }
             }
-            if let e = sendErr {
-                Text(e).font(.caption2).foregroundStyle(theme.status.danger.color(for: scheme))
+            if sendErr == Self.waitSignText {
+                DYSignWaitHint(bridge: bridge, color: theme.status.danger.color(for: scheme))
+                    .accessibilityIdentifier("douyin.comment.sendErr")
+            } else if let e = sendErr {
+                Text(e).font(.caption2)
+                    .foregroundStyle(e == Self.signDoneText ? theme.status.success.color(for: scheme) : theme.status.danger.color(for: scheme))
+                    .accessibilityIdentifier("douyin.comment.sendErr")
             }
             if imageLoading {
                 HStack(spacing: 8) {
@@ -5269,6 +5360,7 @@ struct DYCommentPanel: View {
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hasCommentContent, !sending, !imageLoading else { return }
+        guard bridge.signReady else { waitForSigning(); return }
         // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
         let top = replyParent ?? replyTo?.id
         let to = replyParent == nil ? nil : replyTo?.id
@@ -5286,8 +5378,29 @@ struct DYCommentPanel: View {
         await deliver(localID)
     }
 
+    static let waitSignText = "等待签名完成才可以发送评论"
+    static let signDoneText = "签名完成，现在可以发送了"
+
+    /// 签名完成：等待提示换成「现在可以发送了」，3 秒后自己消失
+    private func signDone(_ ok: Bool) {
+        guard ok, sendErr == Self.waitSignText else { return }
+        sendErr = Self.signDoneText
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            if sendErr == Self.signDoneText { sendErr = nil }
+        }
+    }
+
+    /// 签名没完成：什么都不发、草稿原样留着，提示一句并在后台把签名准备好；完成后提示自动消失
+    private func waitForSigning() {
+        sendErr = Self.waitSignText
+        DYLiveModel.log("DDSIGN send-blocked waiting")
+        Task { await bridge.prepareSigning() }
+    }
+
     /// 真正发出去。只对这一条本地评论负责：成功换成服务器那条，失败/不明就地标在那一行上。
     private func deliver(_ localID: String) async {
+        guard bridge.signReady else { waitForSigning(); return }
         guard var job = pending[localID] else { return }
         job.state = .sending; pending[localID] = job
         sending = true
@@ -6005,5 +6118,27 @@ struct DYCommentTopTracker: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// 签名未完成时的提示：带倒计时，让用户知道大概还要等几秒（老板 2026-11-19）
+struct DYSignWaitHint: View {
+    @ObservedObject var bridge: DouyinBridge
+    let color: Color
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(Self.text(left: bridge.signSecondsLeft(now: ctx.date)))
+                    .font(.caption2).foregroundStyle(color)
+                    .monospacedDigit()
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    static func text(left: Int?) -> String {
+        if let left { return "等待签名完成才可以发送评论，约 \(left) 秒后再点发送" }
+        return "等待签名完成才可以发送评论，马上就好"
     }
 }
