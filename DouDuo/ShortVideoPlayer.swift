@@ -32,10 +32,23 @@ final class DDPlayback {
     private(set) var pauseReason: DDPlaybackPauseReason = .background
     /// 转发等覆盖层还盖着。后台锁不能把它清掉，前台回调也不能在它消失前把直播拉起来。
     private var coverCount = 0
-    var coverHold: Bool { coverCount > 0 }
-    var coverDepth: Int { coverCount }
+    // Settings may destroy their presenter when switching UI mode.
+    // Stable owners make root teardown and late sheet dismissal idempotent.
+    private var settingsCovers: Set<UUID> = []
+    var coverHold: Bool { coverDepth > 0 }
+    var coverDepth: Int { coverCount + settingsCovers.count }
     /// 这一层的播放器现在是不是露在最上面
-    func isUncovered(level: Int) -> Bool { coverCount == 0 || (level > 0 && coverCount <= level) }
+    func isUncovered(level: Int) -> Bool { coverDepth == 0 || (level > 0 && coverDepth <= level) }
+
+    func beginSettingsCover(_ owner: UUID) {
+        guard settingsCovers.insert(owner).inserted else { return }
+        pauseAll(reason: .cover, countLegacyCover: false)
+    }
+
+    func endSettingsCover(_ owner: UUID) {
+        guard settingsCovers.remove(owner) != nil else { return }
+        resumeAfterLastCover()
+    }
     @MainActor private var offlineLibraryPresentations: Set<UUID> = []
     @MainActor var offlineLibraryPresented: Bool { !offlineLibraryPresentations.isEmpty }
 
@@ -74,7 +87,7 @@ final class DDPlayback {
         if let retainsAudioSession { sessionRetainers[id] = retainsAudioSession }
         else { sessionRetainers[id] = nil }
         // 被遮罩挡住才停；自己就在最上层（信息页里点开的视频）时不停
-        let onTop = coverLevel > 0 && coverCount > 0 && coverCount <= coverLevel
+        let onTop = coverLevel > 0 && coverDepth > 0 && coverDepth <= coverLevel
             && UIApplication.shared.applicationState == .active
         let shouldStop = !appIsActive && !playsInsideCover && !onTop
         #if DEBUG
@@ -101,11 +114,16 @@ final class DDPlayback {
         if pauseReason == .inactive { pauseReason = previous }
     }
     func pauseAll(reason: DDPlaybackPauseReason = .background) {
-        if reason == .cover { coverCount += 1 }
-        let backgroundWhileCover = reason == .background && !appIsActive && coverCount > 0
+        pauseAll(reason: reason, countLegacyCover: true)
+    }
+
+    private func pauseAll(reason: DDPlaybackPauseReason, countLegacyCover: Bool) {
+        let addsLegacyCover = reason == .cover && countLegacyCover
+        if addsLegacyCover { coverCount += 1 }
+        let backgroundWhileCover = reason == .background && !appIsActive && coverHold
         if !backgroundWhileCover {
             guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .pause) else {
-                if reason == .cover { coverCount = max(0, coverCount - 1) }
+                if addsLegacyCover { coverCount = max(0, coverCount - 1) }
                 return
             }
             appIsActive = false
@@ -135,22 +153,25 @@ final class DDPlayback {
     func resumeAll() {
         guard DYLivePlaybackGate.apply(appIsActive: appIsActive, command: .resume) else { return }
         appIsActive = true
-        guard coverCount == 0 else { startPlayersOnTop(); return }
+        guard !coverHold else { startPlayersOnTop(); return }
         startRegisteredPlayers()
     }
     /// 覆盖层消失。还在后台时只减计数；人已经回到前台才启动。
     func releaseCover() {
         guard coverCount > 0 else { return }
         coverCount -= 1
+        resumeAfterLastCover()
+    }
+    private func resumeAfterLastCover() {
         guard UIApplication.shared.applicationState == .active else { return }
-        guard coverCount == 0 else { startPlayersOnTop(); return }
+        guard !coverHold else { startPlayersOnTop(); return }
         appIsActive = true
         startRegisteredPlayers()
     }
     /// 还有遮罩时：只启动「就在最上层」的播放器（例如信息页里点开的视频关掉它自己的设置页后）
     private func startPlayersOnTop() {
         lock.lock()
-        let s = starters.filter { id, _ in let l = coverLevels[id] ?? 0; return l > 0 && coverCount <= l }.map(\.value)
+        let s = starters.filter { id, _ in let l = coverLevels[id] ?? 0; return l > 0 && coverDepth <= l }.map(\.value)
         lock.unlock()
         guard !s.isEmpty else { return }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
