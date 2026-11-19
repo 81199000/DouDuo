@@ -12,14 +12,21 @@ const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYWebComposer.swift'
 const m = src.match(/static let sendJS = #"""\n([\s\S]*?)\n\s*"""#/);
 assert.ok(m, 'production sendJS required');
 
-function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { status_code: 0, comment: { cid: 'c-new', text: 'x', reply_id: '0', reply_to_reply_id: '0' } } }), sendDoesNothing = false } = {}) {
+function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { status_code: 0, comment: { cid: 'c-new', text: 'x', reply_id: '0', reply_to_reply_id: '0' } } }), sendDoesNothing = false, viaXHR = false, captchaOnSend = false } = {}) {
   const dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only', url: 'https://www.douyin.com/video/a-1' });
   const w = dom.window, d = w.document;
   Object.defineProperty(w.HTMLElement.prototype, 'innerText', { get() { return this.textContent; }, configurable: true });
   w.HTMLElement.prototype.getBoundingClientRect = function () { return this.hidden ? { width: 0, height: 0 } : { width: 100, height: 20 }; };
   w.HTMLElement.prototype.scrollIntoView = function () {};
   const calls = [];
-  w.fetch = async (u) => { const r = respond(u); calls.push({ u, typed: lastTyped }); return { status: r.status, url: u, clone: () => ({ text: async () => (r.body == null ? '' : JSON.stringify(r.body)) }) }; };
+  const hdrs = r => Object.entries(r.headers || {});
+  w.fetch = async (u) => { const r = respond(u); calls.push({ u, typed: lastTyped }); return { status: r.status, url: u, headers: { forEach: f => hdrs(r).forEach(([k, v]) => f(v, k)) }, clone: () => ({ text: async () => (r.body == null ? '' : JSON.stringify(r.body)) }) }; };
+  // 官方网页版有的接口走 XHR：同样能拿到响应头
+  class FakeXHR { constructor() { this.l = []; this.responseType = ''; } open(m, u) { this.u = u; } setRequestHeader() {} addEventListener(t, f) { if (t === 'loadend') this.l.push(f); }
+    send() { const r = respond(this.u); calls.push({ u: this.u, typed: lastTyped }); this.status = r.status; this.responseURL = 'https://www.douyin.com' + this.u; this.responseText = r.body == null ? '' : JSON.stringify(r.body);
+      this.h = hdrs(r).map(([k, v]) => k + ': ' + v).join('\r\n'); setTimeout(() => this.l.forEach(f => f()), 1); }
+    getAllResponseHeaders() { return this.h || ''; } }
+  w.XMLHttpRequest = FakeXHR;
   let lastTyped = null;
   const el = (tag, cls, text) => { const e = d.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const composer = () => {
@@ -37,7 +44,9 @@ function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { stat
         if (name !== 'send' || sendDoesNothing) return;
         lastTyped = ed.textContent;
         const reply = bar.dataset.reply || '0', to = bar.dataset.to || '0';
-        w.fetch('/aweme/v1/web/comment/publish?reply_id=' + reply + '&reply_to_reply_id=' + to);
+        const u = '/aweme/v1/web/comment/publish?reply_id=' + reply + '&reply_to_reply_id=' + to;
+        if (viaXHR) { const x = new w.XMLHttpRequest(); x.open('POST', u); x.send('a=1'); } else w.fetch(u);
+        if (captchaOnSend) setTimeout(() => { const c = el('div', 'captcha_verify_container'); d.body.appendChild(c); }, 200);
       });
       right.appendChild(s);
     }
@@ -106,6 +115,34 @@ test('点了发送但网页没发请求：报 not-sent，并清空网页框', as
   const p = page({ sendDoesNothing: true });
   const r = await p.run('x', '', ''); assert.equal(r.state, 'not-sent'); assert.equal(p.calls.length, 0);
   assert.equal(p.w.document.querySelector('body > .comment-input-inner-container .public-DraftEditor-content').textContent, '');
+});
+test('验证诊断：空回执带验证头 → 记 vp=1，不当成功、不泄露头的值', async () => {
+  const p = page({ respond: () => ({ status: 200, body: null, headers: { 'x-tt-verify-passport-decision': '{"secret":"SHOULD_NOT_LEAK"}', 'x-tt-logid': 'L' } }) });
+  const r = await p.run('x', '', ''); assert.notEqual(r.state, 'sent');
+  assert.match(r.diagnostic, /vp=1 bt=0 vc=0/); assert.match(r.diagnostic, /chars=0/); assert.doesNotMatch(r.diagnostic, /SHOULD_NOT_LEAK|secret/);
+});
+test('验证诊断：XHR 路径同样读到验证头（bdturing-verify）', async () => {
+  const p = page({ viaXHR: true, respond: () => ({ status: 200, body: null, headers: { 'bdturing-verify': 'VAL_SHOULD_NOT_LEAK' } }) });
+  const r = await p.run('x', '', ''); assert.notEqual(r.state, 'sent');
+  assert.match(r.diagnostic, /vp=0 bt=1/); assert.doesNotMatch(r.diagnostic, /VAL_SHOULD_NOT_LEAK/);
+});
+test('验证诊断：body 里 shark_decision_conf → shark=1', async () => {
+  const p = page({ respond: () => ({ status: 200, body: { status_code: 0, data: { shark_decision_conf: 'S_SHOULD_NOT_LEAK' } } }) });
+  const r = await p.run('x', '', ''); assert.notEqual(r.state, 'sent');
+  assert.match(r.diagnostic, /shark=1/); assert.doesNotMatch(r.diagnostic, /S_SHOULD_NOT_LEAK/);
+});
+test('验证诊断：发送后页面弹出验证框 → cap=1', async () => {
+  const p = page({ captchaOnSend: true, respond: () => ({ status: 200, body: null }) });
+  const r = await p.run('x', '', ''); assert.notEqual(r.state, 'sent'); assert.match(r.diagnostic, /cap=1/);
+});
+test('验证诊断：正常成功 → 全 0，并带评论状态', async () => {
+  const p = page({ respond: () => ({ status: 200, body: { status_code: 0, comment: { cid: 'c9', status: 7, reply_id: '0', reply_to_reply_id: '0' } } }) });
+  const r = await p.run('x', '', ''); assert.equal(r.state, 'sent');
+  assert.match(r.diagnostic, /vp=0 bt=0 vc=0 tg=0 tgs=0 shark=0 cap=0 code=0 got=0\/0 st=7/);
+});
+test('XHR 路径：发送后 XMLHttpRequest 原型恢复原样', async () => {
+  const p = page({ viaXHR: true }); const P = p.w.XMLHttpRequest.prototype, o = P.open, s0 = P.send;
+  const r = await p.run('x', '', ''); assert.equal(r.state, 'sent'); assert.equal(P.open, o); assert.equal(P.send, s0);
 });
 test('发送后 fetch 恢复原样', async () => {
   const p = page(); const orig = p.w.fetch;
