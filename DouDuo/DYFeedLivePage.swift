@@ -57,10 +57,12 @@ struct DYFeedLivePage: View {
                         Text("\(live.viewers) 人在看").font(.caption).foregroundStyle(fg.opacity(0.85))
                     }
                 }
+                // 同普通视频左下角：@博主名 + 标题（两行），字号 / 颜色跟视频页一致
                 Text("@" + live.owner).font(.headline.weight(.bold)).foregroundStyle(fg).lineLimit(1)
-                if !live.title.isEmpty {
-                    Text(live.title).font(.subheadline).foregroundStyle(fg.opacity(0.9)).lineLimit(2)
-                }
+                Text(live.title.isEmpty ? "\(live.owner) 正在直播" : live.title)
+                    .font(.subheadline).foregroundStyle(fg.opacity(0.9))
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("douyin.feed.live.title")
             }
             .themeShadow(.mediaLabel)
             .padding(.leading, 14)
@@ -115,7 +117,7 @@ struct DYFeedLivePage: View {
                 if sourceIndex + 1 < sources.count { self.sourceIndex = sourceIndex + 1; start() } else { failed = true }
             }
         }
-        DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) q=\(s.quality) flv=\(s.isFLV)")
+        DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) q=\(s.quality) flv=\(s.isFLV) title=\(live.title.prefix(20))")
         player.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
     }
 

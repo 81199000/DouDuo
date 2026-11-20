@@ -1139,11 +1139,14 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const portrait = su.stream_orientation !== 2;
       const cover = first(rd.cover) || first(o.avatar_large) || null;
       const viewers = (rd.stats && rd.stats.user_count_str) || rd.user_count_str || (rd.user_count ? String(rd.user_count) : '');
-      return { id: 'live_' + String(rd.id_str || rd.id), desc: rd.title || '', width: portrait ? 1080 : 1920, height: portrait ? 1920 : 1080, duration: 0,
+      // 标题：直播间标题为空 / 只是「xx正在直播」时，用卡片自带的文案（a.desc），再不行用「主播名 正在直播」
+      const generic = !rd.title || /正在直播$/.test(rd.title);
+      const liveTitle = (generic && a.desc) ? a.desc : (rd.title || a.desc || ((o.nickname || '') + ' 正在直播'));
+      return { id: 'live_' + String(rd.id_str || rd.id), desc: liveTitle, width: portrait ? 1080 : 1920, height: portrait ? 1920 : 1080, duration: 0,
         play: null, cover, images: [],
         author: { name: o.nickname || '', avatar: first(o.avatar_thumb), secUid: o.sec_uid || null, uid: o.id_str || (o.id ? String(o.id) : null), follow: (o.follow_info && o.follow_info.follow_status) || 0 },
         stats: { digg: 0, comment: 0, collect: 0, share: 0 }, music: '', userDigged: 0, isCollect: 0, awemeType: 101,
-        live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: rd.title || '',
+        live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: liveTitle,
           owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null } };
     };
     const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video && !a.is_ads && !a.raw_ad_data ? mapA(a) : null))).filter(Boolean);
@@ -1687,6 +1690,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
+    /// 从推荐流点进的直播间：退出直播间就回推荐原位（不留在直播频道）
+    @State private var liveFromFeed = false
     @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
@@ -2193,6 +2198,13 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
         }
+        .onChange(of: live.entered) { _, entered in
+            guard !entered, liveFromFeed else { return }
+            liveFromFeed = false
+            DYLiveModel.log("DDFEEDLIVE back to recommend")
+            if tab == .live { selectTab(.recommend) }
+        }
+        .onChange(of: tab) { _, t in if t != .live { liveFromFeed = false } }
         .fullScreenCover(isPresented: $showMine, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYMineScreen(bridge: bridge,
                          onLogin: { reloadAfterLogin() },
@@ -2549,6 +2561,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
 
     /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
     private func enterFeedLive(_ room: DYLiveRoom) {
+        liveFromFeed = true
         selectTab(.live)
         live.open(room)
     }
@@ -2944,6 +2957,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
+    /// 从推荐流点进的直播间：退出直播间就回推荐原位（不留在直播频道）
+    @State private var liveFromFeed = false
     @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
@@ -3597,6 +3612,13 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
         }
+        .onChange(of: live.entered) { _, entered in
+            guard !entered, liveFromFeed else { return }
+            liveFromFeed = false
+            DYLiveModel.log("DDFEEDLIVE back to recommend")
+            if tab == .live { selectTab(.recommend) }
+        }
+        .onChange(of: tab) { _, t in if t != .live { liveFromFeed = false } }
         .navigationDestination(item: Binding(get: { supportsSidePanel ? nil : authorTarget }, set: { if !supportsSidePanel { authorTarget = $0 } })) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) },
                            onWorkPresentationChange: { authorWorkOpen = $0 })
@@ -3723,6 +3745,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
 
     /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
     private func enterFeedLive(_ room: DYLiveRoom) {
+        liveFromFeed = true
         selectTab(.live)
         live.open(room)
     }
