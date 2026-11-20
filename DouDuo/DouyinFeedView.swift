@@ -49,6 +49,16 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var aiDeclaration: String? = nil
     /// Optional for compatibility with sessions saved before hashtag support.
     var hashtagNames: [String]? = nil
+    /// 视频挂的商品（小黄车）。来自 anchor_info.extra；没有商品为 nil。可选以兼容旧会话。
+    var product: Product? = nil
+    struct Product: Codable, Hashable, Sendable {
+        let id: String
+        let title: String
+        var image: String? = nil
+        var sales: Int? = nil
+        /// 抖音官方商品详情页（ecom.douyin.com），网页能直接下单
+        let detailURL: String
+    }
 
     func publicationText(now: Date = Date()) -> String? {
         guard let publishedAt, publishedAt.isFinite, publishedAt > 0,
@@ -193,7 +203,7 @@ struct DYLiveZone: Hashable {
     ].map { DYLiveZone(id: $0.0, type: "1", name: $0.1) }
 }
 
-private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil }
+private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil; var mix: String? = nil }
 private struct DYCommentPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let total: Int; let msg: String? }
 
 enum DYError: LocalizedError {
@@ -540,6 +550,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                                    "pull": refreshIndex <= 2 ? "0" : "2"]
         let p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.tabFeedJS, args: args))
         DYLiveModel.log("DDFEED idx=\(refreshIndex) \(p.diag ?? "-") more=\(p.hasMore) msg=\(p.msg ?? "-")")
+        if let mix = p.mix { DYLiveModel.log("DDFEEDMIX idx=\(refreshIndex) \(mix)") }
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
         return (p.items, p.hasMore)
@@ -1067,9 +1078,25 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         music: (a.music && a.music.title) || '',
         musicURL: (a.music && a.music.play_url && (((a.music.play_url.url_list || [])[0]) || a.music.play_url.uri)) || null,
         userDigged: a.user_digged ? 1 : 0,
-        isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0
+        isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0,
+        product: mapProduct(a)
       };
     };
+    // 小黄车：anchor_info.extra 是 JSON 字符串数组，商品项带 product_id + product_detail_schema（ecom.douyin.com 详情页）。
+    // anchor_info 也用于地点/游戏/小程序等挂件，只认带商品详情页的那种。
+    function mapProduct(a) {
+      try {
+        const ai = a && a.anchor_info;
+        if (!ai || typeof ai.extra !== 'string') return null;
+        const list = JSON.parse(ai.extra);
+        const p = (Array.isArray(list) ? list : [list]).find(x => x && x.product_id && /^https:\/\/[a-z0-9.-]*(douyin|jinritemai)\.com\//.test(x.product_detail_schema || x.jump_schema || ''));
+        if (!p) return null;
+        const img = p.elastic_images && p.elastic_images[0] && ((p.elastic_images[0].url_list || [])[0] || p.elastic_images[0].uri);
+        return { id: String(p.product_id), title: p.title || p.elastic_title || '商品',
+          image: img || null, sales: typeof p.sales === 'number' ? p.sales : null,
+          detailURL: p.product_detail_schema || p.jump_schema };
+      } catch (e) { return null; }
+    }
     """#
 
     /// 推荐流：网页版首页「推荐」竖屏流（tab/feed）。
@@ -1086,7 +1113,31 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
     const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
     const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
-    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null,
+    // 推荐流成分统计（只读、不改过滤）：被丢的按原因分；保留的里标出带商品 / 直播中 / 软广的。
+    // 字段名以网页接口实际为准，未知字段一并按 key 名收集，便于第一次拿到真实样本。
+    const mix = { ad: 0, live: 0, noVideo: 0, other: 0, shop: 0, liveAuthor: 0, softAd: 0, keys: {} };
+    const hasAny = (o, ks) => ks.some(k => o && o[k] != null && o[k] !== 0 && o[k] !== '' && !(Array.isArray(o[k]) && !o[k].length));
+    for (const a of raw) {
+      if (!a) continue;
+      const isAd = !!(a.is_ads || a.raw_ad_data || a.ad_info);
+      const isLive = !!(a.cell_room || a.room_id || (a.aweme_type === 101) || a.live_reason || a.web_rawdata && /room/.test(a.web_rawdata));
+      const kept = a.video && !a.is_ads && !a.raw_ad_data;
+      if (!kept) {
+        if (isAd) mix.ad++; else if (isLive) mix.live++; else if (!a.video) mix.noVideo++; else mix.other++;
+        if (!a.video) for (const k of Object.keys(a)) if (/room|live|ad|ecom|shop|product|cell/i.test(k)) mix.keys['drop.' + k] = 1;
+        if (isLive && !mix.liveSample) mix.liveSample = JSON.stringify({ t: a.aweme_type, id: a.aweme_id, cell_room: a.cell_room, live_sort_info: a.live_sort_info }).slice(0, 4000);
+        continue;
+      }
+      if (hasAny(a, ['anchor_info', 'product_info', 'products_info', 'commerce_info', 'shop_info', 'promotions', 'simple_promotions', 'ecom_info', 'commodity_info'])
+          || (a.commerce_info && (a.commerce_info.head_image_num || a.commerce_info.ad_source || a.commerce_info.ad_auction_type))) mix.shop++;
+      if (a.author && (a.author.room_id || a.author.live_status === 1 || a.author.room_data)) mix.liveAuthor++;
+      if (a.is_ads === false && (a.ad_aweme_source || (a.commerce_config_data && a.commerce_config_data.length))) mix.softAd++;
+      for (const k of Object.keys(a)) if (/anchor|product|promotion|commerce|ecom|shop|goods|commodity|cart|room/i.test(k)) mix.keys[k] = (mix.keys[k] || 0) + 1;
+    }
+    const mixLine = 'ad=' + mix.ad + ' live=' + mix.live + ' noVideo=' + mix.noVideo + ' other=' + mix.other +
+      ' | kept shop=' + mix.shop + ' liveAuthor=' + mix.liveAuthor + ' softAd=' + mix.softAd +
+      ' | keys=' + Object.keys(mix.keys).sort().join(',') + (mix.liveSample ? ' | LIVESAMPLE ' + mix.liveSample : '');
+    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null, mix: mixLine,
       diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
 
@@ -3931,6 +3982,7 @@ struct DYUpstreamVideoPage: View {
                 .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,
                                   secondary: theme.media.onMediaSecondary.color(for: scheme),
@@ -4418,6 +4470,7 @@ struct DYClassicVideoPage: View {
                 .font(.caption2.weight(.regular))
                 .foregroundStyle(fg.opacity(0.62))
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
                     .font(.caption2).lineLimit(1)
