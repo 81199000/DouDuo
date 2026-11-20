@@ -56,6 +56,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
         let title: String
         var image: String? = nil
         var sales: Int? = nil
+        /// 抖音 App 打开商品页用的 promotion_id（多数情况等于 product_id）
+        var promotionId: String? = nil
         /// 抖音官方商品详情页（ecom.douyin.com），网页能直接下单
         let detailURL: String
     }
@@ -1092,7 +1094,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         const p = (Array.isArray(list) ? list : [list]).find(x => x && x.product_id && /^https:\/\/[a-z0-9.-]*(douyin|jinritemai)\.com\//.test(x.product_detail_schema || x.jump_schema || ''));
         if (!p) return null;
         const img = p.elastic_images && p.elastic_images[0] && ((p.elastic_images[0].url_list || [])[0] || p.elastic_images[0].uri);
-        return { id: String(p.product_id), title: p.title || p.elastic_title || '商品',
+        return { id: String(p.product_id), promotionId: p.promotion_id ? String(p.promotion_id) : null, title: p.title || p.elastic_title || '商品',
           image: img || null, sales: typeof p.sales === 'number' ? p.sales : null,
           detailURL: p.product_detail_schema || p.jump_schema };
       } catch (e) { return null; }
@@ -1131,12 +1133,14 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       if (hasAny(a, ['anchor_info', 'product_info', 'products_info', 'commerce_info', 'shop_info', 'promotions', 'simple_promotions', 'ecom_info', 'commodity_info'])
           || (a.commerce_info && (a.commerce_info.head_image_num || a.commerce_info.ad_source || a.commerce_info.ad_auction_type))) mix.shop++;
       if (a.author && (a.author.room_id || a.author.live_status === 1 || a.author.room_data)) mix.liveAuthor++;
+      if (a.anchor_info && !mapProduct(a) && (mix.anchorSamples || 0) < 2) { mix.anchorSamples = (mix.anchorSamples || 0) + 1; mix.anchorSample = (mix.anchorSample || '') + ' ## ' + JSON.stringify({ type: a.anchor_info.type, title: a.anchor_info.title, extra: String(a.anchor_info.extra || '').slice(0, 700), sp: a.simple_promotions ? String(a.simple_promotions).slice(0, 500) : null }); }
+      if (a.simple_promotions && (mix.spSamples || 0) < 1) { mix.spSamples = 1; mix.anchorSample = (mix.anchorSample || '') + ' ## SP ' + String(typeof a.simple_promotions === 'string' ? a.simple_promotions : JSON.stringify(a.simple_promotions)).slice(0, 1500); }
       if (a.is_ads === false && (a.ad_aweme_source || (a.commerce_config_data && a.commerce_config_data.length))) mix.softAd++;
       for (const k of Object.keys(a)) if (/anchor|product|promotion|commerce|ecom|shop|goods|commodity|cart|room/i.test(k)) mix.keys[k] = (mix.keys[k] || 0) + 1;
     }
     const mixLine = 'ad=' + mix.ad + ' live=' + mix.live + ' noVideo=' + mix.noVideo + ' other=' + mix.other +
       ' | kept shop=' + mix.shop + ' liveAuthor=' + mix.liveAuthor + ' softAd=' + mix.softAd +
-      ' | keys=' + Object.keys(mix.keys).sort().join(',') + (mix.liveSample ? ' | LIVESAMPLE ' + mix.liveSample : '');
+      ' | keys=' + Object.keys(mix.keys).sort().join(',') + (mix.liveSample ? ' | LIVESAMPLE ' + mix.liveSample : '') + (mix.anchorSample ? ' | ANCHOR' + mix.anchorSample : '');
     return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null, mix: mixLine,
       diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
