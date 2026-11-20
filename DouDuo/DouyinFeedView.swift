@@ -6088,7 +6088,10 @@ extension DYFeedModel {
         replacement.screenWide = screenWide
         await replacement.loadMore(bridge)
         try Task.checkCancellation()
-        if excludingCurrentItems { replacement.items.removeAll { previous.contains($0.id) } }
+        if excludingCurrentItems {
+            replacement.items.removeAll { previous.contains($0.id) }
+            replacement.pool.removeAll { previous.contains($0.id) }
+        }
         return replacement
     }
 

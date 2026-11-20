@@ -97,6 +97,9 @@ actor DYVideoCache {
     private var focusedItems: [DYAweme] = []
     private var longCompletion: Task<Void, Never>?
     private var failed: Set<String> = []
+    /// 本次运行已划到过的：markWatched 时这条可能还没入库（边下边播看着看着才拼齐 / 整条下载晚于划到），
+    /// 入库时按这里置已看，否则重启后会被当成「没看过」塞回推荐（工单 B2：重复内容）
+    private var watchedIDs: Set<String> = []
     private var prepared = false
     private var clearing = false
     private var manualBatch = false
@@ -262,7 +265,7 @@ actor DYVideoCache {
                 try fm.moveItem(at: file, to: destination)
                 if let head { try? fm.removeItem(at: head) }
                 entries.removeAll { $0.aweme.id == item.id }
-                entries.append(Entry(aweme: item, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
+                entries.append(Entry(aweme: item, watched: watchedIDs.contains(item.id), added: Date().timeIntervalSince1970, bytes: bytes))
                 evict()
                 save()
                 // 整条下好了：边下边播那份半截的没用了，之后播放 / 补货都直接用这个整条文件
@@ -453,13 +456,14 @@ actor DYVideoCache {
             guard (try? fm.copyItem(at: file, to: destination)) != nil else { return }
         }
         entries.removeAll { $0.aweme.id == item.id }
-        // 已经看过的（当前条看完拼齐）由 markWatched 另记；Wi-Fi 整条预下的是没看过的，进启动秒开池
-        entries.append(Entry(aweme: item, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
+        // 当前条看着看着拼齐的：划到时 markWatched 已记进 watchedIDs，这里直接记成已看；Wi-Fi 整条预下的没看过，进启动秒开池
+        entries.append(Entry(aweme: item, watched: watchedIDs.contains(item.id), added: Date().timeIntervalSince1970, bytes: bytes))
         evict()
         save()
     }
 
     func markWatched(_ id: String) {
+        watchedIDs.insert(id)
         guard let i = entries.firstIndex(where: { $0.aweme.id == id }), !entries[i].watched else { return }
         entries[i].watched = true
         save()
