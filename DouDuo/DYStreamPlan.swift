@@ -19,6 +19,9 @@ enum DYStreamPlan {
     static let chunkBytes: Int64 = 1 * 1024 * 1024
     /// 请求起点比允许范围还远这么多，才算「跳着读」（拖进度条 / 读尾部 moov）
     static let jumpSlack: Int64 = 512 * 1024
+    /// 一次网络请求至少攒够这么多才发（文件尾除外）：播放位置每 0.25 秒推进一点，
+    /// 不攒的话会变成几百个 8KB 的小请求，每个都要 0.2–0.4 秒握手 → 播放一直卡（2026-11-20 真机实测）
+    static let minFetchBytes: Int64 = 512 * 1024
     /// 起码的头部数据（防止码率估算偏小时连首帧都不够）
     static let minimumHeadBytes: Int64 = 384 * 1024
 
@@ -108,8 +111,13 @@ enum DYStreamPlan {
         start += contiguous(from: start, in: ranges)
         guard start < total, start < allowed else { return nil }
         var end = min(total, allowed, start + chunkBytes)
-        if let next = nextCachedStart(after: start, in: ranges) { end = min(end, next) }
-        return end > start ? start..<end : nil
+        let next = nextCachedStart(after: start, in: ranges)
+        if let next { end = min(end, next) }
+        guard end > start else { return nil }
+        // 攒批：不到 minFetchBytes 且后面还有（没碰到文件尾 / 已缓存区间）就先不发，等允许范围再长一点
+        let hitsBoundary = end == total || end == next
+        if end - start < minFetchBytes, !hitsBoundary, end == allowed { return nil }
+        return start..<end
     }
 
     // MARK: MP4 顶层盒子

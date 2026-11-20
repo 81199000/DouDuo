@@ -49,6 +49,12 @@ let have: [Range<Int64>] = [0..<1_000_000, 1_500_000..<2_000_000]
 check(P.nextFetch(need: 0, ranges: have, total: 10_000_000, allowed: 5_000_000) == 1_000_000..<1_500_000, "fill gap")
 check(P.nextFetch(need: 1_600_000, ranges: have, total: 10_000_000, allowed: 5_000_000) == 2_000_000..<(2_000_000 + P.chunkBytes), "skip local then chunk")
 check(P.nextFetch(need: 2_000_000, ranges: have, total: 10_000_000, allowed: 2_000_000) == nil, "beyond allowed → park")
+// 攒批：允许范围只多出一点点（播放推进 0.25 秒）→ 不发小请求，等攒够 minFetchBytes
+check(P.nextFetch(need: 2_000_000, ranges: have, total: 10_000_000, allowed: 2_008_000) == nil, "tiny allowance waits")
+check(P.nextFetch(need: 2_000_000, ranges: have, total: 10_000_000, allowed: 2_000_000 + P.minFetchBytes) == 2_000_000..<(2_000_000 + P.minFetchBytes), "batch once enough")
+// 文件尾 / 碰到已缓存区间：小也照发（否则最后一点永远下不完）
+check(P.nextFetch(need: 9_990_000, ranges: [], total: 10_000_000, allowed: 10_000_000) == 9_990_000..<10_000_000, "tail ok")
+check(P.nextFetch(need: 1_400_000, ranges: have, total: 10_000_000, allowed: 5_000_000) == 1_400_000..<1_500_000, "gap before cached ok")
 check(P.nextFetch(need: 0, ranges: [], total: nil, allowed: 0) == 0..<P.probeBytes, "probe when total unknown")
 // 跳读窗口：拖到 80 秒 → 允许 8 秒
 let w = P.jumpWindow(from: 8_000_000, shape: shape)
@@ -92,6 +98,8 @@ class StreamPlan(unittest.TestCase):
         self.assertIn("DYStream.asset(for: a, remote: url)", FEED)
         # 播放位置驱动下载上限
         self.assertIn("DYStreamStore.shared.setPlayhead(id, t.seconds)", PLAYER)
+        # 划到就算当前条（不等起播），否则长视频互相等永远起不来
+        self.assertIn("DYStreamStore.shared.activate(id", PLAYER)
         # 用流量时不再整条预下载
         self.assertIn("if DYStream.enabled, DYNetPath.shared.cellular {", CACHE)
         # 看完拼齐 → 收进正式缓存
