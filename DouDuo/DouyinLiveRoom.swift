@@ -478,7 +478,9 @@ final class DYLiveModel: ObservableObject {
             vlc.pause()
             vlc.outputMuted = true
             vlc.mediaPlayer.audio?.isMuted = true
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            DDAudioSessionGuard.allowDeactivate {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         case .ended:
             let applicationActive = UIApplication.shared.applicationState == .active
             guard audioInterrupted, DDPlayback.shared.appIsActive || applicationActive else { return }

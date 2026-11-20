@@ -21,6 +21,46 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
     #endif
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // 不让 VLC（推荐直播卡）在前台关掉音频会话，否则下一条短视频开播后会被系统停住
+        DDAudioSessionGuard.install()
+        #if DEBUG
+        enum DYVideoCacheProbe {
+            static func anyLocal() -> URL? {
+                let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("dd-videos")
+                return (try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil))?.first { $0.pathExtension == "mp4" }
+            }
+        }
+        if ProcessInfo.processInfo.environment["DOUDUO_AUDIOGUARD_TEST"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                let s = AVAudioSession.sharedInstance()
+                try? s.setCategory(.playback); try? s.setActive(true)
+                let before = DDAudioSessionGuard.blocked
+                try? s.setActive(false, options: .notifyOthersOnDeactivation)   // 模拟 VLC：前台关会话 → 应被拦
+                let blockedVLC = DDAudioSessionGuard.blocked - before
+                var ok = false
+                DDAudioSessionGuard.allowDeactivate { ok = (try? s.setActive(false)) != nil }   // 我们自己关 → 应放行
+                DYLiveModel.log("DDAUDIOGUARD selftest blockedForeign=\(blockedVLC) ownAllowed=\(ok) blockedTotal=\(DDAudioSessionGuard.blocked)")
+                // 真 VLC：播本地视频 3 秒再 stop，看它是否去关会话、有没有被拦
+                if let f = Bundle.main.url(forResource: "vlcprobe", withExtension: "mp4") ?? DYVideoCacheProbe.anyLocal() {
+                    let v = VLCPlayerController()
+                    try? s.setActive(true)
+                    let b0 = DDAudioSessionGuard.blocked
+                    // 没有界面层也得给 VLC 一个渲染目标，否则它不真正开播
+                    let surface = UIView(frame: CGRect(x: 0, y: 0, width: 160, height: 90))
+                    UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.addSubview(surface)
+                    v.mediaPlayer.drawable = surface
+                    v.play(url: f)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        v.stop()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            DYLiveModel.log("DDAUDIOGUARD vlc-test file=\(f.lastPathComponent) blockedByVLC=\(DDAudioSessionGuard.blocked - b0) played=\(v.duration)")
+                            _ = v; surface.removeFromSuperview()
+                        }
+                    }
+                } else { DYLiveModel.log("DDAUDIOGUARD vlc-test no local file") }
+            }
+        }
+        #endif
         #if DEBUG
         if ProcessInfo.processInfo.environment["DOUDUO_RESET_HASHTAG_FILTER"] == "1" {
             UserDefaults.standard.removeObject(forKey: DYHashtagFilter.storageKey)

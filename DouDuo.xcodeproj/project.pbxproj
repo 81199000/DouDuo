@@ -72,6 +72,7 @@
 		640D8F930CE33AACE1C2FE24 /* DDReleaseNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 591344CAF2A91E0D7CC452C4 /* DDReleaseNotes.swift */; };
 		64760847CD94FEE469039F33 /* DouyinFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */; };
 		64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7F33EB1CF5B949489AA77586 /* Assets.xcassets */; };
+		65B7CD540F494F463C4D1A9E /* DDAudioSessionGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */; };
 		6A8C37030B53130CE582E686 /* DYChatOptionsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595FE5CE5D6D10A299C8E468 /* DYChatOptionsPopover.swift */; };
 		6C096CD738BD6FA36EFCB93E /* DYChatChromeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A48E6D30B51CE56B7F7E7B8 /* DYChatChromeSnapshot.swift */; };
 		6CA4FD8AB3BD43A66B414368 /* DYSearchPlaybackProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B844AA364484EFD9B61F609E /* DYSearchPlaybackProbe.swift */; };
@@ -253,6 +254,7 @@
 		A6754C7BC29DD87FCABDB757 /* DouDuoUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouDuoUITests.swift; sourceTree = "<group>"; };
 		A94155DE2FCE85290C6491D7 /* DYFirstFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFirstFrame.swift; sourceTree = "<group>"; };
 		A98C6CBE4EB4A9999CFB3D03 /* DYDanmakuInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDanmakuInput.swift; sourceTree = "<group>"; };
+		A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDAudioSessionGuard.swift; sourceTree = "<group>"; };
 		AC7988669B7B20EB2EB040BE /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AD6718C6E9D659B4A5F22A9A /* DYChatComposerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatComposerModel.swift; sourceTree = "<group>"; };
 		AF5917F7837D3EDF95FE38DE /* DYFeedLivePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFeedLivePage.swift; sourceTree = "<group>"; };
@@ -323,6 +325,7 @@
 				3213D784302224EDB7868AF3 /* CachedAsyncImage.swift */,
 				E049F77CC7B7331FD0750ECD /* DDAppearance.swift */,
 				110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */,
+				A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */,
 				591344CAF2A91E0D7CC452C4 /* DDReleaseNotes.swift */,
 				EAEEA21047D0EC20D5AC1F3C /* DDWebAppearance.swift */,
 				7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */,
@@ -641,6 +644,7 @@
 				48F46B135907F902C9B20475 /* CachedAsyncImage.swift in Sources */,
 				6279D68970644B3297B72542 /* DDAppearance.swift in Sources */,
 				115E503A4451900455784A66 /* DDAppearanceProbe.swift in Sources */,
+				65B7CD540F494F463C4D1A9E /* DDAudioSessionGuard.swift in Sources */,
 				640D8F930CE33AACE1C2FE24 /* DDReleaseNotes.swift in Sources */,
 				2727373BBAE8236687D47078 /* DDWebAppearance.swift in Sources */,
 				C68490BB0E80CD6EB274B842 /* DYAccounts.swift in Sources */,
