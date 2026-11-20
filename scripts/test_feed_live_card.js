@@ -25,4 +25,9 @@ assert.strictEqual(L.webRid, '123456');
 assert.strictEqual(L.hls.HD1, 'http://pull-x4-t5-hls.douyincdn.com/x/index.m3u8');
 assert.strictEqual(L.viewers, '246');
 assert.strictEqual(out[1].play, null);
+// 标题：「xx正在直播」这种泛标题时用卡片文案；没文案就保留原标题
+const g = items([{ cell_room: { rawdata: JSON.stringify(rd) }, desc: '今晚口语课：10 分钟搞定连读' }]);
+assert.strictEqual(g[0].live.title, '今晚口语课：10 分钟搞定连读');
+assert.strictEqual(g[0].desc, '今晚口语课：10 分钟搞定连读');
+assert.strictEqual(out[1].live.title, '英语sini老师正在直播');
 console.log('ok feed live card');
