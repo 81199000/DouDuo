@@ -49,6 +49,21 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var aiDeclaration: String? = nil
     /// Optional for compatibility with sessions saved before hashtag support.
     var hashtagNames: [String]? = nil
+    /// 推荐流里混进来的直播间卡片（cell_room）。有值时这一页是直播，不是视频。
+    var live: FeedLive? = nil
+    struct FeedLive: Codable, Hashable, Sendable {
+        let roomID: String
+        var webRid: String = ""
+        let title: String
+        let owner: String
+        var avatar: String? = nil
+        var cover: String? = nil
+        var viewers: String = ""
+        var hls: [String: String] = [:]
+        var flv: [String: String] = [:]
+        var portrait: Bool = true
+        var def: String? = nil
+    }
     /// 视频挂的商品（小黄车）。来自 anchor_info.extra；没有商品为 nil。可选以兼容旧会话。
     var product: Product? = nil
     struct Product: Codable, Hashable, Sendable {
@@ -1112,7 +1127,26 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20),
       diag: 'tab s=' + r.s + ' signed=' + /a_bogus=/.test(r.u || '') + ' len=' + (r.t || '').length });
     const raw = d.aweme_list || [];
-    const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
+    // 推荐里的直播卡片（cell_room.rawdata 是直播间 JSON）：能拿到拉流地址的才留，按原位置插在视频之间
+    const mapLiveCard = a => {
+      const rd = a.cell_room && (typeof a.cell_room.rawdata === 'string' ? parse(a.cell_room.rawdata) : a.cell_room.rawdata);
+      if (!rd || rd.status !== 2 || !rd.stream_url) return null;
+      const su = rd.stream_url, o = rd.owner || {};
+      const hls = Object.assign({}, su.hls_pull_url_map || {});
+      if (!Object.keys(hls).length && su.hls_pull_url) hls[su.default_resolution || 'HD1'] = su.hls_pull_url;
+      const flv = compatibleLiveFLV(su);
+      if (!Object.keys(hls).length && !Object.keys(flv).length) return null;
+      const portrait = su.stream_orientation !== 2;
+      const cover = first(rd.cover) || first(o.avatar_large) || null;
+      const viewers = (rd.stats && rd.stats.user_count_str) || rd.user_count_str || (rd.user_count ? String(rd.user_count) : '');
+      return { id: 'live_' + String(rd.id_str || rd.id), desc: rd.title || '', width: portrait ? 1080 : 1920, height: portrait ? 1920 : 1080, duration: 0,
+        play: null, cover, images: [],
+        author: { name: o.nickname || '', avatar: first(o.avatar_thumb), secUid: o.sec_uid || null, uid: o.id_str || (o.id ? String(o.id) : null), follow: (o.follow_info && o.follow_info.follow_status) || 0 },
+        stats: { digg: 0, comment: 0, collect: 0, share: 0 }, music: '', userDigged: 0, isCollect: 0, awemeType: 101,
+        live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: rd.title || '',
+          owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null } };
+    };
+    const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video && !a.is_ads && !a.raw_ad_data ? mapA(a) : null))).filter(Boolean);
     const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
     const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
     // 推荐流成分统计（只读、不改过滤）：被丢的按原因分；保留的里标出带商品 / 直播中 / 软广的。
@@ -1558,7 +1592,7 @@ final class DYFeedModel: ObservableObject {
                 guard !Task.isCancelled, !offlinePlayback, epoch == offlineEpoch else { return }
                 pages += 1
                 let seen = Set(items.map(\.id)).union(pool.map(\.id))
-                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty) }
+                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty || a.live != nil) }
                 // 账号里已点赞/已收藏的，进页面就是选中态
                 for a in fresh {
                     if a.userDigged == 1 { liked.insert(a.id) }
@@ -2061,7 +2095,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
-    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
+    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : (current?.live == nil ? current : nil) }
 
     private var horizontalCommentStatus: Bool {
         (bookFoldComments || (duoLandscapeWindow && showComments))
@@ -2501,10 +2535,22 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item, isCurrentItem in
-                    page(for: item, isCurrentItem: isCurrentItem)
+                    if let live = item.live {
+                        DYFeedLivePage(item: item, live: live,
+                                       isCurrent: isCurrentItem && web == nil && tab == .recommend && !overlayOpen && !showSettings,
+                                       insets: insets, onEnter: { enterFeedLive($0) })
+                    } else {
+                        page(for: item, isCurrentItem: isCurrentItem)
+                    }
                 }
             }
         }
+    }
+
+    /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
+    private func enterFeedLive(_ room: DYLiveRoom) {
+        selectTab(.live)
+        live.open(room)
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
@@ -2964,7 +3010,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         max(DYDuoMetrics.windowSafeTop, DYDuoMetrics.isDuoHardware ? 0 : contentTopInset, 8)
     }
 
-    private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : current) ?? captionItem }
+    private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : (current?.live == nil ? current : nil)) ?? captionItem }
     private var horizontalCommentStatus: Bool {
         (bookFoldComments || (duoLandscapeWindow && showComments))
             && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
@@ -3663,10 +3709,22 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
                             pageAxes: [.horizontal, .vertical]) { item, isCurrentItem in
-                    page(for: item, isCurrentItem: isCurrentItem, audible: audible, interactive: interactive)
+                    if let live = item.live {
+                        DYFeedLivePage(item: item, live: live,
+                                       isCurrent: audible && isCurrentItem && web == nil && !overlayOpen && !showSettings,
+                                       insets: insets, onEnter: { enterFeedLive($0) })
+                    } else {
+                        page(for: item, isCurrentItem: isCurrentItem, audible: audible, interactive: interactive)
+                    }
                 }
             }
         }
+    }
+
+    /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
+    private func enterFeedLive(_ room: DYLiveRoom) {
+        selectTab(.live)
+        live.open(room)
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
@@ -3958,6 +4016,8 @@ struct DYUpstreamVideoPage: View {
     /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // 小黄车放在博主名上面（老板 2026-11-20，同抖音 App）
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             HStack(spacing: 8) {
                 Button(action: { if !boost.blocksTap { onAuthor() } }) {
                     HStack(spacing: 8) {
@@ -3986,7 +4046,6 @@ struct DYUpstreamVideoPage: View {
                 .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             if !item.desc.isEmpty {
                 DYExpandableTitle(text: item.desc, foreground: fg,
                                   secondary: theme.media.onMediaSecondary.color(for: scheme),
@@ -4459,6 +4518,7 @@ struct DYClassicVideoPage: View {
     /// 作者、文案、元数据、音乐；音乐贴近进度条，作者头像归入互动栏。
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 5) {
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             Button(action: onAuthor) {
                 Text("@" + item.author.name).font(.headline.weight(.bold))
                     .foregroundStyle(fg).lineLimit(1)
@@ -4474,7 +4534,6 @@ struct DYClassicVideoPage: View {
                 .font(.caption2.weight(.regular))
                 .foregroundStyle(fg.opacity(0.62))
                 .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             if !item.music.isEmpty {
                 Label(item.music, systemImage: "music.note")
                     .font(.caption2).lineLimit(1)
