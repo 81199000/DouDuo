@@ -97,7 +97,7 @@ struct DDReleaseNotesSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if case .update = mode {
-                        Text("新版本 \(version)（当前 \(DDUpdateChecker.currentVersion)）。打开电脑上的一键签就会自动装上新版，登录态会保留。")
+                        Text("新版本 \(version)（当前 \(DDUpdateChecker.currentVersion)）。打开电脑上的一键签就会自动装上新版，登录态会保留。还没装一键签的点「去一键签更新」到 oneduo.app 下载。")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .padding(.bottom, 4)
                     }
@@ -106,7 +106,7 @@ struct DDReleaseNotesSheet: View {
                             block(b)
                         }
                     } else if failed {
-                        Text("更新说明暂时读不到，可以去发布页查看。")
+                        Text("更新说明暂时读不到。")
                             .foregroundStyle(.secondary)
                     } else {
                         HStack { Spacer(); ProgressView(); Spacer() }.padding(.top, 40)
@@ -125,7 +125,7 @@ struct DDReleaseNotesSheet: View {
                 }
                 if case .update = mode {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("去下载页") { onUpdate?(); dismiss() }.accessibilityIdentifier("whatsnew.update")
+                        Button("去一键签更新") { onUpdate?(); dismiss() }.accessibilityIdentifier("whatsnew.update")
                     }
                 }
             }
