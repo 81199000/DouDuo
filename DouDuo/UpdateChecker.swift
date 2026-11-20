@@ -2,7 +2,7 @@
 // 读发行版页 releases/latest 的跳转，最终 URL 就是 .../releases/tag/vX.Y.Z，从中取版本号（不走 API，免限流）。
 // 2026-11-20：GitHub 旧号 81199000 被封、新号 WuWeiDuo 的仓库暂为私有。更新统一指向自家 oneduo.app：
 // 版本号先读 dl.oneduo.app 上的软件源（Cloudflare R2，发版时同步，不限流），读不到再看 Gitee 的 releases/latest 跳转；
-// 「去更新」打开 oneduo.app（用一键签装新版，登录态保留）。
+// 更新方式：打开电脑上的一键签自动装新版（登录态保留）；「去一键签更新」打开 oneduo.app（没装一键签的从这里下载）。
 import Foundation
 import UIKit
 
