@@ -1472,8 +1472,12 @@ final class DYFeedModel: ObservableObject {
 
     func allowedRecommendations(_ candidates: [DYAweme]) -> [DYAweme] {
         let filter = DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "")
-        let live = defaults.object(forKey: DYFeedExtras.liveKey) as? Bool ?? true
-        return candidates.filter { (live || $0.live == nil) && !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) }
+        return withoutDisabledLive(candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) })
+    }
+
+    /// 设置里关了「推荐里插入直播间」（DYFeedExtras.liveKey，默认开）就把直播条目拿掉，与标签过滤同一入口生效
+    func withoutDisabledLive(_ items: [DYAweme]) -> [DYAweme] {
+        (defaults.object(forKey: "douyin_feed_live_v1") as? Bool ?? true) ? items : items.filter { $0.live == nil }
     }
 
     /// Keep the active video when possible; otherwise prefer the next surviving recommendation.

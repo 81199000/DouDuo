@@ -35,7 +35,7 @@ const settings = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DYSetting
 assert(settings.includes('Toggle("推荐里插入直播间", isOn: $feedLive)'));
 assert(settings.includes('Toggle("显示视频商品（小黄车）", isOn: $feedProduct)'));
 assert(/private var feedLive = true/.test(settings) && /private var feedProduct = true/.test(settings));
-assert(s.includes('(live || $0.live == nil)'), '关掉直播时推荐过滤掉直播条目');
+assert(s.includes('withoutDisabledLive(candidates.filter'), '关掉直播时推荐过滤掉直播条目');
 const pill = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DYProductPill.swift'), 'utf8');
 assert(pill.includes('if enabled { pill }'), '关掉商品时不画胶囊');
 console.log('ok feed live card');
