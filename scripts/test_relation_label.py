@@ -12,14 +12,14 @@ class RelationLabel(unittest.TestCase):
         enum = CELL[CELL.index("enum DYRelationLabel"):CELL.index("struct DYRelationTag")]
         main = "import Foundation\n" + enum + r'''
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
-check(DYRelationLabel.from(follow: 0, follower: 1) == .fan, "对方关注我、我没关注 → 关注了你")
+check(DYRelationLabel.from(follow: 0, follower: 1) == .fan, "对方关注我、我没关注 → 粉丝")
 check(DYRelationLabel.from(follow: 2, follower: 1) == .mutual, "互关")
 check(DYRelationLabel.from(follow: 2, follower: nil) == .mutual, "follow_status=2 本身就是互关")
 check(DYRelationLabel.from(follow: 1, follower: 1) == .mutual, "双向已关注也算互关")
 check(DYRelationLabel.from(follow: 1, follower: 0) == nil, "我单向关注：不打标")
 check(DYRelationLabel.from(follow: 0, follower: 0) == nil, "互不关注：不打标")
 check(DYRelationLabel.from(follow: nil, follower: nil) == nil, "没查到：不打标")
-check(DYRelationLabel.fan.text == "关注了你" && DYRelationLabel.mutual.text == "相互关注", "文案")
+check(DYRelationLabel.fan.text == "粉丝" && DYRelationLabel.mutual.text == "相互关注", "文案")
 print("relation ok")
 '''
         with tempfile.TemporaryDirectory() as d:
@@ -32,6 +32,9 @@ print("relation ok")
     def test_wiring(self):
         self.assertIn("u.follower_status", MSG)
         self.assertIn("relation: cache.relationLabel(row)", MSG)
+        # 我已关注对方 → 头像右下红心
+        self.assertIn("following: cache.isFollowing(row)", MSG)
+        self.assertIn('Image(systemName: "heart.fill")', CELL)
         self.assertIn("var follower: [String: Int]?", MSG)
         # 陌生人列表也带 sec_uid，并且会去查关系
         self.assertIn("toParticipantSecUserId", MSG[MSG.index("collectStrangerJS = "):])

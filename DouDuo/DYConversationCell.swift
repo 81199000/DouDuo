@@ -5,6 +5,10 @@ struct DYConversationCell: View {
     var compact = false
     /// 对方和我的关注关系（关注了你 / 相互关注），名字后面一枚小标签
     var relation: DYRelationLabel? = nil
+    /// 我已关注对方：头像右下角一颗红底爱心（参照官方 App 头像角标，老板 2026-11-20）
+    var following = false
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Group {
@@ -54,7 +58,20 @@ struct DYConversationCell: View {
                 .foregroundStyle(.secondary)
         }
         .frame(width: 48, height: 48).clipShape(.circle)
-        .accessibilityHidden(true)
+        .overlay(alignment: .bottomTrailing) {
+            if following {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(theme.status.danger.color(for: scheme)))
+                    .overlay(Circle().stroke(Color.ddBackground, lineWidth: 2))
+                    .offset(x: 3, y: 3)
+                    .accessibilityLabel("已关注")
+                    .accessibilityIdentifier("douyin.conversation.following")
+            }
+        }
+        .accessibilityHidden(!following)
     }
 
     @ContentBuilder private var badge: some View {
@@ -69,14 +86,14 @@ struct DYConversationCell: View {
 
 /// 私信对方与我的关注关系。判定和抖音网页版关注按钮同一套（follow_status / follower_status）。
 enum DYRelationLabel: Equatable {
-    /// 对方关注了我，我没关注对方（网页按钮文案「回关」）
+    /// 对方关注了我，我没关注对方（网页按钮文案「回关」，官方 App 列表标签「粉丝」）
     case fan
     /// 互相关注（follow_status == 2，或我关注了对方且对方也关注了我）
     case mutual
 
     var text: String {
         switch self {
-        case .fan: return "关注了你"
+        case .fan: return "粉丝"  // 同官方 App 消息列表的灰色「粉丝」标签
         case .mutual: return "相互关注"
         }
     }
