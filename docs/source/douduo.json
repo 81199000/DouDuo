@@ -17,7 +17,7 @@
       "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
       "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
       "lock": "0",
-      "downloadURL": "https://github.com/81199000/DouDuo/releases/download/v1.6.4/DouDuo-1.6.4-unsigned.ipa",
+      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.6.4/DouDuo-1.6.4-unsigned.ipa",
       "isLanZouCloud": "0",
       "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
       "tintColor": "FE2C55",
