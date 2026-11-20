@@ -92,9 +92,13 @@ enum DDAudioSessionGate {
     /// 往往已经开播了，会被系统直接暂停（2026-11-20 真机：直播后面那条「开始播放然后卡住」）。
     /// 直播卡停播后连续几次发这个通知，当前短视频若被意外停住就重新激活会话接着播。
     static let lostNotification = Notification.Name("DDAudioSessionMaybeLost")
+    private static var lostAt = Date.distantPast
+    /// 直播卡刚停（4 秒内）：这段时间里短视频被停住，基本都是 VLC 关会话导致的
+    static var recentlyLost: Bool { Date().timeIntervalSince(lostAt) < 4 }
     static func noteVLCStopping() {
+        lostAt = Date()
         invalidate()
-        for delay in [0.25, 0.6, 1.0, 1.6, 2.5, 3.5] {
+        for delay in [0.15, 0.3, 0.45, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.0, 3.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 invalidate()
                 NotificationCenter.default.post(name: lostNotification, object: nil)
