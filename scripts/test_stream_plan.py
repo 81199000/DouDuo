@@ -32,15 +32,18 @@ let shape = P.Shape(total: 10_000_000, mediaStart: 700_000, duration: 100)
 check(abs(shape.bytesPerSecond - 93_000) < 1, "bps \(shape.bytesPerSecond)")
 // 预热条（非当前）：Wi-Fi 6 秒 → 700k + 558k
 let headW = P.horizon(shape: shape, playhead: nil, current: false, cellular: false)
-check(headW == 700_000 + 93_000 * 6, "head wifi \(headW)")
+// 6 秒 = 558KB < 画面数据下限 768KB → 取下限（长视频 moov 大，6 秒不够首帧）
+check(headW == 700_000 + P.minimumMediaBytes, "head wifi \(headW)")
+let bigShape = P.Shape(total: 100_000_000, mediaStart: 700_000, duration: 100)  // 1MB/s
+check(P.horizon(shape: bigShape, playhead: nil, current: false, cellular: false) == 700_000 + 6 * 993_000, "head by time when larger")
 let headC = P.horizon(shape: shape, playhead: nil, current: false, cellular: true)
-check(headC < headW, "cellular head smaller")
+check(P.horizon(shape: bigShape, playhead: nil, current: false, cellular: true) < P.horizon(shape: bigShape, playhead: nil, current: false, cellular: false), "cellular head smaller")
 // 当前条：播放到 20 秒 → 20 + 30 = 50 秒
 let cur = P.horizon(shape: shape, playhead: 20, current: true, cellular: false)
 check(cur == 700_000 + 93_000 * 50, "current \(cur)")
 // 最小头部（码率估得太小也至少给 384 KB 画面数据）
 let tiny = P.Shape(total: 50_000_000, mediaStart: 1000, duration: 100_000)
-check(P.horizon(shape: tiny, playhead: nil, current: false, cellular: true) == 1000 + P.minimumHeadBytes, "min head")
+check(P.horizon(shape: tiny, playhead: nil, current: false, cellular: true) == 1000 + max(P.minimumHeadBytes, P.minimumMediaBytes), "min head")
 // 不超文件尾
 check(P.horizon(shape: shape, playhead: 99, current: true, cellular: false) == shape.total, "clamp total")
 

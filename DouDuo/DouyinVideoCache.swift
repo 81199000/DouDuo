@@ -195,6 +195,19 @@ actor DYVideoCache {
         guard Self.localURL(item.id) == nil, !failed.contains(item.id) else { return }
         await waitWhilePlaybackWaiting()
         guard !Task.isCancelled, Self.limit > 0 else { return }
+        // 边下边播开着：整条预下也写进同一个边下边播文件（播放器正在读的那份），拼齐后自动收进来，
+        // 不再另下一份完整文件（模拟器实测：两条路各下一遍，同一条视频花两倍流量）
+        if DYStream.enabled, let remote = item.play.flatMap(URL.init(string:)) {
+            let t0 = Date()
+            if await DYStreamLoader.shared.fillWhole(item, remote: remote) {
+                // 收进正式缓存是异步的，等它落地再继续，免得下一轮又当成没缓存
+                for _ in 0..<20 where Self.localURL(item.id) == nil { try? await Task.sleep(for: .milliseconds(50)) }
+                DYLiveModel.log("DDCACHE ok \(item.id) via-stream \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
+            } else if !Task.isCancelled {
+                failed.insert(item.id)
+            }
+            return
+        }
         await storeFull(item)
     }
 
@@ -252,6 +265,8 @@ actor DYVideoCache {
                 entries.append(Entry(aweme: item, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
                 evict()
                 save()
+                // 整条下好了：边下边播那份半截的没用了，之后播放 / 补货都直接用这个整条文件
+                DYStreamStore.shared.dropPartial(item.id)
                 DYLiveModel.log("DDCACHE ok \(item.id) \(bytes / 1024)KB host=\(url.host ?? "-") \(String(format: "%.1f", Date().timeIntervalSince(t0)))s total=\(entries.count)")
                 return
             } catch {
@@ -438,8 +453,8 @@ actor DYVideoCache {
             guard (try? fm.copyItem(at: file, to: destination)) != nil else { return }
         }
         entries.removeAll { $0.aweme.id == item.id }
-        // 边下边播能拼齐 = 用户看完了：直接记成已看（不进启动秒开池）
-        entries.append(Entry(aweme: item, watched: true, added: Date().timeIntervalSince1970, bytes: bytes))
+        // 已经看过的（当前条看完拼齐）由 markWatched 另记；Wi-Fi 整条预下的是没看过的，进启动秒开池
+        entries.append(Entry(aweme: item, watched: false, added: Date().timeIntervalSince1970, bytes: bytes))
         evict()
         save()
     }

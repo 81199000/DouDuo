@@ -22,7 +22,11 @@ enum DYStreamPlan {
     /// 一次网络请求至少攒够这么多才发（文件尾除外）：播放位置每 0.25 秒推进一点，
     /// 不攒的话会变成几百个 8KB 的小请求，每个都要 0.2–0.4 秒握手 → 播放一直卡（2026-11-20 真机实测）
     static let minFetchBytes: Int64 = 512 * 1024
+    /// 预热条在画面数据起点之后至少备这么多（长视频 moov 有 500KB+，以前只够 moov，画面一点没有 →
+    /// 划过去还要现下，起播 2–3 秒；模拟器实测）
+    static let minimumMediaBytes: Int64 = 768 * 1024
     /// 起码的头部数据（防止码率估算偏小时连首帧都不够）
+
     static let minimumHeadBytes: Int64 = 384 * 1024
 
     // MARK: 区间
@@ -87,7 +91,7 @@ enum DYStreamPlan {
         let ahead = cellular ? lookaheadCellular : lookaheadWiFi
         let seconds = current ? max(head, (playhead ?? 0) + ahead) : head
         let byTime = shape.offset(at: seconds)
-        return min(shape.total, max(byTime, shape.mediaStart + minimumHeadBytes))
+        return min(shape.total, max(byTime, shape.mediaStart + max(minimumHeadBytes, minimumMediaBytes)))
     }
 
     /// 跳着读（拖进度 / 尾部 moov）给的临时窗口
