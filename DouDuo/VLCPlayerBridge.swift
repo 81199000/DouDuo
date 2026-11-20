@@ -75,7 +75,8 @@ final class VLCPlayerUIView: UIView {
 
 @MainActor
 final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObject {
-    private(set) var mediaPlayer: VLCMediaPlayer
+    /// 隐式解包：deinit 里要先把它置空，好让最后一次释放发生在后台线程（见 deinit）。
+    private(set) var mediaPlayer: VLCMediaPlayer!
     @Published var current: Double = 0
     @Published var duration: Double = 0
     @Published var isPlaying = false
@@ -114,6 +115,28 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
     private var pendingStartEpoch: Int?
     /// 当前 play 属于哪一次换流。短视频直接 play 时为空，迟到的 stopped 不会重开它。
     private var pendingOwned: VLCReplacement?
+
+    /// 控制器被释放（例如离开推荐页时推荐直播卡整页销毁）时，VLCMediaPlayer 的析构会同步 join 解码/音频线程；
+    /// 音频输出 flush 卡住时这一下永远不返回——放在主线程就是整个 App 卡死，10 秒后被系统看门狗杀掉
+    /// （2026-11-21 Duo 两次：播放中点「直播」频道，主线程停在 libvlc_media_player_destroy → pthread_join，
+    /// VLC 线程停在 input_Close / ca_Flush）。所以最后一次释放必须交给后台线程，跟 installFreshPlayer 换代时一样。
+    deinit {
+        guard let player = mediaPlayer else { return }
+        player.delegate = nil
+        player.drawable = nil
+        let release = VLCPlayerRelease()
+        release.player = player
+        mediaPlayer = nil          // 控制器不再持有：此后唯一的引用在 release 里
+        let done = VLCReleaseFlag()
+        DispatchQueue.global(qos: .utility).async {
+            release.player = nil   // 析构（含可能卡住的线程 join）在这里发生，卡住也只占一个后台线程
+            done.set()
+        }
+        // 释放超过 3 秒还没完成 = 以前这里就是整个 App 卡死被杀；记一笔，证明现在只卡了后台线程
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+            if !done.isSet { DYLiveModel.log("DDVLCRELEASE stuck>3s（VLC 线程卡在停播，已在后台释放，界面不受影响）") }
+        }
+    }
 
     override init() {
         let player = Self.makePlayer()
@@ -192,7 +215,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         stopWait = nil
         stopInFlight = false
         activePlayer.suspendAcceptance()
-        let retired = mediaPlayer
+        let retired: VLCMediaPlayer = mediaPlayer
         retired.delegate = nil
         retired.drawable = nil
         handoffID &+= 1
@@ -720,6 +743,13 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
             #endif
         }
     }
+}
+
+private final class VLCReleaseFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 private final class VLCPlayerRelease: @unchecked Sendable {

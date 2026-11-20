@@ -30,6 +30,24 @@ final class DouDuoAppDelegate: NSObject, UIApplicationDelegate {
                 return (try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil))?.first { $0.pathExtension == "mp4" }
             }
         }
+        // 播放中直接丢掉 VLC 控制器（模拟离开推荐页时直播卡整页销毁），量主线程被占多久
+        if ProcessInfo.processInfo.environment["DOUDUO_VLCDEINIT_TEST"] == "1", let f = DYVideoCacheProbe.anyLocal() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                var v: VLCPlayerController? = VLCPlayerController()
+                let surface = UIView(frame: CGRect(x: 0, y: 0, width: 160, height: 90))
+                UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.addSubview(surface)
+                v?.mediaPlayer.drawable = surface
+                v?.play(url: f)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    let playing = v?.isPlaying ?? false
+                    let t0 = Date()
+                    v = nil                                   // 最后一个引用：触发 deinit
+                    let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                    surface.removeFromSuperview()
+                    DYLiveModel.log("DDVLCDEINIT playing=\(playing) mainBlockedMs=\(ms)")
+                }
+            }
+        }
         if ProcessInfo.processInfo.environment["DOUDUO_AUDIOGUARD_TEST"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 let s = AVAudioSession.sharedInstance()
