@@ -131,6 +131,12 @@ if [[ -n $(git status --porcelain docs/source) ]]; then
   git push -q gitee main 2>&1 | grep -v 'GITEE\|trace' || true
 fi
 
+# ---------- 8b. oneduo.app 分发（Cloudflare R2：App 内更新检查读这里） ----------
+step "oneduo.app 软件源（dl.oneduo.app）"
+R2SYNC=~/Projects/guoduo-installer/py/packaging/r2_sync.py
+[[ -f $R2SYNC ]] || die "缺 $R2SYNC（一键签仓库），App 内更新检查读 dl.oneduo.app，必须同步"
+python3 $R2SYNC || die "R2 同步失败"
+
 # ---------- 9. 匿名验收（手机 UA） ----------
 step "验收"
 ok=1
@@ -152,7 +158,10 @@ GITEE=$(curl -sL -A "$UA" -o /dev/null -w '%{http_code} %{size_download}' https:
 # GitHub 新号仓库暂为私有：用已登录的 gh 核对附件，不做匿名下载
 GH_OK=$(gh release view $TAG --json assets -q ".assets[]|select(.name==\"${IPA:t}\").size")
 [[ $GH_OK == $SIZE ]] && print "✅ GitHub IPA $GH_OK 字节" || { print "❌ GitHub IPA $GH_OK"; ok=0; }
-# App 内更新检查先读 Gitee 的 releases/latest 跳转
+# App 内更新检查先读 dl.oneduo.app 软件源，Gitee 跳转兜底
+check_src https://dl.oneduo.app/douduo/douduo.json dl.oneduo.app
+R2IPA=$(curl -s -A "$UA" -o /dev/null -w '%{http_code} %{size_download}' https://dl.oneduo.app/douduo/$TAG/${IPA:t})
+[[ $R2IPA == "200 $SIZE" ]] && print "✅ R2 IPA $R2IPA" || { print "❌ R2 IPA $R2IPA"; ok=0; }
 LATEST=$(curl -sI -A DouDuo-iOS https://gitee.com/remon8/douduo/releases/latest | sed -nE 's#^[Ll]ocation: .*/tag/([^[:space:]]+).*#\1#p')
 [[ $LATEST == $TAG ]] && print "✅ App 内更新检查指向 $LATEST" || { print "❌ Gitee releases/latest → $LATEST"; ok=0; }
 (( ok )) || die "验收未全部通过（raw 文件 CDN 有几分钟缓存，可稍后重跑本脚本）"
@@ -160,5 +169,6 @@ LATEST=$(curl -sI -A DouDuo-iOS https://gitee.com/remon8/douduo/releases/latest 
 print -P "\n%F{green}✅ DouDuo $VER 发版完成%f
   GitHub  https://github.com/WuWeiDuo/DouDuo/releases/tag/$TAG（私有）
   Gitee   https://gitee.com/remon8/douduo/releases/tag/$TAG
+  更新    https://oneduo.app/（App 内检查 https://dl.oneduo.app/douduo/douduo.json）
   软件源  国内 https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json
           海外 https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/source/douduo-github.json（仓库公开后可用）"
