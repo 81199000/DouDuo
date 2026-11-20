@@ -79,6 +79,13 @@ enum DDAudioSessionGate {
         try? s.setActive(true)
         active = true
     }
+    /// 不看缓存标记，直接再激活一次（便宜）。VLC 停播时会把音频会话关掉（setActive:NO），
+    /// 这里的 active 标记却还是 true → 下一条短视频 play 后一直停着（2026-11-20 真机：
+    /// 推荐里刷过直播卡后，下一条缓冲满了 rate=0 不动）。
+    static func forceActive() {
+        active = false
+        ensureActive()
+    }
     /// 被打断 / 切后台后要重新激活
     static func invalidate() { active = false }
 }
