@@ -50,13 +50,33 @@ struct DYProductPill: View {
         n >= 10_000 ? String(format: "%.1f万", Double(n) / 10_000) : String(n)
     }
 
+    /// 抖音 App 自己的商品页入口（官方网页「点此进入抖音」用的就是这个 scheme）
+    var appURL: URL? {
+        let pid = product.promotionId ?? product.id
+        var c = URLComponents()
+        c.scheme = "snssdk1128"; c.host = "ec_goods_detail"
+        c.queryItems = [.init(name: "promotion_id", value: pid), .init(name: "source_page", value: "video"),
+                        .init(name: "enter_from", value: "video")]
+        return c.url
+    }
+
+    /// 网页兜底：ecom.douyin.com 详情页在 App 外只显示二维码（「检测到当前环境存在安全风险」），
+    /// 改用好货的基础商品页，点「继续访问」后能看商品、能下单（享受不到达人专属价）。
+    var webFallbackURL: URL? {
+        URL(string: "https://haohuo.jinritemai.com/views/product/detail?id=\(product.id)")
+    }
+
     private func open() {
-        guard let url = URL(string: product.detailURL) else { return }
         DYLiveModel.log("DDPRODUCT tap id=\(product.id)")
-        // universalLinksOnly：只有抖音 App 认领这个链接时才跳 App，否则回调 false，不会去 Safari
-        UIApplication.shared.open(url, options: [.universalLinksOnly: true]) { opened in
+        guard let app = appURL else { openWeb(); return }
+        // 装了抖音（含自签的抖音）就交给它；系统会先弹「在抖音中打开」确认。没有能接手的 App 才走网页。
+        UIApplication.shared.open(app, options: [:]) { opened in
             DYLiveModel.log("DDPRODUCT app=\(opened)")
-            if !opened { webTarget = DYWebTarget(url: url) }
+            if !opened { openWeb() }
         }
+    }
+
+    private func openWeb() {
+        if let u = webFallbackURL { webTarget = DYWebTarget(url: u) }
     }
 }
