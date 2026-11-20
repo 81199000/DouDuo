@@ -147,17 +147,18 @@ sys.exit(0 if good else 1)
 PY
 }
 check_src https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json gitee.com
-check_src https://raw.githubusercontent.com/81199000/DouDuo/main/docs/source/douduo-github.json github.com
 GITEE=$(curl -sL -A "$UA" -o /dev/null -w '%{http_code} %{size_download}' https://gitee.com/remon8/douduo/releases/download/$TAG/${IPA:t})
 [[ $GITEE == "200 $SIZE" ]] && print "✅ Gitee IPA $GITEE" || { print "❌ Gitee IPA $GITEE"; ok=0; }
-GHDL=$(curl -sL -A "$UA" -r 0-1023 -o /dev/null -w '%{http_code}' https://github.com/81199000/DouDuo/releases/download/$TAG/${IPA:t})
-[[ $GHDL == 20[06] ]] && print "✅ GitHub IPA $GHDL" || { print "❌ GitHub IPA $GHDL"; ok=0; }
-LATEST=$(curl -sI -A DouDuo-iOS https://github.com/81199000/DouDuo/releases/latest | sed -nE 's#^[Ll]ocation: .*/tag/([^[:space:]]+).*#\1#p')
-[[ $LATEST == $TAG ]] && print "✅ App 内更新检查指向 $LATEST" || { print "❌ releases/latest → $LATEST"; ok=0; }
+# GitHub 新号仓库暂为私有：用已登录的 gh 核对附件，不做匿名下载
+GH_OK=$(gh release view $TAG --json assets -q ".assets[]|select(.name==\"${IPA:t}\").size")
+[[ $GH_OK == $SIZE ]] && print "✅ GitHub IPA $GH_OK 字节" || { print "❌ GitHub IPA $GH_OK"; ok=0; }
+# App 内更新检查先读 Gitee 的 releases/latest 跳转
+LATEST=$(curl -sI -A DouDuo-iOS https://gitee.com/remon8/douduo/releases/latest | sed -nE 's#^[Ll]ocation: .*/tag/([^[:space:]]+).*#\1#p')
+[[ $LATEST == $TAG ]] && print "✅ App 内更新检查指向 $LATEST" || { print "❌ Gitee releases/latest → $LATEST"; ok=0; }
 (( ok )) || die "验收未全部通过（raw 文件 CDN 有几分钟缓存，可稍后重跑本脚本）"
 
 print -P "\n%F{green}✅ DouDuo $VER 发版完成%f
-  GitHub  https://github.com/81199000/DouDuo/releases/tag/$TAG
+  GitHub  https://github.com/WuWeiDuo/DouDuo/releases/tag/$TAG（私有）
   Gitee   https://gitee.com/remon8/douduo/releases/tag/$TAG
   软件源  国内 https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json
-          海外 https://raw.githubusercontent.com/81199000/DouDuo/main/docs/source/douduo-github.json"
+          海外 https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/source/douduo-github.json（仓库公开后可用）"

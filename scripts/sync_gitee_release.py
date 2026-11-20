@@ -8,7 +8,7 @@
 """
 import json, pathlib, subprocess, sys, tempfile, urllib.error, urllib.request, uuid
 
-GH = "81199000/DouDuo"
+GH = "WuWeiDuo/DouDuo"   # 2026-11-20 旧号 81199000 被封后换新号
 API = "https://gitee.com/api/v5/repos/remon8/douduo"
 TOK = json.loads((pathlib.Path.home() / ".hermes/shared-credentials/gitee-remon8.json").read_text())["access_token"]
 
