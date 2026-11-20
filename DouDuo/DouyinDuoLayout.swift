@@ -812,9 +812,8 @@ struct DYCommentPlayerLayout<Video: View>: View {
                     .environment(\.duoCleanScreen, cleanScreen)
                     .environment(\.dyCommentsOpen, showsComments || layout.showsPane)
                     .frame(width: layout.videoSize.width, height: layout.videoSize.height)
-                    .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
-                    // 侧栏评论时裁边：播放器环境光底铺满整屏，会盖住右侧评论栏（同推荐页 DYCommentStage）
-                    .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
+                    .modifier(DYPlaybackPaneClip(restrictsToPane: layout.showsPane && layout.sideBySide,
+                                                 safeAreaInsets: geo.safeAreaInsets))
                 if layout.showsPane, let aweme = commentItem {
                     DYCommentPanel(bridge: bridge, aweme: aweme,
                                    onClose: layout.resident && captionItem == nil ? nil : { showComments = false },
