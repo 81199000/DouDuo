@@ -39,21 +39,8 @@ struct DYFeedLivePage: View {
 
     var body: some View {
         ZStack {
+            // 不铺封面：先封面再切到直播画面会「闪一下」（老板 2026-11-21：闪封面很难受），没出画前就是黑底
             Color.black
-            // 封面（模糊铺底 + 原比例居中）：没出画面时就是这张，出画后被视频盖住
-            // 封面必须先锁成容器大小再填充：scaledToFill 不加约束会把整个 ZStack 撑出屏幕，
-            // 左下角的主播名 / 标题就被挤到屏幕外（2026-11-20 Duo 实测左下全空白）
-            if let c = live.cover, let url = URL(string: c) {
-                Color.clear
-                    .overlay { CachedAsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.black } }
-                    .blur(radius: 24).opacity(0.55).clipped()
-                Color.clear
-                    .overlay {
-                        CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: live.portrait ? .fill : .fit) }
-                            placeholder: { Color.black }
-                    }
-                    .clipped()
-            }
             if isCurrent {
                 VLCPlayerSurface(controller: player, fillWidth: live.portrait, letterbox: .clear)
                     .opacity(player.videoSize.width > 0 ? 1 : 0)
