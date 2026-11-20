@@ -59,6 +59,10 @@ final class DYNetPath: @unchecked Sendable {
     var cellular: Bool { lock.lock(); defer { lock.unlock() }; return _cellular }
 
     private init() {
+        #if DEBUG
+        // 真机测流量：DOUDUO_FORCE_CELLULAR=1 按「用流量」处理（Wi-Fi 下也走省流量路径）
+        if ProcessInfo.processInfo.environment["DOUDUO_FORCE_CELLULAR"] == "1" { _cellular = true; return }
+        #endif
         monitor.pathUpdateHandler = { [weak self] path in
             let cell = path.status == .satisfied && (path.isExpensive || path.usesInterfaceType(.cellular))
             self?.lock.lock(); self?._cellular = cell; self?.lock.unlock()
@@ -215,6 +219,16 @@ final class DYStreamStore: @unchecked Sendable {
             e.lock.lock(); let got = e.fetched, total = e.total ?? 0, have = DYStreamPlan.covered(e.ranges); e.lock.unlock()
             DYLiveModel.log("DDSTREAM leave \(e.id.suffix(6)) key=\(e.key == e.id ? "hd" : "saver") net=\(got / 1024)KB have=\(have / 1024)KB total=\(total / 1024)KB watched=\(Int(position(e.id) ?? 0))/\(Int(e.item.duration))s session=\(sessionBytes / 1024 / 1024)MB")
         }
+    }
+
+    /// 页面一激活（划到这条）就算当前条——不能等时间观察者报播放位置：
+    /// 还没起播时观察者不报，下载又只给当前条放开 → 互相等，长视频永远起不来（真机实测等 20 秒）
+    func activate(_ id: String, at seconds: Double = 0) {
+        lock.lock()
+        let changed = currentID != id
+        if changed { currentID = id; if playhead[id] == nil { playhead[id] = seconds } }
+        lock.unlock()
+        if changed { DYStreamLoader.shared.bump() }
     }
 
     func isCurrent(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return currentID == id }
@@ -425,6 +439,9 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             r.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
             do {
                 let (bytes, resp) = try await session.bytes(for: r)
+                #if DEBUG
+                DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) range=\(range.lowerBound)-\(range.upperBound)")
+                #endif
                 guard let http = resp as? HTTPURLResponse, http.statusCode == 206 || http.statusCode == 200 else {
                     let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
                     if target == e.resolved { e.lock.lock(); e.resolved = nil; e.lock.unlock() }

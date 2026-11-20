@@ -817,6 +817,7 @@ struct PlayerPage: View {
         }
         .onChange(of: isActive) { _, active in
             playbackIsActive = active
+            if active { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
             if !active {
                 if DDRemoteOwner.instance == playbackID { clearRemote() }
                 savedPlaybackStarted = false
@@ -1204,6 +1205,7 @@ struct PlayerPage: View {
             startVLC(); return
         }
         #endif
+        if isActive { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
         let candidate = prepared ?? preparedPlayer?()
         let pre = localURL == nil || (candidate?.currentItem?.asset as? AVURLAsset)?.url == localURL ? candidate : nil
         DYLiveModel.log("DDSETUP \(id.suffix(6)) active=\(isActive) pre=\(pre != nil) status=\(pre?.currentItem?.status.rawValue ?? -1) buf=\(String(format: "%.1f", pre.map { DYPlaybackTelemetry.bufferedAhead($0) } ?? 0))s")
