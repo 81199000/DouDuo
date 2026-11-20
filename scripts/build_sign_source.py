@@ -15,7 +15,7 @@
 """
 import argparse, json, pathlib, re, subprocess, sys, urllib.request
 
-GH_REPO = "81199000/DouDuo"
+GH_REPO = "WuWeiDuo/DouDuo"   # 2026-11-20 旧号 81199000 被封后换新号（仓库暂为私有）
 GITEE_REPO = "remon8/douduo"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "docs/source"
@@ -28,16 +28,31 @@ DESC = ("DouDuo：开源免费的第三方抖音客户端（非官方），原�
 
 
 def gh_releases(limit):
-    out = subprocess.run(["gh", "api", f"repos/{GH_REPO}/releases?per_page=30"],
-                         capture_output=True, text=True, check=True).stdout
+    """版本列表以 Gitee 发行版为准（完整历史都在那；GitHub 新号仓库是 2026-11-20 才建的，旧版本不在上面）。
+    返回 [(release, ipa)]，字段对齐 GitHub：tag_name / published_at / body / name，ipa 带 name / size / browser_download_url。"""
+    tok = gitee_token()
+    hdr = {"Authorization": "token " + tok} if tok else {}
+    def get(u):
+        with urllib.request.urlopen(urllib.request.Request(u, headers=hdr), timeout=30) as r:
+            return json.load(r)
     rels = []
-    for r in json.loads(out):
-        if r.get("draft") or r.get("prerelease"):
+    for r in get(f"https://gitee.com/api/v5/repos/{GITEE_REPO}/releases?per_page=30&direction=desc"):
+        if r.get("prerelease"):
             continue
-        ipa = next((a for a in r["assets"] if a["name"].endswith("-unsigned.ipa")), None)
-        if ipa:
-            rels.append((r, ipa))
-    return rels[:limit]
+        files = get(f"https://gitee.com/api/v5/repos/{GITEE_REPO}/releases/{r['id']}/attach_files")
+        f = next((a for a in files if a.get("name", "").endswith("-unsigned.ipa")), None)
+        if not f:
+            continue
+        r = dict(r, published_at=r.get("created_at", "").replace("+08:00", "Z") if r.get("created_at") else "")
+        if r["published_at"].endswith("Z") and "+08:00" in (r.get("created_at") or ""):
+            # Gitee 给的是北京时间，换成 UTC 写进源
+            import datetime
+            t = datetime.datetime.fromisoformat(r["created_at"]).astimezone(datetime.timezone.utc)
+            r["published_at"] = t.strftime("%Y-%m-%dT%H:%M:%SZ")
+        ipa = {"name": f["name"], "size": f.get("size") or 0,
+               "browser_download_url": f"https://github.com/{GH_REPO}/releases/download/{r['tag_name']}/{f['name']}"}
+        rels.append((r, ipa))
+    return sorted(rels, key=lambda x: x[0]["published_at"], reverse=True)[:limit]
 
 
 def gitee_token():
@@ -121,7 +136,7 @@ def main():
     args = ap.parse_args()
     rels = gh_releases(args.keep)
     if not rels:
-        sys.exit("GitHub 没有带 unsigned.ipa 的正式版")
+        sys.exit("Gitee 没有带 unsigned.ipa 的正式版")
     gitee = gitee_assets()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for kind in ("gitee", "github"):

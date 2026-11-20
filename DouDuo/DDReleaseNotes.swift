@@ -2,7 +2,7 @@
 // 1. 检查到新版本时，提示里直接显示新版写了什么（不用先跳 GitHub 看）；
 // 2. 装上新版后第一次打开，显示一次「本次更新内容」；
 // 3. 设置 →「关于」随时能再看当前版本的更新内容。
-// 内容就是发版用的 docs/releases/v<版本>.md（GitHub 读不到时用 Gitee 镜像）。
+// 内容就是发版用的 docs/releases/v<版本>.md（先读 Gitee 镜像，读不到再试 GitHub）。
 import SwiftUI
 
 enum DDReleaseNotes {
@@ -10,8 +10,8 @@ enum DDReleaseNotes {
     static let seenKey = "douduo_whatsnew_seen_v1"
 
     static func sources(_ tag: String) -> [URL] {
-        ["https://raw.githubusercontent.com/\(DDUpdateChecker.repo)/main/docs/releases/\(tag).md",
-         "https://gitee.com/remon8/douduo/raw/main/docs/releases/\(tag).md"].compactMap(URL.init(string:))
+        ["https://gitee.com/\(DDUpdateChecker.giteeRepo)/raw/main/docs/releases/\(tag).md",
+         "https://raw.githubusercontent.com/\(DDUpdateChecker.repo)/main/docs/releases/\(tag).md"].compactMap(URL.init(string:))
     }
 
     /// 读某个版本的更新说明（Markdown 原文）；都读不到返回 nil
@@ -106,7 +106,7 @@ struct DDReleaseNotesSheet: View {
                             block(b)
                         }
                     } else if failed {
-                        Text("更新说明暂时读不到，可以去 GitHub 的发布页查看。")
+                        Text("更新说明暂时读不到，可以去发布页查看。")
                             .foregroundStyle(.secondary)
                     } else {
                         HStack { Spacer(); ProgressView(); Spacer() }.padding(.top, 40)
@@ -125,7 +125,7 @@ struct DDReleaseNotesSheet: View {
                 }
                 if case .update = mode {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("去 GitHub 更新") { onUpdate?(); dismiss() }.accessibilityIdentifier("whatsnew.update")
+                        Button("去下载页") { onUpdate?(); dismiss() }.accessibilityIdentifier("whatsnew.update")
                     }
                 }
             }

@@ -1,0 +1,12 @@
+"""1.6.5 起「边看边缓存」「省流量模式」默认打开：没设置过的用户（含从旧版升级）取到 true，设置页开关默认值也一致。"""
+import pathlib, re
+root = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
+s = (root / "DYStreamCache.swift").read_text()
+assert re.search(r'static var enabled: Bool \{ UserDefaults\.standard\.object\(forKey: enabledKey\) as\? Bool \?\? true \}', s), "边看边缓存默认要开"
+assert re.search(r'static var saverOn: Bool \{ UserDefaults\.standard\.object\(forKey: saverKey\) as\? Bool \?\? true \}', s), "省流量模式默认要开"
+st = (root / "DYSettingsScreen.swift").read_text()
+assert "@AppStorage(DYStream.enabledKey) private var streamCache = true" in st
+assert "@AppStorage(DYStream.saverKey) private var dataSaver = true" in st
+u = (root / "UpdateChecker.swift").read_text()
+assert 'giteeRepo = "remon8/douduo"' in u and "81199000/DouDuo\"" not in u, "更新检查不能再指被封的旧号"
+print("ok saver default + update source")

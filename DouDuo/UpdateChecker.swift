@@ -1,21 +1,24 @@
-// 启动时检查 GitHub 有没有新版本。
-// 不走 api.github.com（匿名 60 次/小时，容易 403），直接读 releases/latest 的 302 跳转，
-// 最终 URL 就是 .../releases/tag/vX.Y.Z，从中取版本号。
+// 启动时检查有没有新版本。
+// 读发行版页 releases/latest 的跳转，最终 URL 就是 .../releases/tag/vX.Y.Z，从中取版本号（不走 API，免限流）。
+// 2026-11-20：GitHub 旧号 81199000 被封、新号 WuWeiDuo 的仓库暂为私有，对外分发以 Gitee 镜像为准；
+// 先查 Gitee，读不到再试 GitHub（仓库公开后自动生效）。
 import Foundation
 import UIKit
 
 struct DDUpdate: Equatable {
     let version: String        // 例如 1.3.1（不带 v）
     let tag: String            // v1.3.1
-    var pageURL: URL { URL(string: "https://github.com/\(DDUpdateChecker.repo)/releases/tag/\(tag)")! }
+    var pageURL: URL { URL(string: "https://gitee.com/\(DDUpdateChecker.giteeRepo)/releases/tag/\(tag)")! }
 }
 
 enum DDUpdateChecker {
-    static let repo = "81199000/DouDuo"
+    static let repo = "WuWeiDuo/DouDuo"
+    /// 国内镜像（公开），更新检查和下载页以它为准
+    static let giteeRepo = "remon8/douduo"
     /// 用户点过「关闭 / 去更新」的版本，记下来就不再提示这个版本
     static let dismissedKey = "douduo_dismissed_update_v1"
     /// 「关于」跳转的开源仓库
-    static var repoURL: URL { URL(string: "https://github.com/\(repo)")! }
+    static var repoURL: URL { URL(string: "https://gitee.com/\(giteeRepo)")! }
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
@@ -34,22 +37,30 @@ enum DDUpdateChecker {
             return DDUpdate(version: "9.9.9", tag: "v9.9.9")
         }
         #endif
-        guard let url = URL(string: "https://github.com/\(repo)/releases/latest") else { return nil }
-        var req = URLRequest(url: url, timeoutInterval: 12)
-        req.setValue("DouDuo-iOS", forHTTPHeaderField: "User-Agent")
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 12
         cfg.httpShouldSetCookies = false
         let session = URLSession(configuration: cfg)
-        guard let (_, resp) = try? await session.data(for: req),
-              let http = resp as? HTTPURLResponse,
-              let final = http.url else { return nil }
-        // 跟随后最终地址形如 /releases/tag/v1.3.1；没发过 release 会停在 /releases 或 404
+        for page in ["https://gitee.com/\(giteeRepo)/releases/latest", "https://github.com/\(repo)/releases/latest"] {
+            guard let url = URL(string: page) else { continue }
+            var req = URLRequest(url: url, timeoutInterval: 12)
+            req.setValue("DouDuo-iOS", forHTTPHeaderField: "User-Agent")
+            guard let (_, resp) = try? await session.data(for: req),
+                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                  let final = http.url,
+                  let update = parse(final) else { continue }
+            return update
+        }
+        return nil
+    }
+
+    /// 跟随跳转后的地址形如 /releases/tag/v1.3.1 → 版本信息；没发过 release 会停在 /releases，返回 nil
+    static func parse(_ final: URL) -> DDUpdate? {
         let comps = final.pathComponents
         guard let idx = comps.firstIndex(of: "tag"), idx + 1 < comps.count else { return nil }
         let tag = comps[idx + 1]
         let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-        guard !ver.isEmpty else { return nil }
+        guard !ver.isEmpty, ver.first?.isNumber == true else { return nil }
         return DDUpdate(version: ver, tag: tag)
     }
 
