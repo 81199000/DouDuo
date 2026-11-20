@@ -130,6 +130,13 @@ actor DYVideoCache {
 
     func focus(current: DYAweme?, ahead: [DYAweme]) {
         guard !clearing, !manualBatch else { return }
+        // 边下边播开着且在用流量：不再整条预下载（省流量的关键）。开头几秒由预热播放器经 ddstream 取，
+        // 看完的条由边下边播自然拼成完整文件再收进来。Wi-Fi 下照旧整条预下后面几条（启动秒开池靠它）
+        if DYStream.enabled, DYNetPath.shared.cellular {
+            job?.cancel(); job = nil; jobID = nil
+            prepare()
+            return
+        }
         prepare()
         let previous = job
         guard Self.limit > 0 else {
@@ -149,7 +156,8 @@ actor DYVideoCache {
         if jobID == target.id { return }
         previous?.cancel()
         jobID = target.id
-        let plan = Self.plan(current: target, ahead: follow)
+        // 边下边播时当前这条由播放器自己边播边存，整条下载只管后面的，免得同一条下两遍
+        let plan = Self.plan(current: target, ahead: follow).filter { !(DYStream.enabled && current != nil && $0 == target.id) }
         job = Task { [weak self] in
             await previous?.value
             guard let self else { return }
@@ -420,6 +428,22 @@ actor DYVideoCache {
         return joined
     }
 
+    /// 边下边播把整条拼齐了：硬链接成正式缓存（同一份数据，不多占空间），以后直接本地播 / 离线看
+    func adoptStreamed(_ item: DYAweme, file: URL, bytes: Int) {
+        let fm = FileManager.default
+        let destination = Self.fileURL(item.id)
+        guard Self.localURL(item.id) == nil, bytes > 50_000 else { return }
+        try? fm.createDirectory(at: Self.dir, withIntermediateDirectories: true)
+        do { try fm.linkItem(at: file, to: destination) } catch {
+            guard (try? fm.copyItem(at: file, to: destination)) != nil else { return }
+        }
+        entries.removeAll { $0.aweme.id == item.id }
+        // 边下边播能拼齐 = 用户看完了：直接记成已看（不进启动秒开池）
+        entries.append(Entry(aweme: item, watched: true, added: Date().timeIntervalSince1970, bytes: bytes))
+        evict()
+        save()
+    }
+
     func markWatched(_ id: String) {
         guard let i = entries.firstIndex(where: { $0.aweme.id == id }), !entries[i].watched else { return }
         entries[i].watched = true
@@ -454,6 +478,7 @@ actor DYVideoCache {
         let heads = Self.headFiles()
         let headBytes = heads.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
         let bytes = entries.reduce(headBytes) { $0 + $1.bytes }
+        DYStreamStore.shared.clearAll()
         let removed = DYStorageFiles.removeIfPresent(Self.dir)
         entries.removeAll { Self.automaticURL($0.aweme.id) == nil }
         let removedTemporary = DYStorageFiles.removeVideoWork()
@@ -469,7 +494,8 @@ actor DYVideoCache {
         let retained = Set(entries.map { Self.fileURL($0.aweme.id).lastPathComponent }
                            + [Self.indexURL.lastPathComponent, Self.headIndexURL.lastPathComponent])
         if let files = try? FileManager.default.contentsOfDirectory(at: Self.dir, includingPropertiesForKeys: nil) {
-            for file in files where file.pathExtension != "head" && !retained.contains(file.lastPathComponent) {
+            for file in files where file.pathExtension != "head" && !retained.contains(file.lastPathComponent)
+                && file.lastPathComponent != DYStreamStore.dir.lastPathComponent {
                 _ = DYStorageFiles.removeIfPresent(file)
             }
         }

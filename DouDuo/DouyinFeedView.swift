@@ -26,6 +26,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var playAlt: String? = nil
     /// 秒开用的低码率地址（冷启动先放它，高清好了再换）
     var playFast: String? = nil
+    /// 省流量档：≥540p 里码率最低的一档（多为 H.265，约为高清的一半），用流量时边下边播用它
+    var playSaver: String? = nil
     /// 选中的清晰度说明（调试日志用）
     var q: String? = nil
     let cover: String?
@@ -1059,6 +1061,13 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
     };
+    // 省流量档：≥540p、非弱网档里码率最低的（H.265 优先，同画质约省一半）
+    const saverRate = v => {
+      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
+        && resOf(r) >= 540 && !/adapt_lowest|lower/i.test(r.gear_name || ''));
+      rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
+      return rs[0] || null;
+    };
     // 抖音作品 → 精简结构（推荐 / 关注 / 搜索 / 喜欢 / 收藏 / 历史 / 作品 共用）
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
@@ -1078,6 +1087,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         play: anyRedirect || best || def,
         playAlt: best || def,
         playFast: fast && fast !== (best || def) ? fast : null,
+        playSaver: (() => { const r = saverRate(v); return r ? (pickRedirect(r.play_addr.url_list) || pickPlay(r.play_addr.url_list)) : null; })(),
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
         // origin_cover = 原比例首帧（竖屏就是竖的）；cover 是网页推荐用的 4:3 横版裁切，会让竖屏视频先显示成横的
@@ -1254,6 +1264,10 @@ final class DYPreloader {
     /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
     /// 只有过热/极热才降档省电
     static var ahead: Int {
+        // 省流量模式 + 用流量：只预热下一条（每条只取开头几秒）
+        if DYStream.saving { return 1 }
+        // 边下边播时预热只取开头几秒，暖 3 条足够；以前跟缓存条数走（整条下载时代）
+        if DYStream.enabled { return 3 }
         let n = DYVideoCache.limit
         return min(max(n, 3), 10)
     }
@@ -1297,10 +1311,11 @@ final class DYPreloader {
                 DYReadiness.mark(a.id)
                 continue
             }
-            let asset = DYMedia.asset(local ?? url)
+            // 边下边播：预热的条经 ddstream 只取开头几秒（DYStreamPlan.horizon），划到才继续往后下
+            let asset = local.map { AVURLAsset(url: $0) } ?? DYStream.asset(for: a, remote: url)
             let item = AVPlayerItem(asset: asset)
             // 紧挨着的下一条要「已经加载好」：不限制前向缓冲（0 = 交给系统，能把拿到的都先拿到）；
-            // 再后面的留 15 秒够起播，省流量
+            // 再后面的留 15 秒够起播，省流量（边下边播时实际下多少由 ddstream 的允许范围决定）
             item.preferredForwardBufferDuration = index + 1 < items.count && a.id == items[index + 1].id ? 0 : 15
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
@@ -1408,6 +1423,7 @@ final class DYPreloader {
         guard let old = players[a.id], !retried.contains(a.id) else { return }
         retried.insert(a.id)
         release(a.id, old)
+        // 重试一律直连在线地址（ddstream 出问题时的退路）
         let item = AVPlayerItem(asset: DYMedia.asset(remote))
         item.preferredForwardBufferDuration = 15
         let p = AVPlayer(playerItem: item)
@@ -1857,6 +1873,24 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
+            // 真机流量回归：DOUDUO_AUTOSWIPE=<条数>,<每条秒数> 自动翻页，测边下边播的起播 / 卡顿 / 实际下载量
+            if let spec = ProcessInfo.processInfo.environment["DOUDUO_AUTOSWIPE"] {
+                let parts = spec.split(separator: ",").compactMap { Double($0) }
+                let count = Int(parts.first ?? 20), dwell = parts.count > 1 ? parts[1] : 4
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(6))
+                    for n in 0..<count {
+                        guard let id = currentID, let i = currentIndex, i + 1 < feed.items.count else {
+                            try? await Task.sleep(for: .seconds(2)); continue
+                        }
+                        // 交替：短停（模拟刷走）/ 长停（模拟看完一部分）
+                        let wait = n % 4 == 3 ? dwell * 4 : dwell
+                        try? await Task.sleep(for: .seconds(wait))
+                        advance(from: id, to: feed.items[i + 1].id)
+                    }
+                    DYLiveModel.log("DDAUTOSWIPE done n=\(count)")
+                }
+            }
             // 真机验收用：DOUDUO_STARTLIVE=1 + DOUDUO_AUTOLIVEROOM=1 直接进房，省去手点。
             if ProcessInfo.processInfo.environment["DOUDUO_AUTOLIVEROOM"] == "1" {
                 Task { @MainActor in
