@@ -1,14 +1,15 @@
 // 启动时检查有没有新版本。
 // 读发行版页 releases/latest 的跳转，最终 URL 就是 .../releases/tag/vX.Y.Z，从中取版本号（不走 API，免限流）。
-// 2026-11-20：GitHub 旧号 81199000 被封、新号 WuWeiDuo 的仓库暂为私有，对外分发以 Gitee 镜像为准；
-// 先查 Gitee，读不到再试 GitHub（仓库公开后自动生效）。
+// 2026-11-20：GitHub 旧号 81199000 被封、新号 WuWeiDuo 的仓库暂为私有。更新统一指向自家 oneduo.app：
+// 版本号先读 dl.oneduo.app 上的软件源（Cloudflare R2，发版时同步，不限流），读不到再看 Gitee 的 releases/latest 跳转；
+// 「去更新」打开 oneduo.app（用一键签装新版，登录态保留）。
 import Foundation
 import UIKit
 
 struct DDUpdate: Equatable {
     let version: String        // 例如 1.3.1（不带 v）
     let tag: String            // v1.3.1
-    var pageURL: URL { URL(string: "https://gitee.com/\(DDUpdateChecker.giteeRepo)/releases/tag/\(tag)")! }
+    var pageURL: URL { DDUpdateChecker.updatePage }
 }
 
 enum DDUpdateChecker {
@@ -17,6 +18,9 @@ enum DDUpdateChecker {
     static let giteeRepo = "remon8/douduo"
     /// 用户点过「关闭 / 去更新」的版本，记下来就不再提示这个版本
     static let dismissedKey = "douduo_dismissed_update_v1"
+    /// 自家分发：软件源（R2）与更新页
+    static let sourceURL = URL(string: "https://dl.oneduo.app/douduo/douduo.json")!
+    static let updatePage = URL(string: "https://oneduo.app/")!
     /// 「关于」跳转的开源仓库
     static var repoURL: URL { URL(string: "https://gitee.com/\(giteeRepo)")! }
 
@@ -41,7 +45,17 @@ enum DDUpdateChecker {
         cfg.timeoutIntervalForRequest = 12
         cfg.httpShouldSetCookies = false
         let session = URLSession(configuration: cfg)
-        for page in ["https://gitee.com/\(giteeRepo)/releases/latest", "https://github.com/\(repo)/releases/latest"] {
+        // 1. 自家软件源：apps[0].version 就是最新版
+        var src = URLRequest(url: sourceURL, timeoutInterval: 12)
+        src.setValue("DouDuo-iOS", forHTTPHeaderField: "User-Agent")
+        src.cachePolicy = .reloadIgnoringLocalCacheData
+        if let (data, resp) = try? await session.data(for: src),
+           (resp as? HTTPURLResponse)?.statusCode == 200,
+           let update = parseSource(data) {
+            return update
+        }
+        // 2. 兜底：Gitee 发行版 releases/latest 跳转
+        for page in ["https://gitee.com/\(giteeRepo)/releases/latest"] {
             guard let url = URL(string: page) else { continue }
             var req = URLRequest(url: url, timeoutInterval: 12)
             req.setValue("DouDuo-iOS", forHTTPHeaderField: "User-Agent")
@@ -52,6 +66,15 @@ enum DDUpdateChecker {
             return update
         }
         return nil
+    }
+
+    /// 软件源 JSON（全能签格式）→ 最新版本
+    static func parseSource(_ data: Data) -> DDUpdate? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let apps = obj["apps"] as? [[String: Any]],
+              let ver = apps.first?["version"] as? String,
+              ver.first?.isNumber == true else { return nil }
+        return DDUpdate(version: ver, tag: "v" + ver)
     }
 
     /// 跟随跳转后的地址形如 /releases/tag/v1.3.1 → 版本信息；没发过 release 会停在 /releases，返回 nil
