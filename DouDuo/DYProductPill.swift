@@ -8,10 +8,15 @@ struct DYProductPill: View {
     let product: DYAweme.Product
     var foreground: Color = .white
     @State private var webTarget: DYWebTarget?
+    @AppStorage(DYFeedExtras.productKey) private var enabled = true
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        if enabled { pill }
+    }
+
+    private var pill: some View {
         Button(action: open) {
             HStack(spacing: 6) {
                 Image(systemName: "cart.fill")
