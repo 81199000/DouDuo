@@ -95,6 +95,8 @@ final class DYStreamEntry: @unchecked Sendable {
     var fetched: Int64 = 0
     var lastUsed = Date()
     var adopted = false
+    /// 当前条的后台补货是否在跑
+    var pumping = false
     /// 正在下载中的区间：别的请求要这段就等它写进来，不重复下
     var inflight: [Range<Int64>] = []
     /// 第一次拿文件大小（多个请求同时来只发一次）
@@ -219,6 +221,7 @@ final class DYStreamStore: @unchecked Sendable {
         lock.unlock()
         DYStreamLoader.shared.bump()
         logLeave(leaving)
+        if previous != id, let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
     }
 
     /// 页面一激活（划到这条）就算当前条——不能等时间观察者报播放位置：
@@ -227,11 +230,12 @@ final class DYStreamStore: @unchecked Sendable {
         lock.lock()
         let previous = currentID
         let changed = previous != id
-        if changed { currentID = id; advancedAt = .distantPast; if playhead[id] == nil { playhead[id] = seconds } }
+        if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds } }
         let leaving = changed ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
         if changed { DYStreamLoader.shared.bump() }
         logLeave(leaving)
+        if let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
     }
 
     /// 换条时记一笔：上一条实际下了多少 / 总共多大 / 看到第几秒——验证省了多少流量
@@ -245,7 +249,15 @@ final class DYStreamStore: @unchecked Sendable {
     /// 当前条且播放位置超过 1 秒没推进（还没起播 / 卡住等数据）：播放器要多少给多少，不卡着它
     func isStarving(_ id: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return currentID == id && Date().timeIntervalSince(advancedAt) > 1.0
+        // 划到后先给 1.5 秒正常起播；过了还没动才算「饿」（模拟器实测：一划到就算饿，
+        // 起播前播放器猛要数据，每条都多下 2–4MB，省流量只剩 16%）
+        return currentID == id && Date().timeIntervalSince(advancedAt) > 1.5
+    }
+
+    /// 这条视频最近用的那份缓存（高清 / 省流量各一份时取最近用的）
+    func entry(forVideo id: String) -> DYStreamEntry? {
+        lock.lock(); defer { lock.unlock() }
+        return entries.values.filter { $0.id == id }.max { $0.lastUsed < $1.lastUsed }
     }
 
     func isCurrent(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return currentID == id }
@@ -282,6 +294,18 @@ final class DYStreamStore: @unchecked Sendable {
         for f in parts.dropFirst(Self.keep) {
             try? fm.removeItem(at: f)
             try? fm.removeItem(at: f.deletingPathExtension().appendingPathExtension("json"))
+        }
+    }
+
+    /// 整条缓存已就位：删掉这条视频的半截文件（播放器那边下次读会走整条文件）
+    func dropPartial(_ id: String) {
+        lock.lock()
+        let parts = entries.values.filter { $0.id == id && !$0.adopted }
+        lock.unlock()
+        for e in parts {
+            e.lock.lock(); let busy = !e.inflight.isEmpty; e.lock.unlock()
+            if busy { continue }
+            try? FileManager.default.removeItem(at: e.metaURL)
         }
     }
 
@@ -326,6 +350,82 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         }
     }
 
+    /// 当前条的后台补货：不等播放器来要，自己把「播放位置之后 18–30 秒」提前下到本地。
+    /// 播放器默认只在缓冲快见底时才来要数据，那时再联网就来不及，每次都卡 1–3 秒（模拟器实测）。
+    /// 有了补货，播放器要的数据基本都已在本地，读本地是瞬间的。只有当前条在跑，划走自动停。
+    func pump(_ e: DYStreamEntry) {
+        e.lock.lock()
+        if e.pumping { e.lock.unlock(); return }
+        e.pumping = true
+        e.lock.unlock()
+        Task.detached(priority: .utility) { [weak self] in
+            defer { e.lock.lock(); e.pumping = false; e.lock.unlock() }
+            guard let self else { return }
+            if DYVideoCache.localURL(e.id) != nil { return }
+            do { try await self.ensureInfo(e) } catch { return }
+            while DYStreamStore.shared.isCurrent(e.id), !Task.isCancelled, DYVideoCache.localURL(e.id) == nil {
+                let horizon = DYStreamStore.shared.horizon(e) ?? 0
+                let pos = DYStreamStore.shared.position(e.id) ?? 0
+                e.lock.lock()
+                guard let total = e.total, let shape = e.shape else { e.lock.unlock(); return }
+                // 从播放位置往后找第一个缺口
+                var need = shape.offset(at: pos)
+                if pos < 1 { need = 0 }
+                need += DYStreamPlan.contiguous(from: need, in: e.ranges)
+                // 低水位补货：本地领先播放位置不到前瞻的一半就补，一次至少 512KB（可略超前瞻）。
+                // 以前沿用播放器那套「攒够 512KB 才发」：码率低的视频要播十几秒才攒够，
+                // 期间缓冲见底卡 2.4 秒（模拟器实测）。
+                let playOffset = pos < 1 ? 0 : shape.offset(at: pos)
+                let ahead = need - playOffset, window = max(horizon - playOffset, 1)
+                var fetch: Range<Int64>? = nil
+                if need < total, ahead < window / 2 || horizon - need >= DYStreamPlan.minFetchBytes {
+                    var end = min(total, max(horizon, need + DYStreamPlan.minFetchBytes), need + DYStreamPlan.chunkBytes)
+                    if let next = DYStreamPlan.nextCachedStart(after: need, in: e.ranges) { end = min(end, next) }
+                    if end > need { fetch = need..<end }
+                }
+                if let f = fetch, e.inflight.contains(where: { $0.overlaps(f) }) { fetch = nil }
+                if let f = fetch { e.inflight.append(f) }
+                e.lock.unlock()
+                guard let fetch else {
+                    if need >= total { return }
+                    try? await self.park(seconds: 2)
+                    continue
+                }
+                do { try await self.download(e, fetch, sink: nil) } catch {
+                    e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
+            }
+        }
+    }
+
+    /// Wi-Fi 整条预下：往同一个边下边播文件里补齐缺口（不再另下一份完整文件，避免同一条下两遍）。
+    /// 补齐后 finishIfComplete 会把它收成正式缓存。返回是否拼齐。
+    func fillWhole(_ item: DYAweme, remote: URL) async -> Bool {
+        let key = DYStreamStore.shared.register(item, remote: remote)
+        guard let e = DYStreamStore.shared.entry(key) else { return false }
+        do { try await ensureInfo(e) } catch { return false }
+        while !Task.isCancelled {
+            e.lock.lock()
+            guard let total = e.total else { e.lock.unlock(); return false }
+            if e.complete { e.lock.unlock(); return true }
+            // 第一个缺口：0 没有就从 0，否则从第一段之后
+            let need: Int64 = (e.ranges.first?.lowerBound ?? 1) > 0 ? 0 : (e.ranges.first?.upperBound ?? 0)
+            var end = min(total, need + DYStreamPlan.chunkBytes)
+            if let next = DYStreamPlan.nextCachedStart(after: need, in: e.ranges) { end = min(end, next) }
+            let busy = e.inflight.contains { $0.contains(need) }
+            let fetch = need..<end
+            if !busy { e.inflight.append(fetch) }
+            e.lock.unlock()
+            if busy { try? await Task.sleep(for: .milliseconds(200)); continue }
+            defer { e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock() }
+            do { try await download(e, fetch, sink: nil) } catch { return false }
+        }
+        return false
+    }
+
     func resourceLoader(_ loader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource req: AVAssetResourceLoadingRequest) -> Bool {
         guard let url = req.request.url, let streamKey = DYStream.id(of: url), let e = DYStreamStore.shared.entry(streamKey) else { return false }
         let key = ObjectIdentifier(req)
@@ -365,6 +465,20 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                DYStreamStore.shared.isCurrent(e.id) || cursor > shape.total * 9 / 10 {
                 e.lock.lock(); e.windows = Array((e.windows + [DYStreamPlan.jumpWindow(from: cursor, shape: shape)]).suffix(4)); e.lock.unlock()
             }
+            // 整条已经在正式缓存里（Wi-Fi 下整条预下好了）：直接从那个文件给，不再联网
+            if let whole = DYVideoCache.localURL(e.id), let h = try? FileHandle(forReadingFrom: whole) {
+                defer { try? h.close() }
+                let size = Int64((try? whole.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                if size == total {
+                    try? h.seek(toOffset: UInt64(cursor))
+                    while cursor < end {
+                        try Task.checkCancellation()
+                        guard let d = try h.read(upToCount: Int(min(end - cursor, 2 * 1024 * 1024))), !d.isEmpty else { break }
+                        dr.respond(with: d); cursor += Int64(d.count)
+                    }
+                    if cursor >= end { req.finishLoading(); return }
+                }
+            }
             while cursor < end {
                 try Task.checkCancellation()
                 // 1) 本地有：直接给
@@ -394,9 +508,9 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 var allowed = DYStreamPlan.allowedEnd(for: cursor, horizon: horizon, windows: e.windows)
                 // 当前条播放器在等数据（没起播 / 卡住）：放开 1MB，不让「等播放推进」和「等数据」互相卡死
                 // （真机：分片 MP4 起播前要先读到 512KB 之后，被允许范围拦住，等了 20 秒）
-                // 但每条最多多放 4MB（真机：28 分钟的长视频没起播，这条规则一路放开下了 32MB）
-                if starving, cursor < horizon + 4 * 1024 * 1024 {
-                    allowed = max(allowed, min(total, cursor + DYStreamPlan.chunkBytes))
+                // 但每条最多多放 2MB（真机：28 分钟的长视频没起播，这条规则一路放开下了 32MB）
+                if starving, cursor < horizon + 2 * 1024 * 1024 {
+                    allowed = max(allowed, min(total, cursor + DYStreamPlan.minFetchBytes))
                 }
                 var fetch = DYStreamPlan.nextFetch(need: cursor, ranges: e.ranges, total: total, allowed: allowed)
                 if let f = fetch, let busy = e.inflight.map(\.lowerBound).filter({ $0 > f.lowerBound && $0 < f.upperBound }).min() {
