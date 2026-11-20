@@ -20,6 +20,7 @@ enum UIApplication { enum State { case active, background }; static let shared =
 final class AVAudioSession { static func sharedInstance() -> AVAudioSession { .init() }; enum Category { case playback }; enum Mode { case moviePlayback }
   struct Opt: OptionSet { let rawValue: Int; static let notifyOthersOnDeactivation = Opt(rawValue: 1) }
   func setCategory(_ c: Category, mode: Mode) throws {}; func setActive(_ a: Bool, options: Opt = []) throws {} }
+enum DDAudioSessionGuard { static func allowDeactivate(_ body: () -> Void) { body() } }
 @MainActor final class DDAudioEngineHub { static let shared = DDAudioEngineHub(); func pauseAll() {} }
 enum DYLiveSceneCommand { case none, pause, resume }
 struct DYImageXUploadResult: Equatable {}

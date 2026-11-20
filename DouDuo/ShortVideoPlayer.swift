@@ -147,7 +147,9 @@ final class DDPlayback {
         }
         let keepSession = Self.bgPlay || retainers.contains { $0() }
         if !keepSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            DDAudioSessionGuard.allowDeactivate {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         }
     }
     func resumeAll() {
