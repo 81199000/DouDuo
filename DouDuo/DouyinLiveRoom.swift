@@ -478,7 +478,9 @@ final class DYLiveModel: ObservableObject {
             vlc.pause()
             vlc.outputMuted = true
             vlc.mediaPlayer.audio?.isMuted = true
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            DDAudioSessionGuard.allowDeactivate {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         case .ended:
             let applicationActive = UIApplication.shared.applicationState == .active
             guard audioInterrupted, DDPlayback.shared.appIsActive || applicationActive else { return }
@@ -1457,21 +1459,21 @@ struct DYLiveFeed: View {
     }
 
     /// 顶部第一行：发现更多、关注直播选择器。位置由导航下沿和安全区决定。
+    /// 2026-11-20 老板嫌两颗文字胶囊碍眼 → 都收成小号图标：发现 = 圆形网格钮；关注在播 = 叠起来的红圈头像，不写字。
     private var discoverBar: some View {
-        HStack(spacing: hSize == .compact ? 8 : 10) {
+        HStack(spacing: 8) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { showDiscover.toggle() }
             } label: {
-                Label(showDiscover ? "收起" : "发现更多",
-                      systemImage: showDiscover ? "chevron.up" : "chevron.down")
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: DYLivePreviewChrome.minTapHeight)
-                    .ddMediaGlassCapsule()
+                Image(systemName: showDiscover ? "xmark" : "square.grid.2x2")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 36, height: 36)
+                    .ddMediaGlassCircle()
+                    .frame(width: DYLivePreviewChrome.minTapHeight, height: DYLivePreviewChrome.minTapHeight)
+                    .contentShape(Rectangle())
             }
             .foregroundStyle(.primary).buttonStyle(.plain)
+            .accessibilityLabel(showDiscover ? "收起" : "发现更多")
             .accessibilityIdentifier("live.discover")
             if !model.followLive.isEmpty { followLiveButton }
             Spacer(minLength: 0)
@@ -1607,21 +1609,35 @@ struct DYLiveFeed: View {
     }
 
 
-    /// 替换原「我的关注」入口：有关注主播在播才出现，点开是一排头像，点头像直接进直播间。
+    /// 替换原「我的关注」入口：有关注主播在播才出现。不再写「N 位正在直播」，只叠 3 个红圈头像 + 「+N」角标，
+    /// 点开是一排头像，点头像直接进直播间。
     private var followLiveButton: some View {
         let count = model.followLive.count
+        let shown = Array(model.followLive.prefix(3))
         return Button { followStripExpanded.toggle() } label: {
-            Label("\(count) 位正在直播", systemImage: followStripExpanded ? "chevron.up" : "chevron.down")
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .padding(.horizontal, hSize == .compact ? 10 : 14)
-                .frame(minHeight: DYLivePreviewChrome.minTapHeight)
-                .ddMediaGlassCapsule()
+            HStack(spacing: 4) {
+                HStack(spacing: -10) {
+                    ForEach(shown) { r in
+                        CachedAsyncImage(url: r.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+                            placeholder: { theme.media.chromeFill.color(for: scheme) }
+                            .frame(width: 26, height: 26).clipShape(Circle())
+                            .overlay(Circle().stroke(theme.status.danger.color(for: scheme), lineWidth: 1.5))
+                    }
+                }
+                if count > shown.count {
+                    Text("+\(count - shown.count)").font(.caption2.weight(.semibold)).monospacedDigit()
+                }
+                Image(systemName: followStripExpanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+            }
+            .padding(.leading, 5).padding(.trailing, 8)
+            .frame(height: 36)
+            .ddMediaGlassCapsule()
+            .frame(minHeight: DYLivePreviewChrome.minTapHeight)
+            .contentShape(Rectangle())
         }
         .foregroundStyle(.primary).buttonStyle(.plain)
         .accessibilityIdentifier("live.follow")
-        .accessibilityLabel("\(count) 位关注的主播正在直播")
+        .accessibilityLabel("\(count) 位正在直播（关注的主播）")
     }
 
     private func followStrip(scrollTail: CGFloat) -> some View {
@@ -1990,27 +2006,39 @@ private struct DYLiveRoomPage: View {
                         safeBottom: geo.safeAreaInsets.bottom,
                         keyboardOverlap: isCurrent ? keyboardOverlap : 0))
                 } else {
-                    VStack(alignment: .leading, spacing: 12) {
+                    // 与推荐流里的直播卡同一套（老板 2026-11-20）：下方居中「点击进入直播间」，
+                    // 左下「直播中」小标签 + @主播 + 标题；不挡画面中间。
+                    VStack(spacing: 14) {
                         Spacer()
-                        HStack(spacing: 10) {
-                            avatar
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(room.owner).font(.headline).lineLimit(1)
-                                Text("直播中 · \(room.viewers) 在看").font(.caption)
-                            }
-                        }
-                        Text(room.title).font(.subheadline).lineLimit(2)
                         Button(action: model.enterRoom) {
-                            Text("进入直播间").font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 22).frame(height: 44).ddMediaGlassCapsule()
-                        }.buttonStyle(.plain).accessibilityIdentifier("live.room.enter")
-                        if model.rooms.count > 1 && !model.isFollowedVisit {
-                            Text("上滑切换直播间").font(.caption).foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
+                            HStack(spacing: 6) {
+                                Image(systemName: "chart.bar.fill")
+                                Text(room.viewers.isEmpty ? "点击进入直播间" : "点击进入直播间 · \(room.viewers)人在看")
+                            }
+                            .font(.subheadline)
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .background(Capsule().fill(.black.opacity(0.28)))
+                            .overlay(Capsule().stroke(foreground.opacity(0.25), lineWidth: 0.5))
                         }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("live.room.enter")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("直播中")
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(RoundedRectangle(cornerRadius: 3).fill(theme.status.danger.color(for: scheme)))
+                            Text("@" + room.owner).font(.headline.weight(.bold)).lineLimit(1)
+                            Text(room.title.isEmpty ? "\(room.owner) 正在直播" : room.title)
+                                .font(.subheadline).opacity(0.9)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .themeShadow(.mediaLabel)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, hSize == .compact ? 62 : 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 24)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 28)
                 }
                 }
                 .frame(width: interaction.width, height: interaction.height)

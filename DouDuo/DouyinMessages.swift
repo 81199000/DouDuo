@@ -26,7 +26,25 @@ final class DYMessageCache: ObservableObject {
     @Published var unfollowedRows: [DYConversationRow] = []
     /// sec_uid → follow_status（0 未关注 / 1 已关注 / 2 互关），落盘让下次进来分类不闪
     @Published var follow: [String: Int] = [:]
+    /// sec_uid → follower_status（对方有没有关注我：0 没有 / >0 关注了我）。和 follow 同一次请求拿到。
+    @Published var follower: [String: Int] = [:]
     private var followChecked = Set<String>()
+
+    /// 名字旁的关系标签，文案与抖音网页版关注按钮一致（webpack 常量 vc：
+    /// Followed「已关注」/ FollowEach「相互关注」/ FollowByOther「回关」= 对方关注了我、我没关注）。
+    /// 消息列表里「回关」读起来像按钮，换成「关注了你」，意思相同；「已关注」不打标（默认情况，打了是噪音）。
+    /// 对方关注了我（follower_status > 0，含互关）→ 头像上的红心（老板 2026-11-20 定：红心 = 别人关注我）
+    func followsMe(_ row: DYConversationRow) -> Bool {
+        guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return false }
+        return (follower[sec] ?? 0) > 0 || follow[sec] == 2
+    }
+
+    func relationLabel(_ row: DYConversationRow) -> DYRelationLabel? {
+        guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return nil }
+        // 「粉丝」已由头像红心表达，名字旁只留「相互关注」
+        let label = DYRelationLabel.from(follow: follow[sec], follower: follower[sec])
+        return label == .mutual ? label : nil
+    }
     /// Local to this account. Hiding never deletes the official conversation or history.
     @Published private(set) var hiddenConversations: [String: DYConversationRow] = [:]
 
@@ -68,32 +86,37 @@ final class DYMessageCache: ObservableObject {
           try {
             const r = await fetch('/aweme/v1/web/user/profile/other/?device_platform=webapp&aid=6383&sec_user_id=' + encodeURIComponent(s), { credentials: 'include' });
             const u = (JSON.parse(await r.text()) || {}).user || {};
-            if (typeof u.follow_status === 'number') out[s] = u.follow_status;
+            if (typeof u.follow_status === 'number') out[s] = [u.follow_status, typeof u.follower_status === 'number' ? u.follower_status : -1];
           } catch (e) {}
         }));
         return JSON.stringify(out);
         """
         guard let str = try? await web.callAsyncJavaScript(js, arguments: ["secs": need], contentWorld: .page) as? String,
               let d = str.data(using: .utf8),
-              let m = try? JSONDecoder().decode([String: Int].self, from: d) else {
+              let pairs = try? JSONDecoder().decode([String: [Int]].self, from: d) else {
             if scope == account { need.forEach { followChecked.remove($0) } }
             return
         }
         guard scope == account else { return }
+        let m = pairs.compactMapValues { $0.first }
+        let fm = pairs.compactMapValues { $0.count > 1 && $0[1] >= 0 ? $0[1] : nil }
         need.filter { m[$0] == nil }.forEach { followChecked.remove($0) }
         follow.merge(m) { _, new in new }
-        snapshot.follow = follow; save()
-        DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count)")
+        follower.merge(fm) { _, new in new }
+        snapshot.follow = follow; snapshot.follower = follower; save()
+        DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count) fans=\(fm.values.filter { $0 > 0 }.count)")
     }
     struct Snapshot: Codable {
         /// 结构版本：DYNotice 加了 images（评论配图）后升 2；旧文件缺该字段，消息页必须作废重拉
         var v: Int = 1
-        static let currentV = 2
+        /// 3：通知 author 加了 follow/follower（互动消息头像红心 / 粉丝标签），旧缓存没有 → 清一次重拉
+        static let currentV = 3
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
         var friends: [DYFriend] = []
         var conversations: [DYConversationRow] = []
         var follow: [String: Int]?
+        var follower: [String: Int]?
         var friendCursor: String?
         var friendHasMore: Bool?
         var hiddenConversations: [String: DYConversationRow]?
@@ -129,7 +152,7 @@ final class DYMessageCache: ObservableObject {
                 scope = DYMessageFixture.scope
                 snapshot = Snapshot()
                 selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
-                follow = [:]; followChecked = []; hiddenConversations = [:]
+                follow = [:]; follower = [:]; followChecked = []; hiddenConversations = [:]
             }
             return
         }
@@ -155,11 +178,11 @@ final class DYMessageCache: ObservableObject {
         var fresh = Snapshot(); fresh.v = Snapshot.currentV
         snapshot = fresh; lastSavedData = nil
         if let file, let data = try? Data(contentsOf: file), var cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            if cached.v < 2 {
+            if cached.v < Snapshot.currentV {
                 // 旧缓存的评论通知没有 images 字段且 refresh 不会重取老通知：作废消息页重拉（朋友/会话历史保留）
                 cached.pages = [:]
                 cached.v = Snapshot.currentV
-                DYLiveModel.log("DDMSGCACHE schema v<2 → pages cleared")
+                DYLiveModel.log("DDMSGCACHE schema v<\(Snapshot.currentV) → pages cleared")
             }
             snapshot = cached; lastSavedData = data
             // 旧版写进缓存的 ddimg:// 头像还原成原地址：原生列表加载不了 ddimg，那 20 个好友头像就是这么空的
@@ -171,7 +194,7 @@ final class DYMessageCache: ObservableObject {
             if repaired > 0 { lastSavedData = nil; save(); DYLiveModel.log("DDMSGCACHE repaired ddimg avatars=\(repaired)") }
         }
         selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
-        follow = snapshot.follow ?? [:]; followChecked = []
+        follow = snapshot.follow ?? [:]; follower = snapshot.follower ?? [:]; followChecked = []
         hiddenConversations = snapshot.hiddenConversations ?? [:]
         DYPeopleCache.shared.activate(scope: scope)
         if !DYPeopleCache.shared.hasFriendsSnapshot && !snapshot.friends.isEmpty {
@@ -214,7 +237,9 @@ final class DYMessageCache: ObservableObject {
         for batch in 0..<12 {
             let fresh = try await bridge.notices(group: group, maxTime: cursor, minTime: boundary)
             guard scope == account else { throw CancellationError() }
-            if batch == 0 { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
+            // 翻页游标要停在「已拉到的最后一页」之后：以前只记第 1 页的游标，空缓存首拉 3 页后，
+            // 下滑分页从第 2 页重拉 → 全是已有的 → 列表不增长、转圈不再触发，就卡在第一屏（2026-11-20 老板报）
+            if batch == 0 || old == nil { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
             incoming.append(contentsOf: fresh.items)
             if !fresh.hasMore || fresh.items.isEmpty || fresh.maxTime == cursor || fresh.items.contains(where: { known.contains($0.id) }) { break }
             // 没有缓存（或缓存不足一页）时也要连拉几页：抖音单页只给 10 条，
@@ -232,7 +257,34 @@ final class DYMessageCache: ObservableObject {
         return result
     }
     func store(_ page: DYCachedNoticePage, group: Int) { snapshot.pages[String(group)] = page; save() }
+    /// 刚标已读的分组 → 时间。抖音标已读后未读数接口要过一会才归零，期间以本地 0 为准，
+    /// 否则返回后角标还在，要再点进别的分类（再触发一次刷新）才清掉（老板 2026-11-20 报）。
+    private var justRead: [Int: Date] = [:]
+    /// 服务端未读数 → 显示用：刚读过的分组在 30 秒内按 0 显示
+    func applyReadMask(_ server: [Int: Int]) -> [Int: Int] {
+        let now = Date()
+        justRead = justRead.filter { now.timeIntervalSince($0.value) < 30 }
+        var out = server
+        for g in justRead.keys { out[g] = 0 }
+        return out
+    }
+    /// 底栏「信息」总角标：刚读过的分组从总数里扣掉（总数 700 是服务端合计，同样滞后）
+    func maskedBadge(_ groups: [DYNoticeCount]) -> Int {
+        let raw = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+        let masked = applyReadMask(raw)
+        let parts = [DYNoticeGroup.comment, .digg, .fans, .system].map(\.rawValue)
+        let cleared = parts.reduce(0) { $0 + ((raw[$1] ?? 0) - (masked[$1] ?? 0)) }
+        if let all = raw[DYNoticeGroup.all.rawValue] { return max(0, all - cleared) }
+        return parts.reduce(0) { $0 + (masked[$1] ?? 0) }
+    }
+    /// 退出分类时先在本地把角标清零（立即生效），再去服务端标已读
+    func clearCountsLocally(_ groups: Set<Int>) {
+        guard !groups.isEmpty else { return }
+        let now = Date()
+        for g in groups { justRead[g] = now; snapshot.counts[g] = 0 }
+    }
     func markReadAfterExit(_ groups: Set<Int>, bridge: DouyinBridge) async {
+        clearCountsLocally(groups)
         for group in groups {
             do {
                 _ = try await bridge.notices(group: group, maxTime: 0, markRead: true)
@@ -250,7 +302,7 @@ final class DYMessageCache: ObservableObject {
             } catch { DYLiveModel.log("DDNOTICE read-on-exit failed group=\(group)") }
         }
         if let values = try? await bridge.noticeCounts() {
-            snapshot.counts = Dictionary(values.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+            snapshot.counts = applyReadMask(Dictionary(values.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a }))
         }
         save()
     }
@@ -440,6 +492,8 @@ struct DYMessagesScreen: View {
     /// 打开时先显示哪一页：点「我的」进来就是「我的」，点「信息」进来就是信息（老板 2026-11-17）
     var startsOnMine = false
     @State private var showingMine = false
+    /// 「我的」第一次切过去后就常驻（隐藏而不销毁），之后信息 ⇄ 我的来回切不再重建、不重拉资料和作品
+    @State private var mineMounted = false
     let onWeb: (URL) -> Void
     var forwardedShare: DYForwardReceipt? = nil
 
@@ -740,6 +794,9 @@ struct DYMessagesScreen: View {
             // 只有真正退出分类才标已读；打开视频/作者弹层不算退出分类。
             guard old != current, case .category(let route) = old else { return }
             let seen = viewedGroups.removeValue(forKey: route) ?? []
+            // 返回时角标立即清零，不等网络
+            DYMessageCache.shared.clearCountsLocally(seen)
+            counts = DYMessageCache.shared.snapshot.counts
             Task {
                 await DYMessageCache.shared.markReadAfterExit(seen, bridge: bridge)
                 counts = DYMessageCache.shared.snapshot.counts
@@ -781,13 +838,16 @@ struct DYMessagesScreen: View {
                             .padding(edge == .leading ? .leading : .trailing, reserve)
                             .opacity(showingMine ? 0 : 1)
                             .allowsHitTesting(!showingMine)
-                        if showingMine, let mineContent {
+                        if showingMine || mineMounted, let mineContent {
                             // 外层整页忽略了顶部安全区；「我的」自带导航栏，内容要让开状态栏 + 导航栏，
                             // 否则页头（含「去登录」）被导航栏盖住、点不到（老板 2026-11-17「点击登录无反应」）。
                             mineContent
                                 .safeAreaPadding(.top, messageTopInset)
                                 .padding(edge == .leading ? .leading : .trailing, reserve)
-                                .transition(.opacity)
+                                .opacity(showingMine ? 1 : 0)
+                                .allowsHitTesting(showingMine)
+                                .accessibilityHidden(!showingMine)
+                                .onAppear { mineMounted = true }
                         }
                         messageRail
                             .padding(.horizontal, outer)
@@ -1061,7 +1121,7 @@ struct DYMessagesScreen: View {
             }
             ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
-                    DYConversationCell(row: row, compact: compactSidebar)
+                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row), followsMe: cache.followsMe(row))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
@@ -1772,7 +1832,7 @@ struct DYMessagesScreen: View {
         #endif
         DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count) friends=\(friends.count)")
         if let groups = try? await bridge.noticeCounts() {
-            counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+            counts = cache.applyReadMask(Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a }))
             cache.snapshot.counts = counts
         }
         do {
@@ -2135,7 +2195,9 @@ struct DYNoticeListScreen: View {
                         Divider().background(Color.primary.opacity(0.08))
                     }
                     if hasMore {
+                        // id 跟条数走：加载完一页后转圈仍在屏幕上也会重新触发下一页
                         ProgressView().tint(.primary).padding()
+                            .id(items.count)
                             .onAppear { Task { await reload(reset: false) } }
                     }
                 }
@@ -2144,8 +2206,18 @@ struct DYNoticeListScreen: View {
         }
     }
 
+    /// 互动消息里这个人和我的关系：通知自带 from_user 的 follow/follower_status；没有时退回私信查过的缓存
+    private func noticeRelation(_ n: DYNotice) -> (followsMe: Bool, label: DYRelationLabel?) {
+        let sec = n.author?.secUid ?? ""
+        let f = n.author?.follow ?? (sec.isEmpty ? nil : DYMessageCache.shared.follow[sec])
+        let fr = n.author?.follower ?? (sec.isEmpty ? nil : DYMessageCache.shared.follower[sec])
+        let label = DYRelationLabel.from(follow: f, follower: fr)
+        return ((fr ?? 0) > 0 || f == 2, label == .mutual ? label : nil)
+    }
+
     private func row(_ n: DYNotice) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let rel = noticeRelation(n)
+        return HStack(alignment: .top, spacing: 10) {
             ZStack(alignment: .topTrailing) {
                 CachedAsyncImage(url: n.avatar.flatMap(URL.init(string:))) { img in
                     img.resizable().scaledToFill()
@@ -2154,13 +2226,17 @@ struct DYNoticeListScreen: View {
                 }
                 .frame(width: 44, height: 44)
                 .clipShape(Circle())
+                .overlay(alignment: .bottomTrailing) { if rel.followsMe { DYFollowingHeart().offset(x: 3, y: 3) } }
                 if !n.hasRead {
                     Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 2, y: -2)
                 }
             }
             VStack(alignment: .leading, spacing: 3) {
-                Text(n.name.isEmpty ? "抖音用户" : n.name)
-                    .font(.subheadline.weight(.semibold)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(n.name.isEmpty ? "抖音用户" : n.name)
+                        .font(.subheadline.weight(.semibold)).lineLimit(1)
+                    if let label = rel.label { DYRelationTag(label: label) }
+                }
                 if n.isComment {
                     Text(n.action).font(.caption).foregroundStyle(Color.primary.opacity(0.5))
                     commentText(n)
@@ -2284,12 +2360,21 @@ struct DYNoticeListScreen: View {
             if reset {
                 page = try await cache.refresh(requestedGroup, bridge: bridge)
             } else {
-                let next = try await bridge.notices(group: requestedGroup, maxTime: maxTime)
+                // 游标落在已加载区间里时（旧缓存 / 首拉多页），整页都是重复的：继续往后翻，直到拿到新条目
                 let seen = Set(items.map(\.id))
-                page = DYCachedNoticePage(items: items + next.items.filter { !seen.contains($0.id) },
-                                          maxTime: next.maxTime,
-                                          hasMore: next.hasMore && !next.items.isEmpty && next.maxTime != maxTime)
+                var cursor = maxTime
+                var added: [DYNotice] = []
+                var more = true
+                for _ in 0..<8 {
+                    let next = try await bridge.notices(group: requestedGroup, maxTime: cursor)
+                    added += next.items.filter { !seen.contains($0.id) && !added.map(\.id).contains($0.id) }
+                    more = next.hasMore && !next.items.isEmpty && next.maxTime != cursor
+                    cursor = next.maxTime
+                    if !added.isEmpty || !more { break }
+                }
+                page = DYCachedNoticePage(items: items + added, maxTime: cursor, hasMore: more)
                 cache.store(page, group: requestedGroup)
+                DYLiveModel.log("DDNOTICE more group=\(requestedGroup) added=\(added.count) more=\(more)")
             }
             guard gen == loadGen, !Task.isCancelled else { return }
             items = page.items
@@ -2780,10 +2865,15 @@ enum DYChatOpener {
       const avatar = e.querySelector('img')?.src || null;
       const id = 's|' + name + '|' + (avatar || '');
       if (seen.has(id)) return;
+      // 对方 sec_uid（React 会话对象上），用来查「关注了你 / 互相关注」
+      const fk = Object.keys(e).find(k => k.startsWith('__reactFiber'));
+      let f = fk ? e[fk] : null, conv = null;
+      for (let i = 0; f && i < 6; i++, f = f.return) if (f.memoizedProps?.conversation) { conv = f.memoizedProps.conversation; break; }
+      const sec = conv?.toParticipantSecUserId || null;
       const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"]');
       const badge = b && b.textContent.trim() ? b.textContent.trim() : (e.querySelector('[class*="UnReadCount"]') ? '•' : '');
       const y = e.getBoundingClientRect().top + (sc ? sc.scrollTop : 0);
-      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), observedAt: Date.now()/1000, badge, index: '0', stranger: true, _y: y, _o: order++ });
+      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), observedAt: Date.now()/1000, badge, index: '0', stranger: true, kind: sec ? 1 : null, sec, _y: y, _o: order++ });
     });
     grab();
     if (sc) {
@@ -2867,12 +2957,13 @@ struct DYStrangerListScreen: View {
         }
         cache.strangerRows = rows
         cache.strangerUnread = rows.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+        Task { await cache.resolveFollow(rows.compactMap(\.sec)) }
         if rows.isEmpty { status = "暂无陌生人消息" }
         DYLiveModel.log("DDSTRANGER rows=\(rows.count) unread=\(cache.strangerUnread ?? 0)")
     }
 
     private func line(_ row: DYConversationRow) -> some View {
-        DYConversationCell(row: row)
+        DYConversationCell(row: row, relation: cache.relationLabel(row), followsMe: cache.followsMe(row))
     }
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。

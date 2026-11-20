@@ -147,7 +147,9 @@ final class DDPlayback {
         }
         let keepSession = Self.bgPlay || retainers.contains { $0() }
         if !keepSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            DDAudioSessionGuard.allowDeactivate {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         }
     }
     func resumeAll() {
@@ -745,6 +747,16 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             pauseForBackground()
         }
+        .onReceive(NotificationCenter.default.publisher(for: DDAudioSessionGate.lostNotification)) { _ in
+            resumeIfStolen()
+        }
+        // 播放器一被系统停住就立刻接上（不等上面的定时检查，定时检查最多晚 0.4 秒，肉眼能看到一顿）
+        .onReceive(NotificationCenter.default.publisher(for: AVPlayer.rateDidChangeNotification)) { note in
+            guard let p = player, (note.object as AnyObject?) === p, p.rate == 0 else { return }
+            let reason = note.userInfo?[AVPlayer.rateDidChangeReasonKey] as? AVPlayer.RateDidChangeReason
+            guard reason == .audioSessionInterrupted || DDAudioSessionGate.recentlyLost else { return }
+            resumeIfStolen(reason: reason?.rawValue ?? "-")
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             DDAudioSessionGate.invalidate()
             pictureInPicture.didEnterBackground()
@@ -817,6 +829,7 @@ struct PlayerPage: View {
         }
         .onChange(of: isActive) { _, active in
             playbackIsActive = active
+            if active { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
             if !active {
                 if DDRemoteOwner.instance == playbackID { clearRemote() }
                 savedPlaybackStarted = false
@@ -1204,6 +1217,7 @@ struct PlayerPage: View {
             startVLC(); return
         }
         #endif
+        if isActive { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
         let candidate = prepared ?? preparedPlayer?()
         let pre = localURL == nil || (candidate?.currentItem?.asset as? AVURLAsset)?.url == localURL ? candidate : nil
         DYLiveModel.log("DDSETUP \(id.suffix(6)) active=\(isActive) pre=\(pre != nil) status=\(pre?.currentItem?.status.rawValue ?? -1) buf=\(String(format: "%.1f", pre.map { DYPlaybackTelemetry.bufferedAhead($0) } ?? 0))s")
@@ -1211,7 +1225,7 @@ struct PlayerPage: View {
         let preReady = pre?.currentItem?.status == .readyToPlay
         let preBuf = pre?.currentItem?.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
         #endif
-        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? DYMedia.asset(localURL ?? url)
+        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? (localURL.map { AVURLAsset(url: $0) } ?? DYStream.asset(id: id, remote: url))
         let p = pre ?? AVPlayer(playerItem: makeItem(asset: asset))
         if localURL == nil, let pre, let h = headEndSeconds, pre.currentItem?.forwardPlaybackEndTime.seconds ?? 0 <= 0 {
             pre.currentItem?.forwardPlaybackEndTime = CMTime(seconds: h, preferredTimescale: 600)
@@ -1461,7 +1475,22 @@ struct PlayerPage: View {
             guard stuck else { return }
             let st = p.currentItem?.status.rawValue ?? -1
             let err = p.currentItem?.error.map { "\(($0 as NSError).domain)/\(($0 as NSError).code)" } ?? "-"
-            DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried)")
+            let it = p.currentItem
+            let ranges = (it?.loadedTimeRanges ?? []).map { r -> String in
+                let v = r.timeRangeValue; return String(format: "%.1f-%.1f", v.start.seconds, CMTimeRangeGetEnd(v).seconds) }.joined(separator: ",")
+            let reason = p.reasonForWaitingToPlay.map { $0.rawValue } ?? "-"
+            let src = (it?.asset as? AVURLAsset)?.url.scheme ?? "-"
+            DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried) src=\(src) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(reason) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) full=\(it?.isPlaybackBufferFull ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", position))")
+            // 数据已经够了却停着（rate=0 / 暂停态）：是播放被打断了不是数据问题，
+            // 重新激活音频会话再播一下就行，不必重建播放器
+            if it?.status == .readyToPlay, p.rate == 0, p.timeControlStatus == .paused, it?.isPlaybackLikelyToKeepUp == true {
+                DDAudioSessionGate.forceActive()
+                p.playImmediately(atRate: playRate)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                DYLiveModel.log("DDSTARTDIAG \(id) resume-in-place")
+                watchdog(p)
+                return
+            }
             retryPlayback()
         }
     }
@@ -1503,6 +1532,19 @@ struct PlayerPage: View {
 
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
     /// 避免把仍在出声的直播会话一起拆掉。「后台播放」打开时这里直接返回。
+    /// 应该在播（当前条、没被用户暂停、能控制播放）却 rate=0：多半是别的播放器把音频会话关了，重新激活接着播
+    private func resumeIfStolen(reason: String = "tick") {
+        guard vlc == nil, let p = player, canControlPlayback, isPlaying, !userPaused else { return }
+        guard p.rate == 0, p.currentItem?.status == .readyToPlay else { return }
+        DDAudioSessionGate.forceActive()
+        if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
+            p.isMuted = seamAudio.mode == .noAudio || muted
+            p.playImmediately(atRate: playRate)
+        }
+        seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+        DYLiveModel.log("DDRESUME \(id) 音频会话被关后恢复 t=\(String(format: "%.2f", p.currentTime().seconds)) by=\(reason)")
+    }
+
     private func pauseForBackground() {
         let behindOfflineLibrary = DDPlayback.shared.offlineLibraryPresented && offlineContext?.inLibrary != true
         if behindOfflineLibrary, DDRemoteOwner.instance == playbackID { clearRemote() }
@@ -1689,7 +1731,7 @@ struct PlayerPage: View {
                     headCompleted = true
                     Task { await DYVideoCache.shared.completeLong(id: id) }
                 }
-                if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
+                if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos; DYStreamStore.shared.setPlayhead(id, t.seconds) }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)
                 // 原生声音模式下每 0.25s 拉回锁定倍速（交给 seamAudio：能交接给独立引擎就不走会卡一下的原生变速）；

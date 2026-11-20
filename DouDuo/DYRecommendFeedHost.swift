@@ -401,7 +401,7 @@ extension DYRecommendFeedHost {
 
     func refreshNoticeUnread() async {
         guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
+        noticeUnread = DYMessageCache.shared.maskedBadge(groups)
     }
 
     func reloadRecommendationsAfterLogin() {
@@ -475,7 +475,7 @@ extension DYRecommendFeedHost {
     func reportWatch(old: String?, new: String?) {
         if feed.finishedOfflineID == old { feed.finishedOfflineID = nil }
         if feed.onlineContinuationID == old { feed.onlineContinuationID = nil }
-        guard !feed.offlinePlayback, let new, let item = feed.items.first(where: { $0.id == new }) else { return }
+        guard !feed.offlinePlayback, let new, let item = feed.items.first(where: { $0.id == new }), item.live == nil else { return }
         var seen = false
         if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
            DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
