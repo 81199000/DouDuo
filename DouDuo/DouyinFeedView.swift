@@ -2311,10 +2311,15 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             }
             // 「信息」：带字的入口（老板 2026-11-19 要加回来），跟 tab 同款字体；未读红点独立显示
             Button { showMessages = true } label: {
-                Text("信息")
-                    .font(.headline.weight(.medium))
-                    .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
-                    .lineLimit(1).fixedSize()
+                // 跟左边页签同一结构（文字 + 3pt 下划线位，这里不显示）：页签文字被下划线顶高了 3pt，
+                // 「信息」只有文字就会比「直播」低一截（老板 2026-11-21 截图）
+                VStack(spacing: 3) {
+                    Text("信息")
+                        .font(.headline.weight(.medium))
+                        .foregroundStyle(theme.media.onMedia.color(for: scheme).opacity(0.62))
+                        .lineLimit(1).fixedSize()
+                    Capsule().frame(width: 16, height: 3).opacity(0)
+                }
                 .padding(.horizontal, hPad)
                 .padding(.vertical, 14)
                 .frame(minWidth: 44, minHeight: 44)
