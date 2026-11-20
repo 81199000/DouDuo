@@ -1211,7 +1211,7 @@ struct PlayerPage: View {
         let preReady = pre?.currentItem?.status == .readyToPlay
         let preBuf = pre?.currentItem?.loadedTimeRanges.first.map { CMTimeGetSeconds($0.timeRangeValue.duration) } ?? 0
         #endif
-        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? DYMedia.asset(localURL ?? url)
+        let asset = (pre?.currentItem?.asset as? AVURLAsset) ?? (localURL.map { AVURLAsset(url: $0) } ?? DYStream.asset(id: id, remote: url))
         let p = pre ?? AVPlayer(playerItem: makeItem(asset: asset))
         if localURL == nil, let pre, let h = headEndSeconds, pre.currentItem?.forwardPlaybackEndTime.seconds ?? 0 <= 0 {
             pre.currentItem?.forwardPlaybackEndTime = CMTime(seconds: h, preferredTimescale: 600)
@@ -1689,7 +1689,7 @@ struct PlayerPage: View {
                     headCompleted = true
                     Task { await DYVideoCache.shared.completeLong(id: id) }
                 }
-                if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
+                if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos; DYStreamStore.shared.setPlayhead(id, t.seconds) }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)
                 // 原生声音模式下每 0.25s 拉回锁定倍速（交给 seamAudio：能交接给独立引擎就不走会卡一下的原生变速）；
