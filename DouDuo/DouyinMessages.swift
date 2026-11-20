@@ -237,7 +237,9 @@ final class DYMessageCache: ObservableObject {
         for batch in 0..<12 {
             let fresh = try await bridge.notices(group: group, maxTime: cursor, minTime: boundary)
             guard scope == account else { throw CancellationError() }
-            if batch == 0 { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
+            // 翻页游标要停在「已拉到的最后一页」之后：以前只记第 1 页的游标，空缓存首拉 3 页后，
+            // 下滑分页从第 2 页重拉 → 全是已有的 → 列表不增长、转圈不再触发，就卡在第一屏（2026-11-20 老板报）
+            if batch == 0 || old == nil { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
             incoming.append(contentsOf: fresh.items)
             if !fresh.hasMore || fresh.items.isEmpty || fresh.maxTime == cursor || fresh.items.contains(where: { known.contains($0.id) }) { break }
             // 没有缓存（或缓存不足一页）时也要连拉几页：抖音单页只给 10 条，
@@ -2158,7 +2160,9 @@ struct DYNoticeListScreen: View {
                         Divider().background(Color.primary.opacity(0.08))
                     }
                     if hasMore {
+                        // id 跟条数走：加载完一页后转圈仍在屏幕上也会重新触发下一页
                         ProgressView().tint(.primary).padding()
+                            .id(items.count)
                             .onAppear { Task { await reload(reset: false) } }
                     }
                 }
@@ -2321,12 +2325,21 @@ struct DYNoticeListScreen: View {
             if reset {
                 page = try await cache.refresh(requestedGroup, bridge: bridge)
             } else {
-                let next = try await bridge.notices(group: requestedGroup, maxTime: maxTime)
+                // 游标落在已加载区间里时（旧缓存 / 首拉多页），整页都是重复的：继续往后翻，直到拿到新条目
                 let seen = Set(items.map(\.id))
-                page = DYCachedNoticePage(items: items + next.items.filter { !seen.contains($0.id) },
-                                          maxTime: next.maxTime,
-                                          hasMore: next.hasMore && !next.items.isEmpty && next.maxTime != maxTime)
+                var cursor = maxTime
+                var added: [DYNotice] = []
+                var more = true
+                for _ in 0..<8 {
+                    let next = try await bridge.notices(group: requestedGroup, maxTime: cursor)
+                    added += next.items.filter { !seen.contains($0.id) && !added.map(\.id).contains($0.id) }
+                    more = next.hasMore && !next.items.isEmpty && next.maxTime != cursor
+                    cursor = next.maxTime
+                    if !added.isEmpty || !more { break }
+                }
+                page = DYCachedNoticePage(items: items + added, maxTime: cursor, hasMore: more)
                 cache.store(page, group: requestedGroup)
+                DYLiveModel.log("DDNOTICE more group=\(requestedGroup) added=\(added.count) more=\(more)")
             }
             guard gen == loadGen, !Task.isCancelled else { return }
             items = page.items
