@@ -51,10 +51,8 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         return ZStack(alignment: .topLeading) {
             feed()
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
-                .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
-                // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）会铺满整屏宽，盖住右侧评论栏
-                //（内屏横屏评论纯黑的根因；dd405e6 拿掉这个裁边后 11-18 晚复发，老板 11-19 指出之前修过）。
-                .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
+                .modifier(DYPlaybackPaneClip(restrictsToPane: layout.showsPane && layout.sideBySide,
+                                             safeAreaInsets: geo.safeAreaInsets))
             if layout.showsPane {
                 Group {
                     if showsAuthorPane {
@@ -124,10 +122,20 @@ extension EnvironmentValues {
     @Entry var dyRestrictsPlaybackToPane = false
 }
 
-/// 只在 on 时裁边。
-/// ⚠️ 已知（议题 #52-2）：两个分支是两种视图类型，内屏横屏开关评论会重建播放器，进度倒退几秒。
-/// 别改成常挂超大 clipShape / mask（95ef04d 真机评论区黑屏，已回滚），也别整个拿掉（dd405e6 拿掉后评论纯黑）。
-struct DDClipIf: ViewModifier {
-    let on: Bool
-    func body(content: Content) -> some View { if on { content.clipped() } else { content } }
+/// 始终保留同一棵视图树，避免侧栏开关时销毁播放器（议题 #52-2）。
+struct DYPlaybackPaneClip: ViewModifier {
+    let restrictsToPane: Bool
+    let safeAreaInsets: EdgeInsets
+
+    func body(content: Content) -> some View {
+        let overflow = restrictsToPane ? EdgeInsets() : safeAreaInsets
+        // 侧栏打开时在视频窗格边缘裁切，防止环境光盖住评论。其余时候让画面延伸到安全区边缘。
+        // 外层负 padding 抵消裁切范围的扩张，保持窗格原有布局尺寸。
+        content
+            .environment(\.dyRestrictsPlaybackToPane, restrictsToPane)
+            .padding(overflow)
+            .clipped()
+            .padding(EdgeInsets(top: -overflow.top, leading: -overflow.leading,
+                                bottom: -overflow.bottom, trailing: -overflow.trailing))
+    }
 }
