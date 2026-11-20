@@ -180,6 +180,8 @@ final class DYStreamStore: @unchecked Sendable {
     private var items: [String: DYAweme] = [:]
     private var currentID: String?
     private var playhead: [String: Double] = [:]
+    /// 当前条播放位置最后一次推进的时间：一直不动 = 还没起播 / 卡住等数据
+    private var advancedAt = Date.distantPast
     /// 本次运行网络总下载量（日志对比用）
     private(set) var sessionBytes: Int64 = 0
 
@@ -210,25 +212,40 @@ final class DYStreamStore: @unchecked Sendable {
     func setPlayhead(_ id: String, _ seconds: Double) {
         lock.lock()
         let previous = currentID
+        let moved = previous != id || abs((playhead[id] ?? -1) - seconds) > 0.05
         currentID = id; playhead[id] = seconds
+        if moved { advancedAt = Date() }
         let leaving = previous != id ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
         DYStreamLoader.shared.bump()
-        // 换条时记一笔：上一条实际下了多少 / 总共多大 / 看到第几秒——验证省了多少流量
-        for e in leaving {
-            e.lock.lock(); let got = e.fetched, total = e.total ?? 0, have = DYStreamPlan.covered(e.ranges); e.lock.unlock()
-            DYLiveModel.log("DDSTREAM leave \(e.id.suffix(6)) key=\(e.key == e.id ? "hd" : "saver") net=\(got / 1024)KB have=\(have / 1024)KB total=\(total / 1024)KB watched=\(Int(position(e.id) ?? 0))/\(Int(e.item.duration))s session=\(sessionBytes / 1024 / 1024)MB")
-        }
+        logLeave(leaving)
     }
 
     /// 页面一激活（划到这条）就算当前条——不能等时间观察者报播放位置：
     /// 还没起播时观察者不报，下载又只给当前条放开 → 互相等，长视频永远起不来（真机实测等 20 秒）
     func activate(_ id: String, at seconds: Double = 0) {
         lock.lock()
-        let changed = currentID != id
-        if changed { currentID = id; if playhead[id] == nil { playhead[id] = seconds } }
+        let previous = currentID
+        let changed = previous != id
+        if changed { currentID = id; advancedAt = .distantPast; if playhead[id] == nil { playhead[id] = seconds } }
+        let leaving = changed ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
         if changed { DYStreamLoader.shared.bump() }
+        logLeave(leaving)
+    }
+
+    /// 换条时记一笔：上一条实际下了多少 / 总共多大 / 看到第几秒——验证省了多少流量
+    private func logLeave(_ list: [DYStreamEntry]) {
+        for e in list {
+            e.lock.lock(); let got = e.fetched, total = e.total ?? 0, have = DYStreamPlan.covered(e.ranges); e.lock.unlock()
+            DYLiveModel.log("DDSTREAM leave \(e.id.suffix(6)) key=\(e.key == e.id ? "hd" : "saver") net=\(got / 1024)KB have=\(have / 1024)KB total=\(total / 1024)KB watched=\(Int(position(e.id) ?? 0))/\(Int(e.item.duration))s session=\(sessionBytes / 1024 / 1024)MB")
+        }
+    }
+
+    /// 当前条且播放位置超过 1 秒没推进（还没起播 / 卡住等数据）：播放器要多少给多少，不卡着它
+    func isStarving(_ id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return currentID == id && Date().timeIntervalSince(advancedAt) > 1.0
     }
 
     func isCurrent(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return currentID == id }
@@ -371,7 +388,13 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     continue
                 }
                 // 3) 允许范围内就拉，否则挂起等播放位置推进
-                let allowed = DYStreamPlan.allowedEnd(for: cursor, horizon: horizon, windows: e.windows)
+                var allowed = DYStreamPlan.allowedEnd(for: cursor, horizon: horizon, windows: e.windows)
+                // 当前条播放器在等数据（没起播 / 卡住）：放开 1MB，不让「等播放推进」和「等数据」互相卡死
+                // （真机：分片 MP4 起播前要先读到 512KB 之后，被允许范围拦住，等了 20 秒）
+                // 但每条最多多放 4MB（真机：28 分钟的长视频没起播，这条规则一路放开下了 32MB）
+                if DYStreamStore.shared.isStarving(e.id), let h = DYStreamStore.shared.horizon(e), cursor < h + 4 * 1024 * 1024 {
+                    allowed = max(allowed, min(total, cursor + DYStreamPlan.chunkBytes))
+                }
                 var fetch = DYStreamPlan.nextFetch(need: cursor, ranges: e.ranges, total: total, allowed: allowed)
                 if let f = fetch, let busy = e.inflight.map(\.lowerBound).filter({ $0 > f.lowerBound && $0 < f.upperBound }).min() {
                     fetch = f.lowerBound..<busy
