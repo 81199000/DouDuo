@@ -26,7 +26,17 @@ final class DYMessageCache: ObservableObject {
     @Published var unfollowedRows: [DYConversationRow] = []
     /// sec_uid → follow_status（0 未关注 / 1 已关注 / 2 互关），落盘让下次进来分类不闪
     @Published var follow: [String: Int] = [:]
+    /// sec_uid → follower_status（对方有没有关注我：0 没有 / >0 关注了我）。和 follow 同一次请求拿到。
+    @Published var follower: [String: Int] = [:]
     private var followChecked = Set<String>()
+
+    /// 名字旁的关系标签，文案与抖音网页版关注按钮一致（webpack 常量 vc：
+    /// Followed「已关注」/ FollowEach「相互关注」/ FollowByOther「回关」= 对方关注了我、我没关注）。
+    /// 消息列表里「回关」读起来像按钮，换成「关注了你」，意思相同；「已关注」不打标（默认情况，打了是噪音）。
+    func relationLabel(_ row: DYConversationRow) -> DYRelationLabel? {
+        guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return nil }
+        return DYRelationLabel.from(follow: follow[sec], follower: follower[sec])
+    }
     /// Local to this account. Hiding never deletes the official conversation or history.
     @Published private(set) var hiddenConversations: [String: DYConversationRow] = [:]
 
@@ -68,22 +78,25 @@ final class DYMessageCache: ObservableObject {
           try {
             const r = await fetch('/aweme/v1/web/user/profile/other/?device_platform=webapp&aid=6383&sec_user_id=' + encodeURIComponent(s), { credentials: 'include' });
             const u = (JSON.parse(await r.text()) || {}).user || {};
-            if (typeof u.follow_status === 'number') out[s] = u.follow_status;
+            if (typeof u.follow_status === 'number') out[s] = [u.follow_status, typeof u.follower_status === 'number' ? u.follower_status : -1];
           } catch (e) {}
         }));
         return JSON.stringify(out);
         """
         guard let str = try? await web.callAsyncJavaScript(js, arguments: ["secs": need], contentWorld: .page) as? String,
               let d = str.data(using: .utf8),
-              let m = try? JSONDecoder().decode([String: Int].self, from: d) else {
+              let pairs = try? JSONDecoder().decode([String: [Int]].self, from: d) else {
             if scope == account { need.forEach { followChecked.remove($0) } }
             return
         }
         guard scope == account else { return }
+        let m = pairs.compactMapValues { $0.first }
+        let fm = pairs.compactMapValues { $0.count > 1 && $0[1] >= 0 ? $0[1] : nil }
         need.filter { m[$0] == nil }.forEach { followChecked.remove($0) }
         follow.merge(m) { _, new in new }
-        snapshot.follow = follow; save()
-        DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count)")
+        follower.merge(fm) { _, new in new }
+        snapshot.follow = follow; snapshot.follower = follower; save()
+        DYLiveModel.log("DDSTRANGER follow resolved=\(m.count) unfollowed=\(m.values.filter { $0 == 0 }.count) fans=\(fm.values.filter { $0 > 0 }.count)")
     }
     struct Snapshot: Codable {
         /// 结构版本：DYNotice 加了 images（评论配图）后升 2；旧文件缺该字段，消息页必须作废重拉
@@ -94,6 +107,7 @@ final class DYMessageCache: ObservableObject {
         var friends: [DYFriend] = []
         var conversations: [DYConversationRow] = []
         var follow: [String: Int]?
+        var follower: [String: Int]?
         var friendCursor: String?
         var friendHasMore: Bool?
         var hiddenConversations: [String: DYConversationRow]?
@@ -129,7 +143,7 @@ final class DYMessageCache: ObservableObject {
                 scope = DYMessageFixture.scope
                 snapshot = Snapshot()
                 selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
-                follow = [:]; followChecked = []; hiddenConversations = [:]
+                follow = [:]; follower = [:]; followChecked = []; hiddenConversations = [:]
             }
             return
         }
@@ -171,7 +185,7 @@ final class DYMessageCache: ObservableObject {
             if repaired > 0 { lastSavedData = nil; save(); DYLiveModel.log("DDMSGCACHE repaired ddimg avatars=\(repaired)") }
         }
         selectedChat = nil; strangerRows = []; strangerUnread = nil; unfollowedRows = []
-        follow = snapshot.follow ?? [:]; followChecked = []
+        follow = snapshot.follow ?? [:]; follower = snapshot.follower ?? [:]; followChecked = []
         hiddenConversations = snapshot.hiddenConversations ?? [:]
         DYPeopleCache.shared.activate(scope: scope)
         if !DYPeopleCache.shared.hasFriendsSnapshot && !snapshot.friends.isEmpty {
@@ -1061,7 +1075,7 @@ struct DYMessagesScreen: View {
             }
             ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
-                    DYConversationCell(row: row, compact: compactSidebar)
+                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
@@ -2780,10 +2794,15 @@ enum DYChatOpener {
       const avatar = e.querySelector('img')?.src || null;
       const id = 's|' + name + '|' + (avatar || '');
       if (seen.has(id)) return;
+      // 对方 sec_uid（React 会话对象上），用来查「关注了你 / 互相关注」
+      const fk = Object.keys(e).find(k => k.startsWith('__reactFiber'));
+      let f = fk ? e[fk] : null, conv = null;
+      for (let i = 0; f && i < 6; i++, f = f.return) if (f.memoizedProps?.conversation) { conv = f.memoizedProps.conversation; break; }
+      const sec = conv?.toParticipantSecUserId || null;
       const b = e.querySelector('[class*="UnReadCount"].semi-badge, [class*="digitsNumber"]');
       const badge = b && b.textContent.trim() ? b.textContent.trim() : (e.querySelector('[class*="UnReadCount"]') ? '•' : '');
       const y = e.getBoundingClientRect().top + (sc ? sc.scrollTop : 0);
-      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), observedAt: Date.now()/1000, badge, index: '0', stranger: true, _y: y, _o: order++ });
+      seen.set(id, { id, name, avatar, preview: txt('[class*="HinttextBox"]'), time: txt('[class*="timeStr"]'), observedAt: Date.now()/1000, badge, index: '0', stranger: true, kind: sec ? 1 : null, sec, _y: y, _o: order++ });
     });
     grab();
     if (sc) {
@@ -2867,12 +2886,13 @@ struct DYStrangerListScreen: View {
         }
         cache.strangerRows = rows
         cache.strangerUnread = rows.reduce(0) { $0 + (Int($1.badge) ?? ($1.badge.isEmpty ? 0 : 1)) }
+        Task { await cache.resolveFollow(rows.compactMap(\.sec)) }
         if rows.isEmpty { status = "暂无陌生人消息" }
         DYLiveModel.log("DDSTRANGER rows=\(rows.count) unread=\(cache.strangerUnread ?? 0)")
     }
 
     private func line(_ row: DYConversationRow) -> some View {
-        DYConversationCell(row: row)
+        DYConversationCell(row: row, relation: cache.relationLabel(row))
     }
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。
