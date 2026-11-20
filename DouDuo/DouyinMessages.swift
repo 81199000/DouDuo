@@ -492,6 +492,8 @@ struct DYMessagesScreen: View {
     /// 打开时先显示哪一页：点「我的」进来就是「我的」，点「信息」进来就是信息（老板 2026-11-17）
     var startsOnMine = false
     @State private var showingMine = false
+    /// 「我的」第一次切过去后就常驻（隐藏而不销毁），之后信息 ⇄ 我的来回切不再重建、不重拉资料和作品
+    @State private var mineMounted = false
     let onWeb: (URL) -> Void
     var forwardedShare: DYForwardReceipt? = nil
 
@@ -836,13 +838,16 @@ struct DYMessagesScreen: View {
                             .padding(edge == .leading ? .leading : .trailing, reserve)
                             .opacity(showingMine ? 0 : 1)
                             .allowsHitTesting(!showingMine)
-                        if showingMine, let mineContent {
+                        if showingMine || mineMounted, let mineContent {
                             // 外层整页忽略了顶部安全区；「我的」自带导航栏，内容要让开状态栏 + 导航栏，
                             // 否则页头（含「去登录」）被导航栏盖住、点不到（老板 2026-11-17「点击登录无反应」）。
                             mineContent
                                 .safeAreaPadding(.top, messageTopInset)
                                 .padding(edge == .leading ? .leading : .trailing, reserve)
-                                .transition(.opacity)
+                                .opacity(showingMine ? 1 : 0)
+                                .allowsHitTesting(showingMine)
+                                .accessibilityHidden(!showingMine)
+                                .onAppear { mineMounted = true }
                         }
                         messageRail
                             .padding(.horizontal, outer)
