@@ -257,7 +257,34 @@ final class DYMessageCache: ObservableObject {
         return result
     }
     func store(_ page: DYCachedNoticePage, group: Int) { snapshot.pages[String(group)] = page; save() }
+    /// 刚标已读的分组 → 时间。抖音标已读后未读数接口要过一会才归零，期间以本地 0 为准，
+    /// 否则返回后角标还在，要再点进别的分类（再触发一次刷新）才清掉（老板 2026-11-20 报）。
+    private var justRead: [Int: Date] = [:]
+    /// 服务端未读数 → 显示用：刚读过的分组在 30 秒内按 0 显示
+    func applyReadMask(_ server: [Int: Int]) -> [Int: Int] {
+        let now = Date()
+        justRead = justRead.filter { now.timeIntervalSince($0.value) < 30 }
+        var out = server
+        for g in justRead.keys { out[g] = 0 }
+        return out
+    }
+    /// 底栏「信息」总角标：刚读过的分组从总数里扣掉（总数 700 是服务端合计，同样滞后）
+    func maskedBadge(_ groups: [DYNoticeCount]) -> Int {
+        let raw = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+        let masked = applyReadMask(raw)
+        let parts = [DYNoticeGroup.comment, .digg, .fans, .system].map(\.rawValue)
+        let cleared = parts.reduce(0) { $0 + ((raw[$1] ?? 0) - (masked[$1] ?? 0)) }
+        if let all = raw[DYNoticeGroup.all.rawValue] { return max(0, all - cleared) }
+        return parts.reduce(0) { $0 + (masked[$1] ?? 0) }
+    }
+    /// 退出分类时先在本地把角标清零（立即生效），再去服务端标已读
+    func clearCountsLocally(_ groups: Set<Int>) {
+        guard !groups.isEmpty else { return }
+        let now = Date()
+        for g in groups { justRead[g] = now; snapshot.counts[g] = 0 }
+    }
     func markReadAfterExit(_ groups: Set<Int>, bridge: DouyinBridge) async {
+        clearCountsLocally(groups)
         for group in groups {
             do {
                 _ = try await bridge.notices(group: group, maxTime: 0, markRead: true)
@@ -275,7 +302,7 @@ final class DYMessageCache: ObservableObject {
             } catch { DYLiveModel.log("DDNOTICE read-on-exit failed group=\(group)") }
         }
         if let values = try? await bridge.noticeCounts() {
-            snapshot.counts = Dictionary(values.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+            snapshot.counts = applyReadMask(Dictionary(values.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a }))
         }
         save()
     }
@@ -765,6 +792,9 @@ struct DYMessagesScreen: View {
             // 只有真正退出分类才标已读；打开视频/作者弹层不算退出分类。
             guard old != current, case .category(let route) = old else { return }
             let seen = viewedGroups.removeValue(forKey: route) ?? []
+            // 返回时角标立即清零，不等网络
+            DYMessageCache.shared.clearCountsLocally(seen)
+            counts = DYMessageCache.shared.snapshot.counts
             Task {
                 await DYMessageCache.shared.markReadAfterExit(seen, bridge: bridge)
                 counts = DYMessageCache.shared.snapshot.counts
@@ -1797,7 +1827,7 @@ struct DYMessagesScreen: View {
         #endif
         DYLiveModel.log("DDMSGCACHE restore root=\(recent.count) chats=\(conversations.count) friends=\(friends.count)")
         if let groups = try? await bridge.noticeCounts() {
-            counts = Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a })
+            counts = cache.applyReadMask(Dictionary(groups.map { ($0.group, $0.count) }, uniquingKeysWith: { a, _ in a }))
             cache.snapshot.counts = counts
         }
         do {

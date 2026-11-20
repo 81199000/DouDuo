@@ -401,7 +401,7 @@ extension DYRecommendFeedHost {
 
     func refreshNoticeUnread() async {
         guard let groups = try? await bridge.noticeCounts() else { return }
-        noticeUnread = DYMessagesScreen.badge(groups)
+        noticeUnread = DYMessageCache.shared.maskedBadge(groups)
     }
 
     func reloadRecommendationsAfterLogin() {
