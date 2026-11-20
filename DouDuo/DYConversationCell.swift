@@ -3,6 +3,8 @@ import SwiftUI
 struct DYConversationCell: View {
     let row: DYConversationRow
     var compact = false
+    /// 对方和我的关注关系（关注了你 / 相互关注），名字后面一枚小标签
+    var relation: DYRelationLabel? = nil
 
     var body: some View {
         Group {
@@ -20,6 +22,7 @@ struct DYConversationCell: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) {
                             Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
+                            if let relation { DYRelationTag(label: relation) }
                             if let streak = row.streak { DYStreakBadge(streak: streak) }
                         }
                         Text(row.preview).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
@@ -60,5 +63,45 @@ struct DYConversationCell: View {
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(.red, in: .capsule)
         }
+    }
+}
+
+
+/// 私信对方与我的关注关系。判定和抖音网页版关注按钮同一套（follow_status / follower_status）。
+enum DYRelationLabel: Equatable {
+    /// 对方关注了我，我没关注对方（网页按钮文案「回关」）
+    case fan
+    /// 互相关注（follow_status == 2，或我关注了对方且对方也关注了我）
+    case mutual
+
+    var text: String {
+        switch self {
+        case .fan: return "关注了你"
+        case .mutual: return "相互关注"
+        }
+    }
+
+    /// follow：我→对方（0 未关注 / 1 已关注 / 2 互关 / 4 已请求）；follower：对方→我（>0 关注了我）
+    static func from(follow: Int?, follower: Int?) -> DYRelationLabel? {
+        if follow == 2 { return .mutual }
+        guard let follower, follower > 0 else { return nil }
+        return follow == 1 ? .mutual : .fan
+    }
+}
+
+struct DYRelationTag: View {
+    let label: DYRelationLabel
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let tint = label == .mutual ? theme.status.danger.color(for: scheme) : Color.secondary
+        Text(label.text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 5).padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.12)))
+            .fixedSize()
+            .accessibilityIdentifier("douyin.conversation.relation")
     }
 }
