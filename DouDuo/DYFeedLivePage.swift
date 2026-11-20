@@ -142,7 +142,7 @@ struct DYFeedLivePage: View {
         started = false
         player.onError = nil
         player.stop()
-        // VLC 停播会把音频会话关掉：标记作废，下一条短视频起播时重新激活
-        DDAudioSessionGate.invalidate()
+        // VLC 停播（异步）会把音频会话关掉：通知当前短视频检查自己是否被意外停住
+        DDAudioSessionGate.noteVLCStopping()
     }
 }

@@ -88,6 +88,19 @@ enum DDAudioSessionGate {
     }
     /// 被打断 / 切后台后要重新激活
     static func invalidate() { active = false }
+    /// VLC（推荐里的直播卡）停播是异步的，停完会把整个 App 的音频会话关掉——这时下一条短视频
+    /// 往往已经开播了，会被系统直接暂停（2026-11-20 真机：直播后面那条「开始播放然后卡住」）。
+    /// 直播卡停播后连续几次发这个通知，当前短视频若被意外停住就重新激活会话接着播。
+    static let lostNotification = Notification.Name("DDAudioSessionMaybeLost")
+    static func noteVLCStopping() {
+        invalidate()
+        for delay in [0.25, 0.6, 1.0, 1.6, 2.5, 3.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                invalidate()
+                NotificationCenter.default.post(name: lostNotification, object: nil)
+            }
+        }
+    }
 }
 
 
