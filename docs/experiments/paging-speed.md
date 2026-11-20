@@ -1,6 +1,6 @@
 # 可调上下翻页速度
 
-基线：`2515c86dcf366325a351dae488deb6d3944f4aa4`，DouDuo 1.3.14。关联 [issue #22](https://github.com/81199000/DouDuo/issues/22)。
+基线：`2515c86dcf366325a351dae488deb6d3944f4aa4`，DouDuo 1.3.14。关联 issue #22。
 
 ## 改了什么
 
