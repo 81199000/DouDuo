@@ -95,7 +95,12 @@ enum DDAudioSessionGate {
     private static var lostAt = Date.distantPast
     /// 直播卡刚停（4 秒内）：这段时间里短视频被停住，基本都是 VLC 关会话导致的
     static var recentlyLost: Bool { Date().timeIntervalSince(lostAt) < 4 }
+    /// 当前音频输出（扬声器 / 蓝牙耳机 …），排查「直播后滑走卡一下」时对照用
+    static var routeName: String {
+        AVAudioSession.sharedInstance().currentRoute.outputs.map { "\($0.portType.rawValue)" }.joined(separator: "+")
+    }
     static func noteVLCStopping() {
+        DYLiveModel.log("DDROUTE 直播卡停播 输出=\(routeName)")
         lostAt = Date()
         invalidate()
         for delay in [0.15, 0.3, 0.45, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.0, 3.5] {
