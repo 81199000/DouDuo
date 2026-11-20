@@ -748,6 +748,13 @@ struct PlayerPage: View {
         .onReceive(NotificationCenter.default.publisher(for: DDAudioSessionGate.lostNotification)) { _ in
             resumeIfStolen()
         }
+        // 播放器一被系统停住就立刻接上（不等上面的定时检查，定时检查最多晚 0.4 秒，肉眼能看到一顿）
+        .onReceive(NotificationCenter.default.publisher(for: AVPlayer.rateDidChangeNotification)) { note in
+            guard let p = player, (note.object as AnyObject?) === p, p.rate == 0 else { return }
+            let reason = note.userInfo?[AVPlayer.rateDidChangeReasonKey] as? AVPlayer.RateDidChangeReason
+            guard reason == .audioSessionInterrupted || DDAudioSessionGate.recentlyLost else { return }
+            resumeIfStolen(reason: reason?.rawValue ?? "-")
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             DDAudioSessionGate.invalidate()
             pictureInPicture.didEnterBackground()
@@ -1524,7 +1531,7 @@ struct PlayerPage: View {
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
     /// 避免把仍在出声的直播会话一起拆掉。「后台播放」打开时这里直接返回。
     /// 应该在播（当前条、没被用户暂停、能控制播放）却 rate=0：多半是别的播放器把音频会话关了，重新激活接着播
-    private func resumeIfStolen() {
+    private func resumeIfStolen(reason: String = "tick") {
         guard vlc == nil, let p = player, canControlPlayback, isPlaying, !userPaused else { return }
         guard p.rate == 0, p.currentItem?.status == .readyToPlay else { return }
         DDAudioSessionGate.forceActive()
@@ -1533,7 +1540,7 @@ struct PlayerPage: View {
             p.playImmediately(atRate: playRate)
         }
         seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
-        DYLiveModel.log("DDRESUME \(id) 音频会话被关后恢复 t=\(String(format: "%.2f", p.currentTime().seconds))")
+        DYLiveModel.log("DDRESUME \(id) 音频会话被关后恢复 t=\(String(format: "%.2f", p.currentTime().seconds)) by=\(reason)")
     }
 
     private func pauseForBackground() {
