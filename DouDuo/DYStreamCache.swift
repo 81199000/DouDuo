@@ -380,7 +380,10 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     continue
                 }
                 // 2) 别的请求正在下这段：等它写进来（每 60ms 看一次），不重复下
+                // 先在锁外算好：horizon() 自己要拿 e.lock，NSLock 不可重入，锁里再调会死锁
+                // （2026-11-20 真机：上一版在锁里调 horizon → 加载线程卡死，画面冻住）
                 let horizon = DYStreamStore.shared.horizon(e) ?? total
+                let starving = DYStreamStore.shared.isStarving(e.id)
                 e.lock.lock()
                 if e.inflight.contains(where: { $0.contains(cursor) }) {
                     e.lock.unlock()
@@ -392,7 +395,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // 当前条播放器在等数据（没起播 / 卡住）：放开 1MB，不让「等播放推进」和「等数据」互相卡死
                 // （真机：分片 MP4 起播前要先读到 512KB 之后，被允许范围拦住，等了 20 秒）
                 // 但每条最多多放 4MB（真机：28 分钟的长视频没起播，这条规则一路放开下了 32MB）
-                if DYStreamStore.shared.isStarving(e.id), let h = DYStreamStore.shared.horizon(e), cursor < h + 4 * 1024 * 1024 {
+                if starving, cursor < horizon + 4 * 1024 * 1024 {
                     allowed = max(allowed, min(total, cursor + DYStreamPlan.chunkBytes))
                 }
                 var fetch = DYStreamPlan.nextFetch(need: cursor, ranges: e.ranges, total: total, allowed: allowed)
