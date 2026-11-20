@@ -33,6 +33,12 @@ final class DYMessageCache: ObservableObject {
     /// 名字旁的关系标签，文案与抖音网页版关注按钮一致（webpack 常量 vc：
     /// Followed「已关注」/ FollowEach「相互关注」/ FollowByOther「回关」= 对方关注了我、我没关注）。
     /// 消息列表里「回关」读起来像按钮，换成「关注了你」，意思相同；「已关注」不打标（默认情况，打了是噪音）。
+    /// 我关注了对方（1 已关注 / 2 互关）→ 头像上的红心
+    func isFollowing(_ row: DYConversationRow) -> Bool {
+        guard row.kind == 1, let sec = row.sec, !sec.isEmpty, let f = follow[sec] else { return false }
+        return f == 1 || f == 2
+    }
+
     func relationLabel(_ row: DYConversationRow) -> DYRelationLabel? {
         guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return nil }
         return DYRelationLabel.from(follow: follow[sec], follower: follower[sec])
@@ -1075,7 +1081,7 @@ struct DYMessagesScreen: View {
             }
             ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
-                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row))
+                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row), following: cache.isFollowing(row))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
@@ -2892,7 +2898,7 @@ struct DYStrangerListScreen: View {
     }
 
     private func line(_ row: DYConversationRow) -> some View {
-        DYConversationCell(row: row, relation: cache.relationLabel(row))
+        DYConversationCell(row: row, relation: cache.relationLabel(row), following: cache.isFollowing(row))
     }
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。
