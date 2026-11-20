@@ -106,6 +106,16 @@ class StreamPlan(unittest.TestCase):
         self.assertIn("func adoptStreamed(", CACHE)
         # 不同清晰度不混字节
         self.assertIn("knownTotal != total", STREAM)
+        # NSLock 不可重入：持有 e.lock 期间不能再调会拿同一把锁的方法（2026-11-20 真机卡死就是这个）
+        import re
+        held = False
+        for n, line in enumerate(STREAM.splitlines(), 1):
+            if "e.lock.lock()" in line and "e.lock.unlock()" not in line:
+                held = True
+            if held and re.search(r"\.horizon\(e\)|isStarving\(|finishIfComplete\(|logLeave\(", line):
+                self.fail(f"line {n}: 持锁时调用会再拿锁的方法: {line.strip()}")
+            if "e.lock.unlock()" in line:
+                held = False
 
 
 if __name__ == "__main__":
