@@ -1048,22 +1048,25 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const resOf = r => {
       const pa = r.play_addr || {}, w = pa.width || 0, h = pa.height || 0;
       if (w && h) return Math.min(w, h);
-      const m = /_(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
+      // 档名两种：normal_540_0（分辨率在中间）/ 540_3_1、1080_1_1（分辨率在开头，多为 H.265）
+      const m = /(?:^|_)(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
     };
+    // format=dash 的档只有画面没有声音（音轨单独给），只能用 format=mp4 的（2026-11-20 真机：省流量档选到 dash 没声音）
+    const withAudio = r => !r.format || r.format === 'mp4';
     const bestRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
         .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
       rs.sort((a, b) => ((b.bit_rate || 0) * (b.is_h265 ? 1.4 : 1)) - ((a.bit_rate || 0) * (a.is_h265 ? 1.4 : 1)));
       return rs[0] || null;
     };
     const fastRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
     };
     // 省流量档：≥540p、非弱网档里码率最低的（H.265 优先，同画质约省一半）
     const saverRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
         && resOf(r) >= 540 && !/adapt_lowest|lower/i.test(r.gear_name || ''));
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
@@ -1072,7 +1075,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
       const st = a.statistics || {};
-      const allURLs = [...urls, ...((v.bit_rate || []).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
+      const allURLs = [...urls, ...((v.bit_rate || []).filter(withAudio).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
       const def = pickPlay(urls), br = bestRate(v), best = br ? pickPlay(br.play_addr.url_list) : null;
       // 最优档没有重定向地址时，退而求其次找任意一档的重定向地址（直连 CDN 现在 403，不能用来起播）
       const anyRedirect = pickRedirect(br ? br.play_addr.url_list : urls) || pickRedirect(allURLs);
