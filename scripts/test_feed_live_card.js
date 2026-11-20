@@ -30,4 +30,12 @@ const g = items([{ cell_room: { rawdata: JSON.stringify(rd) }, desc: '今晚口�
 assert.strictEqual(g[0].live.title, '今晚口语课：10 分钟搞定连读');
 assert.strictEqual(g[0].desc, '今晚口语课：10 分钟搞定连读');
 assert.strictEqual(out[1].live.title, '英语sini老师正在直播');
+// 设置开关：推荐插直播 / 商品胶囊，默认开
+const settings = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DYSettingsScreen.swift'), 'utf8');
+assert(settings.includes('Toggle("推荐里插入直播间", isOn: $feedLive)'));
+assert(settings.includes('Toggle("显示视频商品（小黄车）", isOn: $feedProduct)'));
+assert(/private var feedLive = true/.test(settings) && /private var feedProduct = true/.test(settings));
+assert(s.includes('(live || $0.live == nil)'), '关掉直播时推荐过滤掉直播条目');
+const pill = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DYProductPill.swift'), 'utf8');
+assert(pill.includes('if enabled { pill }'), '关掉商品时不画胶囊');
 console.log('ok feed live card');

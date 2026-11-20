@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// 推荐流新增内容的开关（设置 → 推荐与内容），默认都开。
+enum DYFeedExtras {
+    /// 推荐流里插入直播间
+    static let liveKey = "douyin_feed_live_v1"
+    /// 视频上的商品胶囊（小黄车）
+    static let productKey = "douyin_feed_product_v1"
+    static var liveEnabled: Bool { UserDefaults.standard.object(forKey: liveKey) as? Bool ?? true }
+}
+
 extension DYAweme.FeedLive {
     var room: DYLiveRoom {
         DYLiveRoom(id: roomID, webRid: webRid, title: title, owner: owner, avatar: avatar, cover: cover,

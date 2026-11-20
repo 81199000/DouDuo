@@ -1472,7 +1472,8 @@ final class DYFeedModel: ObservableObject {
 
     func allowedRecommendations(_ candidates: [DYAweme]) -> [DYAweme] {
         let filter = DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "")
-        return candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) }
+        let live = defaults.object(forKey: DYFeedExtras.liveKey) as? Bool ?? true
+        return candidates.filter { (live || $0.live == nil) && !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) }
     }
 
     /// Keep the active video when possible; otherwise prefer the next surviving recommendation.
@@ -1667,6 +1668,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @ObservedObject var bridge: DouyinBridge
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -1973,7 +1975,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
@@ -2930,6 +2932,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @ObservedObject var bridge: DouyinBridge
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -3201,7 +3204,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
