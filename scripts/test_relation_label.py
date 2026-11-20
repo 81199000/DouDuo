@@ -35,6 +35,10 @@ print("relation ok")
         # 我已关注对方 → 头像右下红心
         self.assertIn("following: cache.isFollowing(row)", MSG)
         self.assertIn('Image(systemName: "heart.fill")', CELL)
+        # 互动消息（点赞/评论/关注通知）也打：通知 from_user 自带 follow_status / follower_status
+        more = (ROOT / "DouDuo" / "DouyinBridge+More.swift").read_text()
+        self.assertIn("follower: typeof u.follower_status === 'number'", more)
+        self.assertIn("DYFollowingHeart()", MSG[MSG.index("private func row(_ n: DYNotice)"):])
         self.assertIn("var follower: [String: Int]?", MSG)
         # 陌生人列表也带 sec_uid，并且会去查关系
         self.assertIn("toParticipantSecUserId", MSG[MSG.index("collectStrangerJS = "):])

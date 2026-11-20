@@ -59,17 +59,7 @@ struct DYConversationCell: View {
         }
         .frame(width: 48, height: 48).clipShape(.circle)
         .overlay(alignment: .bottomTrailing) {
-            if following {
-                Image(systemName: "heart.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(theme.status.danger.color(for: scheme)))
-                    .overlay(Circle().stroke(Color.ddBackground, lineWidth: 2))
-                    .offset(x: 3, y: 3)
-                    .accessibilityLabel("已关注")
-                    .accessibilityIdentifier("douyin.conversation.following")
-            }
+            if following { DYFollowingHeart().offset(x: 3, y: 3) }
         }
         .accessibilityHidden(!following)
     }
@@ -120,5 +110,21 @@ struct DYRelationTag: View {
             .background(RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.12)))
             .fixedSize()
             .accessibilityIdentifier("douyin.conversation.relation")
+    }
+}
+
+/// 「我已关注」头像角标：红底白心 + 背景色描边（参照官方 App 头像角标样式）
+struct DYFollowingHeart: View {
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        Image(systemName: "heart.fill")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(theme.media.onMedia.color(for: scheme))
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(theme.status.danger.color(for: scheme)))
+            .overlay(Circle().stroke(Color.ddBackground, lineWidth: 2))
+            .accessibilityLabel("已关注")
+            .accessibilityIdentifier("douyin.conversation.following")
     }
 }

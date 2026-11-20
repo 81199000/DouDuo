@@ -197,7 +197,9 @@ extension DouyinBridge {
     private static let noticeListJS = #"""
     const authorOf = u => {
       if (!u || (!u.nickname && !u.sec_uid)) return null;
-      return { name: u.nickname || '', avatar: first(u.avatar_thumb) || first(u.avatar_larger), secUid: u.sec_uid || null, uid: u.uid ? String(u.uid) : null };
+      // follow = 我→对方 follow_status；follower = 对方→我 follower_status（头像红心 / 「粉丝」标签用）
+      return { name: u.nickname || '', avatar: first(u.avatar_thumb) || first(u.avatar_larger), secUid: u.sec_uid || null, uid: u.uid ? String(u.uid) : null,
+               follow: typeof u.follow_status === 'number' ? u.follow_status : null, follower: typeof u.follower_status === 'number' ? u.follower_status : null };
     };
     const coverOf = a => {
       if (!a) return null;

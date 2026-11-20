@@ -107,7 +107,8 @@ final class DYMessageCache: ObservableObject {
     struct Snapshot: Codable {
         /// 结构版本：DYNotice 加了 images（评论配图）后升 2；旧文件缺该字段，消息页必须作废重拉
         var v: Int = 1
-        static let currentV = 2
+        /// 3：通知 author 加了 follow/follower（互动消息头像红心 / 粉丝标签），旧缓存没有 → 清一次重拉
+        static let currentV = 3
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
         var friends: [DYFriend] = []
@@ -175,11 +176,11 @@ final class DYMessageCache: ObservableObject {
         var fresh = Snapshot(); fresh.v = Snapshot.currentV
         snapshot = fresh; lastSavedData = nil
         if let file, let data = try? Data(contentsOf: file), var cached = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            if cached.v < 2 {
+            if cached.v < Snapshot.currentV {
                 // 旧缓存的评论通知没有 images 字段且 refresh 不会重取老通知：作废消息页重拉（朋友/会话历史保留）
                 cached.pages = [:]
                 cached.v = Snapshot.currentV
-                DYLiveModel.log("DDMSGCACHE schema v<2 → pages cleared")
+                DYLiveModel.log("DDMSGCACHE schema v<\(Snapshot.currentV) → pages cleared")
             }
             snapshot = cached; lastSavedData = data
             // 旧版写进缓存的 ddimg:// 头像还原成原地址：原生列表加载不了 ddimg，那 20 个好友头像就是这么空的
@@ -2164,8 +2165,17 @@ struct DYNoticeListScreen: View {
         }
     }
 
+    /// 互动消息里这个人和我的关系：通知自带 from_user 的 follow/follower_status；没有时退回私信查过的缓存
+    private func noticeRelation(_ n: DYNotice) -> (following: Bool, label: DYRelationLabel?) {
+        let sec = n.author?.secUid ?? ""
+        let f = n.author?.follow ?? (sec.isEmpty ? nil : DYMessageCache.shared.follow[sec])
+        let fr = n.author?.follower ?? (sec.isEmpty ? nil : DYMessageCache.shared.follower[sec])
+        return (f == 1 || f == 2, DYRelationLabel.from(follow: f, follower: fr))
+    }
+
     private func row(_ n: DYNotice) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let rel = noticeRelation(n)
+        return HStack(alignment: .top, spacing: 10) {
             ZStack(alignment: .topTrailing) {
                 CachedAsyncImage(url: n.avatar.flatMap(URL.init(string:))) { img in
                     img.resizable().scaledToFill()
@@ -2174,13 +2184,17 @@ struct DYNoticeListScreen: View {
                 }
                 .frame(width: 44, height: 44)
                 .clipShape(Circle())
+                .overlay(alignment: .bottomTrailing) { if rel.following { DYFollowingHeart().offset(x: 3, y: 3) } }
                 if !n.hasRead {
                     Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 2, y: -2)
                 }
             }
             VStack(alignment: .leading, spacing: 3) {
-                Text(n.name.isEmpty ? "抖音用户" : n.name)
-                    .font(.subheadline.weight(.semibold)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(n.name.isEmpty ? "抖音用户" : n.name)
+                        .font(.subheadline.weight(.semibold)).lineLimit(1)
+                    if let label = rel.label { DYRelationTag(label: label) }
+                }
                 if n.isComment {
                     Text(n.action).font(.caption).foregroundStyle(Color.primary.opacity(0.5))
                     commentText(n)

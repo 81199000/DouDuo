@@ -97,7 +97,7 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    struct Author: Codable, Hashable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil }
+    struct Author: Codable, Hashable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil; var follower: Int? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int; var play: Int? = nil }
 
     /// 视频画面高宽比，不是界面方向。界面布局看容器尺寸 / size class。
