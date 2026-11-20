@@ -32,11 +32,17 @@ struct DYFeedLivePage: View {
         ZStack {
             Color.black
             // 封面（模糊铺底 + 原比例居中）：没出画面时就是这张，出画后被视频盖住
+            // 封面必须先锁成容器大小再填充：scaledToFill 不加约束会把整个 ZStack 撑出屏幕，
+            // 左下角的主播名 / 标题就被挤到屏幕外（2026-11-20 Duo 实测左下全空白）
             if let c = live.cover, let url = URL(string: c) {
-                CachedAsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.black }
+                Color.clear
+                    .overlay { CachedAsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.black } }
                     .blur(radius: 24).opacity(0.55).clipped()
-                CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: live.portrait ? .fill : .fit) }
-                    placeholder: { Color.black }
+                Color.clear
+                    .overlay {
+                        CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: live.portrait ? .fill : .fit) }
+                            placeholder: { Color.black }
+                    }
                     .clipped()
             }
             if isCurrent {
@@ -70,6 +76,8 @@ struct DYFeedLivePage: View {
             .padding(.bottom, max(insets.bottom, 12) + 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
         .contentShape(Rectangle())
         .onTapGesture { enter() }
         .ignoresSafeArea()
