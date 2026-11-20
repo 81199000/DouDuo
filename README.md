@@ -6,6 +6,8 @@
 
 <p align="center">原生 SwiftUI 的第三方抖音客户端，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。开源免费，非官方。</p>
 
+> ⭐ **点个 Star，再关注 [@WuWeiDuo](https://github.com/WuWeiDuo)，避免走失。** 原 GitHub 账号 81199000 已停用，项目搬到了这里：<https://github.com/WuWeiDuo/DouDuo>。官网 **[oneduo.app](https://oneduo.app)** 是长期固定入口，以后仓库再搬家也能从官网找到。
+
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
 ![DouDuo：默认 / 简洁 / 极简 / 经典 四种界面](docs/screenshots/hero.png)
@@ -31,7 +33,7 @@
 - 搜索（联想词、热搜、历史）、喜欢 / 收藏 / 观看历史 / 稍后再看、作者主页与作品列表
 - 保存视频 / 图集到相册
 
-每个版本的改动见 [更新说明](docs/releases/) 或 [发行版](https://gitee.com/remon8/douduo/releases)。
+每个版本的改动见 [更新说明](docs/releases/) 或 [发行版](https://github.com/WuWeiDuo/DouDuo/releases)（国内镜像 [Gitee](https://gitee.com/remon8/douduo/releases)）。
 
 <a id="下载与签名安装国内用户"></a>
 
@@ -48,11 +50,11 @@
 
 ### 方式一：一键签（免费，自动续签）
 
-1. 下载 [一键签](https://gitee.com/remon8/oneduo/releases)（Windows / Mac）
+1. 到官网 **[oneduo.app](https://oneduo.app)** 下载 [一键签](https://oneduo.app/#download)（Windows / Mac）
 2. 数据线连手机，在一键签里选 **DouDuo**，点 **一键安装**
 3. 手机上 **设置 → 通用 → VPN 与设备管理** 信任你的 Apple ID
 
-详细步骤见 [一键签使用教程](https://gitee.com/remon8/oneduo#使用教程)。
+详细步骤见 [一键签使用教程](https://github.com/WuWeiDuo/OneDuo#使用教程)。
 
 > 更新也在一键签里完成：有新版会自动装上，登录状态和观看记录会保留。
 
@@ -93,7 +95,10 @@
 
 | 软件源 | 地址 |
 | --- | --- |
-| 国内（Gitee） | `https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json` |
+| 官方源（推荐） | `https://dl.oneduo.app/douduo/douduo.json` |
+| 备用（Gitee） | `https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json` |
+
+> 以前加过 Gitee 源的不用改，两个源内容一样；新加的请用官方源。
 
 在源里点 DouDuo → 下载 → **资源 → App** 里点它 → **签名** → **安装**。以后有新版，在源里下拉刷新再装一次，会覆盖旧版，登录状态保留。
 
@@ -119,7 +124,7 @@
 - **经典布局**只在 iOS 27.1 及以上显示，仅针对 iPhone Duo 适配；iPad、画中画尚未完整实测。
 - 抖音风控时可能要去「网页版」过一下验证；抖音网页接口改版时需要跟着更新。
 
-欢迎在 [Gitee](https://gitee.com/remon8/douduo/issues) 提 Issue / PR。
+欢迎在 [GitHub](https://github.com/WuWeiDuo/DouDuo/issues) 提 Issue / PR（国内也可以在 [Gitee](https://gitee.com/remon8/douduo/issues) 提）。
 
 ## 原理
 
@@ -135,7 +140,7 @@
 - **不提供、不存储、不分发内容**：App 只在你自己的设备上展示通过抖音网页接口获取的内容，不搭建内容服务、不缓存分发、不提供下载。视频、图片、音乐、评论、直播流的版权归原作者与平台所有。
 - **账号与使用责任**：使用本项目需要你自己的抖音账号登录。请自行遵守《抖音用户服务协议》和所在地法律；**禁止**用于商业用途、批量抓取、刷量、绕过付费或权限、二次分发，以及其他侵害他人权益的行为。账号被限制、数据丢失、设备异常等后果由使用者自行承担。
 - **不绕过付费与权限**：本项目不提供会员内容、付费内容、私密内容的解锁能力，也不修改平台返回的权限结果。
-- **签名与分发**：仓库和软件源只提供**未签名 IPA**，由使用者用 [一键签](https://gitee.com/remon8/oneduo)（自己的 Apple ID）或自备证书签名安装。本项目**不出售、不提供任何证书**，与全能签及各证书卖家无合作关系；证书来源、掉签等风险由使用者自行判断。请勿分发已签名安装包。
+- **签名与分发**：仓库和软件源只提供**未签名 IPA**，由使用者用 [一键签](https://oneduo.app)（自己的 Apple ID）或自备证书签名安装。本项目**不出售、不提供任何证书**，与全能签及各证书卖家无合作关系；证书来源、掉签等风险由使用者自行判断。请勿分发已签名安装包。
 - **无担保**：软件按「现状」提供，不保证可用性、稳定性、合规性或适用于特定目的；平台接口改版或风控可能导致功能随时失效。
 - **侵权处理**：如权利人认为本项目侵犯其权益，请通过 Issue 或仓库公开的联系方式告知，核实后会删除相关内容或停止分发。
 - **地区差异**：不同国家和地区对第三方客户端、逆向与接口调用的规定不同；如当地法律禁止，请不要使用或分发本项目。

@@ -28,7 +28,7 @@ DouDuo 是一个开源的第三方视频客户端，**与抖音、北京字节�
 
 ## 联系
 
-问题或建议请在 GitHub 提 Issue：https://github.com/81199000/DouDuo/issues
+问题或建议请在 GitHub 提 Issue：https://github.com/WuWeiDuo/DouDuo/issues
 
 ---
 
