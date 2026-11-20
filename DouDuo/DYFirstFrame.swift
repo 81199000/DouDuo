@@ -22,7 +22,10 @@ enum DYFirstFrame {
             guard a.images.isEmpty, let s = a.play, let remote = URL(string: s) else { continue }
             if cached(a.id) != nil || pending.contains(a.id) { continue }
             pending.insert(a.id)
-            let url = DYVideoCache.localURL(a.id) ?? remote
+            // 边下边播开着时不另外联网解首帧（会多下一份开头数据）：本地有整条才解，否则用封面
+            let local = DYVideoCache.localURL(a.id)
+            if DYStream.enabled, local == nil { continue }
+            let url = local ?? remote
             let id = a.id
             queue.async {
                 let generated = decode(url)

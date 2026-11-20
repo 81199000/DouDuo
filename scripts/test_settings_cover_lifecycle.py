@@ -47,6 +47,7 @@ final class AVAudioSession {
     func setActive(_ active: Bool, options: SetActiveOptions = []) throws {}
     func setCategory(_ category: Category, mode: Mode) throws {}
 }
+enum DDAudioSessionGuard { static func allowDeactivate(_ body: () -> Void) { body() } }
 @MainActor final class DDAudioEngineHub {
     static let shared = DDAudioEngineHub()
     private(set) var pauses = 0

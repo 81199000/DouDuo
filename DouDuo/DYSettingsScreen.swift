@@ -23,12 +23,16 @@ struct DYSettingsScreen: View {
     // 内容
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
+    @AppStorage(DYFeedExtras.productKey) private var feedProduct = true
     // 弹幕
     @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
     @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
     @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
     // 缓存
     @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
+    @AppStorage(DYStream.enabledKey) private var streamCache = true
+    @AppStorage(DYStream.saverKey) private var dataSaver = true
     @AppStorage(DYDMNotificationSettings.notifyKey) private var dmNotifications = false
     @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
     @State private var showNotes = false
@@ -101,10 +105,12 @@ struct DYSettingsScreen: View {
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
                     Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
+                    Toggle("推荐里插入直播间", isOn: $feedLive).accessibilityIdentifier("settings.feed.live")
+                    Toggle("显示视频商品（小黄车）", isOn: $feedProduct).accessibilityIdentifier("settings.feed.product")
                 } header: {
                     Text("推荐与内容")
                 } footer: {
-                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。")
+                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n关掉「插入直播间」后推荐里不再出现直播；关掉「商品」后视频上不显示商品胶囊。")
                 }
 
                 Section {
@@ -124,6 +130,11 @@ struct DYSettingsScreen: View {
                 }
 
                 Section {
+                    Toggle("边看边缓存（省流量）", isOn: $streamCache)
+                        .accessibilityIdentifier("settings.stream.enabled")
+                    Toggle("省流量模式", isOn: $dataSaver)
+                        .disabled(!streamCache)
+                        .accessibilityIdentifier("settings.stream.saver")
                     Picker("预缓存数量", selection: $cacheCount) {
                         ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
                     }
@@ -157,6 +168,8 @@ struct DYSettingsScreen: View {
                     .accessibilityIdentifier("settings.cache.clear")
                 } header: {
                     Text("缓存与离线")
+                } footer: {
+                    Text("边看边缓存：视频看到哪下到哪，划走就停，没看的部分不下载；看完的会存成完整文件。用流量时不再整条预下后面几条。\n省流量模式：只在用流量时生效——自动选低一档清晰度（多为 H.265，画质接近、体积约一半），并且只预热下一条。连 Wi-Fi 时不受影响。")
                 }
 
                 Section {

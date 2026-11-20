@@ -26,6 +26,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var playAlt: String? = nil
     /// 秒开用的低码率地址（冷启动先放它，高清好了再换）
     var playFast: String? = nil
+    /// 省流量档：≥540p 里码率最低的一档（多为 H.265，约为高清的一半），用流量时边下边播用它
+    var playSaver: String? = nil
     /// 选中的清晰度说明（调试日志用）
     var q: String? = nil
     let cover: String?
@@ -49,6 +51,33 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var aiDeclaration: String? = nil
     /// Optional for compatibility with sessions saved before hashtag support.
     var hashtagNames: [String]? = nil
+    /// 推荐流里混进来的直播间卡片（cell_room）。有值时这一页是直播，不是视频。
+    var live: FeedLive? = nil
+    struct FeedLive: Codable, Hashable, Sendable {
+        let roomID: String
+        var webRid: String = ""
+        let title: String
+        let owner: String
+        var avatar: String? = nil
+        var cover: String? = nil
+        var viewers: String = ""
+        var hls: [String: String] = [:]
+        var flv: [String: String] = [:]
+        var portrait: Bool = true
+        var def: String? = nil
+    }
+    /// 视频挂的商品（小黄车）。来自 anchor_info.extra；没有商品为 nil。可选以兼容旧会话。
+    var product: Product? = nil
+    struct Product: Codable, Hashable, Sendable {
+        let id: String
+        let title: String
+        var image: String? = nil
+        var sales: Int? = nil
+        /// 抖音 App 打开商品页用的 promotion_id（多数情况等于 product_id）
+        var promotionId: String? = nil
+        /// 抖音官方商品详情页（ecom.douyin.com），网页能直接下单
+        let detailURL: String
+    }
 
     func publicationText(now: Date = Date()) -> String? {
         guard let publishedAt, publishedAt.isFinite, publishedAt > 0,
@@ -70,7 +99,7 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    struct Author: Codable, Hashable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil }
+    struct Author: Codable, Hashable { let name: String; let avatar: String?; let secUid: String?; var uid: String? = nil; var follow: Int? = nil; var follower: Int? = nil }
     struct Stats: Codable, Equatable { let digg: Int; let comment: Int; let collect: Int; let share: Int; var play: Int? = nil }
 
     /// 视频画面高宽比，不是界面方向。界面布局看容器尺寸 / size class。
@@ -193,7 +222,7 @@ struct DYLiveZone: Hashable {
     ].map { DYLiveZone(id: $0.0, type: "1", name: $0.1) }
 }
 
-private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil }
+private struct DYFeedPage: Decodable { let status: Int; let items: [DYAweme]; let hasMore: Bool; let msg: String?; var diag: String? = nil; var mix: String? = nil }
 private struct DYCommentPage: Decodable { let status: Int; let items: [DYComment]; let cursor: Int; let hasMore: Bool; let total: Int; let msg: String? }
 
 enum DYError: LocalizedError {
@@ -540,6 +569,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                                    "pull": refreshIndex <= 2 ? "0" : "2"]
         let p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.tabFeedJS, args: args))
         DYLiveModel.log("DDFEED idx=\(refreshIndex) \(p.diag ?? "-") more=\(p.hasMore) msg=\(p.msg ?? "-")")
+        if let mix = p.mix { DYLiveModel.log("DDFEEDMIX idx=\(refreshIndex) \(mix)") }
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
         return (p.items, p.hasMore)
@@ -1018,16 +1048,26 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const resOf = r => {
       const pa = r.play_addr || {}, w = pa.width || 0, h = pa.height || 0;
       if (w && h) return Math.min(w, h);
-      const m = /_(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
+      // 档名两种：normal_540_0（分辨率在中间）/ 540_3_1、1080_1_1（分辨率在开头，多为 H.265）
+      const m = /(?:^|_)(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
     };
+    // format=dash 的档只有画面没有声音（音轨单独给），只能用 format=mp4 的（2026-11-20 真机：省流量档选到 dash 没声音）
+    const withAudio = r => !r.format || r.format === 'mp4';
     const bestRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
         .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
       rs.sort((a, b) => ((b.bit_rate || 0) * (b.is_h265 ? 1.4 : 1)) - ((a.bit_rate || 0) * (a.is_h265 ? 1.4 : 1)));
       return rs[0] || null;
     };
     const fastRate = v => {
-      const rs = (v.bit_rate || []).filter(r => r && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length && resOf(r) >= 540);
+      rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
+      return rs[0] || null;
+    };
+    // 省流量档：≥540p、非弱网档里码率最低的（H.265 优先，同画质约省一半）
+    const saverRate = v => {
+      const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length
+        && resOf(r) >= 540 && !/adapt_lowest|lower/i.test(r.gear_name || ''));
       rs.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
       return rs[0] || null;
     };
@@ -1035,7 +1075,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const mapA = a => {
       const v = a.video || {}, urls = (v.play_addr && v.play_addr.url_list) || [];
       const st = a.statistics || {};
-      const allURLs = [...urls, ...((v.bit_rate || []).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
+      const allURLs = [...urls, ...((v.bit_rate || []).filter(withAudio).flatMap(r => (r.play_addr && r.play_addr.url_list) || []))];
       const def = pickPlay(urls), br = bestRate(v), best = br ? pickPlay(br.play_addr.url_list) : null;
       // 最优档没有重定向地址时，退而求其次找任意一档的重定向地址（直连 CDN 现在 403，不能用来起播）
       const anyRedirect = pickRedirect(br ? br.play_addr.url_list : urls) || pickRedirect(allURLs);
@@ -1050,6 +1090,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         play: anyRedirect || best || def,
         playAlt: best || def,
         playFast: fast && fast !== (best || def) ? fast : null,
+        playSaver: (() => { const r = saverRate(v); return r ? (pickRedirect(r.play_addr.url_list) || pickPlay(r.play_addr.url_list)) : null; })(),
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
         // origin_cover = 原比例首帧（竖屏就是竖的）；cover 是网页推荐用的 4:3 横版裁切，会让竖屏视频先显示成横的
@@ -1067,9 +1108,25 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         music: (a.music && a.music.title) || '',
         musicURL: (a.music && a.music.play_url && (((a.music.play_url.url_list || [])[0]) || a.music.play_url.uri)) || null,
         userDigged: a.user_digged ? 1 : 0,
-        isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0
+        isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0,
+        product: mapProduct(a)
       };
     };
+    // 小黄车：anchor_info.extra 是 JSON 字符串数组，商品项带 product_id + product_detail_schema（ecom.douyin.com 详情页）。
+    // anchor_info 也用于地点/游戏/小程序等挂件，只认带商品详情页的那种。
+    function mapProduct(a) {
+      try {
+        const ai = a && a.anchor_info;
+        if (!ai || typeof ai.extra !== 'string') return null;
+        const list = JSON.parse(ai.extra);
+        const p = (Array.isArray(list) ? list : [list]).find(x => x && x.product_id && /^https:\/\/[a-z0-9.-]*(douyin|jinritemai)\.com\//.test(x.product_detail_schema || x.jump_schema || ''));
+        if (!p) return null;
+        const img = p.elastic_images && p.elastic_images[0] && ((p.elastic_images[0].url_list || [])[0] || p.elastic_images[0].uri);
+        return { id: String(p.product_id), promotionId: p.promotion_id ? String(p.promotion_id) : null, title: p.title || p.elastic_title || '商品',
+          image: img || null, sales: typeof p.sales === 'number' ? p.sales : null,
+          detailURL: p.product_detail_schema || p.jump_schema };
+      } catch (e) { return null; }
+    }
     """#
 
     /// 推荐流：网页版首页「推荐」竖屏流（tab/feed）。
@@ -1083,10 +1140,58 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     if (!d) return JSON.stringify({ status: r.s, items: [], hasMore: false, msg: (r.t || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').slice(-20),
       diag: 'tab s=' + r.s + ' signed=' + /a_bogus=/.test(r.u || '') + ' len=' + (r.t || '').length });
     const raw = d.aweme_list || [];
-    const items = raw.filter(a => a && a.video && !a.is_ads && !(a.raw_ad_data)).map(mapA);
+    // 推荐里的直播卡片（cell_room.rawdata 是直播间 JSON）：能拿到拉流地址的才留，按原位置插在视频之间
+    const mapLiveCard = a => {
+      const rd = a.cell_room && (typeof a.cell_room.rawdata === 'string' ? parse(a.cell_room.rawdata) : a.cell_room.rawdata);
+      if (!rd || rd.status !== 2 || !rd.stream_url) return null;
+      const su = rd.stream_url, o = rd.owner || {};
+      const hls = Object.assign({}, su.hls_pull_url_map || {});
+      if (!Object.keys(hls).length && su.hls_pull_url) hls[su.default_resolution || 'HD1'] = su.hls_pull_url;
+      const flv = compatibleLiveFLV(su);
+      if (!Object.keys(hls).length && !Object.keys(flv).length) return null;
+      const portrait = su.stream_orientation !== 2;
+      const cover = first(rd.cover) || first(o.avatar_large) || null;
+      const viewers = (rd.stats && rd.stats.user_count_str) || rd.user_count_str || (rd.user_count ? String(rd.user_count) : '');
+      // 标题：直播间标题为空 / 只是「xx正在直播」时，用卡片自带的文案（a.desc），再不行用「主播名 正在直播」
+      const generic = !rd.title || /正在直播$/.test(rd.title);
+      const liveTitle = (generic && a.desc) ? a.desc : (rd.title || a.desc || ((o.nickname || '') + ' 正在直播'));
+      return { id: 'live_' + String(rd.id_str || rd.id), desc: liveTitle, width: portrait ? 1080 : 1920, height: portrait ? 1920 : 1080, duration: 0,
+        play: null, cover, images: [],
+        author: { name: o.nickname || '', avatar: first(o.avatar_thumb), secUid: o.sec_uid || null, uid: o.id_str || (o.id ? String(o.id) : null), follow: (o.follow_info && o.follow_info.follow_status) || 0 },
+        stats: { digg: 0, comment: 0, collect: 0, share: 0 }, music: '', userDigged: 0, isCollect: 0, awemeType: 101,
+        live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: liveTitle,
+          owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null } };
+    };
+    const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video && !a.is_ads && !a.raw_ad_data ? mapA(a) : null))).filter(Boolean);
     const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
     const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
-    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null,
+    // 推荐流成分统计（只读、不改过滤）：被丢的按原因分；保留的里标出带商品 / 直播中 / 软广的。
+    // 字段名以网页接口实际为准，未知字段一并按 key 名收集，便于第一次拿到真实样本。
+    const mix = { ad: 0, live: 0, noVideo: 0, other: 0, shop: 0, liveAuthor: 0, softAd: 0, keys: {} };
+    const hasAny = (o, ks) => ks.some(k => o && o[k] != null && o[k] !== 0 && o[k] !== '' && !(Array.isArray(o[k]) && !o[k].length));
+    for (const a of raw) {
+      if (!a) continue;
+      const isAd = !!(a.is_ads || a.raw_ad_data || a.ad_info);
+      const isLive = !!(a.cell_room || a.room_id || (a.aweme_type === 101) || a.live_reason || a.web_rawdata && /room/.test(a.web_rawdata));
+      const kept = a.video && !a.is_ads && !a.raw_ad_data;
+      if (!kept) {
+        if (isAd) mix.ad++; else if (isLive) mix.live++; else if (!a.video) mix.noVideo++; else mix.other++;
+        if (!a.video) for (const k of Object.keys(a)) if (/room|live|ad|ecom|shop|product|cell/i.test(k)) mix.keys['drop.' + k] = 1;
+        if (isLive && !mix.liveSample) mix.liveSample = JSON.stringify({ t: a.aweme_type, id: a.aweme_id, cell_room: a.cell_room, live_sort_info: a.live_sort_info }).slice(0, 4000);
+        continue;
+      }
+      if (hasAny(a, ['anchor_info', 'product_info', 'products_info', 'commerce_info', 'shop_info', 'promotions', 'simple_promotions', 'ecom_info', 'commodity_info'])
+          || (a.commerce_info && (a.commerce_info.head_image_num || a.commerce_info.ad_source || a.commerce_info.ad_auction_type))) mix.shop++;
+      if (a.author && (a.author.room_id || a.author.live_status === 1 || a.author.room_data)) mix.liveAuthor++;
+      if (a.anchor_info && !mapProduct(a) && (mix.anchorSamples || 0) < 2) { mix.anchorSamples = (mix.anchorSamples || 0) + 1; mix.anchorSample = (mix.anchorSample || '') + ' ## ' + JSON.stringify({ type: a.anchor_info.type, title: a.anchor_info.title, extra: String(a.anchor_info.extra || '').slice(0, 700), sp: a.simple_promotions ? String(a.simple_promotions).slice(0, 500) : null }); }
+      if (a.simple_promotions && (mix.spSamples || 0) < 1) { mix.spSamples = 1; mix.anchorSample = (mix.anchorSample || '') + ' ## SP ' + String(typeof a.simple_promotions === 'string' ? a.simple_promotions : JSON.stringify(a.simple_promotions)).slice(0, 1500); }
+      if (a.is_ads === false && (a.ad_aweme_source || (a.commerce_config_data && a.commerce_config_data.length))) mix.softAd++;
+      for (const k of Object.keys(a)) if (/anchor|product|promotion|commerce|ecom|shop|goods|commodity|cart|room/i.test(k)) mix.keys[k] = (mix.keys[k] || 0) + 1;
+    }
+    const mixLine = 'ad=' + mix.ad + ' live=' + mix.live + ' noVideo=' + mix.noVideo + ' other=' + mix.other +
+      ' | kept shop=' + mix.shop + ' liveAuthor=' + mix.liveAuthor + ' softAd=' + mix.softAd +
+      ' | keys=' + Object.keys(mix.keys).sort().join(',') + (mix.liveSample ? ' | LIVESAMPLE ' + mix.liveSample : '') + (mix.anchorSample ? ' | ANCHOR' + mix.anchorSample : '');
+    return JSON.stringify({ status: r.s, items, hasMore: !!d.has_more, msg: d.status_msg || null, mix: mixLine,
       diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
 
@@ -1162,6 +1267,10 @@ final class DYPreloader {
     /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
     /// 只有过热/极热才降档省电
     static var ahead: Int {
+        // 省流量模式 + 用流量：只预热下一条（每条只取开头几秒）
+        if DYStream.saving { return 1 }
+        // 边下边播时预热只取开头几秒，暖 3 条足够；以前跟缓存条数走（整条下载时代）
+        if DYStream.enabled { return 3 }
         let n = DYVideoCache.limit
         return min(max(n, 3), 10)
     }
@@ -1205,10 +1314,11 @@ final class DYPreloader {
                 DYReadiness.mark(a.id)
                 continue
             }
-            let asset = DYMedia.asset(local ?? url)
+            // 边下边播：预热的条经 ddstream 只取开头几秒（DYStreamPlan.horizon），划到才继续往后下
+            let asset = local.map { AVURLAsset(url: $0) } ?? DYStream.asset(for: a, remote: url)
             let item = AVPlayerItem(asset: asset)
             // 紧挨着的下一条要「已经加载好」：不限制前向缓冲（0 = 交给系统，能把拿到的都先拿到）；
-            // 再后面的留 15 秒够起播，省流量
+            // 再后面的留 15 秒够起播，省流量（边下边播时实际下多少由 ddstream 的允许范围决定）
             item.preferredForwardBufferDuration = index + 1 < items.count && a.id == items[index + 1].id ? 0 : 15
             let p = AVPlayer(playerItem: item)
             p.isMuted = true
@@ -1316,6 +1426,7 @@ final class DYPreloader {
         guard let old = players[a.id], !retried.contains(a.id) else { return }
         retried.insert(a.id)
         release(a.id, old)
+        // 重试一律直连在线地址（ddstream 出问题时的退路）
         let item = AVPlayerItem(asset: DYMedia.asset(remote))
         item.preferredForwardBufferDuration = 15
         let p = AVPlayer(playerItem: item)
@@ -1380,7 +1491,12 @@ final class DYFeedModel: ObservableObject {
 
     func allowedRecommendations(_ candidates: [DYAweme]) -> [DYAweme] {
         let filter = DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "")
-        return candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) }
+        return withoutDisabledLive(candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) })
+    }
+
+    /// 设置里关了「推荐里插入直播间」（DYFeedExtras.liveKey，默认开）就把直播条目拿掉，与标签过滤同一入口生效
+    func withoutDisabledLive(_ items: [DYAweme]) -> [DYAweme] {
+        (defaults.object(forKey: "douyin_feed_live_v1") as? Bool ?? true) ? items : items.filter { $0.live == nil }
     }
 
     /// Keep the active video when possible; otherwise prefer the next surviving recommendation.
@@ -1503,7 +1619,7 @@ final class DYFeedModel: ObservableObject {
                 guard !Task.isCancelled, !offlinePlayback, epoch == offlineEpoch else { return }
                 pages += 1
                 let seen = Set(items.map(\.id)).union(pool.map(\.id))
-                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty) }
+                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty || a.live != nil) }
                 // 账号里已点赞/已收藏的，进页面就是选中态
                 for a in fresh {
                     if a.userDigged == 1 { liked.insert(a.id) }
@@ -1575,6 +1691,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @ObservedObject var bridge: DouyinBridge
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -1598,6 +1715,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
+    /// 从推荐流点进的直播间：退出直播间就回推荐原位（不留在直播频道）
+    @State private var liveFromFeed = false
     @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
@@ -1757,6 +1876,24 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if ProcessInfo.processInfo.environment["DOUDUO_LOGINPROBE"] == "1" { Task { await DYLoginProbe.run(bridge) } }
             #endif
             if ProcessInfo.processInfo.environment["DOUDUO_EXPORTTEST"] == "1" { Task { await DDFeatureProbe.exportHeadProbe(bridge) } }
+            // 真机流量回归：DOUDUO_AUTOSWIPE=<条数>,<每条秒数> 自动翻页，测边下边播的起播 / 卡顿 / 实际下载量
+            if let spec = ProcessInfo.processInfo.environment["DOUDUO_AUTOSWIPE"] {
+                let parts = spec.split(separator: ",").compactMap { Double($0) }
+                let count = Int(parts.first ?? 20), dwell = parts.count > 1 ? parts[1] : 4
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(6))
+                    for n in 0..<count {
+                        guard let id = currentID, let i = currentIndex, i + 1 < feed.items.count else {
+                            try? await Task.sleep(for: .seconds(2)); continue
+                        }
+                        // 交替：短停（模拟刷走）/ 长停（模拟看完一部分）
+                        let wait = n % 4 == 3 ? dwell * 4 : dwell
+                        try? await Task.sleep(for: .seconds(wait))
+                        advance(from: id, to: feed.items[i + 1].id)
+                    }
+                    DYLiveModel.log("DDAUTOSWIPE done n=\(count)")
+                }
+            }
             // 真机验收用：DOUDUO_STARTLIVE=1 + DOUDUO_AUTOLIVEROOM=1 直接进房，省去手点。
             if ProcessInfo.processInfo.environment["DOUDUO_AUTOLIVEROOM"] == "1" {
                 Task { @MainActor in
@@ -1879,7 +2016,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
@@ -2006,7 +2143,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// - 平放/外屏：视频铺满；够宽时评论从右侧滑出（视频缩窄），窄屏走底部 sheet
     /// - 半折叠：视频自动缩到一多半，另一半常驻评论（宽>高→左右分；高>宽→上下分）
     /// 右侧评论栏宽度（没有右侧栏 = 0）；布局和顶栏共用同一算法
-    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : current }
+    private var commentItem: DYAweme? { tab == .follow ? followCommentItem : (current?.live == nil ? current : nil) }
 
     private var horizontalCommentStatus: Bool {
         (bookFoldComments || (duoLandscapeWindow && showComments))
@@ -2104,6 +2241,13 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
         }
+        .onChange(of: live.entered) { _, entered in
+            guard !entered, liveFromFeed else { return }
+            liveFromFeed = false
+            DYLiveModel.log("DDFEEDLIVE back to recommend")
+            if tab == .live { selectTab(.recommend) }
+        }
+        .onChange(of: tab) { _, t in if t != .live { liveFromFeed = false } }
         .fullScreenCover(isPresented: $showMine, onDismiss: { DDPlayback.shared.releaseCover() }) {
             DYMineScreen(bridge: bridge,
                          onLogin: { reloadAfterLogin() },
@@ -2446,10 +2590,23 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 // 四种界面共用同一个分页器（含「更快」收尾），见 DYFeedPager.swift
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask) { item, isCurrentItem in
-                    page(for: item, isCurrentItem: isCurrentItem)
+                    if let live = item.live {
+                        DYFeedLivePage(item: item, live: live,
+                                       isCurrent: isCurrentItem && web == nil && tab == .recommend && !overlayOpen && !showSettings,
+                                       insets: insets, onEnter: { enterFeedLive($0) })
+                    } else {
+                        page(for: item, isCurrentItem: isCurrentItem)
+                    }
                 }
             }
         }
+    }
+
+    /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
+    private func enterFeedLive(_ room: DYLiveRoom) {
+        liveFromFeed = true
+        selectTab(.live)
+        live.open(room)
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
@@ -2816,6 +2973,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @ObservedObject var bridge: DouyinBridge
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
+    @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -2843,6 +3001,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         return .recommend
     }()
     @StateObject private var live = DYLiveModel()
+    /// 从推荐流点进的直播间：退出直播间就回推荐原位（不留在直播频道）
+    @State private var liveFromFeed = false
     @State var searchSession: DYSearchSession?
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
@@ -2909,7 +3069,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         max(DYDuoMetrics.windowSafeTop, DYDuoMetrics.isDuoHardware ? 0 : contentTopInset, 8)
     }
 
-    private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : current) ?? captionItem }
+    private var commentAweme: DYAweme? { (tab == .follow ? visibleVideo : (current?.live == nil ? current : nil)) ?? captionItem }
     private var horizontalCommentStatus: Bool {
         (bookFoldComments || (duoLandscapeWindow && showComments))
             && !showSearch && authorTarget == nil && tab != .live && commentAweme != nil
@@ -3085,7 +3245,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
@@ -3496,6 +3656,13 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if t == .recommend { focusCurrent() } else { preloader.clear() }
             if t != .live { live.stop() }
         }
+        .onChange(of: live.entered) { _, entered in
+            guard !entered, liveFromFeed else { return }
+            liveFromFeed = false
+            DYLiveModel.log("DDFEEDLIVE back to recommend")
+            if tab == .live { selectTab(.recommend) }
+        }
+        .onChange(of: tab) { _, t in if t != .live { liveFromFeed = false } }
         .navigationDestination(item: Binding(get: { supportsSidePanel ? nil : authorTarget }, set: { if !supportsSidePanel { authorTarget = $0 } })) { a in
             DYAuthorScreen(bridge: bridge, author: a, onWeb: { u in web = DYWebTarget(url: u) },
                            onWorkPresentationChange: { authorWorkOpen = $0 })
@@ -3608,10 +3775,23 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 DYFeedPager(items: feed.items, currentID: $currentID, scrollID: $scrollID,
                             userScrolling: $userScrolling, scrollEndTask: $scrollEndTask,
                             pageAxes: [.horizontal, .vertical]) { item, isCurrentItem in
-                    page(for: item, isCurrentItem: isCurrentItem, audible: audible, interactive: interactive)
+                    if let live = item.live {
+                        DYFeedLivePage(item: item, live: live,
+                                       isCurrent: audible && isCurrentItem && web == nil && !overlayOpen && !showSettings,
+                                       insets: insets, onEnter: { enterFeedLive($0) })
+                    } else {
+                        page(for: item, isCurrentItem: isCurrentItem, audible: audible, interactive: interactive)
+                    }
                 }
             }
         }
+    }
+
+    /// 推荐里刷到的直播 → 切到「直播」频道并直接进这一间（直播间页带弹幕、商品）
+    private func enterFeedLive(_ room: DYLiveRoom) {
+        liveFromFeed = true
+        selectTab(.live)
+        live.open(room)
     }
 
     /// 单页构造拆成独立函数：参数太多，写在 ForEach 里会让类型检查超时。
@@ -3903,6 +4083,8 @@ struct DYUpstreamVideoPage: View {
     /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // 小黄车放在博主名上面（老板 2026-11-20，同抖音 App）
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             HStack(spacing: 8) {
                 Button(action: { if !boost.blocksTap { onAuthor() } }) {
                     HStack(spacing: 8) {
@@ -4403,6 +4585,7 @@ struct DYClassicVideoPage: View {
     /// 作者、文案、元数据、音乐；音乐贴近进度条，作者头像归入互动栏。
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 5) {
+            if let product = item.product { DYProductPill(product: product, foreground: fg) }
             Button(action: onAuthor) {
                 Text("@" + item.author.name).font(.headline.weight(.bold))
                     .foregroundStyle(fg).lineLimit(1)

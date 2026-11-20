@@ -1811,10 +1811,15 @@ struct DYMineScreen: View {
     var onMessages: (() -> Void)? = nil
     /// 嵌在信息页里（跟信息共用右侧栏）：不画自己的返回键、不做左缘返回
     var embedded = false
-    @State private var user: DYUser?
+    /// 内存缓存：「我的」被重建（切 Tab / 经典模式底栏切换）时直接用上次的资料和列表，先出画面再后台刷新。
+    /// 换账号时清空（accountChanged）。
+    @MainActor static var cachedUser: DYUser?
+    @MainActor static var cachedModels: [DYListKind: DYPagedModel] = [:]
+    @MainActor static var cachedKind: DYListKind = .post
+    @State private var user: DYUser? = DYMineScreen.cachedUser
     @State private var userErr: String?
-    @State private var kind: DYListKind = .post
-    @State private var models: [DYListKind: DYPagedModel] = [:]
+    @State private var kind: DYListKind = DYMineScreen.cachedKind
+    @State private var models: [DYListKind: DYPagedModel] = DYMineScreen.cachedModels
     @State private var open: DYListTarget?
     @State private var relations: DYRelationsTarget?
     @State private var manageMsg: String?
@@ -1871,6 +1876,7 @@ struct DYMineScreen: View {
     /// 切换 / 退出 / 添加账号后：签名页重载，清空当前页面数据，重新读资料
     private func accountChanged(showLoginAfter: Bool = false) async {
         user = nil; userErr = nil; models = [:]
+        Self.cachedUser = nil; Self.cachedModels = [:]
         bridge.reload()
         onLogin()   // 外层刷新推荐流
         try? await Task.sleep(for: .seconds(2))
@@ -1890,15 +1896,21 @@ struct DYMineScreen: View {
             return
         }
         #endif
+        let previous = user
         do {
             let u = try await bridge.selfProfile()
             user = u; userErr = nil
+            Self.cachedUser = u
             await DYAccountStore.shared.remember(u)   // 登录过的账号存起来，之后可直接切换
         } catch {
-            userErr = error.localizedDescription
+            // 有缓存资料时网络抖一下不顶掉页面
+            if user == nil { userErr = error.localizedDescription }
             DYLiveModel.log("DDMINE self err " + error.localizedDescription)
         }
-        if user != nil { models = [:]; ensure(kind) }
+        // 同一账号再进来：列表沿用缓存（不清空、不重拉），只有换了账号才重建
+        if let u = user, previous?.secUid != u.secUid || models.isEmpty {
+            models = [:]; Self.cachedModels = [:]; ensure(kind)
+        }
     }
 
     private var content: some View {
@@ -1969,6 +1981,7 @@ struct DYMineScreen: View {
                 return
             }
             #endif
+            DYLiveModel.log("DDMINE appear cachedUser=\(user != nil) lists=\(models.count)")
             // 未登录：进「我的」先弹登录。看共享 cookie 有没有 sessionid，不等资料接口——
             // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹（老板 11-17）
             if !autoLoginShown, !(await DYLoginState.hasSession()) {
@@ -1993,7 +2006,7 @@ struct DYMineScreen: View {
             DYAppLoginScreen()
         }
         .onAppear { ensure(kind) }
-        .onChange(of: kind) { _, k in manageMsg = nil; ensure(k) }
+        .onChange(of: kind) { _, k in manageMsg = nil; Self.cachedKind = k; ensure(k) }
         .alert("清空观看历史？", isPresented: $confirmClearHistory) {
             Button("清空", role: .destructive) { Task { await clearHistory() } }
             Button("取消", role: .cancel) {}
@@ -2055,6 +2068,7 @@ struct DYMineScreen: View {
             return r
         }
         models[k] = m
+        Self.cachedModels[k] = m
         Task { await m.loadMore() }
     }
 
