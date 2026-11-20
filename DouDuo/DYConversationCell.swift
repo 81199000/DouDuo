@@ -5,8 +5,8 @@ struct DYConversationCell: View {
     var compact = false
     /// 对方和我的关注关系（关注了你 / 相互关注），名字后面一枚小标签
     var relation: DYRelationLabel? = nil
-    /// 我已关注对方：头像右下角一颗红底爱心（参照官方 App 头像角标，老板 2026-11-20）
-    var following = false
+    /// 对方关注了我：头像右下角一颗红底爱心（老板 2026-11-20）
+    var followsMe = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
 
@@ -59,9 +59,9 @@ struct DYConversationCell: View {
         }
         .frame(width: 48, height: 48).clipShape(.circle)
         .overlay(alignment: .bottomTrailing) {
-            if following { DYFollowingHeart().offset(x: 3, y: 3) }
+            if followsMe { DYFollowingHeart().offset(x: 3, y: 3) }
         }
-        .accessibilityHidden(!following)
+        .accessibilityHidden(!followsMe)
     }
 
     @ContentBuilder private var badge: some View {
@@ -113,7 +113,7 @@ struct DYRelationTag: View {
     }
 }
 
-/// 「我已关注」头像角标：红底白心 + 背景色描边（参照官方 App 头像角标样式）
+/// 「关注了我」头像角标：红底白心 + 背景色描边
 struct DYFollowingHeart: View {
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -124,7 +124,7 @@ struct DYFollowingHeart: View {
             .frame(width: 18, height: 18)
             .background(Circle().fill(theme.status.danger.color(for: scheme)))
             .overlay(Circle().stroke(Color.ddBackground, lineWidth: 2))
-            .accessibilityLabel("已关注")
-            .accessibilityIdentifier("douyin.conversation.following")
+            .accessibilityLabel("关注了你")
+            .accessibilityIdentifier("douyin.conversation.followsMe")
     }
 }

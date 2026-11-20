@@ -33,15 +33,17 @@ final class DYMessageCache: ObservableObject {
     /// 名字旁的关系标签，文案与抖音网页版关注按钮一致（webpack 常量 vc：
     /// Followed「已关注」/ FollowEach「相互关注」/ FollowByOther「回关」= 对方关注了我、我没关注）。
     /// 消息列表里「回关」读起来像按钮，换成「关注了你」，意思相同；「已关注」不打标（默认情况，打了是噪音）。
-    /// 我关注了对方（1 已关注 / 2 互关）→ 头像上的红心
-    func isFollowing(_ row: DYConversationRow) -> Bool {
-        guard row.kind == 1, let sec = row.sec, !sec.isEmpty, let f = follow[sec] else { return false }
-        return f == 1 || f == 2
+    /// 对方关注了我（follower_status > 0，含互关）→ 头像上的红心（老板 2026-11-20 定：红心 = 别人关注我）
+    func followsMe(_ row: DYConversationRow) -> Bool {
+        guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return false }
+        return (follower[sec] ?? 0) > 0 || follow[sec] == 2
     }
 
     func relationLabel(_ row: DYConversationRow) -> DYRelationLabel? {
         guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return nil }
-        return DYRelationLabel.from(follow: follow[sec], follower: follower[sec])
+        // 「粉丝」已由头像红心表达，名字旁只留「相互关注」
+        let label = DYRelationLabel.from(follow: follow[sec], follower: follower[sec])
+        return label == .mutual ? label : nil
     }
     /// Local to this account. Hiding never deletes the official conversation or history.
     @Published private(set) var hiddenConversations: [String: DYConversationRow] = [:]
@@ -1082,7 +1084,7 @@ struct DYMessagesScreen: View {
             }
             ForEach(friendConversations) { row in
                 Button { Task { await openConversation(row) } } label: {
-                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row), following: cache.isFollowing(row))
+                    DYConversationCell(row: row, compact: compactSidebar, relation: cache.relationLabel(row), followsMe: cache.followsMe(row))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("douyin.conversation.row")
@@ -2166,11 +2168,12 @@ struct DYNoticeListScreen: View {
     }
 
     /// 互动消息里这个人和我的关系：通知自带 from_user 的 follow/follower_status；没有时退回私信查过的缓存
-    private func noticeRelation(_ n: DYNotice) -> (following: Bool, label: DYRelationLabel?) {
+    private func noticeRelation(_ n: DYNotice) -> (followsMe: Bool, label: DYRelationLabel?) {
         let sec = n.author?.secUid ?? ""
         let f = n.author?.follow ?? (sec.isEmpty ? nil : DYMessageCache.shared.follow[sec])
         let fr = n.author?.follower ?? (sec.isEmpty ? nil : DYMessageCache.shared.follower[sec])
-        return (f == 1 || f == 2, DYRelationLabel.from(follow: f, follower: fr))
+        let label = DYRelationLabel.from(follow: f, follower: fr)
+        return ((fr ?? 0) > 0 || f == 2, label == .mutual ? label : nil)
     }
 
     private func row(_ n: DYNotice) -> some View {
@@ -2184,7 +2187,7 @@ struct DYNoticeListScreen: View {
                 }
                 .frame(width: 44, height: 44)
                 .clipShape(Circle())
-                .overlay(alignment: .bottomTrailing) { if rel.following { DYFollowingHeart().offset(x: 3, y: 3) } }
+                .overlay(alignment: .bottomTrailing) { if rel.followsMe { DYFollowingHeart().offset(x: 3, y: 3) } }
                 if !n.hasRead {
                     Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 2, y: -2)
                 }
@@ -2912,7 +2915,7 @@ struct DYStrangerListScreen: View {
     }
 
     private func line(_ row: DYConversationRow) -> some View {
-        DYConversationCell(row: row, relation: cache.relationLabel(row), following: cache.isFollowing(row))
+        DYConversationCell(row: row, relation: cache.relationLabel(row), followsMe: cache.followsMe(row))
     }
 
     /// 共用同一个网页聊天；嵌入模式由父级保存陌生人列表作为返回目的地。

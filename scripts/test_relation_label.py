@@ -32,8 +32,9 @@ print("relation ok")
     def test_wiring(self):
         self.assertIn("u.follower_status", MSG)
         self.assertIn("relation: cache.relationLabel(row)", MSG)
-        # 我已关注对方 → 头像右下红心
-        self.assertIn("following: cache.isFollowing(row)", MSG)
+        # 对方关注了我 → 头像右下红心（看 follower_status，不是我关注了谁）
+        self.assertIn("followsMe: cache.followsMe(row)", MSG)
+        self.assertIn("(follower[sec] ?? 0) > 0", MSG)
         self.assertIn('Image(systemName: "heart.fill")', CELL)
         # 互动消息（点赞/评论/关注通知）也打：通知 from_user 自带 follow_status / follower_status
         more = (ROOT / "DouDuo" / "DouyinBridge+More.swift").read_text()
