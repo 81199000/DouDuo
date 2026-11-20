@@ -1469,6 +1469,16 @@ struct PlayerPage: View {
             let reason = p.reasonForWaitingToPlay.map { $0.rawValue } ?? "-"
             let src = (it?.asset as? AVURLAsset)?.url.scheme ?? "-"
             DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried) src=\(src) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(reason) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) full=\(it?.isPlaybackBufferFull ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", position))")
+            // 数据已经够了却停着（rate=0 / 暂停态）：是播放被打断了不是数据问题，
+            // 重新激活音频会话再播一下就行，不必重建播放器
+            if it?.status == .readyToPlay, p.rate == 0, p.timeControlStatus == .paused, it?.isPlaybackLikelyToKeepUp == true {
+                DDAudioSessionGate.forceActive()
+                p.playImmediately(atRate: playRate)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                DYLiveModel.log("DDSTARTDIAG \(id) resume-in-place")
+                watchdog(p)
+                return
+            }
             retryPlayback()
         }
     }
