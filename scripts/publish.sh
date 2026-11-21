@@ -7,7 +7,7 @@
 #
 # 前置：docs/releases/v<版本>.md 已写好；gh 已登录；Gitee token 在
 #       ~/.config/gitee_token.json（不入库）；Vendor/VLCKit 已就位。
-# 步骤：检查 → 改版本号 → 编译(模拟器+未签名真机包) → 全部脚本测试 → 提交 → tag →
+# 步骤：检查 → 改版本号 → 未签名真机包（同时后台跑全部脚本测试）→ 提交 → tag →
 #       推 GitHub/Gitee → GitHub Release → Gitee 发行版 → 软件源 → 推送 → 匿名验收。
 # 任何一步失败立即停止；重跑是安全的（已发的 Release / Gitee 发行版 / 软件源都会跳过或覆盖）。
 set -euo pipefail
@@ -52,12 +52,14 @@ if (( ! RESUME )); then
 fi
 
 # ---------- 3. 编译 ----------
-step "模拟器编译"
-# 同真机包：不加 -sdk，由 destination 决定平台
-xcodebuild -project DouDuo.xcodeproj -scheme DouDuo \
-  -destination 'generic/platform=iOS Simulator' -derivedDataPath "$TMPDIR/dd-publish-sim" \
-  build CODE_SIGNING_ALLOWED=NO > "$TMPDIR/dd-publish-sim.log" 2>&1 \
-  || { grep -E 'error:' "$TMPDIR/dd-publish-sim.log" | head; die "模拟器编译失败（$TMPDIR/dd-publish-sim.log）"; }
+# 测试和真机编译同时跑（测试约 100 秒，串行时要额外等）；模拟器编译去掉：真机包编得过就够了，
+# 发版前开发分支早已在模拟器上编过（2026-11-21 发版提速）
+TESTLOG=$TMPDIR/dd-publish-tests.log
+( fails=()
+  for t in scripts/test_*.py scripts/test_*.js; do
+    { case $t in *.py) python3 $t >/dev/null 2>&1 ;; *.js) node $t >/dev/null 2>&1 ;; esac || print "FAIL $t" } &
+  done | tee "$TESTLOG" >/dev/null; wait ) &
+TESTPID=$!
 
 step "真机未签名包"
 DD=$TMPDIR/dd-publish-rel
@@ -74,18 +76,27 @@ rm -rf build/ipa && mkdir -p build/ipa/Payload && cp -R "$APP" build/ipa/Payload
 SIZE=$(stat -f %z $IPA)
 print "✅ $IPA  $SIZE 字节  build $(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")"
 
-# ---------- 4. 测试 ----------
+# ---------- 4. 测试（编译时已在后台并行跑） ----------
 step "脚本测试"
-fails=()
-for t in scripts/test_*.py scripts/test_*.js; do
-  case $t in *.py) python3 $t >/dev/null 2>&1 ;; *.js) node $t >/dev/null 2>&1 ;; esac || fails+=$t
-done
-(( ${#fails} == 0 )) || die "测试失败：${fails[*]}"
+wait $TESTPID
+grep -q '^FAIL' "$TESTLOG" && die "测试失败：$(grep '^FAIL' "$TESTLOG" | cut -d' ' -f2 | tr '\n' ' ')"
 print "✅ 全部 $(ls scripts/test_*.py scripts/test_*.js | wc -l | tr -d ' ') 个通过"
 
 if [[ $DRY == --dry-run ]]; then
   (( RESUME )) || git checkout -q -- project.yml DouDuo.xcodeproj/project.pbxproj
   print -P "\n%F{green}✅ dry-run 通过：编译、打包、测试均 OK（已还原版本号，未提交、未推送）%f"; exit 0
+fi
+
+# ---------- 4b. 后台并行：R2 先传 IPA + 签名包装老板手机 ----------
+# 以前 R2 要等 Gitee 发行版、软件源都弄完才开始传，还要先从 Gitee 再下载一遍 22MB；现在包一打好就传
+R2SYNC=~/Projects/guoduo-installer/py/packaging/r2_sync.py
+[[ -f $R2SYNC ]] || die "缺 $R2SYNC（一键签仓库），App 内更新检查读 dl.oneduo.app，必须同步"
+python3 $R2SYNC --put "douduo/$TAG/${IPA:t}" "$IPA" > "$TMPDIR/dd-publish-r2ipa.log" 2>&1 &
+R2PID=$!
+# 签名包 + 装 Duo（默认开；DOUDUO_INSTALL=0 关）。失败不影响发版，最后单独报告
+if [[ ${DOUDUO_INSTALL:-1} == 1 ]]; then
+  scripts/install_duo.sh > "$TMPDIR/dd-publish-install.log" 2>&1 &
+  INSTPID=$!
 fi
 
 # ---------- 5. 提交 + tag + 推送 ----------
@@ -133,9 +144,10 @@ fi
 
 # ---------- 8b. oneduo.app 分发（Cloudflare R2：App 内更新检查读这里） ----------
 step "oneduo.app 软件源（dl.oneduo.app）"
-R2SYNC=~/Projects/guoduo-installer/py/packaging/r2_sync.py
-[[ -f $R2SYNC ]] || die "缺 $R2SYNC（一键签仓库），App 内更新检查读 dl.oneduo.app，必须同步"
-python3 $R2SYNC || die "R2 同步失败"
+wait $R2PID || { cat "$TMPDIR/dd-publish-r2ipa.log"; die "R2 上传 IPA 失败"; }
+# 直接读刚生成的本地源和本机 IPA：不等 Gitee raw 的 CDN 缓存、不从 Gitee 再下一遍 22MB（2026-11-21 提速）
+ONEDUO_LOCAL_SOURCES="douduo=$PWD/docs/source/douduo.json" ONEDUO_LOCAL_IPA_DIRS="$PWD/build" \
+  python3 $R2SYNC || die "R2 同步失败"
 
 # ---------- 9. 匿名验收（手机 UA） ----------
 step "验收"
@@ -166,8 +178,13 @@ LATEST=$(curl -sI -A DouDuo-iOS https://gitee.com/remon8/douduo/releases/latest 
 [[ $LATEST == $TAG ]] && print "✅ App 内更新检查指向 $LATEST" || { print "❌ Gitee releases/latest → $LATEST"; ok=0; }
 (( ok )) || die "验收未全部通过（raw 文件 CDN 有几分钟缓存，可稍后重跑本脚本）"
 
+if [[ -n ${INSTPID:-} ]]; then
+  step "装手机"
+  if wait $INSTPID; then tail -1 "$TMPDIR/dd-publish-install.log"; else print "⚠️ 装手机没成功（不影响发版）：$(tail -1 "$TMPDIR/dd-publish-install.log")"; fi
+fi
+
 print -P "\n%F{green}✅ DouDuo $VER 发版完成%f
-  GitHub  https://github.com/WuWeiDuo/DouDuo/releases/tag/$TAG（私有）
+  GitHub  https://github.com/WuWeiDuo/DouDuo/releases/tag/$TAG
   Gitee   https://gitee.com/remon8/douduo/releases/tag/$TAG
   更新    https://oneduo.app/（App 内检查 https://dl.oneduo.app/douduo/douduo.json）
   软件源  国内 https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json
