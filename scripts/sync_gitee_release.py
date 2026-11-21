@@ -46,13 +46,11 @@ def main():
 
     if ipa["name"] not in [a.get("name") for a in rel.get("assets", [])]:
         # 本机刚打好的包和 GitHub 上那份大小一致就直接用，省一次下载（家里网络从 GitHub 拉大文件常中途断）
+        # 只用本机刚打好的包上传；不再从 GitHub 下载回来再传（老板 11-21：上传完不该再下载再上传）
         local = pathlib.Path(__file__).resolve().parent.parent / "build" / ipa["name"]
-        if local.exists() and local.stat().st_size == ipa["size"]:
-            data = local.read_bytes()
-        else:
-            d = pathlib.Path(tempfile.mkdtemp())
-            gh("release", "download", tag, "-R", GH, "-p", ipa["name"], "-D", str(d))
-            data = (d / ipa["name"]).read_bytes()
+        if not (local.exists() and local.stat().st_size == ipa["size"]):
+            sys.exit(f"本机没有 {local}（或大小 ≠ GitHub 上的 {ipa['size']}），请在打包的这台机器上跑")
+        data = local.read_bytes()
         b = uuid.uuid4().hex
         payload = (f"--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{ipa['name']}\"\r\n"
                    f"Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{b}--\r\n".encode()
@@ -62,11 +60,12 @@ def main():
     else:
         print("IPA 已挂上")
 
+    # 只看响应头里的大小，不下载整包（以前把 22MB 完整下一遍来核对）
     url = f"https://gitee.com/remon8/douduo/releases/download/{tag}/{ipa['name']}"
-    out = subprocess.run(["curl", "-sL", "-m", "600", "-o", "/dev/null", "-w", "%{http_code} %{size_download}", url],
+    out = subprocess.run(["curl", "-sIL", "-m", "60", "-o", "/dev/null", "-w", "%{http_code} %header{content-length}", url],
                          capture_output=True, text=True).stdout.split()
-    ok = out and out[0] == "200" and int(out[1]) == ipa["size"]
-    print(("✅" if ok else "❌"), "匿名下载核对", out, "期望大小", ipa["size"])
+    ok = len(out) == 2 and out[0] == "200" and out[1].isdigit() and int(out[1]) == ipa["size"]
+    print(("✅" if ok else "❌"), "匿名地址核对（只读大小）", out, "期望大小", ipa["size"])
     sys.exit(0 if ok else 1)
 
 
