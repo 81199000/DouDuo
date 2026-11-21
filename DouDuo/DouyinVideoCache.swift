@@ -160,7 +160,8 @@ actor DYVideoCache {
         previous?.cancel()
         jobID = target.id
         // 边下边播时当前这条由播放器自己边播边存，整条下载只管后面的，免得同一条下两遍
-        let plan = Self.plan(current: target, ahead: follow).filter { !(DYStream.enabled && current != nil && $0 == target.id) }
+        let plan = Self.streamingPlan(Self.plan(current: target, ahead: follow), items: candidates, streaming: DYStream.enabled)
+            .filter { !(DYStream.enabled && current != nil && $0 == target.id) }
         job = Task { [weak self] in
             await previous?.value
             guard let self else { return }
@@ -170,6 +171,16 @@ actor DYVideoCache {
                     await self.store(item)
                 }
             }
+        }
+    }
+
+    /// 边下边播开着时，Wi-Fi 整条预下只留短视频（≤90 秒）：长视频靠边下边播取开头几秒，划到再往后下。
+    /// 以前 Wi-Fi 下会把后面 30 分钟以内的长视频整条下完——实测一条 12 分钟的只看了 2 秒就下了 105MB（老板 11-21）。
+    nonisolated static func streamingPlan(_ plan: [String], items: [DYAweme], streaming: Bool) -> [String] {
+        guard streaming else { return plan }
+        return plan.filter { id in
+            guard let a = items.first(where: { $0.id == id }) else { return false }
+            return a.duration > 0 && a.duration <= blockingDuration
         }
     }
 
@@ -460,6 +471,8 @@ actor DYVideoCache {
         entries.append(Entry(aweme: item, watched: watchedIDs.contains(item.id), added: Date().timeIntervalSince1970, bytes: bytes))
         evict()
         save()
+        // .part 和正式缓存的 .mp4 是同一份数据的两个硬链接；不删 .part 的话，正式缓存淘汰这条后数据仍占着盘
+        DYStreamStore.shared.dropPartial(item.id)
     }
 
     func markWatched(_ id: String) {

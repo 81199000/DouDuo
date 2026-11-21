@@ -59,6 +59,27 @@ print("PASS cache order: long current never downloaded (no bandwidth fight); nex
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         print(r.stdout.strip())
 
+    def test_streaming_plan_short_only(self):
+        """边下边播开着：整条预下只留 ≤90 秒的，长视频不整条下（12 分钟只看 2 秒却下了 105MB，11-21）"""
+        fn = extract(CACHE, "    nonisolated static func streamingPlan(").replace("nonisolated static func", "func")
+        harness = r'''
+import Foundation
+struct DYAweme { let id: String; var duration: Double }
+let blockingDuration: Double = 90
+''' + fn + r'''
+let items = [DYAweme(id: "a", duration: 30), DYAweme(id: "b", duration: 759), DYAweme(id: "c", duration: 90), DYAweme(id: "d", duration: 0)]
+var p = streamingPlan(["a", "b", "c", "d"], items: items, streaming: true)
+precondition(p == ["a", "c"], "\\(p)")
+p = streamingPlan(["a", "b", "c"], items: items, streaming: false)
+precondition(p == ["a", "b", "c"], "关掉边下边播时保持原样 \\(p)")
+print("PASS streaming plan: long videos not prefetched whole when streaming")
+'''
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "SP.swift"; f.write_text(harness)
+            r = subprocess.run(["swift", str(f)], text=True, capture_output=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        print(r.stdout.strip())
+
     def test_telemetry_is_release(self):
         tel = (ROOT / "DouDuo/DYPlaybackTelemetry.swift").read_text()
         self.assertNotIn("#if DEBUG", tel)

@@ -222,6 +222,7 @@ final class DYStreamStore: @unchecked Sendable {
         DYStreamLoader.shared.bump()
         logLeave(leaving)
         if previous != id, let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
+        if previous != id { scheduleTrim() }
     }
 
     /// 页面一激活（划到这条）就算当前条——不能等时间观察者报播放位置：
@@ -233,9 +234,21 @@ final class DYStreamStore: @unchecked Sendable {
         if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds } }
         let leaving = changed ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
-        if changed { DYStreamLoader.shared.bump() }
+        if changed { DYStreamLoader.shared.bump(); scheduleTrim() }
         logLeave(leaving)
         if let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
+    }
+
+    private var trimScheduled = false
+    /// 换条后 5 秒在后台清一次（同一时间只排一个）
+    func scheduleTrim() {
+        lock.lock(); let skip = trimScheduled; trimScheduled = true; lock.unlock()
+        guard !skip else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); self.trimScheduled = false; self.lock.unlock()
+            self.trim()
+        }
     }
 
     /// 换条时记一笔：上一条实际下了多少 / 总共多大 / 看到第几秒——验证省了多少流量
@@ -284,16 +297,64 @@ final class DYStreamStore: @unchecked Sendable {
         DYLiveModel.log("DDSTREAM complete \(e.id.suffix(6)) \(total / 1024)KB")
     }
 
-    /// 启动 / 清缓存：部分文件按最近使用留 keep 条
+    /// 边下边播的半截文件最多占多少（超了按最近使用淘汰）
+    static let keepBytes: Int64 = 300 * 1024 * 1024
+
+    /// 清理边下边播目录（启动时 + 每次换条时）。以前这个函数没人调，半截文件一直堆着不删（老板 11-21：视频缓存 8.67GB）。
+    /// 规则：已整条收进正式缓存的、孤儿文件直接删；其余按最近使用留 keep 条且不超过 keepBytes。
+    /// 正在播 / 正在下 / 2 分钟内刚用过的不动。
     func trim() {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: Self.dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        let parts = files.filter { $0.pathExtension == "part" }
-            .sorted { (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast) ?? .distantPast
-                    > (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast) ?? .distantPast }
-        for f in parts.dropFirst(Self.keep) {
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileAllocatedSizeKey, .fileSizeKey]
+        guard let files = try? fm.contentsOfDirectory(at: Self.dir, includingPropertiesForKeys: keys) else { return }
+        lock.lock()
+        let current = currentID
+        let busy = Set(entries.values.filter { e in
+            e.lock.lock(); defer { e.lock.unlock() }
+            return !e.inflight.isEmpty || e.pumping || e.id == current
+        }.map(\.key))
+        lock.unlock()
+        let names = Set(files.map(\.lastPathComponent))
+        let now = Date()
+        func mtime(_ u: URL) -> Date { (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        func size(_ u: URL) -> Int64 {
+            let v = try? u.resourceValues(forKeys: [.fileAllocatedSizeKey, .fileSizeKey])
+            return Int64(v?.fileAllocatedSize ?? v?.fileSize ?? 0)
+        }
+        func untouchable(_ key: String, _ u: URL) -> Bool { busy.contains(key) || now.timeIntervalSince(mtime(u)) < 120 }
+        var removed = 0, freed: Int64 = 0
+        func drop(_ key: String) {
+            let part = Self.dir.appendingPathComponent(key + ".part"), meta = Self.dir.appendingPathComponent(key + ".json")
+            freed += size(part)
+            try? fm.removeItem(at: part); try? fm.removeItem(at: meta)
+            lock.lock(); entries[key] = nil; lock.unlock()
+            removed += 1
+        }
+        // 孤儿 .json（没有对应 .part）
+        for f in files where f.pathExtension == "json" && !names.contains(f.deletingPathExtension().lastPathComponent + ".part") {
             try? fm.removeItem(at: f)
-            try? fm.removeItem(at: f.deletingPathExtension().appendingPathExtension("json"))
+        }
+        var parts = files.filter { $0.pathExtension == "part" }
+        // 已整条收进正式缓存（.part 只是它的硬链接，留着会在正式缓存删掉后继续占盘）、或没有 .json 的孤儿
+        for f in parts {
+            let key = f.deletingPathExtension().lastPathComponent
+            let id = String(key.split(separator: "~").first ?? Substring(key))
+            let orphan = !names.contains(key + ".json")
+            if (DYVideoCache.localURL(id) != nil || orphan) && !untouchable(key, f) { drop(key) }
+        }
+        parts = parts.filter { fm.fileExists(atPath: $0.path) }.sorted { mtime($0) > mtime($1) }
+        var kept = 0, keptBytes: Int64 = 0
+        for f in parts {
+            let key = f.deletingPathExtension().lastPathComponent
+            let b = size(f)
+            if untouchable(key, f) || (kept < Self.keep && keptBytes + b <= Self.keepBytes) {
+                kept += 1; keptBytes += b
+            } else {
+                drop(key)
+            }
+        }
+        if removed > 0 {
+            DYLiveModel.log("DDSTREAM trim removed=\(removed) freed=\(freed / 1024 / 1024)MB kept=\(kept) keptMB=\(keptBytes / 1024 / 1024)")
         }
     }
 
@@ -302,10 +363,15 @@ final class DYStreamStore: @unchecked Sendable {
         lock.lock()
         let parts = entries.values.filter { $0.id == id && !$0.adopted }
         lock.unlock()
+        lock.lock(); let current = currentID; lock.unlock()
         for e in parts {
-            e.lock.lock(); let busy = !e.inflight.isEmpty; e.lock.unlock()
+            // 正在播 / 正在下 / 在补货的先不删（播放器可能还在读这份），换条后由 trim 收尾
+            e.lock.lock(); let busy = !e.inflight.isEmpty || e.pumping || e.id == current; e.lock.unlock()
             if busy { continue }
+            // 以前只删 .json、留着 .part：数据文件永远不删（缓存越堆越大的原因之一）
             try? FileManager.default.removeItem(at: e.metaURL)
+            try? FileManager.default.removeItem(at: e.dataURL)
+            lock.lock(); entries[e.key] = nil; lock.unlock()
         }
     }
 
