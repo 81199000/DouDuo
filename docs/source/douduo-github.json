@@ -11,6 +11,22 @@
       "name": "DouDuo",
       "bundleIdentifier": "me.rrmm.douduo",
       "type": "1",
+      "version": "1.6.8",
+      "versionDate": "2026-11-21T04:02:41+00:00",
+      "versionDescription": "DouDuo 1.6.8 · 展开屏开评论不再从头播 · 「我的」下拉刷新\n\n小修复版。包为未签名 IPA，需要自行签名安装。\n\n修复\n- iPhone Duo 展开内屏横屏时点评论（评论从右侧出来），视频会从头重新播放（工单 B13）：以前一开关侧栏评论，整个播放器都会被拆掉重建。现在开关评论只改变视频大小，接着原来的位置播。\n- 同一场景下视频底部手势条那一截露出一条白边：现在视频的模糊背景光铺到屏幕最底边。\n\n新功能\n- 「我的」页可以下拉刷新：资料（粉丝 / 获赞 / 作品数）和当前这一栏一起重新加载。拉不到时保留原内容，不会清空成白屏。\n\n关注不走失\n项目在 GitHub WuWeiDuo/DouDuo，点个 Star、关注 @WuWeiDuo，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n- 侧栏评论不再从头播：作者的 iPhone Duo 真机上确认评论区显示正常、不再从头播；iPad 模拟器横屏日志确认开评论只改尺寸、播放器没有重建。\n- 底部白边：改为背景光铺满后，真机上还没有截图复核。如果设置里关了「环境光」，或者视频还没出第一帧，底部那一截会是黑色。\n- 已知问题（这一版没修）：刷到直播间再往下滑到下一条视频时，偶尔会顿一下。",
+      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
+      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
+      "lock": "0",
+      "downloadURL": "https://github.com/WuWeiDuo/DouDuo/releases/download/v1.6.8/DouDuo-1.6.8-unsigned.ipa",
+      "isLanZouCloud": "0",
+      "iconURL": "https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/brand/app-icon.png",
+      "tintColor": "FE2C55",
+      "size": "22844294"
+    },
+    {
+      "name": "DouDuo",
+      "bundleIdentifier": "me.rrmm.douduo",
+      "type": "1",
       "version": "1.6.7",
       "versionDate": "2026-11-20T20:01:39+00:00",
       "versionDescription": "DouDuo 1.6.7 · 修复点「直播」卡死\n\n小修复版。包为未签名 IPA，需要自行签名安装。\n\n修复\n- 推荐里刷过直播间后，点顶部「直播」整个 App 卡住、十几秒后闪退：直播播放器关闭时偶尔会卡在停声音这一步，以前是在界面线程上等它，界面就跟着冻住。现在改到后台关闭，卡住也不影响界面。\n- 推荐里刷到直播间时不再先显示封面再切到直播画面（会闪一下），没出画面前是黑底。\n- 顶部「信息」和「关注 / 推荐 / 直播」没对齐（低一截）：已对齐。\n- 「关于 → 开源仓库」改为打开 GitHub 新仓库 WuWeiDuo/DouDuo。\n\n关注不走失\n项目已搬到 GitHub WuWeiDuo/DouDuo，点个 Star、关注 @WuWeiDuo，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n- 点「直播」卡死：作者的 iPhone Duo 真机上，修复后再遇到直播播放器关不掉时，日志记到「已在后台关闭」，App 没有卡住或闪退。\n- 已知问题（这一版没修）：刷到直播间再往下滑到下一条视频时，偶尔会顿一下。原因还在查。",
@@ -70,22 +86,6 @@
       "iconURL": "https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/brand/app-icon.png",
       "tintColor": "FE2C55",
       "size": "22593110"
-    },
-    {
-      "name": "DouDuo",
-      "bundleIdentifier": "me.rrmm.douduo",
-      "type": "1",
-      "version": "1.6.3",
-      "versionDate": "2026-11-19T12:20:52+00:00",
-      "versionDescription": "DouDuo 1.6.3 · 修复打开后视频不播放；含 1.6.2 全部更新（自动画中画、评论发送更稳、设置页重排）\n\n1.6.2 发布后发现：打开 App 后推荐页视频停着不播放。1.6.3 修复了这个问题，并新增半折叠桌面投影。1.6.2 的全部更新内容也都在这一版里，没装过 1.6.2 的可以直接升级到 1.6.3。包为未签名 IPA，需要自行签名安装。\n\n本版修复\n\n1.6.2 打开后视频不播放\n- 1.6.2 冷启动后，推荐页视频停在画面上不播放（各机型都可能遇到，iPhone Air 上必现）。原因是推荐页没有把刚选定的「当前条」交给视频页，结果没有一条被当成正在看的视频。以前的版本启动时会弹「有新版本 / 本次更新内容」，顺带刷新了页面，问题一直被盖住；1.6.2 本身就是最新版，不再弹窗，问题就露出来了。\n- 现在由翻页器直接判断哪一条是当前条，启动后立即起播。默认 / 简洁 / 极简 / 经典四种界面都已修复。\n\n本版新增\n\n半折叠桌面投影\n- iPhone Duo 半折叠放在桌上看视频时，下半屏会出现视频的「桌面投影」：与视频同宽、上下翻转，画面亮的地方投得明显、暗处几乎不投；离折痕近的地方清楚，远处更糊、也更散开，底下再垫一层环境光，像屏幕的光洒在桌面上。\n\n1.6.2 的更新内容（一并包含）\n1.6.2 新增短视频自动画中画，重写了发评论的流程（等签名、身份验证、失败重发），设置页重新分组，另外修了私信、作者主页和界面模式切换的几处问题。\n\n新功能 · 短视频自动画中画\n- 设置 →「播放与弹幕」新增「离开应用时自动画中画」，默认关闭。打开后，看短视频时回到主屏或切到别的 App，系统会把当前视频转成悬浮小窗（能否启动由系统决定）。（#60，感谢 @kikozheng27-creator）\n…完整说明见发行版页面",
-      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
-      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
-      "lock": "0",
-      "downloadURL": "https://github.com/WuWeiDuo/DouDuo/releases/download/v1.6.3/DouDuo-1.6.3-unsigned.ipa",
-      "isLanZouCloud": "0",
-      "iconURL": "https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/brand/app-icon.png",
-      "tintColor": "FE2C55",
-      "size": "22590474"
     }
   ]
 }
