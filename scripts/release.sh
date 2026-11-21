@@ -70,7 +70,7 @@ if fix:  lines += ["## 修复", *dict.fromkeys(fix), ""]
 if not feat and not fix:
     lines += ["## 说明", "这一版 App 功能与上一版相同，主要是发布流程与内部改进。", ""]
 lines += ["## 关注不走失",
-          "项目在 GitHub [WuWeiDuo/DouDuo](https://github.com/WuWeiDuo/DouDuo)，点个 Star、关注 @WuWeiDuo，避免走失。"
+          "项目在 GitHub [81199000/DouDuo](https://github.com/81199000/DouDuo)，点个 Star、关注 @81199000，避免走失。"
           "官网 [oneduo.app](https://oneduo.app) 是长期固定入口。", ""]
 open(out, "w").write("\n".join(lines))
 print(f"发行说明自动生成：{out}（{len(feat)} 新功能 / {len(fix)} 修复）")

@@ -6,7 +6,7 @@
 
 <p align="center">原生 SwiftUI 的第三方抖音客户端，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。开源免费，非官方。</p>
 
-> ⭐ **点个 Star，再关注 [@WuWeiDuo](https://github.com/WuWeiDuo)，避免走失。** 原 GitHub 账号 81199000 已停用，项目搬到了这里：<https://github.com/WuWeiDuo/DouDuo>。官网 **[oneduo.app](https://oneduo.app)** 是长期固定入口，以后仓库再搬家也能从官网找到。
+> ⭐ **点个 Star，再关注 [@81199000](https://github.com/81199000)，避免走失。** 官网 **[oneduo.app](https://oneduo.app)** 是长期固定入口，以后仓库再搬家也能从官网找到。
 
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
@@ -33,7 +33,7 @@
 - 搜索（联想词、热搜、历史）、喜欢 / 收藏 / 观看历史 / 稍后再看、作者主页与作品列表
 - 保存视频 / 图集到相册
 
-每个版本的改动见 [更新说明](docs/releases/) 或 [发行版](https://github.com/WuWeiDuo/DouDuo/releases)（国内镜像 [Gitee](https://gitee.com/remon8/douduo/releases)）。
+每个版本的改动见 [更新说明](docs/releases/) 或 [发行版](https://github.com/81199000/DouDuo/releases)（国内镜像 [Gitee](https://gitee.com/remon8/douduo/releases)）。
 
 <a id="下载与签名安装国内用户"></a>
 
@@ -54,7 +54,7 @@
 2. 数据线连手机，在一键签里选 **DouDuo**，点 **一键安装**
 3. 手机上 **设置 → 通用 → VPN 与设备管理** 信任你的 Apple ID
 
-详细步骤见 [一键签使用教程](https://github.com/WuWeiDuo/OneDuo#使用教程)。
+详细步骤见 [一键签使用教程](https://github.com/81199000/OneDuo#使用教程)。
 
 > 更新也在一键签里完成：有新版会自动装上，登录状态和观看记录会保留。
 
@@ -124,7 +124,7 @@
 - **经典布局**只在 iOS 27.1 及以上显示，仅针对 iPhone Duo 适配；iPad、画中画尚未完整实测。
 - 抖音风控时可能要去「网页版」过一下验证；抖音网页接口改版时需要跟着更新。
 
-欢迎在 [GitHub](https://github.com/WuWeiDuo/DouDuo/issues) 提 Issue / PR（国内也可以在 [Gitee](https://gitee.com/remon8/douduo/issues) 提）。
+欢迎在 [GitHub](https://github.com/81199000/DouDuo/issues) 提 Issue / PR（国内也可以在 [Gitee](https://gitee.com/remon8/douduo/issues) 提）。
 
 ## 原理
 
