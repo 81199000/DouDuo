@@ -18,7 +18,10 @@ const out = items([
   { aweme_id: '3', video: {}, is_ads: true },
   { aweme_id: '4', cell_room: { rawdata: JSON.stringify(Object.assign({}, rd, { status: 4 })) } },
 ]);
-assert.deepStrictEqual(out.map(x => x.id), ['1', 'live_7710083151640431387']);
+// 广告不再丢（11-21 老板：广告加回来 + 单独开关），只带 isAd 标记交给原生侧按设置过滤
+assert.deepStrictEqual(out.map(x => x.id), ['1', 'live_7710083151640431387', '3']);
+assert.strictEqual(out[2].isAd, true);
+assert.strictEqual(out[0].isAd, undefined);
 const L = out[1].live;
 assert.strictEqual(L.roomID, '7710083151640431387');
 assert.strictEqual(L.webRid, '123456');
