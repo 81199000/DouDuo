@@ -198,8 +198,8 @@ if [[ -n ${INSTPID:-} ]]; then
 fi
 
 print -P "\n%F{green}✅ DouDuo $VER 发版完成%f
-  GitHub  https://github.com/WuWeiDuo/DouDuo/releases/tag/$TAG
+  GitHub  https://github.com/81199000/DouDuo/releases/tag/$TAG
   Gitee   https://gitee.com/remon8/douduo/releases/tag/$TAG
   更新    https://oneduo.app/（App 内检查 https://dl.oneduo.app/douduo/douduo.json）
   软件源  国内 https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json
-          海外 https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/source/douduo-github.json（仓库公开后可用）"
+          海外 https://raw.githubusercontent.com/81199000/DouDuo/main/docs/source/douduo-github.json"
