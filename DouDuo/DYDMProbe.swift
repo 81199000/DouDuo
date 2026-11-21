@@ -765,6 +765,7 @@ final class DYChatWebSession {
     private let chatURL = URL(string: "https://www.douyin.com/chat")!
 
     func attachPark(_ view: UIView, scheme: ColorScheme) {
+        if DDPerfExperiment.off("CHATPARK") { return }
         parkView = view
         parkedScheme = scheme
         if !messagesVisible, let web = DYMessageCache.shared.chatModel.web {
