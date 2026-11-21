@@ -1031,6 +1031,14 @@ enum DYSaver {
 
 // MARK: - 封面网格（搜索 / 我的 / 作者）
 
+/// 只有传了刷新动作才挂 .refreshable：作者页等没有刷新的列表不出现下拉转圈
+private struct DYOptionalRefresh: ViewModifier {
+    let action: (() async -> Void)?
+    func body(content: Content) -> some View {
+        if let action { content.refreshable { await action() } } else { content }
+    }
+}
+
 struct DYGrid: View {
     let items: [DYAweme]
     let hasMore: Bool
@@ -1044,6 +1052,8 @@ struct DYGrid: View {
     var onRemove: ((DYAweme) -> Void)? = nil
     /// 作者主页：刚刚看过的那条（同抖音：格子上标「刚刚看过」，不在屏上时底部给一键定位）
     var focusID: String? = nil
+    /// 传了就支持下拉刷新（系统下拉转圈，等它返回才收起）
+    var onRefresh: (() async -> Void)? = nil
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
     @State private var focusVisible = false
 
@@ -1094,6 +1104,7 @@ struct DYGrid: View {
                 }
             }
             .coordinateSpace(name: "ddgrid")
+            .modifier(DYOptionalRefresh(action: onRefresh))
             .onPreferenceChange(DYBottomYKey.self) { y in
                 if y < outer.size.height - 16 { onLoadMore() }
             }
@@ -1540,6 +1551,23 @@ final class DYPagedModel: ObservableObject {
 
     func reset() { items = []; cursor = "0"; hasMore = true; error = nil }
 
+    /// 下拉刷新：重新拉第一页。拉到了才替换（旧内容先留着，失败也不清空页面）
+    func refresh() async {
+        while loading { try? await Task.sleep(for: .milliseconds(100)) }
+        loading = true
+        defer { loading = false }
+        do {
+            let r = try await fetch("0")
+            items = r.items.filter { $0.play != nil || !$0.images.isEmpty }
+            hasMore = r.hasMore && !r.items.isEmpty && r.cursor != "0"
+            cursor = r.cursor
+            error = nil
+        } catch {
+            if items.isEmpty { self.error = error.localizedDescription }
+            DYLiveModel.log("DDMINE refresh err " + error.localizedDescription)
+        }
+    }
+
     @discardableResult
     func loadMore() async -> [DYAweme] {
         guard !loading, hasMore else { return [] }
@@ -1984,7 +2012,8 @@ struct DYMineScreen: View {
             if let m = models[kind] {
                 DYMineList(model: m, showsPlayCount: kind == .post,
                            removeTitle: kind == .later ? "移出稍后再看" : nil,
-                           onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil) { i in
+                           onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil,
+                           onRefresh: { await pullRefresh(m) }) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
@@ -2007,7 +2036,12 @@ struct DYMineScreen: View {
             DYLiveModel.log("DDMINE appear cachedUser=\(user != nil) lists=\(models.count)")
             // 未登录：进「我的」先弹登录。看共享 cookie 有没有 sessionid，不等资料接口——
             // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹（老板 11-17）
-            if !autoLoginShown, !(await DYLoginState.hasSession()) {
+            #if DEBUG
+            let selfFixture = ProcessInfo.processInfo.environment["DOUDUO_SELF_FIXTURE"] == "1"
+            #else
+            let selfFixture = false
+            #endif
+            if !selfFixture, !autoLoginShown, !(await DYLoginState.hasSession()) {
                 autoLoginShown = true
                 DYLiveModel.log("DDAPPLOGIN auto-show (no sessionid)")
                 showLogin = true
@@ -2043,6 +2077,25 @@ struct DYMineScreen: View {
         }
     }
 
+    /// 下拉刷新（老板 2026-11-21）：资料（粉丝 / 获赞 / 作品数）和当前这一栏一起重拉；
+    /// 其它栏的缓存作废，切过去时再拉新的。拉不到就保留原内容。
+    private func pullRefresh(_ m: DYPagedModel) async {
+        DYLiveModel.log("DDMINE pull-refresh kind=\(kind.rawValue)")
+        async let profile: Void = refreshProfile()
+        await m.refresh()
+        await profile
+        let current = kind
+        for k in models.keys where k != current { models[k] = nil }
+        Self.cachedModels = models
+    }
+
+    private func refreshProfile() async {
+        if let u = try? await bridge.selfProfile() {
+            user = u; userErr = nil
+            Self.cachedUser = u
+        }
+    }
+
     /// 移出稍后再看。抖音确认了才从列表里拿掉。
     private func removeLater(_ a: DYAweme, from m: DYPagedModel) async {
         do {
@@ -2075,7 +2128,11 @@ struct DYMineScreen: View {
         if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_ENTRY"] == "mine" { return }
         if ProcessInfo.processInfo.environment["DOUDUO_GRID_FIXTURE"] == "1" {
             guard models[k] == nil else { return }
-            let model = DYPagedModel { _ in (items: DYFeedModel.hashtagFixtures, cursor: "0", hasMore: false) }
+            // 夹具：每拉一次第一页记一笔，UI 测试据此确认下拉刷新真的重拉了
+            let model = DYPagedModel { cur in
+                DYLiveModel.log("DDMINE fixture fetch cursor=\(cur)")
+                return (items: DYFeedModel.hashtagFixtures, cursor: "0", hasMore: false)
+            }
             models[k] = model
             Task { await model.loadMore() }
             return
@@ -2119,11 +2176,12 @@ private struct DYMineList: View {
     var showsPlayCount = false
     var removeTitle: String? = nil
     var onRemove: ((DYAweme) -> Void)? = nil
+    var onRefresh: (() async -> Void)? = nil
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
                onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount,
-               removeTitle: removeTitle, onRemove: onRemove)
+               removeTitle: removeTitle, onRemove: onRemove, onRefresh: onRefresh)
     }
 }
 
