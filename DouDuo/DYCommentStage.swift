@@ -124,10 +124,15 @@ extension EnvironmentValues {
     @Entry var dyRestrictsPlaybackToPane = false
 }
 
-/// 只在 on 时裁边。
-/// ⚠️ 已知（议题 #52-2）：两个分支是两种视图类型，内屏横屏开关评论会重建播放器，进度倒退几秒。
-/// 别改成常挂超大 clipShape / mask（95ef04d 真机评论区黑屏，已回滚），也别整个拿掉（dd405e6 拿掉后评论纯黑）。
+/// 侧栏评论时把视频区裁到自己的框内（环境光底铺满整屏会盖住右侧评论栏，dd405e6 拿掉后评论纯黑）。
+///
+/// 裁剪**一直挂着、视图类型不变**：以前写成 `if on { content.clipped() } else { content }`，两个分支是两种视图，
+/// Duo 内屏横屏一开关评论 SwiftUI 就把整块视频连播放器拆掉重建 → 从头播（议题 #52-2 / 工单 B13）。
+/// 关评论时裁剪框只往外放 200pt（盖住安全区就够）。**别放到几万点**：95ef04d 用 ±100000 的超大裁剪，
+/// 真机评论区黑屏（渲染不了那么大的遮罩），已回滚。
 struct DDClipIf: ViewModifier {
     let on: Bool
-    func body(content: Content) -> some View { if on { content.clipped() } else { content } }
+    func body(content: Content) -> some View {
+        content.clipShape(Rectangle().inset(by: on ? 0 : -200))
+    }
 }
