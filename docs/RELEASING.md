@@ -4,7 +4,7 @@ DouDuo 发版不需要发布管家：负责该版本的维护者（人或 Agent�
 
 ## 前置
 
-- 主干：`~/Projects/douduo`（`main`），remote `origin` = GitHub `WuWeiDuo/DouDuo`（公开；2026-11-20 旧号 81199000 被封后换的新号），`gitee` = Gitee `remon8/douduo`（国内镜像）。
+- 主干：`~/Projects/douduo`（`main`），remote `origin` = GitHub `81199000/DouDuo`（公开），`gitee` = Gitee `remon8/douduo`（国内镜像）。
 - `gh` 已登录；Gitee token 在 `~/.hermes/shared-credentials/gitee-remon8.json`（不入库）。
 - 版本号、构建号在 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`），发行说明写 `docs/releases/vX.Y.Z.md`。**发版不改 README**：首页只放功能与安装说明，不写版本号、不列版本流水，版本改动只进 `docs/releases/` 和 Release。
 
@@ -48,7 +48,7 @@ scripts/publish.sh X.Y.Z             # 正式发版
 
 - **官方源（对外首推）**：`https://dl.oneduo.app/douduo/douduo.json`（Cloudflare R2，下载也走 dl.oneduo.app；发版脚本第 8b 步用一键签仓库的 `py/packaging/r2_sync.py` 同步）
 - 备用 · 国内：`https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json`（下载走 Gitee）
-- 备用 · GitHub：`https://raw.githubusercontent.com/WuWeiDuo/DouDuo/main/docs/source/douduo-github.json`（下载走 GitHub）
+- 备用 · GitHub：`https://raw.githubusercontent.com/81199000/DouDuo/main/docs/source/douduo-github.json`（下载走 GitHub）
 - 官网 `https://oneduo.app` 是长期固定入口，README、App 内「去下载 / 去一键签更新」都指向它。
 - 版本列表以 Gitee 发行版为准（`build_sign_source.py` 读 Gitee），App 内更新检查也先读 Gitee。
 - 全能签一键添加：`nsk-sign://addsource?url=<源地址>`
