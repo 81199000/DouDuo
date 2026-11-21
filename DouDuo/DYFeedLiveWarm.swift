@@ -18,6 +18,8 @@ final class DYFeedLiveWarm {
     private var warm: Handle?
     private var startedAt: CFTimeInterval = 0
     private var cap: Task<Void, Never>?
+    /// 预热期间一直按住静音：VLC 音频输出起来之前设的静音可能不生效，还在看上一条时不能漏出直播的声音
+    private var muteKeeper: Task<Void, Never>?
     /// 预热最多挂这么久（直播一直在下数据，停在一条长视频上别一直白下）
     static let maxWarm: TimeInterval = 60
 
@@ -48,6 +50,13 @@ final class DYFeedLiveWarm {
         warm = Handle(roomID: live.roomID, controller: c, view: v)
         startedAt = CACurrentMediaTime()
         DYLiveModel.log("DDLIVEWARM start room=\(live.roomID.suffix(6)) q=\(s.quality) flv=\(s.isFLV)")
+        muteKeeper?.cancel()
+        muteKeeper = Task { @MainActor [weak c] in
+            while !Task.isCancelled, let c {
+                if c.mediaPlayer.audio?.isMuted != true { c.mediaPlayer.audio?.isMuted = true }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
         cap?.cancel()
         cap = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.maxWarm))
@@ -61,6 +70,7 @@ final class DYFeedLiveWarm {
         guard let h = warm, h.roomID == roomID else { return nil }
         warm = nil
         cap?.cancel(); cap = nil
+        muteKeeper?.cancel(); muteKeeper = nil
         let hasFrame = h.controller.videoSize.width > 0
         DYLiveModel.log("DDLIVEWARM take room=\(roomID.suffix(6)) warmed=\(Int((CACurrentMediaTime() - startedAt) * 1000))ms frame=\(hasFrame)")
         return h
@@ -68,6 +78,7 @@ final class DYFeedLiveWarm {
 
     func release(reason: String) {
         cap?.cancel(); cap = nil
+        muteKeeper?.cancel(); muteKeeper = nil
         guard let h = warm else { return }
         warm = nil
         DYLiveModel.log("DDLIVEWARM drop room=\(h.roomID.suffix(6)) reason=\(reason) after=\(Int((CACurrentMediaTime() - startedAt) * 1000))ms")
