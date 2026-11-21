@@ -344,7 +344,9 @@ extension DYRecommendFeedHost {
         #endif
         guard !refreshing, let i = currentIndex else { return }
         preloader.update(feed.items, current: i, localOnly: feed.offlinePlayback)
-        guard !feed.offlinePlayback else { return }
+        guard !feed.offlinePlayback else { DYFeedLiveWarm.shared.release(reason: "offline"); return }
+        // 下一条是直播：先在后台连上（划到就有画面）
+        DYFeedLiveWarm.shared.update(next: feed.items.indices.contains(i + 1) ? feed.items[i + 1] : nil)
         // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
