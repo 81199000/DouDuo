@@ -181,7 +181,7 @@ class MenuPolicyTests(unittest.TestCase):
         for token in ("DYVideoAmbient.key", '"douyin_wide_landscape_v1"', 'Toggle("横屏时只放横屏内容"',
                       "DYHashtagFilterScreen(currentTags: [], embedded: true)",
                       '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
-                      "DYVideoCache.countKey", "DYStorageScreen()", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
+                      "DYVideoCache.countKey", "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
                       "DDAppVersion.display", "DDChromeMode.key"):
             self.assertIn(token, screen)
         self.assertEqual(FEED.count(".environment(\\.dyOpenSettings, { showSettings = true })"), 2)
