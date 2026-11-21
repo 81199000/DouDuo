@@ -240,6 +240,7 @@ struct DYAweme {
     var isTallFrame: Bool = false
     var duration: Double = 60
     var live: Int? = nil  // 推荐直播条目（只用来判空，见 withoutDisabledLive）
+    var isAd: Bool? = nil  // 推荐广告标记（withoutDisabledLive 按「推荐里显示广告」过滤）
 }
 '''
         checks = r'''

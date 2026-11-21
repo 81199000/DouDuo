@@ -6,6 +6,8 @@ enum DYFeedExtras {
     static let liveKey = "douyin_feed_live_v1"
     /// 视频上的商品胶囊（小黄车）
     static let productKey = "douyin_feed_product_v1"
+    /// 推荐里显示广告（默认开，和官方一样；关掉后推荐里不再出现广告）
+    static let adKey = "douyin_feed_ads_v1"
     static var liveEnabled: Bool { UserDefaults.standard.object(forKey: liveKey) as? Bool ?? true }
 }
 
@@ -30,6 +32,8 @@ struct DYFeedLivePage: View {
     @State private var started = false
     @State private var sourceIndex = 0
     @State private var failed = false
+    /// 变成当前条的时刻：记「视频划到直播 → 直播出画」等了多久（DDFEEDLIVE firstframe）
+    @State private var shownAt: CFTimeInterval = 0
     @AppStorage("douyin_muted_v1") private var muted = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -79,6 +83,11 @@ struct DYFeedLivePage: View {
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, cur in cur ? start() : stop() }
         .onChange(of: muted) { _, m in player.outputMuted = m; player.mediaPlayer.audio?.isMuted = m }
+        .onChange(of: player.videoSize.width > 0) { _, has in
+            guard has, shownAt > 0 else { return }
+            DYLiveModel.log("DDFEEDLIVE firstframe room=\(live.roomID.suffix(6)) wait=\(Int((CACurrentMediaTime() - shownAt) * 1000))ms src=\(sourceIndex)")
+            shownAt = 0
+        }
         .onDisappear { stop() }
         .accessibilityIdentifier("douyin.feed.live")
     }
@@ -120,12 +129,16 @@ struct DYFeedLivePage: View {
                 if sourceIndex + 1 < sources.count { self.sourceIndex = sourceIndex + 1; start() } else { failed = true }
             }
         }
+        if shownAt == 0 { shownAt = CACurrentMediaTime() }
         DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) q=\(s.quality) flv=\(s.isFLV) title=\(live.title.prefix(20))")
         player.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
     }
 
     private func stop() {
+        if shownAt > 0 { DYLiveModel.log("DDFEEDLIVE leave-before-frame room=\(live.roomID.suffix(6)) after=\(Int((CACurrentMediaTime() - shownAt) * 1000))ms"); shownAt = 0 }
         guard started else { return }
+        let t0 = CACurrentMediaTime()
+        defer { let ms = Int((CACurrentMediaTime() - t0) * 1000); if ms > 8 { DYLiveModel.log("DDFEEDLIVE stop-main=\(ms)ms") } }
         started = false
         player.onError = nil
         player.stop()

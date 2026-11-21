@@ -51,6 +51,8 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     var aiDeclaration: String? = nil
     /// Optional for compatibility with sessions saved before hashtag support.
     var hashtagNames: [String]? = nil
+    /// 网页推荐里的广告（is_ads / raw_ad_data）。以前直接丢，现在保留并在简介下方标「广告」，设置可关（DYFeedExtras.adKey）
+    var isAd: Bool? = nil
     /// 推荐流里混进来的直播间卡片（cell_room）。有值时这一页是直播，不是视频。
     var live: FeedLive? = nil
     struct FeedLive: Codable, Hashable, Sendable {
@@ -94,7 +96,7 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     }
 
     func metadataText(now: Date = Date()) -> String? {
-        let parts = [publicationText(now: now), aiDeclaration?.trimmingCharacters(in: .whitespacesAndNewlines)]
+        let parts = [isAd == true ? "广告" : nil, publicationText(now: now), aiDeclaration?.trimmingCharacters(in: .whitespacesAndNewlines)]
             .compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -1169,7 +1171,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: liveTitle,
           owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null } };
     };
-    const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video && !a.is_ads && !a.raw_ad_data ? mapA(a) : null))).filter(Boolean);
+    // 广告不再丢：带 isAd 标记交给原生侧，设置里关了「推荐里显示广告」再过滤（以前 a.is_ads / raw_ad_data 直接丢）
+    const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video ? Object.assign(mapA(a), (a.is_ads || a.raw_ad_data) ? { isAd: true } : {}) : null))).filter(Boolean);
     const tall = raw.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
     const fol = raw.filter(a => a && a.author && a.author.follow_status).length;
     // 推荐流成分统计（只读、不改过滤）：被丢的按原因分；保留的里标出带商品 / 直播中 / 软广的。
@@ -1180,7 +1183,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       if (!a) continue;
       const isAd = !!(a.is_ads || a.raw_ad_data || a.ad_info);
       const isLive = !!(a.cell_room || a.room_id || (a.aweme_type === 101) || a.live_reason || a.web_rawdata && /room/.test(a.web_rawdata));
-      const kept = a.video && !a.is_ads && !a.raw_ad_data;
+      const kept = a.video && !a.is_ads && !a.raw_ad_data;   // 统计口径不变：ad= 仍是广告条数
       if (!kept) {
         if (isAd) mix.ad++; else if (isLive) mix.live++; else if (!a.video) mix.noVideo++; else mix.other++;
         if (!a.video) for (const k of Object.keys(a)) if (/room|live|ad|ecom|shop|product|cell/i.test(k)) mix.keys['drop.' + k] = 1;
@@ -1501,9 +1504,12 @@ final class DYFeedModel: ObservableObject {
         return withoutDisabledLive(candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) })
     }
 
-    /// 设置里关了「推荐里插入直播间」（DYFeedExtras.liveKey，默认开）就把直播条目拿掉，与标签过滤同一入口生效
+    /// 设置里关了「推荐里插入直播间」/「推荐里显示广告」（默认都开）就把对应条目拿掉，与标签过滤同一入口生效
     func withoutDisabledLive(_ items: [DYAweme]) -> [DYAweme] {
-        (defaults.object(forKey: "douyin_feed_live_v1") as? Bool ?? true) ? items : items.filter { $0.live == nil }
+        // 键名写死成字面量：标签过滤脚本测试单独编译这段，拿不到 DYFeedExtras
+        let live = defaults.object(forKey: "douyin_feed_live_v1") as? Bool ?? true
+        let ads = defaults.object(forKey: "douyin_feed_ads_v1") as? Bool ?? true
+        return items.filter { (live || $0.live == nil) && (ads || $0.isAd != true) }
     }
 
     /// Keep the active video when possible; otherwise prefer the next surviving recommendation.
@@ -1699,6 +1705,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
+    @AppStorage(DYFeedExtras.adKey) private var feedAdsOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -1991,7 +1998,14 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             // ⚠️ 宽屏（Duo 内屏）首次布局时 ScrollView 会把 scrollPosition 回写成 nil → 没有「当前条」→ 全部不播、上滑也不认。
             // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
-            scrollID = new
+            // 2A 提前起播时收尾动画还没停：等它停了再同步滚动位置，免得和收尾动画抢位置
+            let wait = DYPagingDelegate.settleEndsAt - CACurrentMediaTime()
+            if wait > 0 {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64((wait + 0.02) * 1_000_000_000))
+                    if currentID == new { scrollID = new }
+                }
+            } else { scrollID = new }
             // 滑动起播那一帧的主线程耗时：超 16ms 就是肉眼可见的顿挫，分段记下来定位
             let t0 = CACurrentMediaTime()
             DYSwipeProbe.mark("curID(\(new?.suffix(4) ?? "-"))")
@@ -2026,7 +2040,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
@@ -2989,6 +3003,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @ObservedObject var feed: DYFeedModel
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLiveOn = true
+    @AppStorage(DYFeedExtras.adKey) private var feedAdsOn = true
     @Environment(\.dyHashtagFilterPresented) private var hashtagFilterPresented
     @State private var insets = EdgeInsets()
     @State var preloader = DYPreloader()
@@ -3231,7 +3246,14 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             // ⚠️ 宽屏（Duo 内屏）首次布局时 ScrollView 会把 scrollPosition 回写成 nil → 没有「当前条」→ 全部不播、上滑也不认。
             // 列表非空时把 nil 顶回上一个；刷新 / 重载会先清空列表再置 nil，不受影响。
             if new == nil, let old, feed.items.contains(where: { $0.id == old }) { currentID = old; return }
-            scrollID = new
+            // 2A 提前起播时收尾动画还没停：等它停了再同步滚动位置，免得和收尾动画抢位置
+            let wait = DYPagingDelegate.settleEndsAt - CACurrentMediaTime()
+            if wait > 0 {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64((wait + 0.02) * 1_000_000_000))
+                    if currentID == new { scrollID = new }
+                }
+            } else { scrollID = new }
             // 滑动起播那一帧的主线程耗时：超 16ms 就是肉眼可见的顿挫，分段记下来定位
             let t0 = CACurrentMediaTime()
             DYSwipeProbe.mark("curID(\(new?.suffix(4) ?? "-"))")
@@ -3263,7 +3285,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             Task { await refreshOfflineQueueIfNeeded() }
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
-        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive")) { await applyHashtagFilter() }
+        .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()

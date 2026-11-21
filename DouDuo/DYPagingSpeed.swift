@@ -184,6 +184,11 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     /// 收尾动画期间「应该在的位置」；SwiftUI 的 scrollPosition 在抬手切当前页时会把列表直接跳到终点，
     /// 下一帧动画又拉回中途 → 肉眼看到「往回跳一帧」。动画期间外部写入一律在同一帧内改回来。
     private var expected: CGPoint?
+    /// 提前起播时收尾动画还要走多久：这段时间里别让 SwiftUI 的 scrollPosition 跟着当前条改（会和收尾动画抢位置 → DDJUMPFIX）
+    @MainActor static var settleEndsAt: CFTimeInterval = 0
+    /// 收尾动画剩最后这么久时就切当前条起播（老板 11-21 选 2A：停住那一刻画面正好动起来，不再停住后干等约 0.15s）
+    static let earlyStart: TimeInterval = 0.10
+    private var earlyFired = false
     private var writing = false
     private var jumpFixes = 0
     /// 每条被拦次数（同一条拦太多就放行，避免永久卡住）
@@ -294,7 +299,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         guard target != nil else { return }
         start = scrollView.contentOffset; startTime = CACurrentMediaTime()
-        expected = start; jumpFixes = 0
+        expected = start; jumpFixes = 0; earlyFired = false
         // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
         if let t = target {
             let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
@@ -304,8 +309,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)
-        // 老板定：下一条完全滑到位、停住才开始播（不再抬手就起播，那样画面还在往上走就已经开播）。
-        // 切当前页统一放到收尾动画结束的 didSettle 里。
+        // 老板定（11-21 改 2A）：收尾动画剩最后 0.1s 时切当前条起播（tick 里 earlyStart），停住那一刻画面正好在动；
+        // 不是抬手就起播（那样画面还在往上走就开播了）。
         if let id = targetID, id != currentID() {
             DYSwipeProbe.lift(); DYSwipeProbe.mark("lift(\(id.suffix(4)))")
         } else {
@@ -326,6 +331,12 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let target = CGPoint(x: capturedTarget.x,
                              y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top)
         let fraction = min(1, max(0, (CACurrentMediaTime() - startTime) / animationDuration))
+        if !earlyFired, CACurrentMediaTime() - startTime >= animationDuration - Self.earlyStart {
+            earlyFired = true
+            Self.settleEndsAt = startTime + animationDuration
+            DYLiveModel.log("DDSETTLE-EARLY \(targetID.suffix(6)) 剩 \(Int(Self.earlyStart * 1000))ms 起播")
+            didSettle(targetID)
+        }
         let progress = 1 - pow(1 - fraction, 3)
         let p = CGPoint(x: start.x + (target.x - start.x) * progress,
                         y: start.y + (target.y - start.y) * progress)
@@ -340,7 +351,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             #if DEBUG
             ddWrite("DDPAGE settle id=\(targetID) ms=\(Int((CACurrentMediaTime() - startTime) * 1000))")
             #endif
-            DYLiveModel.log("DDSETTLE \(targetID.suffix(6)) 停住才起播 \(Int((CACurrentMediaTime() - startTime) * 1000))ms")
+            DYLiveModel.log("DDSETTLE \(targetID.suffix(6)) 停住 \(Int((CACurrentMediaTime() - startTime) * 1000))ms")
             didSettle(targetID)
         }
     }
@@ -354,7 +365,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         targetID = to
         target = CGPoint(x: scroll.contentOffset.x, y: y)
         start = scroll.contentOffset; startTime = CACurrentMediaTime()
-        expected = start; jumpFixes = 0
+        expected = start; jumpFixes = 0; earlyFired = false
         // 比手滑收尾（0.16–0.22s）慢一点：没有手指带着，要看得出是「滑上来」而不是闪过去
         animationDuration = 0.34
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
