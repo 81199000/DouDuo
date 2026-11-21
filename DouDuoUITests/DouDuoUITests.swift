@@ -1005,6 +1005,44 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "playback-" + mode + "-next-paused")
     }
 
+    /// 工单 B13：大屏（宽 ≥ 700，侧栏评论）播放中开关评论，进度不能倒退 / 归零
+    func testSideCommentsKeepProgress() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_SEARCH_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE"] {
+            app.launchEnvironment[flag] = "1"
+        }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
+                                "-douduo_dismissed_update_v1", "1.5.0"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        func snapshot() -> [String: Any] {
+            let label = app.staticTexts["douyin.search.playbackProbe"].firstMatch.label
+            return (try? JSONSerialization.jsonObject(with: Data(label.utf8))) as? [String: Any] ?? [:]
+        }
+        func cat() -> [String: Any]? {
+            (snapshot()["players"] as? [[String: Any]])?.first { $0["id"] as? String == "hashtag-cat" && $0["active"] as? Bool == true }
+        }
+        func time() -> Double { cat()?["time"] as? Double ?? 0 }
+        XCTAssertTrue(waitUntil(timeout: 30) { (cat()?["rate"] as? Double ?? 0) > 0 && time() > 8 }, "\(snapshot())")
+        XCTAssertGreaterThanOrEqual(app.windows.firstMatch.frame.width, 700)
+        let instance = cat()?["instance"] as? String
+        let before = time()
+        app.buttons["douyin.comments"].firstMatch.tap()
+        XCTAssertTrue(app.scrollViews["douyin.comments.list"].waitForExistence(timeout: 10))
+        Thread.sleep(forTimeInterval: 2)
+        let afterOpen = time()
+        print("B13PROBE open before=\(before) after=\(afterOpen) sameInstance=\(cat()?["instance"] as? String == instance)")
+        XCTAssertGreaterThan(afterOpen, before + 0.5, "打开侧栏评论进度倒退")
+        let mid = time()
+        app.buttons["douyin.comments.close"].firstMatch.tap()
+        Thread.sleep(forTimeInterval: 2)
+        let afterClose = time()
+        print("B13PROBE close before=\(mid) after=\(afterClose)")
+        XCTAssertGreaterThan(afterClose, mid + 0.5, "关闭侧栏评论进度倒退")
+    }
+
     func testHashtagChipLayout() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
