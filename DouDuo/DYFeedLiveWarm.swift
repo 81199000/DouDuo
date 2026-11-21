@@ -9,6 +9,13 @@ import UIKit
 final class DYFeedLiveWarm {
     static let shared = DYFeedLiveWarm()
 
+    /// 退到后台就把预热的那一路停掉（后台没人看，别白下数据；回前台按当前条重新判断）
+    private init() {
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { DYFeedLiveWarm.shared.release(reason: "background") }
+        }
+    }
+
     struct Handle {
         let roomID: String
         let controller: VLCPlayerController
@@ -26,8 +33,11 @@ final class DYFeedLiveWarm {
     /// 省流量模式用流量时不预热；设置里关了「推荐里插入直播间」也不预热
     static var allowed: Bool { DYFeedExtras.liveEnabled && !DYStream.saving }
 
-    /// 按当前条更新：下一条是直播 → 预热它；否则把已有的预热停掉
-    func update(next: DYAweme?) {
+    /// 按当前条更新：下一条是直播 → 预热它；否则把已有的预热停掉。
+    /// ⚠️ 预热的正好是当前条（刚划到这间直播）时不能停：页面马上要接过去。
+    /// 上一版在这里把它停了，导致一次都没接上（真机 11-21：start 13 次、take 0 次）。
+    func update(current: DYAweme?, next: DYAweme?) {
+        if let w = warm, w.roomID == current?.live?.roomID { return }
         guard let next, let live = next.live, Self.allowed else { release(reason: "next-not-live"); return }
         if warm?.roomID == live.roomID { return }
         release(reason: "switch")
@@ -51,9 +61,11 @@ final class DYFeedLiveWarm {
         startedAt = CACurrentMediaTime()
         DYLiveModel.log("DDLIVEWARM start room=\(live.roomID.suffix(6)) q=\(s.quality) flv=\(s.isFLV)")
         muteKeeper?.cancel()
+        // 只在每轮里短暂拿强引用，睡眠期间不持有控制器（别让这个任务成为最后一个持有者）
         muteKeeper = Task { @MainActor [weak c] in
-            while !Task.isCancelled, let c {
-                if c.mediaPlayer.audio?.isMuted != true { c.mediaPlayer.audio?.isMuted = true }
+            while !Task.isCancelled {
+                guard let audio = c?.mediaPlayer.audio else { break }
+                if audio.isMuted != true { audio.isMuted = true }
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }
@@ -85,13 +97,21 @@ final class DYFeedLiveWarm {
         Self.dispose(h)
     }
 
-    /// 停播 + 摘掉视图（页面用完也走这里）
+    /// 停播 + 摘掉视图（页面用完也走这里）。
+    /// ⚠️ 不能停完立刻放掉控制器：VLC 停播是异步的，排在主线程的回调还拿着播放器，
+    /// 最后一次释放就会落在主线程上 → libvlc_media_player_destroy 等线程结束卡死 → 系统杀掉 App
+    /// （真机 11-21 18:46 崩溃日志即此）。先留 10 秒等停播彻底完成，再放（控制器 deinit 会把释放交给后台线程）。
     static func dispose(_ h: Handle) {
         h.controller.onError = nil
         h.controller.stop()
         DDAudioSessionGate.noteVLCStopping()
         h.view.removeFromSuperview()
+        retired.append(h)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            if let i = retired.firstIndex(where: { $0.controller === h.controller }) { retired.remove(at: i) }
+        }
     }
+    private static var retired: [Handle] = []
 
     private static var window: UIWindow? {
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
