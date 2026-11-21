@@ -837,6 +837,8 @@ final class DYChatWebSession {
                 arguments: ["gen": gen, "epoch": currentEpoch], contentWorld: .page)
             let window = web.window == nil ? 0 : 1
             DYLiveModel.log("DDDM nav finish window=\(window)")
+            // 新页面加载完冻结状态丢了：还挂在后台就重新冻结
+            if !messagesVisible { parkedQuiet = nil; applyParkedQuiet(web, parked: true) }
         }
     }
 
@@ -959,6 +961,7 @@ final class DYChatWebSession {
             return
         }
         if web.superview !== target { target.addSubview(web) }
+        applyParkedQuiet(web, parked: holder != "messages")
         if holder == "messages" {
             web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             web.frame = target.bounds
@@ -1126,6 +1129,43 @@ final class DYChatWebSession {
     }
 
     private func markHit() { hits.append(Date()) }
+
+    /// 挂在后台（刷视频时）冻结聊天页的 CSS 动画 / 过渡和动画帧回调：页面看不见，却一直在按屏幕刷新率重画，
+    /// 每帧把图层树提交给 App 主线程（真机分析：隐藏网页占主线程约 3 成，提交图层树是大头）。
+    /// 进消息页时立刻解冻，页面状态和 DOM 都没动，秒开不受影响。读会话列表靠定时 JS，不依赖动画帧。
+    private var parkedQuiet: Bool?
+    private func applyParkedQuiet(_ web: WKWebView, parked: Bool) {
+        guard parkedQuiet != parked else { return }
+        parkedQuiet = parked
+        let js = parked ? Self.freezeJS : Self.thawJS
+        web.evaluateJavaScript(js) { r, _ in
+            DYLiveModel.log("DDDM quiet parked=\(parked) \(r.map { String(describing: $0) } ?? "nil")")
+        }
+    }
+    private static let freezeJS = #"""
+    (() => { try {
+      if (!window.__ddRAF) {
+        window.__ddRAF = window.requestAnimationFrame.bind(window);
+        window.__ddRafQ = [];
+        window.requestAnimationFrame = cb => { if (window.__ddFrozen) { window.__ddRafQ.push(cb); return 0; } return window.__ddRAF(cb); };
+      }
+      window.__ddFrozen = true;
+      let st = document.getElementById('__dd_freeze');
+      if (!st) { st = document.createElement('style'); st.id = '__dd_freeze';
+        st.textContent = '*,*::before,*::after{animation-play-state:paused!important;transition:none!important}';
+        (document.head || document.documentElement).appendChild(st); }
+      return 'frozen';
+    } catch (e) { return 'err ' + e; } })()
+    """#
+    private static let thawJS = #"""
+    (() => { try {
+      window.__ddFrozen = false;
+      const st = document.getElementById('__dd_freeze'); if (st) st.remove();
+      const q = window.__ddRafQ || []; window.__ddRafQ = [];
+      q.forEach(cb => { try { window.__ddRAF(cb); } catch (e) {} });
+      return 'thawed';
+    } catch (e) { return 'err ' + e; } })()
+    """#
 
     private func logHolder(_ holder: String, window: Int) {
         guard holder != lastHolder || window != lastWindow else { return }
