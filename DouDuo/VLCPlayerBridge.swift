@@ -649,8 +649,12 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         }
         let epoch = callbackEpoch.current
         advanceClock.stamp()
+        // ⚠️ 只弱引用回调来源（VLCMediaPlayer 本身）：强引用的话，控制器已放掉播放器时，
+        // 这个排在主线程的任务会成为最后一个持有者 → 在主线程析构 → join 解码线程卡死，App 被系统杀
+        //（真机 11-21 18:46 崩溃：main-queue drain → _Block_release → VLCMediaPlayer dealloc → pthread_join）
+        let weakSource = VLCWeakBox(source)
         Task { @MainActor in
-            guard epoch == callbackEpoch.current, activePlayer.accepts(source), mediaPlayer.isPlaying else { return }
+            guard epoch == callbackEpoch.current, activePlayer.accepts(weakSource.object), mediaPlayer.isPlaying else { return }
             publishAcceptedVideoSize(epoch: epoch)
             applyRestoredAudioIfNeeded()
             let raw = Double(mediaPlayer.time.intValue) / 1000.0
@@ -690,8 +694,9 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
             return
         }
         let epoch = callbackEpoch.current
+        let weakSource = VLCWeakBox(source)   // 同上：不让主线程任务成为播放器最后的持有者
         Task { @MainActor in
-            guard epoch == callbackEpoch.current, activePlayer.accepts(source) else { return }
+            guard epoch == callbackEpoch.current, activePlayer.accepts(weakSource.object) else { return }
             let state = mediaPlayer.state
             switch state {
             case .opening, .buffering:
@@ -750,6 +755,11 @@ private final class VLCReleaseFlag: @unchecked Sendable {
     private var value = false
     func set() { lock.lock(); value = true; lock.unlock() }
     var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+private final class VLCWeakBox: @unchecked Sendable {
+    weak var object: AnyObject?
+    init(_ object: AnyObject?) { self.object = object }
 }
 
 private final class VLCPlayerRelease: @unchecked Sendable {
