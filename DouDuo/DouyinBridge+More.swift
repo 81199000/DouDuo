@@ -95,6 +95,13 @@ private struct DYDetailPage: Decodable {
     let code: Int?
     let item: DYAweme?
     let msg: String?
+    let shape: DYDetailShape?
+}
+
+/// 作品原始形态（诊断用）：网页接口怎么给图文 / 文字帖
+private struct DYDetailShape: Decodable {
+    let t: Int?; let m: Int?; let dur: Double?; let wh: String?; let play: Int?; let gears: Int?
+    let img: Int?; let img0: String?; let music: Bool?; let keys: String?
 }
 
 extension DouyinBridge {
@@ -119,6 +126,9 @@ extension DouyinBridge {
     func awemeDetail(_ id: String) async throws -> DYAweme {
         let d = try await call(Self.detailJS, args: ["id": id], attempts: 1)
         let p = try JSONDecoder().decode(DYDetailPage.self, from: d)
+        if let sh = p.shape {
+            DYLiveModel.log("DDDETAILSHAPE id=\(id) type=\(sh.t.map(String.init) ?? "-") media=\(sh.m.map(String.init) ?? "-") dur=\(Int(sh.dur ?? 0))ms wh=\(sh.wh ?? "-") play=\(sh.play ?? 0) gears=\(sh.gears ?? 0) img=\(sh.img ?? 0) img0=\(sh.img0 ?? "-") music=\(sh.music == true) keys=\(sh.keys ?? "")")
+        }
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200, let item = p.item, item.play != nil || !item.images.isEmpty else {
             throw DYError.bad(p.msg?.isEmpty == false ? p.msg! : "打不开这条视频")
@@ -292,7 +302,17 @@ extension DouyinBridge {
     const r = await req('GET', '/aweme/v1/web/aweme/detail/?' + q({ aweme_id: id }));
     const d = parse(r.t) || {};
     const a = d.aweme_detail || d.aweme || null;
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, item: (a && (a.video || a.images)) ? mapA(a) : null, msg: d.status_msg || null });
+    // 诊断（2026-11-21 图文/文字帖）：记下作品类型和图文相关字段，看网页接口怎么给「文字」帖
+    let shape = null;
+    if (a) {
+      const v = a.video || {};
+      shape = { t: a.aweme_type, m: a.media_type, dur: v.duration || 0, wh: (v.width || 0) + 'x' + (v.height || 0),
+        play: ((v.play_addr && v.play_addr.url_list) || []).length, gears: (v.bit_rate || []).length,
+        img: (a.images || []).length, img0: a.images && a.images[0] ? Object.keys(a.images[0]).join('|') : null,
+        music: !!(a.music && a.music.play_url && (a.music.play_url.url_list || []).length),
+        keys: Object.keys(a).filter(k => /text|note|slide|graphic|image|clip|media/i.test(k)).join('|') };
+    }
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, item: (a && (a.video || a.images)) ? mapA(a) : null, msg: d.status_msg || null, shape });
     """#
 
     private static let authorPostJS = #"""
