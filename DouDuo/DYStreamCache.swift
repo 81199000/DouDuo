@@ -644,7 +644,11 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             DYMedia.headers.forEach { r.setValue($1, forHTTPHeaderField: $0) }
             r.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
             do {
-                let (bytes, resp) = try await session.bytes(for: r)
+                // 按块收（URLSession 每次给几十 KB），不再逐字节 `for try await b in bytes`：
+                // 逐字节一条 10MB 视频就是一千万次异步迭代，真机分析里是后台 CPU 第一大户（发烫原因之一）
+                let chunks = DYChunkStream(session: session, request: r)
+                let resp = try await chunks.response()
+                defer { chunks.cancel() }
                 #if DEBUG
                 DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) range=\(range.lowerBound)-\(range.upperBound)")
                 #endif
@@ -680,8 +684,8 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     offset += Int64(buf.count)
                     buf.removeAll(keepingCapacity: true)
                 }
-                for try await b in bytes {
-                    buf.append(b)
+                for try await chunk in chunks.data {
+                    buf.append(chunk)
                     if buf.count >= 64 * 1024 { try flush() }
                 }
                 if !buf.isEmpty { try flush() }
@@ -696,5 +700,67 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             }
         }
         throw lastError
+    }
+}
+
+
+/// 用 dataTask + delegate 按块收数据（替代逐字节的 URLSession.AsyncBytes）
+final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    let data: AsyncThrowingStream<Data, Error>
+    private let cont: AsyncThrowingStream<Data, Error>.Continuation
+    private var task: URLSessionDataTask?
+    private let lock = NSLock()
+    private var respCont: CheckedContinuation<URLResponse, Error>?
+    private var gotResponse: URLResponse?
+    private var failed: Error?
+
+    init(session: URLSession, request: URLRequest) {
+        var c: AsyncThrowingStream<Data, Error>.Continuation!
+        data = AsyncThrowingStream(bufferingPolicy: .unbounded) { c = $0 }
+        cont = c
+        super.init()
+        let t = session.dataTask(with: request)
+        t.delegate = self
+        task = t
+        t.resume()
+    }
+
+    func response() async throws -> URLResponse {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (k: CheckedContinuation<URLResponse, Error>) in
+                lock.lock()
+                if let r = gotResponse { lock.unlock(); k.resume(returning: r); return }
+                if let e = failed { lock.unlock(); k.resume(throwing: e); return }
+                respCont = k
+                lock.unlock()
+            }
+        } onCancel: { self.cancel() }
+    }
+
+    func cancel() { task?.cancel() }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock(); gotResponse = response; let k = respCont; respCont = nil; lock.unlock()
+        k?.resume(returning: response)
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        cont.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let k = respCont; respCont = nil
+        if let error { failed = error }
+        lock.unlock()
+        if let error {
+            k?.resume(throwing: error)
+            cont.finish(throwing: (error as? URLError)?.code == .cancelled ? CancellationError() : error)
+        } else {
+            k?.resume(throwing: URLError(.badServerResponse))
+            cont.finish()
+        }
     }
 }

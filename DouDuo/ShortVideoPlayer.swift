@@ -442,7 +442,17 @@ struct PlayerPage: View {
     @StateObject private var pictureInPicture = DYPictureInPicture()
     @State private var imgGen: AVAssetImageGenerator?
     @State private var duration: Double = 0
-    @State private var current: Double = 0
+    /// 播放进度放进单独的对象里：PlayerPage 不订阅它，每 0.25 秒更新进度时不再整页重算
+    ///（真机分析：SwiftUI 重算占主线程约 1/3，PlayerPage.body 排第一）。只有进度条（DDClockReader）跟着刷。
+    @State private var clock = DDPlaybackClock()
+    private var current: Double {
+        get { clock.current }
+        nonmutating set {
+            guard clock.current != newValue else { return }
+            clock.current = newValue
+            pushRailProgress()
+        }
+    }
     @State private var pendingOfflineSeek: Double?
     @State private var isPlaying = false
     /// 用户是不是手动暂停了：回前台不能把「我自己按的暂停」当成后台中断接着播。
@@ -674,13 +684,15 @@ struct PlayerPage: View {
         }
         .overlay(alignment: .bottom) {
             if isActive && !cleanScreen && !progressOnRail {
-                progressBar
+                DDClockReader(clock: clock) { cur in
+                progressBar(cur)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("视频进度")
-                    .accessibilityValue("\(Int(current.isFinite ? current : 0)) / \(Int(duration.isFinite ? duration : 0)) 秒")
+                    .accessibilityValue("\(Int(cur.isFinite ? cur : 0)) / \(Int(duration.isFinite ? duration : 0)) 秒")
                     .accessibilityIdentifier("douyin.progress")
                     .padding(chromeInsets)
                     .padding(.bottom, DYDuoMetrics.mediaBottomPadding(bottomInset))
+                }
             }
         }
         .clipped()
@@ -810,7 +822,6 @@ struct PlayerPage: View {
             bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
         }
         .onChange(of: rateBoost) { _, on in boost?.boosting = on }
-        .onChange(of: current) { _, _ in pushRailProgress() }
         .onChange(of: seeking) { _, _ in pushRailProgress() }
         .onChange(of: seekPreview) { _, _ in if seeking { pushRailProgress() } }
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
@@ -1071,8 +1082,8 @@ struct PlayerPage: View {
         .dyPlaybackHintStyle()
     }
 
-    private var progressBar: some View {
-        let pos = seeking ? seekPreview : current
+    private func progressBar(_ cur: Double) -> some View {
+        let pos = seeking ? seekPreview : cur
         let frac = duration > 0 ? max(0, min(1, pos / duration)) : 0
         // 不显示时间（拖动时预览气泡里有），只留细进度条
         return VStack(spacing: 0) {
@@ -2203,4 +2214,16 @@ enum DYResumePolicy {
     private final class Tick: NSObject {
         @objc func tick(_ l: CADisplayLink) { MainActor.assumeIsolated { DYBoostProbe.frame(l.timestamp) } }
     }
+}
+
+
+/// 播放进度（见 PlayerPage.clock）：只让读它的小视图跟着刷新
+@MainActor final class DDPlaybackClock: ObservableObject {
+    @Published var current: Double = 0
+}
+
+struct DDClockReader<Content: View>: View {
+    @ObservedObject var clock: DDPlaybackClock
+    @ViewBuilder let content: (Double) -> Content
+    var body: some View { content(clock.current) }
 }
