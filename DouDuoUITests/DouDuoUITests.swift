@@ -123,6 +123,27 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "mine-light-grid-bounds")
     }
 
+    /// 工单 B13：大屏（iPad / Duo 内屏展开）播放时打开侧栏评论，视频不能从头播。
+    /// 看日志 DDB13 setup 行的 handoff 值和之后的播放进度。
+    func testCommentPaneKeepsPosition() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "classic"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE"] { app.launchEnvironment[flag] = "1" }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO", "-douduo_dismissed_update_v1", "9.9.9"]
+        addTeardownBlock { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        XCUIDevice.shared.orientation = .landscapeLeft   // 横屏才会走左视频 / 右评论的并排布局（Duo 内屏同款）
+        app.launch()
+        sleep(8)   // 播几秒，进度明显大于 0
+        let comments = app.buttons["douyin.comments"].firstMatch
+        XCTAssertTrue(comments.waitForExistence(timeout: 10), "评论按钮")
+        comments.tap()
+        sleep(4)
+        attach(app, "b13-comments-open")
+        if app.buttons["douyin.comments.close"].firstMatch.exists { app.buttons["douyin.comments.close"].firstMatch.tap() }
+        sleep(3)
+        attach(app, "b13-comments-closed")
+    }
+
     /// 「我的」下拉刷新：作品格子往下拉，出现系统转圈并重新拉第一页（老板 2026-11-21）
     func testMinePullToRefresh() throws {
         let app = XCUIApplication()
