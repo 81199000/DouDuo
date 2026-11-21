@@ -574,6 +574,11 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             throw DYError.blocked("HTTP -1")
         }
         #endif
+        // App 接口优先：内容就是 App 里刷到的那一套（竖屏约 8 成）。
+        // 拉不到（风控 / 接口变动 / 没网）就退回网页推荐，不让推荐页空着。
+        if DYAppFeed.prefersApp {
+            if let page = await fetchAppFeed() { return (page.items, page.hasMore) }
+        }
         let args: [String: Any] = ["refresh": String(refreshIndex), "install": String(Self.installTime),
                                    "pull": refreshIndex <= 2 ? "0" : "2"]
         let p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.tabFeedJS, args: args))
@@ -582,6 +587,30 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
         if p.items.isEmpty, let m = p.msg, !m.isEmpty { throw DYError.blocked(m) }
         return (p.items, p.hasMore)
+    }
+
+    /// App 接口拉一页：原生请求（手机 App UA）→ 把原始 JSON 交给页面里的 mapA 映射成统一结构。
+    /// 映射复用网页那份，播放地址挑档、封面、商品、作者字段的口径不会和网页推荐分叉。
+    /// 返回 nil = 这次不用 App 接口（拉失败已记日志），调用方退回网页推荐。
+    private func fetchAppFeed() async -> DYFeedPage? {
+        // App 接口偶发空包（GuoDuo 侧同样现象）：空包/报错再来一次，两次都不行才退回网页推荐
+        for round in 0..<2 {
+            if round > 0 { try? await Task.sleep(nanoseconds: 400_000_000) }
+            do {
+                let raw = try await DYAppFeed.fetch(pull: refreshIndex <= 2 ? 0 : 2)
+                guard let text = String(data: raw, encoding: .utf8) else { throw DYError.bad("返回不是文本") }
+                let p = try JSONDecoder().decode(DYFeedPage.self,
+                    from: try await call(Self.appFeedJS, args: ["raw": text], attempts: 1))
+                DYLiveModel.log("DDFEED idx=\(refreshIndex) \(p.diag ?? "-") more=\(p.hasMore) msg=\(p.msg ?? "-")")
+                if let mix = p.mix { DYLiveModel.log("DDFEEDMIX idx=\(refreshIndex) \(mix)") }
+                guard p.status == 200 else { throw DYError.blocked("App 接口 code \(p.status)") }
+                guard !p.items.isEmpty else { throw DYError.bad("App 接口没给条目") }
+                return p
+            } catch {
+                DYLiveModel.log("DDFEEDAPP fail idx=\(refreshIndex) round=\(round) \(error.localizedDescription)")
+            }
+        }
+        return nil
     }
 
     /// 真点赞（走网页端同一个接口，页面 SDK 自动签名）
@@ -1208,6 +1237,27 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       diag: 'tab s=' + r.s + ' code=' + d.status_code + ' signed=' + /a_bogus=/.test(r.u || '') + ' raw=' + raw.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
     """#
 
+    /// App 推荐（aweme/v1/feed）原始 JSON → 和网页推荐同一套精简结构（复用 mapA）。
+    /// 请求在原生侧发（手机 App UA），这里只做映射，不联网。
+    private static let appFeedJS = #"""
+    const d = parse(raw);
+    if (!d) return JSON.stringify({ status: -1, items: [], hasMore: false, msg: 'App 接口返回无法解析',
+      diag: 'app bad-json len=' + (raw || '').length });
+    const list = d.aweme_list || [];
+    const items = list.map(a => {
+      if (!a || (!a.video && !(a.images && a.images.length))) return null;
+      return Object.assign(mapA(a), (a.is_ads || a.raw_ad_data) ? { isAd: true } : {});
+    }).filter(Boolean);
+    const tall = list.filter(a => a && a.video && a.video.height > a.video.width * 1.05).length;
+    const fol = list.filter(a => a && a.author && a.author.follow_status).length;
+    const ads = list.filter(a => a && (a.is_ads || a.raw_ad_data)).length;
+    const noVideo = list.filter(a => a && !a.video).length;
+    return JSON.stringify({ status: d.status_code === 0 ? 200 : (d.status_code ?? -1), items,
+      hasMore: !!d.has_more, msg: d.status_msg || null,
+      mix: 'app ad=' + ads + ' noVideo=' + noVideo + ' | shop=' + items.filter(i => i.product).length,
+      diag: 'app code=' + d.status_code + ' raw=' + list.length + ' kept=' + items.length + ' tall=' + tall + ' follow=' + fol });
+    """#
+
     private static let watchJS = #"""
     const s = await req('POST', '/aweme/v2/web/aweme/stats/?' + q({}),
       new URLSearchParams({ aweme_type: type, item_id: id, source: '0', play_delta: '1' }).toString());
@@ -1552,8 +1602,13 @@ final class DYFeedModel: ObservableObject {
 
     /// 横屏限定时只要横屏。
     var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
-    /// 当前竖屏目标：横屏限定 0，其余 70%。
-    var targetRatio: Double { landscapeOnlyActive ? 0 : Self.portraitTarget }
+    /// 当前竖屏目标：横屏限定 0；App 接口（本身竖屏约 8 成）按推荐原序放，不再本地穿插；网页推荐 70%。
+    /// 由 loadMore 按设置同步 appFeedSource（这里不读设置键：选片逻辑被脚本测试单独编译）。
+    var appFeedSource = false
+    var targetRatio: Double {
+        if landscapeOnlyActive { return 0 }
+        return appFeedSource ? 0 : Self.portraitTarget
+    }
 
     /// 从候选池往列表里排最多 maxN 条：竖横按目标比例均匀穿插（70% → 竖横竖竖横竖竖…），
     /// 同方向内保持推荐原顺序；横屏限定时只取横屏。
@@ -1566,7 +1621,8 @@ final class DYFeedModel: ObservableObject {
         while n < maxN, !pool.isEmpty {
             let idx: Int?
             if r <= 0 {
-                idx = pool.firstIndex { !Self.isPortrait($0) }
+                // 目标 0 有两种来路：横屏限定（只取横屏）/ App 接口（本身竖屏为主，按推荐原序放）
+                idx = landscapeOnlyActive ? pool.firstIndex { !Self.isPortrait($0) } : 0
             } else if relaxed {
                 idx = 0
             } else {
@@ -1627,6 +1683,8 @@ final class DYFeedModel: ObservableObject {
         guard !loading, hasMore || items.isEmpty || !pool.isEmpty else { return }
         loading = true
         defer { loading = false }
+        // App 接口下的条目本身就竖屏为主，按推荐原序放（不再本地横竖穿插）
+        appFeedSource = DYAppFeed.prefersApp
         let epoch = offlineEpoch
         let want = 6
         var added = fill(want)
@@ -1650,7 +1708,7 @@ final class DYFeedModel: ObservableObject {
             // 竖横凑不齐（如接口连着几页没竖屏）时按原顺序补，横屏限定不放宽
             if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }
             trimPool()
-            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(String(format: "%.2f", targetRatio)) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
+            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(String(format: "%.2f", targetRatio))\(appFeedSource ? " orig" : "") landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {

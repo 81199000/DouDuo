@@ -201,13 +201,21 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertIn("static let portraitTarget = 0.7", FEED)
 
     def test_feed_uses_recommend_endpoint_only(self):
-        # 2026-11-14 老板定：只保留网页首页「推荐」(tab/feed)，精选(module/feed)删掉，也不给切换
+        # 2026-11-14 老板定：精选(module/feed)删掉，也不给切换
+        # 2026-11-21：推荐来源换成「App 接口优先、失败退回网页 tab/feed」（网页推荐竖屏只占 1～3 成，和 App 差很远）
         fetch = block(FEED, "func fetchFeed()")
         self.assertIn("Self.tabFeedJS", fetch)
+        self.assertIn("DYAppFeed.prefersApp", fetch)
+        self.assertIn("fetchAppFeed()", fetch)
         self.assertNotIn("feedJS,", fetch.replace("tabFeedJS", ""))
         self.assertIn("/aweme/v1/web/tab/feed/", FEED)
         self.assertNotIn("private static let feedJS", FEED)
         self.assertNotIn("DYFeedSource", FEED)
+        # App 推荐走原生手机 UA 请求，映射复用网页那份 mapA
+        app = (ROOT / "DouDuo/DYAppFeed.swift").read_text()
+        self.assertIn("com.ss.android.ugc.aweme", app)
+        self.assertIn("aweme/v1/feed", app)
+        self.assertIn("mapA(a)", FEED)
 
     def test_execute_extracted_swift_model(self):
         # Compile production properties + policy/fill/pick/remix/trim, excluding all network code.

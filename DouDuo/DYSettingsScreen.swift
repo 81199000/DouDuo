@@ -26,6 +26,8 @@ struct DYSettingsScreen: View {
     @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
     @AppStorage(DYFeedExtras.adKey) private var feedAds = true
     @AppStorage(DYFeedExtras.productKey) private var feedProduct = true
+    @AppStorage(DYAppFeed.sourceKey) private var feedSource = "app"
+    @AppStorage(DYAppFeed.cookieKey) private var feedAppCookie = false
     // 弹幕
     @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
     @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
@@ -104,13 +106,21 @@ struct DYSettingsScreen: View {
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
                     Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
+                    Picker("推荐来源", selection: $feedSource) {
+                        Text("App 接口").tag("app")
+                        Text("网页推荐").tag("web")
+                    }
+                    .accessibilityIdentifier("settings.feed.source")
+                    Toggle("用账号登录态请求 App 接口（实验）", isOn: $feedAppCookie)
+                        .disabled(feedSource != "app")
+                        .accessibilityIdentifier("settings.feed.appCookie")
                     Toggle("推荐里插入直播间", isOn: $feedLive).accessibilityIdentifier("settings.feed.live")
                     Toggle("推荐里显示广告", isOn: $feedAds).accessibilityIdentifier("settings.feed.ads")
                     Toggle("显示视频商品（小黄车）", isOn: $feedProduct).accessibilityIdentifier("settings.feed.product")
                 } header: {
                     Text("推荐与内容")
                 } footer: {
-                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
+                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n推荐来源「App 接口」是抖音 App 自己下发的推荐（竖屏多，和 App 里刷到的接近）；拉不到会自动用网页推荐。「网页推荐」只用网页版首页那份。\n用账号登录态请求 App 接口：把网页登录的 sessionid 一起带上，看是否按你的账号下发——可能被判定为异常设备，默认关。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
                 }
 
                 Section {
