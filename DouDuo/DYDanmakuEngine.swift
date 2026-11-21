@@ -129,7 +129,7 @@ final class DYDanmakuEngineView: UIView {
     }
 
     private func start() {
-        guard link == nil, window != nil else { return }
+        guard link == nil, window != nil, !DDPerfExperiment.off("DANMAKU") else { return }
         let l = CADisplayLink(target: DYDanmakuEngineTick(self), selector: #selector(DYDanmakuEngineTick.tick(_:)))
         l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)

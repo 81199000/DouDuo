@@ -87,11 +87,12 @@ final class DYAmbientFrameView: UIView {
     }
 
     private func updateLink() {
-        if active && window != nil {
+        if active && window != nil && !DDPerfExperiment.off("AMBIENT") {
             guard link == nil else { return }
             let l = CADisplayLink(target: DYAmbientTick(self), selector: #selector(DYAmbientTick.tick))
             // 环境光不用 60 帧，12 帧左右看着就是连续的
-            l.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 15, preferred: 12)
+            // 实测这一项占主线程约 1 成（每帧缩图 + 高斯模糊 + 生成图片都在主线程）；背景光变化慢，6 帧足够
+            l.preferredFrameRateRange = CAFrameRateRange(minimum: 4, maximum: 8, preferred: 6)
             l.add(to: .main, forMode: .common)
             link = l
         } else {

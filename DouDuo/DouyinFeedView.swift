@@ -2702,7 +2702,7 @@ private struct DDRailProgressRing: View {
         }
         .padding(lw / 2)
         .frame(width: d, height: d)
-        .animation(.linear(duration: 0.25), value: railProgress.fraction)
+        .animation(DDPerfExperiment.off("RING") ? nil : .linear(duration: 0.25), value: railProgress.fraction)
         .allowsHitTesting(false)
         .accessibilityIdentifier("douyin.module.ring")
         .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")

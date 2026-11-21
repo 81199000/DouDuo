@@ -89,6 +89,7 @@
 		7FB591AA7DF490884FB3A925 /* DYCommentStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC1D9BDEA8CFD52E90C4CD6 /* DYCommentStage.swift */; };
 		7FE6BA9D942723D9E6142FAD /* DouyinLiveAdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E50B100019A096A959BC847E /* DouyinLiveAdaptiveLayout.swift */; };
 		808D2150FABD5DB6A6149A47 /* DYDMBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B2F8179B60788D6D462F8E /* DYDMBanner.swift */; };
+		80ADD5B724F81D4CD80F7EC8 /* DDPerfExperiment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA7EEC582B3E1800F3868EE /* DDPerfExperiment.swift */; };
 		844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */; };
 		8527AFFAA0970036C2B5C61F /* DYSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */; };
 		85C30C1C9411C32D14761E7A /* DouyinExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66F335DE5A601EA019AD61E /* DouyinExtras.swift */; };
@@ -222,6 +223,7 @@
 		68F4E1542F53FF3D9DF55FEF /* DYOfflineDownloadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineDownloadScreen.swift; sourceTree = "<group>"; };
 		699075AF97CF431A7EC3922E /* DYSettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSettingsScreen.swift; sourceTree = "<group>"; };
 		6C41CFF8DFF40A68B9BA4DAE /* DYSignGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSignGateTests.swift; sourceTree = "<group>"; };
+		6CA7EEC582B3E1800F3868EE /* DDPerfExperiment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDPerfExperiment.swift; sourceTree = "<group>"; };
 		6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYVideoFitTests.swift; sourceTree = "<group>"; };
 		6E0C4AB926730D897C79B9C7 /* DYForwardFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardFeedback.swift; sourceTree = "<group>"; };
 		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
@@ -328,6 +330,7 @@
 				E049F77CC7B7331FD0750ECD /* DDAppearance.swift */,
 				110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */,
 				A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */,
+				6CA7EEC582B3E1800F3868EE /* DDPerfExperiment.swift */,
 				591344CAF2A91E0D7CC452C4 /* DDReleaseNotes.swift */,
 				EAEEA21047D0EC20D5AC1F3C /* DDWebAppearance.swift */,
 				7DEA756C4CD3920F4920BACF /* DouDuoApp.swift */,
@@ -648,6 +651,7 @@
 				6279D68970644B3297B72542 /* DDAppearance.swift in Sources */,
 				115E503A4451900455784A66 /* DDAppearanceProbe.swift in Sources */,
 				65B7CD540F494F463C4D1A9E /* DDAudioSessionGuard.swift in Sources */,
+				80ADD5B724F81D4CD80F7EC8 /* DDPerfExperiment.swift in Sources */,
 				640D8F930CE33AACE1C2FE24 /* DDReleaseNotes.swift in Sources */,
 				2727373BBAE8236687D47078 /* DDWebAppearance.swift in Sources */,
 				C68490BB0E80CD6EB274B842 /* DYAccounts.swift in Sources */,
