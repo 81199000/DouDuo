@@ -699,6 +699,7 @@ struct PlayerPage: View {
             // 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论）：接上旧实例的实时进度，不从头播（工单 B13）
             if isActive, player == nil, vlc == nil, offlineContext?.inLibrary != true {
                 handoffPosition = DDNowPlaying.handoff(id, to: playbackID)
+                DYLiveModel.log("DDB13 setup \(id.suffix(6)) handoff=\(handoffPosition.map { String(format: "%.2f", $0) } ?? "nil") resume=\(resumePosition.map { String(format: "%.2f", $0) } ?? "nil") now=\(DDNowPlaying.id.suffix(6))@\(String(format: "%.2f", DDNowPlaying.time))")
             }
             if player == nil, vlc == nil {
                 // 动画帧里不建播放器：非当前页延迟到滑动结束后再建（抖音也是提前预渲染，不在滑动那一帧做）
@@ -739,6 +740,7 @@ struct PlayerPage: View {
                                        playsInsideCover: playsInsideCover, coverLevel: coverLevel)
         }
         .onDisappear {
+            if playbackIsActive { DYLiveModel.log("DDB13 disappear \(id.suffix(6)) at=\(String(format: "%.2f", DDNowPlaying.time))") }
             DDNowPlaying.release(playbackID, whilePlaying: playbackIsActive)
             playbackIsActive = false
             if DDRemoteOwner.instance == playbackID { clearRemote() }
@@ -1249,6 +1251,15 @@ struct PlayerPage: View {
         imgGen = gen
         attachObservers(p)
         if let seconds = initialResumePosition { restorePosition(seconds, using: p) }
+        if isActive {
+            // 工单 B13 排查：重建后接到哪、0.6 秒后实际播到哪（模拟器接得上，真机仍从头播，差在哪一步）
+            let src = (p.currentItem?.asset as? AVURLAsset)?.url.scheme ?? "-"
+            DYLiveModel.log("DDB13 restore \(id.suffix(6)) to=\(initialResumePosition.map { String(format: "%.2f", $0) } ?? "nil") src=\(src) status=\(p.currentItem?.status.rawValue ?? -1)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak p] in
+                guard let p else { return }
+                DYLiveModel.log("DDB13 after0.6s \(id.suffix(6)) t=\(String(format: "%.2f", p.currentTime().seconds)) rate=\(p.rate) seam=\(seamAudio.currentMediaTime.map { String(format: "%.2f", $0) } ?? "nil")")
+            }
+        }
         let shouldPlay = canControlPlayback && !userPaused
         if shouldPlay, shouldFastStart(p) {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
