@@ -373,6 +373,24 @@ extension DYRecommendFeedHost {
         }
     }
 
+    /// 推荐列表在当前条之后已经没东西可划（开 App 时拉推荐失败，只剩启动缓存那一条）：补拉一页。
+    /// 以前只有「换条」时才补拉，列表就一条时根本换不了条 → 永远划不动（老板 11-21 真机：拉推荐网络失败后卡在一条上）。
+    /// 由签名就绪和定时器触发；有在拉的、离线模式、刷新中都不动。
+    func refillIfStuck(reason: String) {
+        guard initialized, !refreshing, !feed.offlinePlayback, !feed.loading else { return }
+        let i = currentIndex ?? -1
+        guard feed.items.count - i - 1 < 2, Date().timeIntervalSince(lastFeedPull) > 2 else { return }
+        lastFeedPull = Date()
+        DYLiveModel.log("DDREFILL reason=\(reason) n=\(feed.items.count) at=\(i)")
+        Task {
+            await feed.loadMore(bridge)
+            guard !feed.offlinePlayback else { return }
+            if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
+            focusCurrent()
+            DYLiveModel.log("DDREFILL done n=\(feed.items.count)")
+        }
+    }
+
     func openSearch() {
         DYSearchSession.transition { showComments = false; searchSession = DYSearchSession() }
     }
