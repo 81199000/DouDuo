@@ -165,14 +165,16 @@ sys.exit(0 if good else 1)
 PY
 }
 check_src https://gitee.com/remon8/douduo/raw/main/docs/source/douduo.json gitee.com
-GITEE=$(curl -sL -A "$UA" -o /dev/null -w '%{http_code} %{size_download}' https://gitee.com/remon8/douduo/releases/download/$TAG/${IPA:t})
+# 下载地址只查响应头里的大小，不下载整包
+size_of() { curl -sIL -A "$UA" -m 60 -o /dev/null -w '%{http_code} %header{content-length}' "$1"; }
+GITEE=$(size_of https://gitee.com/remon8/douduo/releases/download/$TAG/${IPA:t})
 [[ $GITEE == "200 $SIZE" ]] && print "✅ Gitee IPA $GITEE" || { print "❌ Gitee IPA $GITEE"; ok=0; }
-# GitHub 新号仓库暂为私有：用已登录的 gh 核对附件，不做匿名下载
+# GitHub：附件大小从 API 读（不下载）
 GH_OK=$(gh release view $TAG --json assets -q ".assets[]|select(.name==\"${IPA:t}\").size")
 [[ $GH_OK == $SIZE ]] && print "✅ GitHub IPA $GH_OK 字节" || { print "❌ GitHub IPA $GH_OK"; ok=0; }
 # App 内更新检查先读 dl.oneduo.app 软件源，Gitee 跳转兜底
 check_src https://dl.oneduo.app/douduo/douduo.json dl.oneduo.app
-R2IPA=$(curl -s -A "$UA" -o /dev/null -w '%{http_code} %{size_download}' https://dl.oneduo.app/douduo/$TAG/${IPA:t})
+R2IPA=$(size_of https://dl.oneduo.app/douduo/$TAG/${IPA:t})
 [[ $R2IPA == "200 $SIZE" ]] && print "✅ R2 IPA $R2IPA" || { print "❌ R2 IPA $R2IPA"; ok=0; }
 LATEST=$(curl -sI -A DouDuo-iOS https://gitee.com/remon8/douduo/releases/latest | sed -nE 's#^[Ll]ocation: .*/tag/([^[:space:]]+).*#\1#p')
 [[ $LATEST == $TAG ]] && print "✅ App 内更新检查指向 $LATEST" || { print "❌ Gitee releases/latest → $LATEST"; ok=0; }
