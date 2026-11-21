@@ -7,6 +7,10 @@ assert m, "DDClipIf 不见了"
 body = m.group(1)
 assert not re.search(r"\bif on\b", body), "DDClipIf 不能用 if/else 换视图类型（会重建播放器、从头播）"
 assert "clipShape(" in body, "要一直挂着裁剪"
-big = [int(x) for x in re.findall(r"-\s*(\d+)", body)]
+shape = re.search(r"struct DDPaneClipShape: Shape \{(.*?)\n\}", s, re.S)
+scope = body + (shape.group(1) if shape else "")
+big = [int(x) for x in re.findall(r"-\s*(\d+)", scope)]
 assert big and max(big) <= 1000, f"关评论时的放大量 {big} 太大（超大裁剪真机黑屏）"
+# 开评论时上下也要外扩（环境光铺到屏幕底边，不留白边 / 黑边，老板 11-21）
+assert shape and "dy: -" in shape.group(1), "开评论时上下也要外扩"
 print("ok clip identity")
