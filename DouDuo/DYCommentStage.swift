@@ -49,6 +49,15 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         let w = geo.size.width, h = geo.size.height
 
         return ZStack(alignment: .topLeading) {
+            // 侧栏评论时视频区只画到底部安全区上沿，下面会露出页面底色（浅色主题是一条白边，老板 11-21 截图）。
+            // 垫一条黑底到屏幕最下沿；它是独立兄弟层，不包播放器，不会引起重建（工单 B13）。
+            if layout.showsPane && layout.sideBySide {
+                Color.black
+                    .frame(width: layout.videoSize.width)
+                    .frame(maxHeight: .infinity)
+                    .ignoresSafeArea(edges: .vertical)
+                    .allowsHitTesting(false)
+            }
             feed()
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
