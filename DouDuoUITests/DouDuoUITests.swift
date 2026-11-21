@@ -137,6 +137,10 @@ final class DouDuoUITests: XCTestCase {
         let comments = app.buttons["douyin.comments"].firstMatch
         XCTAssertTrue(comments.waitForExistence(timeout: 10), "评论按钮")
         comments.tap()
+        let panel = app.descendants(matching: .any).matching(identifier: "douyin.comments.panel").firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 6), "评论栏要打开")
+        let f = panel.frame, w = app.windows.firstMatch.frame
+        print("B13PANEL frame=\(f) window=\(w) side=\(f.minX > w.width * 0.3)")
         sleep(4)
         attach(app, "b13-comments-open")
         if app.buttons["douyin.comments.close"].firstMatch.exists { app.buttons["douyin.comments.close"].firstMatch.tap() }
