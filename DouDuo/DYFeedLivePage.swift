@@ -91,6 +91,7 @@ struct DYFeedLivePage: View {
         .onChange(of: muted) { _, m in
             let c = warm?.controller ?? player
             c.outputMuted = m; c.mediaPlayer.audio?.isMuted = m
+            if !m, c.mediaPlayer.audio?.volume == 0 { c.mediaPlayer.audio?.volume = 100 }
         }
 
         .onDisappear { stop() }
@@ -125,8 +126,10 @@ struct DYFeedLivePage: View {
             started = true
             failed = false
             shownAt = CACurrentMediaTime()
+            // 预热时是音量 0、没静音：直接把音量拉回来，声音立刻有（不走取消静音，那会重启音频输出）
             h.controller.outputMuted = muted
-            h.controller.mediaPlayer.audio?.isMuted = muted
+            if muted { h.controller.mediaPlayer.audio?.isMuted = true }
+            h.controller.mediaPlayer.audio?.volume = muted ? 0 : 100
             h.controller.onError = {
                 Task { @MainActor in
                     // 预热那一路断了：丢掉它，走现连
