@@ -95,9 +95,12 @@ final class DYDanmakuEngineView: UIView {
         CATransaction.commit()
         merge(items)
         if jumped { restart(at: clock.now(Date())) }
-        if clock.playing { start() } else { stop() }
+        if clock.playing && hasWork { start() } else { stop() }
         render(clock.now(Date()))
     }
+
+    /// 没有在飞的、也没有待出场的弹幕时不跑逐帧刷新（否则 120 帧空转。真机：弹幕刷新占主线程约 1 成）
+    private var hasWork: Bool { !flying.isEmpty || cursor < queue.count }
 
     /// 新到的弹幕并入队列；已经在飞的不受影响，过去时间点的不倒着补（跟抖音一样）
     private func merge(_ items: [DYDanmaku]) {
@@ -125,19 +128,42 @@ final class DYDanmakuEngineView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stop() } else if clock.playing { start() }
+        if window == nil { stop() } else if clock.playing && hasWork { start() }
     }
 
     private func start() {
         guard link == nil, window != nil, !DDPerfExperiment.off("DANMAKU") else { return }
         let l = CADisplayLink(target: DYDanmakuEngineTick(self), selector: #selector(DYDanmakuEngineTick.tick(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        // 发热（serious 及以上）时降到 60 帧：弹幕平移 60 帧肉眼也是顺的
+        let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+        l.preferredFrameRateRange = hot ? CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+                                        : CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         l.add(to: .main, forMode: .common)
         link = l
         lastTS = 0
     }
 
-    func stop() { link?.invalidate(); link = nil }
+    func stop() {
+        #if DEBUG
+        if link != nil { DDDanmakuIdleStat.stops += 1 }
+        #endif
+        link?.invalidate(); link = nil
+    }
+
+    #if DEBUG
+    static var idleStops: Int { DDDanmakuIdleStat.stops }
+    #else
+    static var idleStops: Int { -1 }
+    #endif
+    private var wakeToken = 0
+    private func scheduleWake(after seconds: Double) {
+        wakeToken &+= 1
+        let token = wakeToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.05, seconds)) { [weak self] in
+            guard let self, token == self.wakeToken, self.clock.playing, self.window != nil else { return }
+            self.start()
+        }
+    }
 
     fileprivate func tick(_ l: CADisplayLink) {
         if lastTS > 0 {
@@ -146,7 +172,7 @@ final class DYDanmakuEngineView: UIView {
                 let avg = gaps.reduce(0, +) / Double(gaps.count)
                 let over = gaps.filter { $0 > 0.02 }.count
                 let p95 = gaps.sorted()[Int(Double(gaps.count) * 0.95)]
-                DYLiveModel.log("DDDMFRAME fps=\(Int(1 / max(avg, 0.001))) p95=\(Int(p95 * 1000))ms over20ms=\(over)/\(gaps.count) maxOnScreen=\(maxOn) spawned=\(spawned) dropped=\(dropped) queue=\(queue.count - cursor) engine=live")
+                DYLiveModel.log("DDDMFRAME idleStops=\(Self.idleStops) fps=\(Int(1 / max(avg, 0.001))) p95=\(Int(p95 * 1000))ms over20ms=\(over)/\(gaps.count) maxOnScreen=\(maxOn) spawned=\(spawned) dropped=\(dropped) queue=\(queue.count - cursor) engine=live")
                 gaps.removeAll(); maxOn = 0; spawned = 0; dropped = 0
             }
         }
@@ -178,6 +204,14 @@ final class DYDanmakuEngineView: UIView {
         flying = keep
         maxOn = max(maxOn, flying.count)
         CATransaction.commit()
+        // 屏上没有在飞的：队列排完就停；下一条还早（>0.4s）就停掉、到点前再起（不在等待期间 120 帧空转）
+        if flying.isEmpty {
+            if cursor >= queue.count { stop() }
+            else {
+                let wait = (queue[cursor].offset - t) / max(clock.rate, 0.1)
+                if wait > 0.4 { stop(); scheduleWake(after: wait - 0.15) }
+            }
+        }
     }
 
     /// 让到点的弹幕出场：找右侧空出来、而且不会被追尾的轨道
@@ -296,3 +330,7 @@ struct DYDanmakuLiveSurface: UIViewRepresentable {
     }
     static func dismantleUIView(_ v: DYDanmakuEngineView, coordinator: ()) { v.stop() }
 }
+
+#if DEBUG
+enum DDDanmakuIdleStat { static var stops = 0 }
+#endif

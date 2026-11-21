@@ -450,7 +450,6 @@ struct PlayerPage: View {
         nonmutating set {
             guard clock.current != newValue else { return }
             clock.current = newValue
-            pushRailProgress()
         }
     }
     @State private var pendingOfflineSeek: Double?
@@ -822,6 +821,10 @@ struct PlayerPage: View {
             bindSeamlessAudio(to: p, initialPos: p.currentTime().seconds, active: isActive, playing: isPlaying)
         }
         .onChange(of: rateBoost) { _, on in boost?.boosting = on }
+        // ⚠️ 不能在 current 的 setter 里直接推：setter 常在播放器时间回调里调，那个闭包捕获的是旧的 PlayerPage 副本，
+        // 里面的 isActive 是挂回调时的值（预热时 = false）→ 极简模式进度环永远不动（老板 11-21）。
+        // onReceive 每次都用当前这一版视图跑，且不会让 PlayerPage 整页重算。
+        .onReceive(clock.$current) { _ in pushRailProgress() }
         .onChange(of: seeking) { _, _ in pushRailProgress() }
         .onChange(of: seekPreview) { _, _ in if seeking { pushRailProgress() } }
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }

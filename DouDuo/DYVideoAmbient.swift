@@ -45,6 +45,9 @@ final class DYAmbientFrameView: UIView {
     private weak var attachedItem: AVPlayerItem?
     private var link: CADisplayLink?
     private static let ci = CIContext(options: [.cacheIntermediates: false])
+    private static let queue = DispatchQueue(label: "douduo.ambient", qos: .utility)
+    /// 上一帧还没处理完就不取新帧（不堆积）
+    private var working = false
 
     init(player: AVPlayer) {
         self.player = player
@@ -87,7 +90,9 @@ final class DYAmbientFrameView: UIView {
     }
 
     private func updateLink() {
-        if active && window != nil && !DDPerfExperiment.off("AMBIENT") {
+        // 发热（serious 及以上）时停掉环境光取帧：背景留在最后一帧，不再每秒做图像处理（抖音同款发热降载）
+        let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+        if active && window != nil && !hot && !DDPerfExperiment.off("AMBIENT") {
             guard link == nil else { return }
             let l = CADisplayLink(target: DYAmbientTick(self), selector: #selector(DYAmbientTick.tick))
             // 环境光不用 60 帧，12 帧左右看着就是连续的
@@ -121,21 +126,30 @@ final class DYAmbientFrameView: UIView {
             attachedItem = item
         }
         let t = output.itemTime(forHostTime: CACurrentMediaTime())
-        guard output.hasNewPixelBuffer(forItemTime: t),
+        guard !working, output.hasNewPixelBuffer(forItemTime: t),
               let pb = output.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) else { return }
-        let src = CIImage(cvPixelBuffer: pb)
-        let scale = 48 / max(src.extent.width, 1)
-        let small = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let blurred = small.clampedToExtent().applyingGaussianBlur(sigma: 3).cropped(to: small.extent)
-            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.85])
-        guard let cg = Self.ci.createCGImage(blurred, from: small.extent) else { return }
-        imageView.image = UIImage(cgImage: cg)
-        // 桌面投影（与 GuoDuo 同一套：按亮度出光、近清远糊、远端扩散、垫环境光；只有投影视图在屏幕上时才算）
-        if DYDeskLightHub.wanted, let proj = DYDeskProjection.render(src, ci: Self.ci) {
-            DYDeskLightHub.publish(proj.image, glow: proj.glow, aspect: src.extent.width / max(src.extent.height, 1))
-        }
-        if imageView.alpha == 0 {
-            UIView.animate(withDuration: 0.25) { self.imageView.alpha = 1; self.dimView.alpha = 1 }
+        // 缩图 + 模糊 + 生成图片放到后台队列（真机：环境光占主线程约 1 成），主线程只换图
+        working = true
+        let desk = DYDeskLightHub.wanted
+        Self.queue.async { [weak self] in
+            let src = CIImage(cvPixelBuffer: pb)
+            let scale = 48 / max(src.extent.width, 1)
+            let small = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            let blurred = small.clampedToExtent().applyingGaussianBlur(sigma: 3).cropped(to: small.extent)
+                .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.85])
+            let cg = Self.ci.createCGImage(blurred, from: small.extent)
+            // 桌面投影（与 GuoDuo 同一套；只有投影视图在屏幕上时才算）
+            let proj = desk ? DYDeskProjection.render(src, ci: Self.ci) : nil
+            let aspect = src.extent.width / max(src.extent.height, 1)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.working = false
+                if let cg { self.imageView.image = UIImage(cgImage: cg) }
+                if let proj { DYDeskLightHub.publish(proj.image, glow: proj.glow, aspect: aspect) }
+                if self.imageView.alpha == 0, cg != nil {
+                    UIView.animate(withDuration: 0.25) { self.imageView.alpha = 1; self.dimView.alpha = 1 }
+                }
+            }
         }
     }
 }

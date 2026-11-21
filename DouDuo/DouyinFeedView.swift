@@ -1289,7 +1289,9 @@ final class DYPreloader {
     }
     /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
     /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次
-    static let prerollAhead = 5
+    /// 只给紧挨着的下一条预解码首帧（preroll 会把解码器跑起来）；再往后的只备好数据，划到前一条时自然轮到它。
+    /// 以前 5 条都 preroll = 屏外同时开着好几个解码器（抖音做法：只解码可见页 + 下一页）
+    static let prerollAhead = 1
     private var players: [String: AVPlayer] = [:]
     private var handedOut: Set<String> = []
     private var obs: [String: NSKeyValueObservation] = [:]
@@ -2029,7 +2031,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             saveSession()
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
-            DYLiveModel.log(String(format: "DDMEM 常驻=%.0fMB 缓存条数=%d 暖机=%d", DYMemoryProbe.footprintMB, DYVideoCache.limit, DYPreloader.ahead))
+            DYLiveModel.log(String(format: "DDMEM 常驻=%.0fMB 缓存条数=%d 暖机=%d 发热=%d 电量模式=%d", DYMemoryProbe.footprintMB, DYVideoCache.limit, DYPreloader.ahead,
+                                   ProcessInfo.processInfo.thermalState.rawValue, ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0))
         }
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }
@@ -2694,16 +2697,17 @@ private struct DDRailProgressRing: View {
         return ZStack {
             if show {
                 Circle().stroke(fg.opacity(theme.media.progressRingTrackOpacity), lineWidth: lw)
-                Circle()
-                    .trim(from: 0, to: max(railProgress.fraction, 0.004))
-                    .stroke(fg, style: StrokeStyle(lineWidth: lw, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                // 进度弧交给 Core Animation 画：每 0.25s 只改一次 strokeEnd，中间的补间在渲染服务里跑，
+                // 不占 App 主线程。以前用 SwiftUI .animation 补间 = 每帧整棵视图重算，
+                // 真机分析占主线程约 1/4～1/3（老板 11-21：刷久了发烫）。
+                DDRingArc(fraction: max(railProgress.fraction, 0.004), color: UIColor(fg), lineWidth: lw)
             }
         }
         .padding(lw / 2)
         .frame(width: d, height: d)
-        .animation(DDPerfExperiment.off("RING") ? nil : .linear(duration: 0.25), value: railProgress.fraction)
         .allowsHitTesting(false)
+        // 里面有 UIKit 视图（进度弧），不合并的话辅助功能/测试只看到内部视图、找不到这颗环
+        .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("douyin.module.ring")
         .accessibilityValue(show ? "\(Int(railProgress.fraction * 100))%" : "")
         .accessibilityHidden(!show)
@@ -6373,5 +6377,59 @@ struct DYSignWaitHint: View {
     static func text(left: Int?) -> String {
         if let left { return "等待签名完成才可以发送评论，约 \(left) 秒后再点发送" }
         return "等待签名完成才可以发送评论，马上就好"
+    }
+}
+
+
+/// 进度弧：CAShapeLayer + 隐式动画（补间在渲染服务里跑，不占主线程）
+private struct DDRingArc: UIViewRepresentable {
+    let fraction: Double
+    let color: UIColor
+    let lineWidth: CGFloat
+    func makeUIView(context: Context) -> DDRingArcView { DDRingArcView() }
+    func updateUIView(_ v: DDRingArcView, context: Context) {
+        v.shape.strokeColor = color.cgColor
+        v.shape.lineWidth = lineWidth
+        v.set(fraction)
+    }
+}
+
+final class DDRingArcView: UIView {
+    let shape = CAShapeLayer()
+    private var last: Double = -1
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        accessibilityElementsHidden = true
+        backgroundColor = .clear
+        shape.fillColor = UIColor.clear.cgColor
+        shape.lineCap = .round
+        shape.strokeStart = 0
+        shape.strokeEnd = 0
+        layer.addSublayer(shape)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        shape.frame = bounds
+        let r = min(bounds.width, bounds.height) / 2
+        // 从 12 点方向顺时针
+        shape.path = UIBezierPath(arcCenter: CGPoint(x: bounds.midX, y: bounds.midY), radius: r,
+                                  startAngle: -.pi / 2, endAngle: 1.5 * .pi, clockwise: true).cgPath
+        CATransaction.commit()
+    }
+    func set(_ f: Double) {
+        let v = CGFloat(max(0, min(1, f)))
+        guard Double(v) != last else { return }
+        // 往回跳（换条 / 拖动 / 循环）直接到位；往前走 0.25s 线性补间（跟进度更新间隔一致，看起来连续）
+        let back = last >= 0 && Double(v) < last
+        last = Double(v)
+        CATransaction.begin()
+        if back { CATransaction.setDisableActions(true) }
+        else { CATransaction.setAnimationDuration(0.25); CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear)) }
+        shape.strokeEnd = v
+        CATransaction.commit()
     }
 }
