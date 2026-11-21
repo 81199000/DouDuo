@@ -25,7 +25,7 @@ final class DYFeedLiveWarm {
     private var warm: Handle?
     private var startedAt: CFTimeInterval = 0
     private var cap: Task<Void, Never>?
-    /// 预热期间一直按住静音：VLC 音频输出起来之前设的静音可能不生效，还在看上一条时不能漏出直播的声音
+    /// 预热期间一直按住音量 0（见 update 里的说明），还在看上一条时不能漏出直播的声音
     private var muteKeeper: Task<Void, Never>?
     /// 预热最多挂这么久（直播一直在下数据，停在一条长视频上别一直白下）
     static let maxWarm: TimeInterval = 60
@@ -44,7 +44,7 @@ final class DYFeedLiveWarm {
         let sources = live.room.liveStreams
         guard let s = sources.first, let window = Self.window else { return }
         let c = VLCPlayerController()
-        c.outputMuted = true
+        c.outputMuted = false
         let v = VLCPlayerUIView(frame: window.bounds)
         v.controller = c
         v.fillWidth = live.portrait
@@ -56,17 +56,22 @@ final class DYFeedLiveWarm {
         c.boundSurface = v
         c.mediaPlayer.drawable = v
         c.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
-        c.mediaPlayer.audio?.isMuted = true
+        c.mediaPlayer.audio?.volume = 0
         warm = Handle(roomID: live.roomID, controller: c, view: v)
         startedAt = CACurrentMediaTime()
         DYLiveModel.log("DDLIVEWARM start room=\(live.roomID.suffix(6)) q=\(s.quality) flv=\(s.isFLV)")
         muteKeeper?.cancel()
-        // 只在每轮里短暂拿强引用，睡眠期间不持有控制器（别让这个任务成为最后一个持有者）
+        // 用音量 0 而不是静音：iOS 上 VLC 静音 = 暂停音频输出并清空，取消静音要重启输出、重新对时，
+        // 声音要晚一会才出来（老板 11-21：画面很快出来，声音要等一会）。音量 0 时音频照常在走，划到只把音量拉回来。
+        // 音频输出没建好前设音量无效（get 返回 -1），所以前 3 秒每 30ms 盯一次，之后 200ms。
         muteKeeper = Task { @MainActor [weak c] in
+            let t0 = CACurrentMediaTime()
             while !Task.isCancelled {
                 guard let audio = c?.mediaPlayer.audio else { break }
-                if audio.isMuted != true { audio.isMuted = true }
-                try? await Task.sleep(for: .milliseconds(200))
+                if audio.volume != 0 { audio.volume = 0 }
+                if audio.isMuted { audio.isMuted = false }
+                let fast = CACurrentMediaTime() - t0 < 3
+                try? await Task.sleep(for: .milliseconds(fast ? 30 : 200))
             }
         }
         cap?.cancel()
@@ -84,7 +89,7 @@ final class DYFeedLiveWarm {
         cap?.cancel(); cap = nil
         muteKeeper?.cancel(); muteKeeper = nil
         let hasFrame = h.controller.videoSize.width > 0
-        DYLiveModel.log("DDLIVEWARM take room=\(roomID.suffix(6)) warmed=\(Int((CACurrentMediaTime() - startedAt) * 1000))ms frame=\(hasFrame)")
+        DYLiveModel.log("DDLIVEWARM take room=\(roomID.suffix(6)) warmed=\(Int((CACurrentMediaTime() - startedAt) * 1000))ms frame=\(hasFrame) vol=\(h.controller.mediaPlayer.audio?.volume ?? -9) mute=\(h.controller.mediaPlayer.audio?.isMuted == true)")
         return h
     }
 
