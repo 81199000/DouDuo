@@ -11,6 +11,22 @@
       "name": "DouDuo",
       "bundleIdentifier": "me.rrmm.douduo",
       "type": "1",
+      "version": "1.6.9",
+      "versionDate": "2026-11-21T05:48:10+00:00",
+      "versionDescription": "DouDuo 1.6.9\n\n包为未签名 IPA，需要自行签名安装。\n\n说明\n这一版 App 功能与上一版相同，主要是发布流程与内部改进。\n\n关注不走失\n项目在 GitHub WuWeiDuo/DouDuo，点个 Star、关注 @WuWeiDuo，避免走失。官网 oneduo.app 是长期固定入口。",
+      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
+      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
+      "lock": "0",
+      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.6.9/DouDuo-1.6.9-unsigned.ipa",
+      "isLanZouCloud": "0",
+      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
+      "tintColor": "FE2C55",
+      "size": "22844293"
+    },
+    {
+      "name": "DouDuo",
+      "bundleIdentifier": "me.rrmm.douduo",
+      "type": "1",
       "version": "1.6.8",
       "versionDate": "2026-11-21T04:02:41+00:00",
       "versionDescription": "DouDuo 1.6.8 · 展开屏开评论不再从头播 · 「我的」下拉刷新\n\n小修复版。包为未签名 IPA，需要自行签名安装。\n\n修复\n- iPhone Duo 展开内屏横屏时点评论（评论从右侧出来），视频会从头重新播放（工单 B13）：以前一开关侧栏评论，整个播放器都会被拆掉重建。现在开关评论只改变视频大小，接着原来的位置播。\n- 同一场景下视频底部手势条那一截露出一条白边：现在视频的模糊背景光铺到屏幕最底边。\n\n新功能\n- 「我的」页可以下拉刷新：资料（粉丝 / 获赞 / 作品数）和当前这一栏一起重新加载。拉不到时保留原内容，不会清空成白屏。\n\n关注不走失\n项目在 GitHub WuWeiDuo/DouDuo，点个 Star、关注 @WuWeiDuo，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n- 侧栏评论不再从头播：作者的 iPhone Duo 真机上确认评论区显示正常、不再从头播；iPad 模拟器横屏日志确认开评论只改尺寸、播放器没有重建。\n- 底部白边：改为背景光铺满后，真机上还没有截图复核。如果设置里关了「环境光」，或者视频还没出第一帧，底部那一截会是黑色。\n- 已知问题（这一版没修）：刷到直播间再往下滑到下一条视频时，偶尔会顿一下。",
@@ -70,22 +86,6 @@
       "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
       "tintColor": "FE2C55",
       "size": "22828707"
-    },
-    {
-      "name": "DouDuo",
-      "bundleIdentifier": "me.rrmm.douduo",
-      "type": "1",
-      "version": "1.6.4",
-      "versionDate": "2026-11-19T14:30:33+00:00",
-      "versionDescription": "DouDuo 1.6.4 · 支持直板 iPhone；含 1.6.3、1.6.2 全部更新\n\n1.6.4 开始支持直板 iPhone。1.6.3、1.6.2 都是刚发不久，这两版的更新内容也一并列在下面，没装过的可以直接升级到 1.6.4。包为未签名 IPA，需要自行签名安装。\n\n1.6.4 · 支持直板 iPhone\n- 支持 iPhone Air 等直板 iPhone：打开就能播放，上下滑动切换视频，顶部「关注 / 推荐 / 直播」正常切换。\n\n1.6.3 的更新内容（一并包含）\n\n半折叠桌面投影\n- iPhone Duo 半折叠放在桌上看视频时，下半屏会出现视频的「桌面投影」：与视频同宽、上下翻转，画面亮的地方投得明显、暗处几乎不投；离折痕近的地方清楚，远处更糊、也更散开，底下再垫一层环境光，像屏幕的光洒在桌面上。\n\n1.6.2 的更新内容（一并包含）\n1.6.2 新增短视频自动画中画，重写了发评论的流程（等签名、身份验证、失败重发），设置页重新分组，另外修了私信、作者主页和界面模式切换的几处问题。\n\n新功能 · 短视频自动画中画\n- 设置 →「播放与弹幕」新增「离开应用时自动画中画」，默认关闭。打开后，看短视频时回到主屏或切到别的 App，系统会把当前视频转成悬浮小窗（能否启动由系统决定）。（#60，感谢 @kikozheng27-creator）\n- 打开这个开关后，前台长按加速仍然不断声；只在离开 App 进小窗的那一刻把声音交还给系统播放器，小窗里暂停/播放和声音保持一致。\n- 清屏模式原有的画中画行为不变。\n\n新功能 · 作者主页定位「刚刚看过」\n- 看视频时点作者头像进主页，刚刚看的那条作品会标上「刚刚看过」并描边；不在第一页时会自动往下翻找到它。\n- 那条作品不在屏幕上时，底部出现「定位到刚刚看过」，点一下滚过去。\n…完整说明见发行版页面",
-      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
-      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
-      "lock": "0",
-      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.6.4/DouDuo-1.6.4-unsigned.ipa",
-      "isLanZouCloud": "0",
-      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
-      "tintColor": "FE2C55",
-      "size": "22593110"
     }
   ]
 }
