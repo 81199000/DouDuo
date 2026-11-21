@@ -8,7 +8,7 @@ MINI=${DOUDUO_MINI:-user@mac-mini.local}
 OUT=build/adhoc; ARCH=build/DouDuo.xcarchive
 rm -rf $ARCH $OUT
 xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release -destination 'generic/platform=iOS' \
-  -archivePath $ARCH -allowProvisioningUpdates archive -quiet > "$TMPDIR/dd-install-archive.log" 2>&1 \
+  -archivePath $ARCH -allowProvisioningUpdates DEVELOPMENT_TEAM=${DOUDUO_TEAM:-<TEAM_ID>} archive -quiet > "$TMPDIR/dd-install-archive.log" 2>&1 \
   && xcodebuild -exportArchive -archivePath $ARCH -exportPath $OUT -exportOptionsPlist signing/ExportOptions-adhoc.plist \
        -allowProvisioningUpdates -quiet >> "$TMPDIR/dd-install-archive.log" 2>&1 \
   || { echo "签名包失败（$TMPDIR/dd-install-archive.log）"; exit 1; }
