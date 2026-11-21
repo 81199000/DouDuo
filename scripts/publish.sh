@@ -35,7 +35,12 @@ for c in xcodegen xcodebuild node python3; do command -v $c >/dev/null || die "�
 git fetch -q origin --tags; git fetch -q gitee
 [[ $(git rev-parse HEAD) == $(git rev-parse origin/main) ]] || die "本地 main 与 origin/main 不一致，先同步"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  [[ $(git rev-list -n1 $TAG) == $(git rev-parse HEAD) ]] || die "$TAG 已存在且不在当前 HEAD"
+  # tag 之后只多了软件源 / 发行说明的提交（发版自己产生的）也算续发；有别的改动才拒绝
+  if [[ $(git rev-list -n1 $TAG) != $(git rev-parse HEAD) ]]; then
+    git merge-base --is-ancestor $TAG HEAD || die "$TAG 不在当前 main 历史上"
+    extra=$(git diff --name-only $TAG HEAD | grep -vE '^docs/(source|releases)/' || true)
+    [[ -z $extra ]] || die "$TAG 之后有代码改动，不能续发同一版本：$(print $extra | head -3 | tr '\n' ' ')"
+  fi
   RESUME=1; print "↻ $TAG 已在 HEAD，继续未完成的发布步骤"
 else
   RESUME=0
@@ -61,20 +66,27 @@ TESTLOG=$TMPDIR/dd-publish-tests.log
   done | tee "$TESTLOG" >/dev/null; wait ) &
 TESTPID=$!
 
-step "真机未签名包"
-DD=$TMPDIR/dd-publish-rel
-# 不加 -sdk iphoneos：只给 destination，各 target 按自己的平台选 SDK。
-xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
-  build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO > "$TMPDIR/dd-publish-rel.log" 2>&1 \
-  || { grep -E 'error:' "$TMPDIR/dd-publish-rel.log" | head; die "真机编译失败（$TMPDIR/dd-publish-rel.log）"; }
-APP=$DD/Build/Products/Release-iphoneos/DouDuo.app
-GOT=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")
-[[ $GOT == $VER ]] || die "包内版本 $GOT ≠ $VER"
-rm -rf build/ipa && mkdir -p build/ipa/Payload && cp -R "$APP" build/ipa/Payload/
-(cd build/ipa && rm -f "../${IPA:t}" && zip -qry "../${IPA:t}" Payload)
-SIZE=$(stat -f %z $IPA)
-print "✅ $IPA  $SIZE 字节  build $(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")"
+if (( RESUME )) && [[ -f $IPA ]]; then
+  # 续发：用上次打好的包，不重新编译（重新 zip 字节会变，跟已经传上去的对不上）
+  step "真机未签名包（续发，沿用已打好的包）"
+  SIZE=$(stat -f %z $IPA); print "✅ $IPA  $SIZE 字节"
+else
+  step "真机未签名包"
+  DD=$TMPDIR/dd-publish-rel
+  # 不加 -sdk iphoneos：只给 destination，各 target 按自己的平台选 SDK。
+  xcodebuild -project DouDuo.xcodeproj -scheme DouDuo -configuration Release \
+    -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+    build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO > "$TMPDIR/dd-publish-rel.log" 2>&1 \
+    || { grep -E 'error:' "$TMPDIR/dd-publish-rel.log" | head; die "真机编译失败（$TMPDIR/dd-publish-rel.log）"; }
+  APP=$DD/Build/Products/Release-iphoneos/DouDuo.app
+  GOT=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")
+  [[ $GOT == $VER ]] || die "包内版本 $GOT ≠ $VER"
+  rm -rf build/ipa && mkdir -p build/ipa/Payload && cp -R "$APP" build/ipa/Payload/
+  (cd build/ipa && rm -f "../${IPA:t}" && zip -qry "../${IPA:t}" Payload)
+  SIZE=$(stat -f %z $IPA)
+  print "✅ $IPA  $SIZE 字节  build $(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")"
+
+fi
 
 # ---------- 4. 测试（编译时已在后台并行跑） ----------
 step "脚本测试"

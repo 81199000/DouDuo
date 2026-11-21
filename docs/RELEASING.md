@@ -12,6 +12,9 @@ DouDuo 发版不需要发布管家：负责该版本的维护者（人或 Agent�
 
 写好 `docs/releases/vX.Y.Z.md`（第一行 `# 标题` 会作为 Release 标题），在主干 main 上：
 
+scripts/release.sh                   # ★ 一键发版（AI / 自动化直接跑这个）：版本号自动 +1、缺发行说明自动生成、失败重跑即续发
+scripts/release.sh X.Y.Z             # 指定版本号
+scripts/release.sh --dry-run         # 只演练
 ```bash
 scripts/publish.sh X.Y.Z --dry-run   # 先演练：检查 + 编译 + 打包 + 全部测试，不提交不推送
 scripts/publish.sh X.Y.Z             # 正式发版
