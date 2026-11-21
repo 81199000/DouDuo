@@ -8,5 +8,5 @@ st = (root / "DYSettingsScreen.swift").read_text()
 assert "@AppStorage(DYStream.enabledKey) private var streamCache = true" in st
 assert "@AppStorage(DYStream.saverKey) private var dataSaver = true" in st
 u = (root / "UpdateChecker.swift").read_text()
-assert 'giteeRepo = "remon8/douduo"' in u and "81199000/DouDuo\"" not in u, "更新检查不能再指被封的旧号"
+assert 'giteeRepo = "remon8/douduo"' in u and 'static let repo = "81199000/DouDuo"' in u, "更新检查源与开源仓库地址不对"
 print("ok saver default + update source")

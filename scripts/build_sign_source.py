@@ -15,7 +15,7 @@
 """
 import argparse, json, pathlib, re, subprocess, sys, urllib.request
 
-GH_REPO = "WuWeiDuo/DouDuo"   # 2026-11-20 旧号 81199000 被封后换新号（仓库暂为私有）
+GH_REPO = "81199000/DouDuo"
 GITEE_REPO = "remon8/douduo"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "docs/source"
@@ -28,7 +28,7 @@ DESC = ("DouDuo：开源免费的第三方抖音客户端（非官方），原�
 
 
 def gh_releases(limit):
-    """版本列表以 Gitee 发行版为准（完整历史都在那；GitHub 新号仓库是 2026-11-20 才建的，旧版本不在上面）。
+    """版本列表以 Gitee 发行版为准（完整历史都在那）。
     返回 [(release, ipa)]，字段对齐 GitHub：tag_name / published_at / body / name，ipa 带 name / size / browser_download_url。"""
     tok = gitee_token()
     hdr = {"Authorization": "token " + tok} if tok else {}
