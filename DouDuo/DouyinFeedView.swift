@@ -565,6 +565,13 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     func fetchFeed() async throws -> (items: [DYAweme], hasMore: Bool) {
         refreshIndex += 1
+        #if DEBUG
+        // 复现「开 App 时拉推荐失败」：前 N 次直接当网络失败（DOUDUO_FAIL_FEED=N）
+        if let n = ProcessInfo.processInfo.environment["DOUDUO_FAIL_FEED"].flatMap(Int.init), refreshIndex <= n + 1 {
+            DYLiveModel.log("DDFEED idx=\(refreshIndex) tab s=-1 signed=false len=0 more=false msg= (DOUDUO_FAIL_FEED)")
+            throw DYError.blocked("HTTP -1")
+        }
+        #endif
         let args: [String: Any] = ["refresh": String(refreshIndex), "install": String(Self.installTime),
                                    "pull": refreshIndex <= 2 ? "0" : "2"]
         let p = try JSONDecoder().decode(DYFeedPage.self, from: try await call(Self.tabFeedJS, args: args))
@@ -1998,6 +2005,9 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 DYLiveModel.log("DDSWIPECOST focus=\(Int((t1-t0)*1000))ms save=\(Int((t2-t1)*1000))ms watch=\(Int((t3-t2)*1000))ms n=\(feed.items.count)")
             }
         }
+        // 开 App 时推荐没拉到（签名还没好 / 网络抖一下）：签名一就绪立刻补拉，之后每 2 秒检查一次（补拉本身 3 秒节流）
+        .onReceive(bridge.$signReady) { ok in if ok { refillIfStuck(reason: "sign") } }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
         }
@@ -3235,6 +3245,9 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 DYLiveModel.log("DDSWIPECOST focus=\(Int((t1-t0)*1000))ms save=\(Int((t2-t1)*1000))ms watch=\(Int((t3-t2)*1000))ms n=\(feed.items.count)")
             }
         }
+        // 开 App 时推荐没拉到（签名还没好 / 网络抖一下）：签名一就绪立刻补拉，之后每 2 秒检查一次（补拉本身 3 秒节流）
+        .onReceive(bridge.$signReady) { ok in if ok { refillIfStuck(reason: "sign") } }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refillIfStuck(reason: "timer") }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             saveSession()
         }
