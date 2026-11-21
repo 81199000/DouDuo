@@ -774,6 +774,29 @@ extension DouyinBridge {
 @MainActor enum DDNowPlaying {
     static var id = ""
     static var time: Double = 0
+    /// 正在写进度的播放器实例；滑走 / 页面消失时清空并记下时刻
+    private static var owner: UUID?
+    private static var releasedAt = Date.distantPast
+
+    static func note(_ id: String, _ time: Double, owner: UUID) {
+        self.id = id; self.time = time; self.owner = owner
+    }
+
+    /// whilePlaying = 当前页还在前台就被拆掉（视图重建）；滑走只清空，不算可接手
+    static func release(_ owner: UUID, whilePlaying: Bool) {
+        guard self.owner == owner else { return }
+        self.owner = nil
+        if whilePlaying { releasedAt = Date() }
+    }
+
+    /// 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论时 DDClipIf 换视图身份，#52-2 / 工单 B13）：
+    /// 新实例建好时外层的 resume 还是旧值（旧实例 onDisappear 才回写），直接接旧实例的实时进度，否则从头播。
+    static func handoff(_ id: String, to instance: UUID) -> Double? {
+        guard self.id == id, time.isFinite, time > 0 else { return nil }
+        let liveElsewhere = owner != nil && owner != instance
+        guard liveElsewhere || Date().timeIntervalSince(releasedAt) < 1.5 else { return nil }
+        return time
+    }
 }
 
 // MARK: - 弹幕调度策略
