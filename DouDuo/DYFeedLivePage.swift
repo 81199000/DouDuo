@@ -138,6 +138,7 @@ struct DYFeedLivePage: View {
                 }
             }
             DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) warm=1 title=\(live.title.prefix(20))")
+            Self.traceAudio(h.controller, room: live.roomID, tag: "warm")
             return
         }
         let sources = room.liveStreams
@@ -157,6 +158,28 @@ struct DYFeedLivePage: View {
         if shownAt == 0 { shownAt = CACurrentMediaTime() }
         DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) q=\(s.quality) flv=\(s.isFLV) title=\(live.title.prefix(20))")
         player.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
+        Self.traceAudio(player, room: live.roomID, tag: "cold")
+    }
+
+    /// 划到直播后 3 秒内每 100ms 记一笔音频状态：解出几块音频、播出几块、音轨号、音量、静音。
+    /// 用来看「画面有了、声音晚一会」到底卡在哪一步（没解出 / 解出没播 / 播了但音量没起来）。
+    private static func traceAudio(_ c: VLCPlayerController, room: String, tag: String) {
+        let t0 = CACurrentMediaTime()
+        Task { @MainActor [weak c] in
+            var last = ""
+            var firstPlayed: Int?
+            for _ in 0..<30 {
+                guard let c else { return }
+                let st = c.mediaPlayer.media?.statistics
+                let dec = Int(st?.decodedAudio ?? -1), played = Int(st?.playedAudioBuffers ?? -1), lost = Int(st?.lostAudioBuffers ?? -1)
+                let a = c.mediaPlayer.audio
+                let line = "dec=\(dec) played=\(played) lost=\(lost) track=\(c.mediaPlayer.currentAudioTrackIndex) vol=\(a?.volume ?? -9) mute=\(a?.isMuted == true ? 1 : 0) state=\(c.mediaPlayer.state.rawValue)"
+                let ms = Int((CACurrentMediaTime() - t0) * 1000)
+                if line != last { DYLiveModel.log("DDLIVEAUDIO \(tag) room=\(room.suffix(6)) +\(ms)ms \(line)"); last = line }
+                if firstPlayed == nil, played > 0 { firstPlayed = played }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
     private func stop() {

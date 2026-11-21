@@ -89,6 +89,8 @@ final class DYFeedLiveWarm {
         cap?.cancel(); cap = nil
         muteKeeper?.cancel(); muteKeeper = nil
         let hasFrame = h.controller.videoSize.width > 0
+        let st = h.controller.mediaPlayer.media?.statistics
+        DYLiveModel.log("DDLIVEWARM audio-at-take dec=\(st?.decodedAudio ?? -1) played=\(st?.playedAudioBuffers ?? -1) lost=\(st?.lostAudioBuffers ?? -1) track=\(h.controller.mediaPlayer.currentAudioTrackIndex) tracks=\(h.controller.mediaPlayer.audioTrackIndexes.count) video=\(st?.decodedVideo ?? -1)")
         DYLiveModel.log("DDLIVEWARM take room=\(roomID.suffix(6)) warmed=\(Int((CACurrentMediaTime() - startedAt) * 1000))ms frame=\(hasFrame) vol=\(h.controller.mediaPlayer.audio?.volume ?? -9) mute=\(h.controller.mediaPlayer.audio?.isMuted == true)")
         return h
     }
