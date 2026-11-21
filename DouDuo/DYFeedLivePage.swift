@@ -34,6 +34,8 @@ struct DYFeedLivePage: View {
     @State private var failed = false
     /// 变成当前条的时刻：记「视频划到直播 → 直播出画」等了多久（DDFEEDLIVE firstframe）
     @State private var shownAt: CFTimeInterval = 0
+    /// 从预热拿来的那一路（有值时用它，不用自己的 player）
+    @State private var warm: DYFeedLiveWarm.Handle?
     @AppStorage("douyin_muted_v1") private var muted = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -46,9 +48,13 @@ struct DYFeedLivePage: View {
             // 不铺封面：先封面再切到直播画面会「闪一下」（老板 2026-11-21：闪封面很难受），没出画前就是黑底
             Color.black
             if isCurrent {
-                VLCPlayerSurface(controller: player, fillWidth: live.portrait, letterbox: .clear)
-                    .opacity(player.videoSize.width > 0 ? 1 : 0)
-                    .allowsHitTesting(false)
+                // 预热过（上一条时已在后台连上）就用那一路，划到就有画面；否则现连
+                DYFeedLiveVideo(controller: warm?.controller ?? player, warmView: warm?.view, portrait: live.portrait) {
+                    guard shownAt > 0 else { return }
+                    DYLiveModel.log("DDFEEDLIVE firstframe room=\(live.roomID.suffix(6)) wait=\(Int((CACurrentMediaTime() - shownAt) * 1000))ms src=\(sourceIndex) warm=\(warm != nil)")
+                    shownAt = 0
+                }
+                .id(warm?.roomID ?? "cold")
             }
             // 同抖音 App：「点击进入直播间」放在下方居中、紧挨左下信息上面，不挡画面中间（老板 2026-11-20）
             VStack(spacing: 14) {
@@ -82,12 +88,11 @@ struct DYFeedLivePage: View {
         .ignoresSafeArea()
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, cur in cur ? start() : stop() }
-        .onChange(of: muted) { _, m in player.outputMuted = m; player.mediaPlayer.audio?.isMuted = m }
-        .onChange(of: player.videoSize.width > 0) { _, has in
-            guard has, shownAt > 0 else { return }
-            DYLiveModel.log("DDFEEDLIVE firstframe room=\(live.roomID.suffix(6)) wait=\(Int((CACurrentMediaTime() - shownAt) * 1000))ms src=\(sourceIndex)")
-            shownAt = 0
+        .onChange(of: muted) { _, m in
+            let c = warm?.controller ?? player
+            c.outputMuted = m; c.mediaPlayer.audio?.isMuted = m
         }
+
         .onDisappear { stop() }
         .accessibilityIdentifier("douyin.feed.live")
     }
@@ -115,6 +120,23 @@ struct DYFeedLivePage: View {
     }
 
     private func start() {
+        if warm == nil, let h = DYFeedLiveWarm.shared.take(live.roomID) {
+            warm = h
+            started = true
+            failed = false
+            shownAt = CACurrentMediaTime()
+            h.controller.outputMuted = muted
+            h.controller.mediaPlayer.audio?.isMuted = muted
+            h.controller.onError = {
+                Task { @MainActor in
+                    // 预热那一路断了：丢掉它，走现连
+                    guard started, isCurrent, let w = warm else { return }
+                    warm = nil; DYFeedLiveWarm.dispose(w); started = false; start()
+                }
+            }
+            DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) warm=1 title=\(live.title.prefix(20))")
+            return
+        }
         let sources = room.liveStreams
         guard !sources.isEmpty else { failed = true; return }
         if sourceIndex >= sources.count { sourceIndex = 0 }
@@ -140,6 +162,7 @@ struct DYFeedLivePage: View {
         let t0 = CACurrentMediaTime()
         defer { let ms = Int((CACurrentMediaTime() - t0) * 1000); if ms > 8 { DYLiveModel.log("DDFEEDLIVE stop-main=\(ms)ms") } }
         started = false
+        if let w = warm { warm = nil; DYFeedLiveWarm.dispose(w); return }
         player.onError = nil
         player.stop()
         // VLC 停播（异步）会把音频会话关掉：通知当前短视频检查自己是否被意外停住

@@ -1061,7 +1061,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       const m = /(?:^|_)(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
     };
     // format=dash 的档只有画面没有声音（音轨单独给），只能用 format=mp4 的（2026-11-20 真机：省流量档选到 dash 没声音）
-    const withAudio = r => !r.format || r.format === 'mp4';
+    // 档名末位 _2 = 字节自研 ByteVC2（文件里是 bvc2），iPhone 解不了 → 有声没画面（2026-11-21 真机：广告 10 条里 5 条黑屏，全是选中了 720_1_2）。
+    // 普通视频的 H.265 档末位是 _1（hvc1，能解）。播放地址只从能解的档里挑。
+    const decodable = r => !/_2$/.test(r.gear_name || '');
+    const withAudio = r => (!r.format || r.format === 'mp4') && decodable(r);
     const bestRate = v => {
       const rs = (v.bit_rate || []).filter(r => r && withAudio(r) && r.play_addr && r.play_addr.url_list && r.play_addr.url_list.length)
         .filter(r => !/adapt_lowest|lower/i.test(r.gear_name || ''));
