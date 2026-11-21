@@ -5402,7 +5402,7 @@ final class DouDuoUITests: XCTestCase {
         sleep(1)
         more().tap()
         any("设置").tap()
-        for l in ["横着看时只放横屏", "自动铺满宽度", "预缓存视频", "清除视频缓存", "网页版", "关于"] {
+        for l in ["横着看时只放横屏", "自动铺满宽度", "预缓存视频", "储存空间", "网页版", "关于"] {
             XCTAssertTrue(any(l).waitForExistence(timeout: 5), "设置子菜单缺少 \(l)")
         }
         attach(app, "more-settings")

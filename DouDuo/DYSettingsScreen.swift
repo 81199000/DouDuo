@@ -37,8 +37,6 @@ struct DYSettingsScreen: View {
     @AppStorage(DYDMNotificationSettings.detailKey) private var dmDetail = false
     @State private var showNotes = false
     @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
-    @State private var clearing = false
-    @State private var cacheNote: String?
 
     private static let cacheChoices: [(Int, String)] = [(5, "5 条"), (10, "10 条"), (20, "20 条"), (50, "50 条"), (100, "100 条"), (0, "关闭")]
 
@@ -146,26 +144,11 @@ struct DYSettingsScreen: View {
                     }
                     .accessibilityIdentifier("settings.cache.offline")
                     NavigationLink {
-                        DYStorageScreen()
+                        DYStorageScreen(onCleared: onCacheCleared)
                     } label: {
                         Label("储存空间", systemImage: "internaldrive")
                     }
                     .accessibilityIdentifier("settings.storage")
-                    Button(role: .destructive) {
-                        clearing = true
-                        Task {
-                            let b = await DYVideoCache.shared.clear()
-                            cacheNote = "已清除 \(b / 1024 / 1024) MB"
-                            clearing = false
-                            onCacheCleared()
-                        }
-                    } label: {
-                        LabeledContent(clearing ? "清除中…" : "清除视频缓存") {
-                            if let cacheNote { Text(cacheNote) }
-                        }
-                    }
-                    .disabled(clearing)
-                    .accessibilityIdentifier("settings.cache.clear")
                 } header: {
                     Text("缓存与离线")
                 } footer: {

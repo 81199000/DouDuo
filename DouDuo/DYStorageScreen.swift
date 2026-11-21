@@ -11,6 +11,8 @@ struct DYStorageScreen: View {
     @State private var confirming = false
     @State private var scanFailed = false
     @State private var cleanupSucceeded: Bool?
+    /// 清完缓存后让推荐页重新准备当前这条（原设置页「清除视频缓存」按钮的做法，按钮已并到这里）
+    var onCleared: () -> Void = {}
 
     var body: some View {
         Form {
@@ -210,6 +212,7 @@ struct DYStorageScreen: View {
 
         await updateUsage()
         cleanupSucceeded = videos && images && chatImages && previews && logs
+        onCleared()
     }
 
     private static let byteFormatter: ByteCountFormatter = {
