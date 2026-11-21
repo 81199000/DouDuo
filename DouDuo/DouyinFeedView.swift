@@ -6206,6 +6206,7 @@ extension DYFeedModel {
     func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
         // 启动先清掉上次看过的缓存，避免重启后又被当成「待看」塞回推荐里
         Task { await DYVideoCache.shared.purgeWatched() }
+        DispatchQueue.global(qos: .utility).async { DYStreamStore.shared.trim() }
         var result: (currentID: String?, positions: [String: Double])?
         // 启动不再恢复上次会话的条目：抖音播放地址带签名，过一段时间就 403，
         // 拿旧条目起播会一直等到超时（实测有条等了 56.93 秒）。
