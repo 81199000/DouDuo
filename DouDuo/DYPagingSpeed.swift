@@ -187,7 +187,10 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     /// 提前起播时收尾动画还要走多久：这段时间里别让 SwiftUI 的 scrollPosition 跟着当前条改（会和收尾动画抢位置 → DDJUMPFIX）
     @MainActor static var settleEndsAt: CFTimeInterval = 0
     /// 收尾动画剩最后这么久时就切当前条起播（老板 11-21 选 2A：停住那一刻画面正好动起来，不再停住后干等约 0.15s）
-    static let earlyStart: TimeInterval = 0.10
+    /// ⚠️ 11-21 晚改回 0：切当前条那一帧主线程要忙 50–70ms（播放器换成当前、整页重算），
+    /// 提前 0.1s 切 = 这一顿正好落在画面还在往上走的时候，老板看到「每条快到位都卡一下」（真机 244 次长帧里 117 次紧跟提前起播）。
+    /// 停住再切，这一顿发生在画面静止时，肉眼看不出。
+    static let earlyStart: TimeInterval = 0
     private var earlyFired = false
     private var writing = false
     private var jumpFixes = 0
@@ -331,7 +334,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         let target = CGPoint(x: capturedTarget.x,
                              y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top)
         let fraction = min(1, max(0, (CACurrentMediaTime() - startTime) / animationDuration))
-        if !earlyFired, CACurrentMediaTime() - startTime >= animationDuration - Self.earlyStart {
+        if Self.earlyStart > 0, !earlyFired, CACurrentMediaTime() - startTime >= animationDuration - Self.earlyStart {
             earlyFired = true
             Self.settleEndsAt = startTime + animationDuration
             DYLiveModel.log("DDSETTLE-EARLY \(targetID.suffix(6)) 剩 \(Int(Self.earlyStart * 1000))ms 起播")
