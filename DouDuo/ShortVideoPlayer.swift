@@ -519,8 +519,10 @@ struct PlayerPage: View {
     private var canControlPlayback: Bool {
         playbackIsActive && (!DDPlayback.shared.offlineLibraryPresented || offlineContext?.inLibrary == true)
     }
+    /// 同一条视频的播放器被重建时接手的实时进度（工单 B13：内屏开评论从头播）
+    @State private var handoffPosition: Double?
     private var initialResumePosition: Double? {
-        guard let seconds = resumePosition, seconds.isFinite,
+        guard let seconds = handoffPosition ?? resumePosition, seconds.isFinite,
               seconds > (offlineContext?.inLibrary == true ? 0 : 1) else { return nil }
         return seconds
     }
@@ -694,6 +696,10 @@ struct PlayerPage: View {
             life.generation += 1
             let generation = life.generation
             playbackIsActive = isActive
+            // 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论）：接上旧实例的实时进度，不从头播（工单 B13）
+            if isActive, player == nil, vlc == nil, offlineContext?.inLibrary != true {
+                handoffPosition = DDNowPlaying.handoff(id, to: playbackID)
+            }
             if player == nil, vlc == nil {
                 // 动画帧里不建播放器：非当前页延迟到滑动结束后再建（抖音也是提前预渲染，不在滑动那一帧做）
                 if isActive { DYSwipeProbe.mark("setup-active(\(id.suffix(4)))"); setup() }
@@ -733,6 +739,7 @@ struct PlayerPage: View {
                                        playsInsideCover: playsInsideCover, coverLevel: coverLevel)
         }
         .onDisappear {
+            DDNowPlaying.release(playbackID, whilePlaying: playbackIsActive)
             playbackIsActive = false
             if DDRemoteOwner.instance == playbackID { clearRemote() }
             #if DEBUG
@@ -829,6 +836,7 @@ struct PlayerPage: View {
         }
         .onChange(of: isActive) { _, active in
             playbackIsActive = active
+            if !active { DDNowPlaying.release(playbackID, whilePlaying: false); handoffPosition = nil }
             if active { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
             if !active {
                 if DDRemoteOwner.instance == playbackID { clearRemote() }
@@ -1644,7 +1652,7 @@ struct PlayerPage: View {
             recordOfflinePosition(pos)
             if v.isPlaying, pos >= playbackRecordThreshold { noteSavedPlayback(completed: false) }
             refreshNowPlaying(pos)
-            if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos }
+            if playbackIsActive { DDNowPlaying.note(id, pos, owner: playbackID) }
             dmClock.sync(pos, playing: v.isPlaying && !seeking, rate: Double(v.mediaPlayer.rate))
             if !rateBoost, v.isPlaying, v.mediaPlayer.rate != Float(effectiveRate) { v.setRate(Float(effectiveRate)) }
             if v.duration > 0 { duration = v.duration }
@@ -1731,7 +1739,7 @@ struct PlayerPage: View {
                     headCompleted = true
                     Task { await DYVideoCache.shared.completeLong(id: id) }
                 }
-                if playbackIsActive { DDNowPlaying.id = id; DDNowPlaying.time = pos; DYStreamStore.shared.setPlayhead(id, t.seconds) }
+                if playbackIsActive { DDNowPlaying.note(id, pos, owner: playbackID); DYStreamStore.shared.setPlayhead(id, t.seconds) }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)
                 // 原生声音模式下每 0.25s 拉回锁定倍速（交给 seamAudio：能交接给独立引擎就不走会卡一下的原生变速）；
