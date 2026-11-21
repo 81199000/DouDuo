@@ -123,6 +123,22 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "mine-light-grid-bounds")
     }
 
+    /// 「我的」下拉刷新：作品格子往下拉，出现系统转圈并重新拉第一页（老板 2026-11-21）
+    func testMinePullToRefresh() throws {
+        let app = XCUIApplication()
+        // 带假的已登录资料：不带的话未登录会自动弹登录页，拖动落在登录页上而不是列表
+        app.launchEnvironment = ["DOUDUO_CHROME_MODE":"classic", "DOUDUO_GRID_FIXTURE":"1", "DOUDUO_SELF_FIXTURE":"1", "DOUDUO_OPEN":"mine"]
+        app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let cell = app.buttons["douyin.grid.item.hashtag-travel"].firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 20))
+        let start = cell.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 420)))
+        attach(app, "mine-pull-refresh")
+        XCTAssertTrue(cell.waitForExistence(timeout: 10), "刷新后作品格子还在")
+    }
+
     func testAppearanceClassic() throws { try verifyAppearance(mode: "duoClassic") }
     func testAppearanceOrdinary() throws { try verifyAppearance(mode: "classic") }
 
