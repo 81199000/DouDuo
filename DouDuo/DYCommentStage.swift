@@ -49,15 +49,6 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         let w = geo.size.width, h = geo.size.height
 
         return ZStack(alignment: .topLeading) {
-            // 侧栏评论时视频区只画到底部安全区上沿，下面会露出页面底色（浅色主题是一条白边，老板 11-21 截图）。
-            // 垫一条黑底到屏幕最下沿；它是独立兄弟层，不包播放器，不会引起重建（工单 B13）。
-            if layout.showsPane && layout.sideBySide {
-                Color.black
-                    .frame(width: layout.videoSize.width)
-                    .frame(maxHeight: .infinity)
-                    .ignoresSafeArea(edges: .vertical)
-                    .allowsHitTesting(false)
-            }
             feed()
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
@@ -142,6 +133,15 @@ extension EnvironmentValues {
 struct DDClipIf: ViewModifier {
     let on: Bool
     func body(content: Content) -> some View {
-        content.clipShape(Rectangle().inset(by: on ? 0 : -200))
+        content.clipShape(DDPaneClipShape(on: on))
+    }
+}
+
+/// 开评论时只裁左右（别盖住右侧评论栏），上下照样外扩：环境光要铺到屏幕最底边，
+/// 否则底部手势条那一截露出页面底色（老板 11-21：先是白边，垫黑底后成黑边）。
+private struct DDPaneClipShape: Shape {
+    let on: Bool
+    func path(in rect: CGRect) -> Path {
+        Path(rect.insetBy(dx: on ? 0 : -200, dy: -200))
     }
 }

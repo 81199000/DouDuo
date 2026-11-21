@@ -569,7 +569,8 @@ struct PlayerPage: View {
             // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
             if ambientLevel > 0, vlc == nil, let player {
                 DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
-                    .ignoresSafeArea(edges: playbackSafeAreaEdges)
+                    // 侧栏评论时也铺满上下安全区（左右由外层裁剪），底部不留白边 / 黑边
+                    .ignoresSafeArea(edges: restrictsPlaybackToPane ? .vertical : .all)
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.video.ambient")
             }
