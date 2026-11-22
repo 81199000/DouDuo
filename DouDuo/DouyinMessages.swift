@@ -1470,13 +1470,13 @@ struct DYMessagesScreen: View {
                     let active = visible
                     Group {
                         if route == .stranger {
-                            DYStrangerListScreen(isActive: active, embedded: true,
+                            DYStrangerListScreen(isActive: active, embedded: true, topInset: messageTopInset,
                                 onOpen: { row in navigation.openChat(row.id, from: .stranger) },
                                 onOpeningChanged: { openingChat = $0 ? "stranger" : nil })
                         } else {
                             DYNoticeListScreen(bridge: bridge, route: route, onWeb: onWeb,
                                 onViewedGroup: { group in viewedGroups[route, default: []].insert(group) },
-                                isActive: active, embedded: true)
+                                isActive: active, embedded: true, topInset: messageTopInset)
                         }
                     }
                     .offset(x: !sidebarVisible && !reduceMotion && navigation.isChat && navigation.category == route
@@ -1922,6 +1922,9 @@ struct DYNoticeListScreen: View {
     let onViewedGroup: (Int) -> Void
     let isActive: Bool
     let embedded: Bool
+    /// 嵌在信息页右侧时外层整页忽略了顶部安全区：标题行要让开状态栏，否则「全部互动」下拉落在系统导航栏底下，点不到
+    /// （老板 2026-11-22：展开大屏竖屏点不了）。跟左侧「消息」标题同一个值，两边顶部对齐。
+    var topInset: CGFloat = 0
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
     @ObservedObject private var emojiStore = DYEmojiStore.shared
@@ -1954,7 +1957,8 @@ struct DYNoticeListScreen: View {
     @State private var replyKeyboardInset: CGFloat = 0
 
     init(bridge: DouyinBridge, route: DYMsgRoute, onWeb: @escaping (URL) -> Void, onViewedGroup: @escaping (Int) -> Void,
-         isActive: Bool = true, embedded: Bool = false) {
+         isActive: Bool = true, embedded: Bool = false, topInset: CGFloat = 0) {
+        self.topInset = topInset
         self.bridge = bridge
         self.route = route
         self.onWeb = onWeb
@@ -2051,6 +2055,8 @@ struct DYNoticeListScreen: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .frame(minHeight: theme.messages.headerHeight)
+                .padding(.top, topInset)
                 .background(Color.ddBackground)
                 Divider()
                 list
@@ -2945,6 +2951,8 @@ enum DYChatOpener {
 struct DYStrangerListScreen: View {
     var isActive = true
     var embedded = false
+    /// 同互动页：嵌在信息页右侧时标题让开状态栏
+    var topInset: CGFloat = 0
     var onOpen: ((DYConversationRow) -> Void)? = nil
     var onOpeningChanged: (Bool) -> Void = { _ in }
     @ObservedObject private var cache = DYMessageCache.shared
@@ -2966,6 +2974,8 @@ struct DYStrangerListScreen: View {
                     Divider()
                 }
                 .frame(maxWidth: .infinity)
+                .padding(.top, topInset)
+                .background(Color.ddBackground)
             }
         } else {
             content.navigationTitle(DYMsgRoute.stranger.title).navigationBarTitleDisplayMode(.inline)
