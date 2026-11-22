@@ -192,6 +192,20 @@ extension DouyinBridge {
         Self.manageResult(try await writeCall(Self.mixCollectJS, ["mix": mixID, "action": on ? "1" : "0"], tag: on ? "mix-collect" : "mix-uncollect"))
     }
 
+    /// 收藏的短剧（series/collections，字段同合集：series_id / series_name / cover_url / stats.updated_to_episode）
+    func collectedSeries(cursor: String) async throws -> (items: [DYMixInfo], cursor: String, hasMore: Bool) {
+        try await page(Self.seriesCollectionsJS, ["cursor": cursor], DYMixInfo.self)
+    }
+
+    func seriesVideos(_ seriesID: String, cursor: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
+        try await page(Self.seriesAwemeJS, ["sid": seriesID, "cursor": cursor], DYAweme.self)
+    }
+
+    /// 批量取消收藏短剧（series/cancel/collect/multi，series_ids）
+    func cancelSeriesCollects(_ ids: [String]) async throws -> DYBatchResult {
+        try await batch(Self.cancelSeriesMultiJS, ids: ids, tag: "unseries-multi")
+    }
+
     func collectedMusic(cursor: String) async throws -> (items: [DYMusicInfo], cursor: String, hasMore: Bool) {
         try await page(Self.musicListCollectionJS, ["cursor": cursor], DYMusicInfo.self)
     }
@@ -346,6 +360,31 @@ extension DouyinBridge {
     const r = await req('GET', '/aweme/v1/web/mix/collect/?' + q({ mix_id: mix, action: action }));
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, statusCode: d.status_code ?? null, msg: d.status_msg || null });
+    """#
+
+    static let seriesCollectionsJS = #"""
+    const r = await req('GET', '/aweme/v1/web/series/collections/?' + q({ cursor: cursor, count: '20' }));
+    const d = parse(r.t) || {};
+    const items = (d.series_infos || []).filter(m => m && !(m.status && (m.status.status === 3 || m.status.status === 4))).map(m => ({
+      id: String(m.series_id || ''), name: m.series_name || '', cover: first(m.cover_url),
+      episodes: Number((m.stats && m.stats.updated_to_episode) || 0), author: (m.author && m.author.nickname) || ''
+    })).filter(m => m.id);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    """#
+
+    static let seriesAwemeJS = #"""
+    const r = await req('GET', '/aweme/v1/web/series/aweme/?' + q({ series_id: sid, pull_type: '2', cursor: String(Math.max(Number(cursor) || 0, 0)), count: '20' }));
+    const d = parse(r.t) || {};
+    const items = (d.aweme_list || []).filter(a => a && (a.video || a.images) && !a.is_ads).map(mapA);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    """#
+
+    static let cancelSeriesMultiJS = #"""
+    if (typeof sdkReady === 'function') await sdkReady(6000);
+    const body = new URLSearchParams({ series_ids: ids }).toString();
+    const r = await req('POST', '/aweme/v1/web/series/cancel/collect/multi/?' + q({}), body);
+    const d = parse(r.t) || {};
+    return JSON.stringify({ status: r.s, statusCode: d.status_code ?? null, msg: d.status_msg || null, failed: [] });
     """#
 
     static let musicListCollectionJS = #"""

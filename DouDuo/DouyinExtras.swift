@@ -70,6 +70,21 @@ struct DYSug: Identifiable, Decodable, Equatable {
     let word: String
 }
 
+/// 「我的 · 收藏」分类，对应网页版 tQ：favorite_folder / video / music / compilation / playlet
+enum DYCollectSub: String, CaseIterable, Identifiable {
+    case folders, video, music, mix, series
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .folders: "我的收藏夹"
+        case .video: "视频"
+        case .music: "音乐"
+        case .mix: "合集"
+        case .series: "短剧"
+        }
+    }
+}
+
 enum DYListKind: String, CaseIterable, Identifiable {
     case post, like, collect, history, later
     var id: String { rawValue }
@@ -1403,6 +1418,7 @@ struct DYListPlayer: View {
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
+        .modifier(DYCollectPromptHost(owner: .list))
         .sheet(item: $authorSheet, onDismiss: { if !offlineLibrary { DDPlayback.shared.releaseCover() } }) { a in
             NavigationStack {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
@@ -1546,7 +1562,10 @@ struct DYListPlayer: View {
         if want { playback.collected.insert(id) } else { playback.collected.remove(id) }
         Task {
             let r = try? await bridge.favorite(id, add: want)
-            if case .ok = r { show(want ? "已收藏" : "已取消收藏"); return }
+            if case .ok = r {
+                if want { DYCollectPrompt.shared.show(id, owner: .list) } else { show("已取消收藏") }
+                return
+            }
             if want { playback.collected.remove(id) } else { playback.collected.insert(id) }
             show("收藏失败")
         }
@@ -1905,10 +1924,9 @@ struct DYMineScreen: View {
     @State private var picked: Set<String> = []
     @State private var batchBusy = false
     @State private var confirmBatch: DYMineBatch?
-    @State private var showFolders = false
     @State private var moveTarget: [String]?
-    @State private var showMixes = false
-    @State private var showMusic = false
+    /// 「收藏」下的分类（网页版同款：收藏夹 / 视频 / 音乐 / 合集 / 短剧）
+    @State private var collectSub: DYCollectSub = .video
     /// 这次打开期间已经自动弹过登录：放在静态里——简洁 / 极简模式在信息 ⇄ 我的之间切换会重建「我的」，
     /// @State 会被重置，导致每切回来一次就再弹一次登录
     private static var autoLoginShownAt: Date?
@@ -2035,23 +2053,30 @@ struct DYMineScreen: View {
             .padding(.bottom, 6)
 
             if kind == .collect && !managing {
-                // 收藏下的二级入口：收藏夹 / 合集 / 音乐（网页版「收藏」页同款分类）
-                HStack(spacing: 8) {
-                    collectEntry("收藏夹", "folder", id: "douyin.mine.folders") { showFolders = true }
-                    collectEntry("合集", "rectangle.stack", id: "douyin.mine.mixes") { showMixes = true }
-                    collectEntry("音乐", "music.note", id: "douyin.mine.music") { showMusic = true }
-                    Spacer(minLength: 0)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(DYCollectSub.allCases) { c in
+                            Button { collectSub = c } label: {
+                                Text(c.title).font(.caption.weight(collectSub == c ? .semibold : .regular))
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(Capsule().fill(Color.primary.opacity(collectSub == c ? 0.16 : 0.06)))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("douyin.mine.collect.\(c.rawValue)")
+                        }
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16).padding(.bottom, 6)
+                .padding(.bottom, 6)
             }
 
-            if kind.supportsBatch || kind == .history || manageMsg != nil {
+            if (kind.supportsBatch && !(kind == .collect && collectSub != .video)) || kind == .history || manageMsg != nil {
                 HStack(spacing: 10) {
                     if let manageMsg {
                         Text(manageMsg).font(.caption).foregroundStyle(.orange).lineLimit(2)
                     }
                     Spacer(minLength: 0)
-                    if kind.supportsBatch {
+                    if kind.supportsBatch && !(kind == .collect && collectSub != .video) {
                         if managing {
                             Text("已选 \(picked.count)").font(.caption).foregroundStyle(.secondary)
                             Button("全选") { picked = Set(models[kind]?.items.map(\.id) ?? []) }
@@ -2073,7 +2098,19 @@ struct DYMineScreen: View {
                 .padding(.horizontal, 16).padding(.bottom, 6)
             }
 
-            if let m = models[kind] {
+            if kind == .collect && collectSub != .video {
+                Group {
+                    switch collectSub {
+                    case .folders: DYCollectsFoldersScreen(bridge: bridge, onAuthor: onAuthor, embedded: true)
+                    case .music: DYCollectedMusicScreen(bridge: bridge, embedded: true)
+                    case .mix: DYCollectedMixesScreen(bridge: bridge, onAuthor: onAuthor, embedded: true)
+                    case .series: DYCollectedMixesScreen(bridge: bridge, onAuthor: onAuthor, series: true, embedded: true)
+                    case .video: EmptyView()
+                    }
+                }
+                .id(collectSub)
+                .scrollContentBackground(.hidden)
+            } else if let m = models[kind] {
                 DYMineList(model: m, showsPlayCount: kind == .post,
                            removeTitle: kind == .later ? "移出稍后再看" : nil,
                            onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil,
@@ -2140,16 +2177,12 @@ struct DYMineScreen: View {
             }
             Button("取消", role: .cancel) {}
         } message: { Text(confirmBatch?.message ?? "") }
-        .sheet(isPresented: $showFolders) {
-            DYCollectsFoldersScreen(bridge: bridge, onAuthor: onAuthor)
-        }
         .sheet(item: Binding(get: { moveTarget.map { DYMoveRequest(ids: $0) } }, set: { moveTarget = $0?.ids })) { req in
             DYCollectsFolderPicker(bridge: bridge, ids: req.ids) { msg in
                 manageMsg = msg; managing = false; picked = []
             }
         }
-        .sheet(isPresented: $showMixes) { DYCollectedMixesScreen(bridge: bridge, onAuthor: onAuthor) }
-        .sheet(isPresented: $showMusic) { DYCollectedMusicScreen(bridge: bridge) }
+
         .alert("清空观看历史？", isPresented: $confirmClearHistory) {
             Button("清空", role: .destructive) { Task { await clearHistory() } }
             Button("取消", role: .cancel) {}
@@ -2217,16 +2250,6 @@ struct DYMineScreen: View {
             case .failed(let why): manageMsg = "没清掉：" + why
             }
         } catch { manageMsg = "没清掉：" + error.localizedDescription }
-    }
-
-    private func collectEntry(_ title: String, _ icon: String, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon).font(.caption.weight(.medium))
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(Capsule().fill(Color.primary.opacity(0.08)))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(id)
     }
 
     /// 批量管理底栏：按当前栏给能做的操作
@@ -2862,7 +2885,10 @@ struct DYFollowFeed: View {
         if want { collected.insert(id) } else { collected.remove(id) }
         Task {
             let r = try? await bridge.favorite(id, add: want)
-            if case .ok = r { onToast(want ? "已收藏" : "已取消收藏"); return }
+            if case .ok = r {
+                if want { DYCollectPrompt.shared.show(id, owner: .feed) } else { onToast("已取消收藏") }
+                return
+            }
             if want { collected.remove(id) } else { collected.insert(id) }
             onToast("收藏失败")
         }

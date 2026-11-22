@@ -101,16 +101,42 @@ struct DYCollectsFoldersScreen: View {
     @State private var message: String?
     @State private var open: DYCollectsFolder?
 
-    init(bridge: DouyinBridge, onAuthor: @escaping (DYAweme) -> Void) {
+    /// 嵌在「我的 · 收藏」里（官方同款分类行），不套导航栏
+    let embedded: Bool
+
+    init(bridge: DouyinBridge, onAuthor: @escaping (DYAweme) -> Void, embedded: Bool = false) {
         self.bridge = bridge
         self.onAuthor = onAuthor
+        self.embedded = embedded
         _pager = StateObject(wrappedValue: DYSimplePager { cur in try await bridge.collectsFolders(cursor: cur) })
     }
 
     var body: some View {
-        NavigationStack {
+        if embedded { content } else {
+            NavigationStack {
+                content.toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("新建", systemImage: "plus") { editing = DYFolderEdit(folder: nil) }
+                            .accessibilityIdentifier("douyin.folders.new")
+                    }
+                }
+            }
+        }
+    }
+
+    private var content: some View {
             List {
                 if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+                if embedded {
+                    Button { editing = DYFolderEdit(folder: nil) } label: {
+                        Label("创建收藏夹", systemImage: "plus").font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("douyin.folders.new")
+                    .listRowSeparator(.hidden)
+                }
                 ForEach(pager.items) { f in
                     Button { open = f } label: { folderRow(f) }
                         .buttonStyle(.plain)
@@ -131,13 +157,6 @@ struct DYCollectsFoldersScreen: View {
             .refreshable { await pager.reload() }
             .navigationTitle("收藏夹")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("新建", systemImage: "plus") { editing = DYFolderEdit(folder: nil) }
-                        .accessibilityIdentifier("douyin.folders.new")
-                }
-            }
             .task { if pager.items.isEmpty { await pager.more() } }
             .sheet(item: $editing) { e in
                 DYFolderEditor(edit: e) { name, secret in
@@ -154,7 +173,6 @@ struct DYCollectsFoldersScreen: View {
                     try await bridge.collectsVideos(f.id, cursor: cur)
                 }
             }
-        }
     }
 
     private func folderRow(_ f: DYCollectsFolder) -> some View {
@@ -306,6 +324,9 @@ struct DYCollectsFolderPicker: View {
 struct DYCollectedMixesScreen: View {
     let bridge: DouyinBridge
     let onAuthor: (DYAweme) -> Void
+    /// true = 收藏的短剧（series/*），false = 收藏的合集（mix/*）；两者网页版字段同形
+    let series: Bool
+    let embedded: Bool
     @Environment(\.dismiss) private var dismiss
     @StateObject private var pager: DYSimplePager<DYMixInfo>
     @State private var open: DYMixInfo?
@@ -314,16 +335,43 @@ struct DYCollectedMixesScreen: View {
     @State private var message: String?
     @State private var confirm = false
 
-    init(bridge: DouyinBridge, onAuthor: @escaping (DYAweme) -> Void) {
+    init(bridge: DouyinBridge, onAuthor: @escaping (DYAweme) -> Void, series: Bool = false, embedded: Bool = false) {
         self.bridge = bridge
         self.onAuthor = onAuthor
-        _pager = StateObject(wrappedValue: DYSimplePager { cur in try await bridge.collectedMixes(cursor: cur) })
+        self.series = series
+        self.embedded = embedded
+        _pager = StateObject(wrappedValue: DYSimplePager { cur in
+            series ? try await bridge.collectedSeries(cursor: cur) : try await bridge.collectedMixes(cursor: cur)
+        })
     }
 
+    private var noun: String { series ? "短剧" : "合集" }
+
     var body: some View {
-        NavigationStack {
+        if embedded { content } else {
+            NavigationStack {
+                content.toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(managing ? "完成" : "管理") { managing.toggle(); picked = [] }
+                            .accessibilityIdentifier("douyin.mixes.manage")
+                    }
+                }
+            }
+        }
+    }
+
+    private var content: some View {
             List {
                 if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+                if embedded, !pager.items.isEmpty {
+                    HStack {
+                        Spacer()
+                        Button(managing ? "完成" : "管理") { managing.toggle(); picked = [] }
+                            .font(.caption).accessibilityIdentifier("douyin.mixes.manage")
+                    }
+                    .listRowSeparator(.hidden)
+                }
                 ForEach(pager.items) { m in
                     Button {
                         if managing { if picked.contains(m.id) { picked.remove(m.id) } else { picked.insert(m.id) } }
@@ -349,20 +397,13 @@ struct DYCollectedMixesScreen: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("douyin.mixes.row")
                 }
-                DYPagerFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty, emptyText: "还没有收藏合集",
+                DYPagerFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty, emptyText: "还没有收藏\(noun)",
                               hasMore: pager.hasMore) { Task { await pager.more() } }
             }
             .listStyle(.plain)
             .refreshable { await pager.reload() }
-            .navigationTitle("收藏的合集")
+            .navigationTitle("收藏的\(noun)")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) {
-                    Button(managing ? "完成" : "管理") { managing.toggle(); picked = [] }
-                        .accessibilityIdentifier("douyin.mixes.manage")
-                }
-            }
             .safeAreaInset(edge: .bottom) {
                 if managing {
                     Button("取消收藏（\(picked.count)）", role: .destructive) { confirm = true }
@@ -370,21 +411,22 @@ struct DYCollectedMixesScreen: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 10).background(.bar)
                 }
             }
-            .alert("取消收藏 \(picked.count) 个合集？", isPresented: $confirm) {
+            .alert("取消收藏 \(picked.count) 个\(noun)？", isPresented: $confirm) {
                 Button("取消收藏", role: .destructive) { Task { await uncollect() } }
                 Button("再想想", role: .cancel) {}
             }
             .task { if pager.items.isEmpty { await pager.more() } }
             .fullScreenCover(item: $open) { m in
-                DYPagedVideoScreen(bridge: bridge, title: m.name, onAuthor: onAuthor) { cur in try await bridge.mixVideos(m.id, cursor: cur) }
+                DYPagedVideoScreen(bridge: bridge, title: m.name, onAuthor: onAuthor) { cur in
+                    series ? try await bridge.seriesVideos(m.id, cursor: cur) : try await bridge.mixVideos(m.id, cursor: cur)
+                }
             }
-        }
     }
 
     private func uncollect() async {
         let ids = Array(picked)
         do {
-            let r = try await bridge.cancelMixCollects(ids)
+            let r = series ? try await bridge.cancelSeriesCollects(ids) : try await bridge.cancelMixCollects(ids)
             switch r.result {
             case .ok:
                 let done = Set(ids).subtracting(r.failedIDs)
@@ -405,13 +447,23 @@ struct DYCollectedMusicScreen: View {
     @StateObject private var pager: DYSimplePager<DYMusicInfo>
     @State private var message: String?
 
-    init(bridge: DouyinBridge) {
+    let embedded: Bool
+
+    init(bridge: DouyinBridge, embedded: Bool = false) {
         self.bridge = bridge
+        self.embedded = embedded
         _pager = StateObject(wrappedValue: DYSimplePager { cur in try await bridge.collectedMusic(cursor: cur) })
     }
 
     var body: some View {
-        NavigationStack {
+        if embedded { content } else {
+            NavigationStack {
+                content.toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            }
+        }
+    }
+
+    private var content: some View {
             List {
                 if let message { Text(message).font(.caption).foregroundStyle(.orange) }
                 ForEach(pager.items) { m in
@@ -442,9 +494,7 @@ struct DYCollectedMusicScreen: View {
             .refreshable { await pager.reload() }
             .navigationTitle("收藏的音乐")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
             .task { if pager.items.isEmpty { await pager.more() } }
-        }
     }
 
     private func uncollect(_ m: DYMusicInfo) async {
@@ -542,54 +592,79 @@ struct DYDiggUsersScreen: View {
     }
 }
 
-// MARK: - 视频「更多」里的收藏类动作（推荐 / 关注 / 列表播放共用）
+// MARK: - 收藏成功提示条（官方同款：点五角星收藏后，底部「收藏成功  加入收藏夹 >」，点了选收藏夹）
 
-/// 「更多」菜单里一组：放进收藏夹 / 收藏合集 / 收藏音乐 / 复制短链
-struct DYVideoLibraryMenu: View {
-    let item: DYAweme
-    let bridge: DouyinBridge
-    let onToast: ((String) -> Void)?
-    @State private var picking = false
+@MainActor
+final class DYCollectPrompt: ObservableObject {
+    static let shared = DYCollectPrompt()
+    enum Owner { case feed, list }
+    @Published var awemeID: String?
+    @Published var picking: String?
+    /// 哪一层页面发起的：根视图（推荐 / 关注）和全屏列表播放器各挂一个提示条，只在发起的那层出，免得被全屏页挡住或重复弹
+    @Published var owner: Owner = .feed
+    private var hideTask: Task<Void, Never>?
 
-    var body: some View {
-        Section {
-            Button("放进收藏夹", systemImage: "folder.badge.plus") { picking = true }
-                .accessibilityIdentifier("douyin.more.folder")
-            if let mix = item.mixID, !mix.isEmpty {
-                Button("收藏合集\(item.mixName.map { "「\($0.prefix(12))」" } ?? "")", systemImage: "rectangle.stack.badge.plus") {
-                    Task { await run("已收藏合集") { try await bridge.collectMix(mix, on: true) } }
-                }
-                .accessibilityIdentifier("douyin.more.mix")
-            }
-            if let mid = item.musicID, !mid.isEmpty {
-                Button("收藏音乐", systemImage: "music.note") {
-                    Task { await run("已收藏音乐，在「我的 · 收藏 · 音乐」") { try await bridge.collectMusic(mid, on: true) } }
-                }
-                .accessibilityIdentifier("douyin.more.music")
-            }
-            Button("复制短链", systemImage: "link.badge.plus") {
-                Task {
-                    do {
-                        let s = try await bridge.shortLink(for: item.webURL)
-                        UIPasteboard.general.string = s
-                        onToast?("短链已复制")
-                    } catch { onToast?("短链生成失败：" + error.localizedDescription) }
-                }
-            }
-            .accessibilityIdentifier("douyin.more.shortlink")
-        }
-        .sheet(isPresented: $picking) {
-            DYCollectsFolderPicker(bridge: bridge, ids: [item.id]) { onToast?($0) }
+    func show(_ id: String, owner: Owner) {
+        self.owner = owner
+        awemeID = id
+        DYLiveModel.log("DDCOLLECT prompt id=…\(id.suffix(4)) owner=\(owner)")
+        hideTask?.cancel()
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            withAnimation(.snappy) { self?.awemeID = nil }
         }
     }
 
-    private func run(_ ok: String, _ op: () async throws -> DYActionResult) async {
-        do {
-            switch try await op() {
-            case .ok: onToast?(ok)
-            case .notLoggedIn: onToast?("抖音未登录")
-            case .failed(let why): onToast?("没成功：" + why)
+    func openPicker() {
+        hideTask?.cancel()
+        picking = awemeID
+        awemeID = nil
+    }
+}
+
+/// 挂在根视图上：提示条 + 选收藏夹面板，任何页面收藏都在同一处出
+struct DYCollectPromptHost: ViewModifier {
+    var owner: DYCollectPrompt.Owner = .feed
+    @ObservedObject private var prompt = DYCollectPrompt.shared
+    @State private var done: String?
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottom) {
+                if (prompt.awemeID != nil && prompt.owner == owner) || done != nil {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.primary)
+                        Text(done ?? "收藏成功").font(.subheadline.weight(.medium))
+                        Spacer(minLength: 8)
+                        if done == nil, DouyinBridge.primary != nil {
+                            Button { prompt.openPicker() } label: {
+                                HStack(spacing: 2) { Text("加入收藏夹"); Image(systemName: "chevron.right").font(.caption) }
+                                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.pink)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("douyin.collect.addToFolder")
+                        }
+                    }
+                    .padding(.horizontal, 16).frame(height: 48)
+                    .frame(maxWidth: 520)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 20).padding(.bottom, 90)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityIdentifier("douyin.collect.prompt")
+                }
             }
-        } catch { onToast?("没成功：" + error.localizedDescription) }
+            .animation(.snappy, value: prompt.awemeID)
+            .animation(.snappy, value: done)
+            .sheet(item: Binding(get: { prompt.owner == owner ? prompt.picking.map { DYMoveRequest(ids: [$0]) } : nil },
+                                 set: { prompt.picking = $0?.ids.first })) { r in
+                if let bridge = DouyinBridge.primary {
+                    DYCollectsFolderPicker(bridge: bridge, ids: r.ids) { msg in
+                        done = msg
+                        Task { try? await Task.sleep(for: .seconds(2)); done = nil }
+                    }
+                    .presentationDetents([.medium, .large])
+                }
+            }
     }
 }

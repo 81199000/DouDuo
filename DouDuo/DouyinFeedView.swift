@@ -272,6 +272,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         self.init(startURL: URL(string: "https://www.douyin.com/jingxuan")!)
     }
 
+    /// 主签名页（App 里第一个按默认地址建的桥）：转发面板的「复制短链」、收藏后的「加入收藏夹」这些没有直接拿到桥的地方用
+    static weak var primary: DouyinBridge?
+
     init(startURL: URL) {
         self.startURL = startURL
         let cfg = WKWebViewConfiguration()
@@ -290,6 +293,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
         web.navigationDelegate = self
+        if Self.primary == nil, startURL.host == "www.douyin.com" { Self.primary = self }
         reload()
     }
 
@@ -4337,9 +4341,7 @@ struct DYUpstreamVideoPage: View {
                 Button("稍后再看", systemImage: "clock") { addWatchLater() }
                     .accessibilityIdentifier("douyin.watchlater.add")
             }
-            if let bridge, offlinePlayback?.onlineActionsAllowed != false {
-                DYVideoLibraryMenu(item: item, bridge: bridge, onToast: onToast)
-            }
+
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
                     dm.showInput = true
@@ -4595,8 +4597,7 @@ struct DYClassicVideoPage: View {
             DYVideoOptionsPanel(onDislike: onDislike, onSendDanmaku: bridge == nil ? nil : {
                 dm.showInput = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
-            }, onWatchLater: bridge == nil ? nil : { addWatchLater() },
-               library: bridge.flatMap { b in offlinePlayback?.onlineActionsAllowed == false ? nil : (item, b, onToast) })
+            }, onWatchLater: bridge == nil ? nil : { addWatchLater() })
         }
         .onAppear { if isCurrent { publishVisible() } }
         .onChange(of: isCurrent) { _, active in if active { publishVisible() } }
@@ -6236,7 +6237,9 @@ extension DYFeedModel {
             do {
                 switch try await bridge.favorite(id, add: want) {
                 case .ok:
-                    await MainActor.run { self.showToast(want ? "已收藏" : "已取消收藏") }
+                    await MainActor.run {
+                        if want { DYCollectPrompt.shared.show(id, owner: .feed) } else { self.showToast("已取消收藏") }
+                    }
                 case .notLoggedIn:
                     await MainActor.run {
                         if want { self.collected.remove(id) } else { self.collected.insert(id) }

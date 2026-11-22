@@ -17,9 +17,6 @@ struct DYVideoOptionsPanel: View {
     var onDislike: (() -> Void)?
     var onSendDanmaku: (() -> Void)?
     var onWatchLater: (() -> Void)?
-    /// 收藏类动作（放进收藏夹 / 收藏合集 / 收藏音乐 / 复制短链）；经典模式的「更多」走这个面板
-    var library: (item: DYAweme, bridge: DouyinBridge, onToast: ((String) -> Void)?)? = nil
-    @State private var pickingFolder = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -102,27 +99,6 @@ struct DYVideoOptionsPanel: View {
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
                             .accessibilityIdentifier("douyin.watchlater.add")
                         }
-                        if let library {
-                            libraryRow("放进收藏夹", "folder.badge.plus", id: "douyin.more.folder") { pickingFolder = true }
-                            if let mix = library.item.mixID, !mix.isEmpty {
-                                libraryRow("收藏合集", "rectangle.stack.badge.plus", id: "douyin.more.mix") {
-                                    Task { await libraryRun("已收藏合集") { try await library.bridge.collectMix(mix, on: true) } }
-                                }
-                            }
-                            if let mid = library.item.musicID, !mid.isEmpty {
-                                libraryRow("收藏音乐", "music.note", id: "douyin.more.music") {
-                                    Task { await libraryRun("已收藏音乐") { try await library.bridge.collectMusic(mid, on: true) } }
-                                }
-                            }
-                            libraryRow("复制短链", "link.badge.plus", id: "douyin.more.shortlink") {
-                                Task {
-                                    do {
-                                        UIPasteboard.general.string = try await library.bridge.shortLink(for: library.item.webURL)
-                                        library.onToast?("短链已复制")
-                                    } catch { library.onToast?("短链生成失败：" + error.localizedDescription) }
-                                }
-                            }
-                        }
                     }
                     .optionGroup()
                 }
@@ -146,31 +122,6 @@ struct DYVideoOptionsPanel: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.options.panel")
-        .sheet(isPresented: $pickingFolder) {
-            if let library {
-                DYCollectsFolderPicker(bridge: library.bridge, ids: [library.item.id]) { library.onToast?($0) }
-            }
-        }
-    }
-
-    private func libraryRow(_ title: String, _ icon: String, id: String, action: @escaping () -> Void) -> some View {
-        VStack(spacing: 0) {
-            Divider().padding(.leading, 16)
-            Button(title, systemImage: icon, action: action)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                .accessibilityIdentifier(id)
-        }
-    }
-
-    private func libraryRun(_ ok: String, _ op: () async throws -> DYActionResult) async {
-        do {
-            switch try await op() {
-            case .ok: library?.onToast?(ok)
-            case .notLoggedIn: library?.onToast?("抖音未登录")
-            case .failed(let why): library?.onToast?("没成功：" + why)
-            }
-        } catch { library?.onToast?("没成功：" + error.localizedDescription) }
     }
 
     private func shortcut(_ title: String, icon: String, selected: Bool,

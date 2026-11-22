@@ -119,6 +119,21 @@ const bp = b => new URLSearchParams(b);
     assert.equal(out.items[0].action, '请求关注你'); assert.equal(out.items[0].author.uid, '7');
     assert.equal(out.items[1].diggCount, 5); assert.equal(out.items[1].awemeID, 'a9');
   });
+  await test('收藏短剧：series_infos 过滤下架（3/4），取消用 series_ids', async () => {
+    const { out } = await run(js(src, 'seriesCollectionsJS'), { cursor: '0' }, ok({ status_code: 0, series_infos: [
+      { series_id: 's1', series_name: '剧一', stats: { updated_to_episode: 30 } }, { series_id: 's2', status: { status: 3 } }] }));
+    assert.equal(out.items.length, 1); assert.equal(out.items[0].episodes, 30);
+    const r = await run(js(src, 'cancelSeriesMultiJS'), { ids: 's1' }, ok({ status_code: 0 }));
+    assert(r.sent[0].url.startsWith('/aweme/v1/web/series/cancel/collect/multi/?')); assert.equal(bp(r.sent[0].body).get('series_ids'), 's1');
+  });
+  await test('界面口径：「更多」里不放收藏类，短链在转发面板，收藏成功弹「加入收藏夹」', async () => {
+    const feed = fs.readFileSync(path.join(__dirname, '../DouDuo/DouyinFeedView.swift'), 'utf8');
+    const panel = fs.readFileSync(path.join(__dirname, '../DouDuo/DYVideoOptionsPanel.swift'), 'utf8');
+    const msgs = fs.readFileSync(path.join(__dirname, '../DouDuo/DouyinMessages.swift'), 'utf8');
+    for (const t of [feed, panel]) { assert(!/douyin\.more\.(folder|music|mix|shortlink)/.test(t), '更多菜单里不该有收藏类/短链'); }
+    assert(/id: "shortlink", title: shortLinking \? "生成中…" : "复制短链"/.test(msgs), '转发面板要有复制短链');
+    assert(/DYCollectPrompt\.shared\.show\(id, owner: \.feed\)/.test(feed), '推荐页收藏成功要弹加入收藏夹');
+  });
   if (failed) { console.log(failed + ' failed'); process.exit(1); }
   console.log('library actions OK');
 })();

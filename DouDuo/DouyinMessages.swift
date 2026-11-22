@@ -3156,6 +3156,7 @@ struct DYForwardScreen: View {
     @State private var showLogin = false
     @State private var showOtherApps = false
     @State private var copiedLink = false
+    @State private var shortLinking = false
     @State private var saving = false
     @State private var saveMessage: String?
 
@@ -3172,6 +3173,7 @@ struct DYForwardScreen: View {
         if !model.contacts.isEmpty { result.append(.init(id: "private", title: "私信好友", symbol: "paperplane.fill")) }
         if model.contacts.contains(where: { $0.kind == 2 }) { result.append(.init(id: "groups", title: "分享至群", symbol: "person.2.fill")) }
         result.append(.init(id: "copy", title: "复制链接", symbol: "link"))
+        if DouyinBridge.primary != nil { result.append(.init(id: "shortlink", title: shortLinking ? "生成中…" : "复制短链", symbol: "link.badge.plus")) }
         if usesClassicLayout { result.append(.init(id: "download", title: saving ? "保存中…" : "下载", symbol: "arrow.down.to.line")) }
         result.append(.init(id: "other", title: "其他分享", symbol: "square.and.arrow.up"))
         if model.loginRequired { result.append(.init(id: "login", title: "登录抖音", symbol: "person.crop.circle")) }
@@ -3299,6 +3301,21 @@ struct DYForwardScreen: View {
         switch action {
         case "private", "groups": groupsOnly = action == "groups"; query = ""; showContacts = true
         case "copy": DYCopyVideoLink.copy(item); saveMessage = nil; copiedLink = true; if !usesClassicLayout { model.message = "链接已复制" }
+        case "shortlink":
+            // 抖音短链（v.douyin.com/xxx/）：接口要页面签名，走主签名页；生成失败就退回长链接
+            guard !shortLinking, let bridge = DouyinBridge.primary else { return }
+            shortLinking = true
+            Task {
+                defer { shortLinking = false }
+                if let s = try? await bridge.shortLink(for: item.webURL) {
+                    UIPasteboard.general.string = DYShareLink.shareText(for: item).replacingOccurrences(of: item.webURL.absoluteString, with: s)
+                    saveMessage = nil; copiedLink = true
+                    if !usesClassicLayout { model.message = "短链已复制" }
+                } else {
+                    saveMessage = "短链生成失败，已改为复制长链接"
+                    DYCopyVideoLink.copy(item)
+                }
+            }
         case "download":
             guard !saving else { return }
             saving = true
