@@ -6,7 +6,7 @@ const { JSDOM } = (() => {
   // 没装在仓库里就用 DOUDUO_JSDOM 指到本机任意 jsdom 目录
   const tries = [process.env.DOUDUO_JSDOM, 'jsdom'].filter(Boolean);
   for (const t of tries) { try { return require(t); } catch (e) {} }
-  throw new Error('jsdom not found; set DOUDUO_JSDOM');
+  throw new Error('jsdom not found; install jsdom or set DOUDUO_JSDOM=/absolute/path/to/jsdom');
 })();
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYWebComposer.swift'), 'utf8');
 const m = src.match(/static let sendJS = #"""\n([\s\S]*?)\n\s*"""#/);

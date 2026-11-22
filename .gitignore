@@ -15,3 +15,18 @@ Vendor/VLCKit/VLCKit-all.xcframework
 
 # Local Python test bytecode.
 __pycache__/
+
+# Local signing credentials and machine-specific configuration.
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.pem
+*.key
+*.local.xcconfig
+Local.xcconfig
+.env
+.env.*
+!.env.example
+*.dl_secret
