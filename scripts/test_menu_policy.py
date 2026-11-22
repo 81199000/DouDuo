@@ -231,6 +231,7 @@ let preferences = UserDefaults(suiteName: suiteName)!
         nonmutating set { preferences.set(newValue, forKey: key) }
     }
 }
+enum DYLiveModel { static func log(_ text: String) {} }
 // Explicit in-memory policy fixtures, not captured or synthesized platform responses.
 struct DYAweme {
     let id: String

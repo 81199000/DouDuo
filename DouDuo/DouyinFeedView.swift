@@ -1520,6 +1520,15 @@ final class DYFeedModel: ObservableObject {
         return withoutDisabledLive(candidates.filter { !filter.blocks(description: $0.desc, knownNames: $0.hashtagNames ?? []) })
     }
 
+    /// 看过的不再推荐（开关「不再推荐看过的视频」，App 启动时注入 DYSeenHistory；脚本测试里默认什么都没看过）
+    nonisolated(unsafe) static var isSeen: (String) -> Bool = { _ in false }
+    /// 新拉到的推荐：去掉看过的（只用于刚从接口拿回来的，不动已经排进列表 / 正在播的）
+    func unseen(_ fresh: [DYAweme]) -> [DYAweme] {
+        let kept = fresh.filter { !Self.isSeen($0.id) }
+        if kept.count < fresh.count { DYLiveModel.log("DDSEEN skip=\(fresh.count - kept.count)/\(fresh.count)") }
+        return kept
+    }
+
     /// 设置里关了「推荐里插入直播间」/「推荐里显示广告」（默认都开）就把对应条目拿掉，与标签过滤同一入口生效
     func withoutDisabledLive(_ items: [DYAweme]) -> [DYAweme] {
         // 键名写死成字面量：标签过滤脚本测试单独编译这段，拿不到 DYFeedExtras
@@ -1656,7 +1665,7 @@ final class DYFeedModel: ObservableObject {
                 guard !Task.isCancelled, !offlinePlayback, epoch == offlineEpoch else { return }
                 pages += 1
                 let seen = Set(items.map(\.id)).union(pool.map(\.id))
-                let fresh = allowedRecommendations(r.items).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty || a.live != nil) }
+                let fresh = unseen(allowedRecommendations(r.items)).filter { a in !seen.contains(a.id) && (a.play != nil || !a.images.isEmpty || a.live != nil) }
                 // 账号里已点赞/已收藏的，进页面就是选中态
                 for a in fresh {
                     if a.userDigged == 1 { liked.insert(a.id) }

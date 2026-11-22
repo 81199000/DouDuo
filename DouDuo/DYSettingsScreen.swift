@@ -23,6 +23,9 @@ struct DYSettingsScreen: View {
     // 内容
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage("douyin_portrait_mix_v1") private var portraitMix = true
+    @AppStorage(DYSeenHistory.enabledKey) private var hideSeen = true
+    @State private var seenCount = 0
+    @State private var confirmClearSeen = false
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
     @AppStorage(DYFeedExtras.adKey) private var feedAds = true
@@ -105,6 +108,18 @@ struct DYSettingsScreen: View {
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
                     Toggle("竖屏时固定 70% 竖屏视频", isOn: $portraitMix).accessibilityIdentifier("settings.portrait.mix")
+                    Toggle("不再推荐看过的视频", isOn: $hideSeen).accessibilityIdentifier("settings.hide.seen")
+                    Button(role: .destructive) { confirmClearSeen = true } label: {
+                        LabeledContent("清空看过记录") { Text("\(seenCount) 条").foregroundStyle(.secondary) }
+                    }
+                    .disabled(seenCount == 0)
+                    .accessibilityIdentifier("settings.seen.clear")
+                    .onAppear { seenCount = DYSeenHistory.shared.count }
+                    .confirmationDialog("清空看过记录？清空后看过的视频可能会再被推荐。", isPresented: $confirmClearSeen, titleVisibility: .visible) {
+                        Button("清空 \(seenCount) 条", role: .destructive) {
+                            DYSeenHistory.shared.clear(); seenCount = 0
+                        }
+                    }
                     Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
                     Toggle("推荐里插入直播间", isOn: $feedLive).accessibilityIdentifier("settings.feed.live")
                     Toggle("推荐里显示广告", isOn: $feedAds).accessibilityIdentifier("settings.feed.ads")
@@ -112,7 +127,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("推荐与内容")
                 } footer: {
-                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n「固定 70% 竖屏」：竖着看时推荐里约七成是竖屏视频（抖音网页推荐本身竖屏只有一到三成）；关掉则按抖音原顺序播放。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
+                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n「固定 70% 竖屏」：竖着看时推荐里约七成是竖屏视频（抖音网页推荐本身竖屏只有一到三成）；关掉则按抖音原顺序播放。\n「不再推荐看过的视频」：推荐页划到过的就算看过（按账号分开记，保留最近 5000 条），抖音再推时自动跳过；关注页不受影响。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
                 }
 
                 Section {

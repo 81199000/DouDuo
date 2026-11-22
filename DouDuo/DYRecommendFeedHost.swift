@@ -496,6 +496,8 @@ extension DYRecommendFeedHost {
         if feed.finishedOfflineID == old { feed.finishedOfflineID = nil }
         if feed.onlineContinuationID == old { feed.onlineContinuationID = nil }
         guard !feed.offlinePlayback, let new, let item = feed.items.first(where: { $0.id == new }), item.live == nil else { return }
+        // 只要划到就算看过（老板 2026-11-22）：之后推荐再推这条直接跳过
+        DYSeenHistory.shared.mark(new)
         var seen = false
         if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
            DDNowPlaying.id == old { seen = DDNowPlaying.time / prev.duration >= 0.95 }
