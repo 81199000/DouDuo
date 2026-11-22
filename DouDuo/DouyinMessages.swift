@@ -110,7 +110,8 @@ final class DYMessageCache: ObservableObject {
         /// 结构版本：DYNotice 加了 images（评论配图）后升 2；旧文件缺该字段，消息页必须作废重拉
         var v: Int = 1
         /// 3：通知 author 加了 follow/follower（互动消息头像红心 / 粉丝标签），旧缓存没有 → 清一次重拉
-        static let currentV = 3
+        /// 4：@我的（type 45）以前解析成空白「通知」，旧缓存里的这些行要重拉
+        static let currentV = 4
         var pages: [String: DYCachedNoticePage] = [:]
         var counts: [Int: Int] = [:]
         var friends: [DYFriend] = []
@@ -408,8 +409,12 @@ enum DYNoticeGroup: Int, CaseIterable, Identifiable {
     case all = 700
     case comment = 2
     case digg = 3
+    /// @我的（网页版 noticeGroupMap 9→6，2026-11-22 从官方 JS 读出）
+    case at = 6
     case fans = 401
     case system = 961
+    /// 推荐：分组号不固定，由 notice/count 的 interactive_group（type "26"）下发；这里只是占位键
+    case recommend = -26
 
     var id: Int { rawValue }
     var title: String {
@@ -417,9 +422,43 @@ enum DYNoticeGroup: Int, CaseIterable, Identifiable {
         case .all: "全部"
         case .comment: "评论"
         case .digg: "赞"
+        case .at: "@我的"
         case .fans: "粉丝"
         case .system: "系统"
+        case .recommend: "推荐"
         }
+    }
+
+    /// 实际请求 / 缓存用的分组号。推荐没拿到服务端分组号时退回 700，再在本地只留推荐类条目
+    var requestGroup: Int {
+        guard self == .recommend else { return rawValue }
+        return DYNoticeGroupMap.group(forType: "26") ?? DYNoticeGroup.all.rawValue
+    }
+    /// 推荐退回 700 时要本地过滤
+    var filtersLocally: Bool { self == .recommend && DYNoticeGroupMap.group(forType: "26") == nil }
+
+    /// 在这个筛选里看过，退出时也要标已读的分组（互动页本身的 2/3 由路由给）
+    var extraReadGroups: [Int] {
+        switch self {
+        case .at: [DYNoticeGroup.at.rawValue]
+        case .fans: [DYNoticeGroup.fans.rawValue]
+        case .recommend: DYNoticeGroupMap.group(forType: "26").map { [$0] } ?? []
+        default: []
+        }
+    }
+}
+
+/// 网页版 notice/count 下发的 interactive_group（[{type:"26", group:N}]）：推荐等动态分组号。存 UserDefaults，下次启动直接可用
+enum DYNoticeGroupMap {
+    private static let key = "douduo_notice_group_map_v1"
+    static func group(forType t: String) -> Int? {
+        (UserDefaults.standard.dictionary(forKey: key) as? [String: Int])?[t]
+    }
+    static func update(_ pairs: [DYNoticeInteractiveGroup]) {
+        guard !pairs.isEmpty else { return }
+        var m = (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
+        for p in pairs where p.group != 0 { m[p.type] = p.group }
+        UserDefaults.standard.set(m, forKey: key)
     }
 }
 
@@ -450,7 +489,8 @@ enum DYMsgRoute: Hashable {
     /// 标题下拉可切的接口分组（互动页 = 全部/评论/赞）
     var filters: [DYNoticeGroup] {
         switch self {
-        case .interactive: [.all, .comment, .digg]
+        // 对齐网页版「互动消息」下拉：全部 / 粉丝 / @我的 / 评论 / 赞 / 推荐（网页版本身也不显示「弹幕」）
+        case .interactive: [.all, .fans, .at, .comment, .digg, .recommend]
         case .fans: [.fans]
         case .system: [.system]
         case .stranger: []
@@ -460,16 +500,18 @@ enum DYMsgRoute: Hashable {
     func filterTitle(_ g: DYNoticeGroup) -> String {
         guard self == .interactive else { return title }
         switch g {
-        case .comment: return "评论"
-        case .digg: return "赞"
-        default: return "全部互动"
+        case .all, .system: return "全部互动"
+        default: return g.title
         }
     }
 }
 
-/// notice 列表里的 type（不是 group）：31 评论 / 41 赞 / 9009 推荐 / 33 关注
+/// notice 列表里的 type（不是 group）：31 评论 / 41 赞 / 45 @ / 9009 推荐 / 33 关注
 enum DYNoticeKind {
     static let follow = 33
+    static let mention = 45
+    /// 网页版 I6：RECOMMEND 9009 / FOLLOW_RECOMMEND 9002 / FOLLOW_DIGG_RECOMMEND 514 / FOLLOWER_DIGG_RECOMMEND 9067
+    static let recommend: Set<Int> = [9009, 9002, 514, 9067]
     static func isInteractive(_ n: DYNotice) -> Bool {
         n.type != follow && (n.author != nil || (n.awemeID ?? "").isEmpty == false)
     }
@@ -1921,7 +1963,7 @@ struct DYNoticeListScreen: View {
         self.embedded = embedded
         let group = route.filters.first ?? .all
         _group = State(initialValue: group)
-        let cached = DYMessageCache.shared.page(group.rawValue)
+        let cached = DYMessageCache.shared.page(group.requestGroup)
         _items = State(initialValue: cached?.items ?? [])
         _maxTime = State(initialValue: cached?.maxTime ?? 0)
         _hasMore = State(initialValue: cached?.hasMore ?? true)
@@ -1939,7 +1981,7 @@ struct DYNoticeListScreen: View {
         .task(id: "\(group.rawValue):\(isActive)") {
             guard isActive else { return }
             // 进哪个分类就记下它对应的服务端分组，退出时一起标已读（评论+赞同属互动）
-            route.readGroups.forEach { onViewedGroup($0) }
+            (route.readGroups + group.extraReadGroups).forEach { onViewedGroup($0) }
             if loadedGroup != group {
                 let requested = group
                 await reload(reset: true)
@@ -2161,8 +2203,9 @@ struct DYNoticeListScreen: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if toast == s { toast = nil } }
     }
 
-    /// 互动「全部」走 700 分组，要剔掉关注和系统类
+    /// 互动「全部」走 700 分组，要剔掉关注和系统类；推荐没拿到分组号时同样借 700，只留推荐类
     private var visibleItems: [DYNotice] {
+        if group.filtersLocally { return items.filter { DYNoticeKind.recommend.contains($0.type) } }
         guard route == .interactive, group == .all else { return items }
         return items.filter(DYNoticeKind.isInteractive)
     }
@@ -2237,7 +2280,7 @@ struct DYNoticeListScreen: View {
                         .font(.subheadline.weight(.semibold)).lineLimit(1)
                     if let label = rel.label { DYRelationTag(label: label) }
                 }
-                if n.isComment {
+                if n.isComment || n.isMention {
                     Text(n.action).font(.caption).foregroundStyle(Color.primary.opacity(0.5))
                     commentText(n)
                     if let q = n.quote, !q.isEmpty {
@@ -2344,7 +2387,7 @@ struct DYNoticeListScreen: View {
         if !reset && (!hasMore || loading) { return }
         loadGen += 1
         let gen = loadGen
-        let requestedGroup = group.rawValue
+        let requestedGroup = group.requestGroup
         let cache = DYMessageCache.shared
         loading = true
         defer { if gen == loadGen { loading = false } }
