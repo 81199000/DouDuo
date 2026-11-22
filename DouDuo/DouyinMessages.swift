@@ -784,11 +784,15 @@ struct DYMessagesScreen: View {
                     DYLiveModel.log("DDMSGUSER intercept click sec=\(sec.prefix(12))")
                     Task { @MainActor in self.openUser(sec: sec) }
                 case "photo":
-                    let urls = ((obj["urls"] as? [String]) ?? []).compactMap(URL.init(string:)).filter { $0.scheme == "https" || $0.scheme == "http" }
-                    guard !urls.isEmpty else { return }
+                    // 网络原图优先；拿不到原图时网页给的是内嵌 base64 缩略图（data:），也照样能看
+                    let urls = ((obj["urls"] as? [String]) ?? []).compactMap(URL.init(string:))
+                        .filter { ["https", "http", "data"].contains($0.scheme ?? "") }
                     let i = (obj["index"] as? NSNumber)?.intValue ?? 0
-                    DYLiveModel.log("DDPHOTO open n=\(urls.count) i=\(i)")
+                    DYLiveModel.log("DDPHOTO open n=\(urls.count) i=\(i) src=\(obj["src"] as? String ?? "-")")
+                    guard !urls.isEmpty else { return }
                     Task { @MainActor in self.photo = DYPhotoViewerTarget(urls: urls, start: i) }
+                case "photo-miss":
+                    DYLiveModel.log("DDPHOTO miss cls=\(obj["cls"] as? String ?? "-") box=\(obj["box"] as? String ?? "-")")
                 case "preview-open", "preview-close":
                     DYLiveModel.log("DDCHATPREVIEW \(obj["type"] as? String ?? "-") why=\(obj["why"] as? String ?? "-") closed=\(obj["closed"] as? Bool ?? false)")
                 case "msg-menu":

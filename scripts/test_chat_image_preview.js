@@ -9,8 +9,9 @@ const m = src.match(/enum DYChatImagePreviewClose \{[\s\S]*?static let script = 
 assert(m, '找不到 DYChatImagePreviewClose.script');
 const script = m[1].replace(/\\\\/g, '\\');
 const html = `<!doctype html><body><div class="componentsRightPanelwrapper">
-  <div data-e2e="message-item"><img id="avatar" class="avatarImg" src="https://p3.douyinpic.com/av.jpg">
-    <div class="MessageItemImage"><img id="photo" src="ddimg://img/?u=x" data-dd-orig="https://p3.douyinpic.com/big.jpg"></div></div>
+  <div data-e2e="message-item" class="MessageItemmessageWithAvatar"><img id="avatar" class="avatarImg" src="https://p3.douyinpic.com/av.jpg">
+    <div class="MessageItemImageImageBox"><img id="photo" class="commonMyImageimgReal MessageItemImageImage" src="ddimg://img/?u=x" data-dd-orig="https://p3.douyinpic.com/big.jpg"></div></div>
+  <div data-e2e="message-item" class="MessageItemmessageWithAvatar"><div class="MessageItemImageImageBox"><img id="inline" class="MessageItemImageImage" src="data:image/png;base64,AAAA"></div></div>
   <div data-e2e="message-item"><div class="MessageItemShareAweme"><img id="card" src="https://p3.douyinpic.com/cover.jpg"></div></div>
 </div></body>`;
 (async () => {
@@ -28,6 +29,11 @@ const html = `<!doctype html><body><div class="componentsRightPanelwrapper">
   const p = posts.find(x => x.type === 'photo');
   assert(p, '要发 photo 给 App');
   assert.deepEqual(p.urls, ['https://p3.douyinpic.com/big.jpg'], '要给原图地址（data-dd-orig），不是 ddimg 缓存地址');
+  // 内嵌 base64 缩略图：React payload 里的 resource_url 原图优先
+  const inl = document.getElementById('inline');
+  inl.closest('[data-e2e="message-item"]').__reactProps$x = { message: { parsedContent: { aweType: 2702, resource_url: { origin_url_list: ['https://p3.douyinpic.com/orig.jpg'] } } } };
+  posts.length = 0; click('inline');
+  assert.deepEqual((posts.find(x => x.type === 'photo') || {}).urls, ['https://p3.douyinpic.com/orig.jpg'], 'base64 缩略图要换成 resource_url 原图');
   posts.length = 0; click('avatar'); click('card');
   assert(!posts.some(x => x.type === 'photo'), '头像 / 分享卡不拦');
   const leak = document.createElement('div'); leak.className = 'semi-image-preview'; document.body.appendChild(leak);

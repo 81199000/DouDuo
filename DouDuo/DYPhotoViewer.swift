@@ -221,8 +221,14 @@ final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecogn
     private func load() {
         Task { @MainActor in
             let raw = DYChatImageCache.originalURL(url.absoluteString) ?? url.absoluteString
-            var data = DYChatImageCache.shared.cachedData(for: raw)
-            if data == nil, let u = URL(string: raw) {
+            var data: Data?
+            if url.scheme == "data", let comma = raw.firstIndex(of: ",") {
+                // 内嵌 base64（私信图片缩略图）：直接解码
+                data = Data(base64Encoded: String(raw[raw.index(after: comma)...]), options: .ignoreUnknownCharacters)
+            } else {
+                data = DYChatImageCache.shared.cachedData(for: raw)
+            }
+            if data == nil, url.scheme != "data", let u = URL(string: raw) {
                 var req = URLRequest(url: u, timeoutInterval: 20)
                 req.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
                 req.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")

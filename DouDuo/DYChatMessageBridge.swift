@@ -128,17 +128,57 @@ enum DYChatImagePreviewClose {
   if (window.__ddPhotoHook) return; window.__ddPhotoHook = 1;
   const post = o => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
   const orig = img => (img.dataset && img.dataset.ddOrig) || img.currentSrc || img.getAttribute('src') || '';
+  // 图片消息（aweType 2702）气泡里的 <img> 常是内嵌 base64 缩略图（inline_pic），原图在消息 payload 的 resource_url 里。
+  // payload 从 React 节点上取（同视频钩子的取法），只认这条消息自己的。
+  const payloadOf = root => {
+    const seen = new Set();
+    for (let n = root, d = 0; n && d < 12; n = n.parentElement, d++) {
+      for (const k of Object.keys(n)) {
+        if (k.startsWith('__reactProps')) {
+          const m = n[k] && n[k].message;
+          if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+        }
+        if (!k.startsWith('__reactFiber') && !k.startsWith('__reactInternalInstance')) continue;
+        for (let f = n[k], depth = 0; f && depth < 24 && !seen.has(f); f = f.return, depth++) {
+          seen.add(f);
+          const m = f.memoizedProps && f.memoizedProps.message;
+          if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+        }
+      }
+      if (n.matches && n.matches('[data-e2e="message-item"]')) break;
+    }
+    return null;
+  };
+  // resource_url 里可能是 {origin_url_list / large_url_list / medium_url_list / thumb_url_list / url_list}，取最大的一档
+  const bestURL = pl => {
+    const r = pl && pl.resource_url;
+    if (!r) return null;
+    if (typeof r === 'string') return /^https?:/.test(r) ? r : null;
+    const order = ['origin_url_list', 'large_url_list', 'url_list', 'medium_url_list', 'thumb_url_list'];
+    for (const k of order) { const l = r[k]; if (Array.isArray(l)) { const u = l.find(x => typeof x === 'string' && /^https?:/.test(x)); if (u) return u; } }
+    const all = []; const walk = (o, d) => { if (!o || d > 3) return; if (typeof o === 'string') { if (/^https?:/.test(o)) all.push(o); return; } if (typeof o === 'object') Object.values(o).forEach(v => walk(v, d + 1)); };
+    walk(r, 0);
+    return all[0] || null;
+  };
+  const fullOf = (img, msg) => {
+    const o = orig(img);
+    if (/^https?:/.test(o) && !/~tplv-[^/]*(?:resize|thumb)/.test(o)) return o;
+    return bestURL(payloadOf(msg)) || o;
+  };
+  // 真机 11-22：图片消息 = MessageItemImageImageBox > img.MessageItemImageImage（aweType 2702）。
+  // 先正向认图片消息；以前用「祖先类名含 avatar 就排除」，消息行外层类名带 Avatar，图片全被排除 → 点了没反应。
   const isPhotoMessage = img => {
     if (!img || img.tagName !== 'IMG') return null;
     if (!/\/chat/.test(location.pathname)) return null;
-    const pane = img.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
-    if (!pane) return null;
     const msg = img.closest('[data-e2e="message-item"], [class*="MessageItem"]');
     if (!msg) return null;
-    // 分享卡（视频/图文/商品）、头像、表情贴纸不算
-    if (img.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"],[class*="avatar"],[class*="Avatar"],[class*="emoji"],[class*="Emoji"],[class*="sticker"],[class*="Sticker"]')) return null;
+    if (img.closest('[class*="MessageItemImage"]')) return img.closest('[data-e2e="message-item"]') || msg;
+    // 其它没见过的图片消息：只看图片自己和它直接的盒子，不看整行祖先
+    const own = String(img.className || '') + ' ' + String((img.parentElement && img.parentElement.className) || '');
+    if (/avatar|emoji|sticker|ShareAweme|BulletBulletVideo|videoCard|VideoCard/i.test(own)) return null;
+    if (img.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"]')) return null;
     const r = img.getBoundingClientRect();
-    if (r.width < 48 || r.height < 48) return null;
+    if (r.width < 60 || r.height < 60) return null;
     return msg;
   };
   const swallow = e => { e.preventDefault(); e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); };
@@ -151,11 +191,18 @@ enum DYChatImagePreviewClose {
   document.addEventListener('click', e => {
     const img = e.target && e.target.closest ? e.target.closest('img') : null;
     const msg = isPhotoMessage(img);
-    if (!msg) { armed = null; return; }
+    if (!msg) {
+      if (img && /\/chat/.test(location.pathname) && img.closest('[data-e2e="message-item"], [class*="MessageItem"]')) {
+        post({ type: 'photo-miss', cls: String(img.className || '').slice(0, 80), box: String((img.parentElement && img.parentElement.className) || '').slice(0, 80) });
+      }
+      armed = null; return;
+    }
     swallow(e);
-    const list = [...msg.querySelectorAll('img')].filter(i => isPhotoMessage(i)).map(orig).filter(Boolean);
-    const urls = list.length ? list : [orig(img)];
-    post({ type: 'photo', urls, index: Math.max(0, urls.indexOf(orig(img))) });
+    const imgs = [...msg.querySelectorAll('img')].filter(i => isPhotoMessage(i));
+    const list = (imgs.length ? imgs : [img]);
+    const urls = list.map(i => fullOf(i, msg)).filter(Boolean);
+    post({ type: 'photo', urls, index: Math.max(0, list.indexOf(img)),
+           src: urls.map(u => u.startsWith('data:') ? 'data' : 'net').join(',') });
     armed = null;
   }, true);
   // 兜底：网页自己的看大图层（Semi ImagePreview / 全屏 fixed + scale 大图）冒出来就立刻关掉
