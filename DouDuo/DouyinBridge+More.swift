@@ -26,6 +26,9 @@ struct DYNotice: Identifiable, Codable, Equatable {
     }
     /// 被回复的那条（通常是我的评论）原文，列表里灰字引用
     var quote: String? = nil
+    /// 赞通知合并的人数（「等 N 人」）；>1 时可点开看全部点赞的人
+    var diggCount: Int? = nil
+    var isFollowRequest: Bool { type == 98 }
 
     var isComment: Bool { type == 31 && (cid?.isEmpty == false) && (awemeID?.isEmpty == false) }
     /// @我的（type 45）：评论里 @ 时带 cid，点开定位到那条评论；不给回复入口（拿不到一级评论 id，回错楼会挂空）
@@ -237,7 +240,7 @@ extension DouyinBridge {
       const gn = n.general_notice || {};
       const inn = n.interactive_notice || {};
       let name = '', avatar = null, action = gn.title || '通知', detail = gn.content || '', cover = null, awemeID = n.aweme_id ? String(n.aweme_id) : null, author = null, images = null;
-      let cid = null, parentCid = null, quote = null;
+      let cid = null, parentCid = null, quote = null, diggCount = 0;
       if (t === 31 && n.comment) {
         const c = n.comment.comment || {};
         const u = c.user || {};
@@ -264,7 +267,8 @@ extension DouyinBridge {
       } else if (t === 41 && n.digg) {
         const users = n.digg.from_user || [];
         const u = users[0] || {};
-        const extra = (n.digg.merge_count || users.length) > 1 ? ' 等' + (n.digg.merge_count || users.length) + '人' : '';
+        diggCount = Number(n.digg.merge_count || users.length || 0);
+        const extra = diggCount > 1 ? ' 等' + diggCount + '人' : '';
         name = (u.nickname || '') + extra;
         avatar = first(u.avatar_thumb);
         action = '赞了你的作品';
@@ -272,11 +276,12 @@ extension DouyinBridge {
         cover = coverOf(n.digg.aweme);
         awemeID = (n.digg.aweme && n.digg.aweme.aweme_id && String(n.digg.aweme.aweme_id)) || awemeID;
         author = authorOf(u);
-      } else if (t === 33 && n.follow) {
+      } else if ((t === 33 || t === 98) && n.follow) {
+        // 98 = 关注请求（私密账号）：网页版可「通过 / 拒绝」
         const u = n.follow.from_user || {};
         name = u.nickname || '';
         avatar = first(u.avatar_thumb);
-        action = '关注了你';
+        action = t === 98 ? '请求关注你' : '关注了你';
         detail = n.follow.content || '';
         author = authorOf(u);
       } else if (t === 45 && n.at) {
@@ -310,7 +315,7 @@ extension DouyinBridge {
       return {
         id: String(n.nid_str || n.nid || (t + '-' + (n.create_time || 0))),
         type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: (images && images.length) ? images : null, awemeID, author,
-        hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote
+        hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote, diggCount: diggCount || null
       };
     };
     const r = await req('GET', '/aweme/v1/web/notice/?' + q({

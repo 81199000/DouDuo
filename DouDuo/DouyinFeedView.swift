@@ -37,6 +37,10 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
     let music: String
     /// 图文作品的背景音乐地址（视频作品不用它）
     var musicURL: String? = nil
+    /// 背景音乐 id（收藏音乐用）、所属合集（收藏合集 / 看全集用）。旧缓存缺字段为空
+    var musicID: String? = nil
+    var mixID: String? = nil
+    var mixName: String? = nil
     /// 该视频在你账号里是否已点赞 / 已收藏（未登录时一般没有这些字段）
     let userDigged: Int?
     let isCollect: Int?
@@ -1119,6 +1123,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         stats: { digg: st.digg_count || 0, comment: st.comment_count || 0, collect: st.collect_count || 0, share: st.share_count || 0, play: st.play_count == null ? null : Number(st.play_count) },
         music: (a.music && a.music.title) || '',
         musicURL: (a.music && a.music.play_url && (((a.music.play_url.url_list || [])[0]) || a.music.play_url.uri)) || null,
+        musicID: (a.music && (a.music.id_str || (a.music.id != null ? String(a.music.id) : ''))) || null,
+        mixID: (a.mix_info && a.mix_info.mix_id) ? String(a.mix_info.mix_id) : null,
+        mixName: (a.mix_info && a.mix_info.mix_name) || null,
         userDigged: a.user_digged ? 1 : 0,
         isCollect: (a.is_collect || a.is_collected || (a.collect_stat === 1)) ? 1 : 0,
         product: mapProduct(a)
@@ -4330,6 +4337,9 @@ struct DYUpstreamVideoPage: View {
                 Button("稍后再看", systemImage: "clock") { addWatchLater() }
                     .accessibilityIdentifier("douyin.watchlater.add")
             }
+            if let bridge, offlinePlayback?.onlineActionsAllowed != false {
+                DYVideoLibraryMenu(item: item, bridge: bridge, onToast: onToast)
+            }
             if item.images.isEmpty, bridge != nil {
                 Button("发弹幕", systemImage: "text.bubble") {
                     dm.showInput = true
@@ -4585,7 +4595,8 @@ struct DYClassicVideoPage: View {
             DYVideoOptionsPanel(onDislike: onDislike, onSendDanmaku: bridge == nil ? nil : {
                 dm.showInput = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { danmakuFocused = true }
-            }, onWatchLater: bridge == nil ? nil : { addWatchLater() })
+            }, onWatchLater: bridge == nil ? nil : { addWatchLater() },
+               library: bridge.flatMap { b in offlinePlayback?.onlineActionsAllowed == false ? nil : (item, b, onToast) })
         }
         .onAppear { if isCurrent { publishVisible() } }
         .onChange(of: isCurrent) { _, active in if active { publishVisible() } }
@@ -4922,6 +4933,8 @@ struct DYCommentPanel: View {
     @State private var deletingComment: DYComment?
     @State private var deletingParent: String?
     @State private var deleteBusy = false
+    /// 评论翻译结果（cid → 译文）
+    @State private var translated: [String: String] = [:]
     /// 评论配图：相册里选中的那一项 → 处理好等着发的图 → 已经传上去的结果（发评论失败再点发送时不重传）
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var imageDraft: DYCommentImageDraft?
@@ -5739,6 +5752,11 @@ struct DYCommentPanel: View {
             }
             .accessibilityIdentifier(highlight == c.id ? "douyin.comment.focused" : "douyin.comment.row")
             .contextMenu {
+                Button(translated[c.id] == nil ? "翻译" : "查看原文", systemImage: "character.bubble") {
+                    if translated[c.id] != nil { translated[c.id] = nil } else { Task { await translate(c) } }
+                }
+                .accessibilityIdentifier("douyin.comment.translate")
+                Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = c.text }
                 if canDelete(c) {
                     Button("删除", systemImage: "trash", role: .destructive) {
                         deletingParent = parent ?? c.parent
@@ -5747,6 +5765,14 @@ struct DYCommentPanel: View {
                     .accessibilityIdentifier("douyin.comment.delete")
                 }
             }
+    }
+
+    /// 评论翻译（comment/translate）：结果只放在内存里，关掉评论区就没了
+    private func translate(_ c: DYComment) async {
+        do {
+            let t = try await bridge.translateComment(c)
+            translated[c.id] = t
+        } catch { DYLiveModel.log("DDCOMMENT translate err \(error.localizedDescription)") }
     }
 
     /// 能删的评论：我自己发的，或者这条作品是我的（作者能删自己作品下的评论）。认不出我是谁时不给删。
@@ -5790,8 +5816,12 @@ struct DYCommentPanel: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(c.name).font(.caption.weight(.semibold)).foregroundStyle(.themeTextSecondary)
                 if !c.text.isEmpty {
-                    DYEmojiStore.shared.rich(c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
+                    DYEmojiStore.shared.rich(translated[c.id] ?? c.text).font(.subheadline).foregroundStyle(.themeTextPrimary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if translated[c.id] != nil {
+                        Text("已翻译 · 长按查看原文").font(.caption2).foregroundStyle(.themeTextSecondary)
+                            .accessibilityIdentifier("douyin.comment.translated")
+                    }
                 }
                 DYCommentMedia(comment: c)
                 HStack(spacing: 8) {

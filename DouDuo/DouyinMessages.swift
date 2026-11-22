@@ -1951,6 +1951,9 @@ struct DYNoticeListScreen: View {
     @State private var replyErr: String?
     @State private var showRelogin = false
     @State private var replied: Set<String> = []
+    /// 点赞名单（赞通知「等 N 人」）
+    @State private var diggList: String?
+    @State private var approved: Set<String> = []
     @State private var toast: String?
     @FocusState private var replyFocused: Bool
     /// 整页现在不跟键盘避让（右侧栏会错位），回复栏自己垫到键盘上方
@@ -2008,6 +2011,9 @@ struct DYNoticeListScreen: View {
             }
             .presentationDetents([.medium, .large])
             .presentationBackground(Color.ddBackground)
+        }
+        .sheet(item: Binding(get: { diggList.map { DYMoveRequest(ids: [$0]) } }, set: { diggList = $0?.ids.first })) { r in
+            DYDiggUsersScreen(bridge: bridge, awemeID: r.ids[0]) { a in diggList = nil; author = a }
         }
         .fullScreenCover(item: $player) { p in
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc, items: [p.item], start: 0,
@@ -2237,9 +2243,23 @@ struct DYNoticeListScreen: View {
                         VStack(alignment: .leading, spacing: 0) {
                             Button { Task { await open(n) } } label: { row(n) }
                                 .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("删除这条通知", systemImage: "trash", role: .destructive) { Task { await deleteNotice(n) } }
+                                        .accessibilityIdentifier("douyin.notice.delete")
+                                }
                                 .accessibilityIdentifier(n.isComment ? "douyin.notice.comment" : (n.awemeID == nil ? "douyin.notice.author" : "douyin.notice.video"))
                                 .accessibilityValue(n.hasRead ? "已读" : "未读")
                             if n.isComment { commentActions(n) }
+                            if n.isFollowRequest { followRequestActions(n) }
+                            if (n.diggCount ?? 0) > 1, let aid = n.awemeID, !aid.isEmpty {
+                                Button { diggList = aid } label: {
+                                    Label("查看全部 \(n.diggCount ?? 0) 个赞", systemImage: "person.2")
+                                        .font(.caption).padding(.leading, 54).padding(.bottom, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Color.primary.opacity(0.6))
+                                .accessibilityIdentifier("douyin.notice.digglist")
+                            }
                         }
                         Divider().background(Color.primary.opacity(0.08))
                     }
@@ -2358,6 +2378,61 @@ struct DYNoticeListScreen: View {
     private func markTruncated(_ id: String, _ isCut: Bool) {
         if isCut { if !truncated.contains(id) { truncated.insert(id) } }
         else if truncated.contains(id) { truncated.remove(id) }
+    }
+
+    /// 删除一条通知：抖音确认了才从列表和缓存里拿掉
+    private func deleteNotice(_ n: DYNotice) async {
+        do {
+            switch try await bridge.deleteNotice(n.id) {
+            case .ok:
+                items.removeAll { $0.id == n.id }
+                let g = group.requestGroup
+                if var page = DYMessageCache.shared.page(g) { page.items.removeAll { $0.id == n.id }; DYMessageCache.shared.store(page, group: g) }
+                showToast("已删除")
+            case .notLoggedIn: showToast("抖音未登录")
+            case .failed(let why): showToast("没删掉：" + why)
+            }
+        } catch { showToast("没删掉：" + error.localizedDescription) }
+    }
+
+    /// 关注请求（私密账号）：通过 / 拒绝（拒绝 = notice/del action_type 1）
+    private func followRequestActions(_ n: DYNotice) -> some View {
+        HStack(spacing: 12) {
+            if approved.contains(n.id) {
+                Text("已通过").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("通过") {
+                    Task {
+                        guard let uid = n.author?.uid, !uid.isEmpty else { showToast("拿不到对方 id"); return }
+                        do {
+                            switch try await bridge.approveFollowRequest(uid: uid) {
+                            case .ok: approved.insert(n.id); showToast("已通过关注请求")
+                            case .notLoggedIn: showToast("抖音未登录")
+                            case .failed(let why): showToast("没通过：" + why)
+                            }
+                        } catch { showToast("没通过：" + error.localizedDescription) }
+                    }
+                }
+                .buttonStyle(.borderedProminent).tint(.pink)
+                .accessibilityIdentifier("douyin.notice.approve")
+                Button("拒绝") {
+                    Task {
+                        do {
+                            switch try await bridge.deleteNotice(n.id, rejectFollowRequest: true) {
+                            case .ok: items.removeAll { $0.id == n.id }; showToast("已拒绝")
+                            case .notLoggedIn: showToast("抖音未登录")
+                            case .failed(let why): showToast("没拒绝：" + why)
+                            }
+                        } catch { showToast("没拒绝：" + error.localizedDescription) }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("douyin.notice.reject")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .padding(.leading, 54).padding(.bottom, 8)
     }
 
     /// 评论下方：展开/收起 + 回复
