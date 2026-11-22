@@ -130,6 +130,7 @@
 		D47F0763D3CAEBAAE08A9035 /* DYChatSnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A2BF85A721093F30441E5F5 /* DYChatSnapshotCache.swift */; };
 		D49F178B4B2B396F212CEEC5 /* DYConversationStreak.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74F646B31DAD1BDD97D97FBA /* DYConversationStreak.swift */; };
 		D4C0D14AA0AE10DD71A00B3B /* DYHashtagFilterButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = E948B13DA5E6505F703CAA4C /* DYHashtagFilterButton.swift */; };
+		D4C4FF844F738CB253BAA212 /* DYUploadScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD32AA7E05533FF5BC3286EB /* DYUploadScreen.swift */; };
 		D6A40EE7FB068521E3E7CB20 /* DYRelationsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8BAE91B96A90EB92AC6A7F /* DYRelationsProbe.swift */; };
 		D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */; };
 		DC20068F342E15BD7D314F4A /* DYPublicationRegionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */; };
@@ -306,6 +307,7 @@
 		F91812B67F0D3FB927E45A53 /* DYOfflineVideoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflineVideoStore.swift; sourceTree = "<group>"; };
 		F9929F2A3F9E6C999A67F565 /* DYMessageDivider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageDivider.swift; sourceTree = "<group>"; };
 		FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowLiveLogic.swift; sourceTree = "<group>"; };
+		FD32AA7E05533FF5BC3286EB /* DYUploadScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYUploadScreen.swift; sourceTree = "<group>"; };
 		FD34350433D4912F2B0CC499 /* DYAppLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYAppLogin.swift; sourceTree = "<group>"; };
 		FEB305D03FD029B1282B94AB /* DouyinEmojiStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinEmojiStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -439,6 +441,7 @@
 				155B32250F5E880D0E5980F8 /* DYStreamPlan.swift */,
 				730650A08AE183BAB384340D /* DYSwipeProbe.swift */,
 				C53D74D77792434EAD3EB1AF /* DYTrustLogin.swift */,
+				FD32AA7E05533FF5BC3286EB /* DYUploadScreen.swift */,
 				631BD772CFA6D0746CEFAF94 /* DYVideoAmbient.swift */,
 				DCC4748DC1421B4B7A0885D8 /* DYVideoFit.swift */,
 				5053C76DAFCB7CD6A7418C7E /* DYVideoMoreMenu.swift */,
@@ -735,6 +738,7 @@
 				9FDD1965337CF3D52231C4D0 /* DYStreamPlan.swift in Sources */,
 				196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */,
 				16EFC0E221EF2286EABD7381 /* DYTrustLogin.swift in Sources */,
+				D4C4FF844F738CB253BAA212 /* DYUploadScreen.swift in Sources */,
 				76E23E9018E12443F48468FA /* DYVideoAmbient.swift in Sources */,
 				3480CE84AD330E7BF31FD448 /* DYVideoFit.swift in Sources */,
 				727FF399B8CF3C46700F5D15 /* DYVideoMoreMenu.swift in Sources */,
@@ -813,7 +817,10 @@
 				INFOPLIST_KEY_CFBundleDisplayName = DouDuo;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "发布作品时拍摄视频或照片";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "发布作品时录制视频的声音";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "保存视频和图集到相册";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "发布作品时从相册选择视频或图片";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -856,7 +863,10 @@
 				INFOPLIST_KEY_CFBundleDisplayName = DouDuo;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "发布作品时拍摄视频或照片";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "发布作品时录制视频的声音";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "保存视频和图集到相册";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "发布作品时从相册选择视频或图片";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

@@ -1879,6 +1879,8 @@ struct DYMineScreen: View {
     /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
     @State private var showLogin = false
     @State private var showAccounts = false
+    /// 发布作品：开抖音创作者中心的上传页（DYUploadScreen），关掉后刷新作品列表
+    @State private var showUpload = false
     /// 这次打开期间已经自动弹过登录：放在静态里——简洁 / 极简模式在信息 ⇄ 我的之间切换会重建「我的」，
     /// @State 会被重置，导致每切回来一次就再弹一次登录
     private static var autoLoginShownAt: Date?
@@ -1977,6 +1979,17 @@ struct DYMineScreen: View {
                 .accessibilityIdentifier("douyin.mine.title")
             }
             header.padding(.horizontal, 16).padding(.bottom, 12)
+            if user != nil {
+                Button { showUpload = true } label: {
+                    Label("发布作品", systemImage: "plus.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.pink)
+                .padding(.horizontal, 16).padding(.bottom, 10)
+                .accessibilityIdentifier("douyin.mine.upload")
+            }
 
             HStack(spacing: 22) {
                 ForEach(DYListKind.allCases) { k in
@@ -2074,6 +2087,16 @@ struct DYMineScreen: View {
         }
         .fullScreenCover(item: $relations) { t in
             DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid, manageFollowers: true)
+        }
+        .fullScreenCover(isPresented: $showUpload, onDismiss: {
+            // 发完回来：作品数和「作品」栏重拉（抖音转码审核要一会儿，刚发的可能稍后才出现）
+            Task {
+                await refreshProfile()
+                models[.post] = nil; Self.cachedModels[.post] = nil
+                if kind == .post { ensure(.post) }
+            }
+        }) {
+            DYUploadScreen()
         }
     }
 
