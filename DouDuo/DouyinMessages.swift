@@ -608,6 +608,8 @@ struct DYMessagesScreen: View {
     @State private var chatStatus = "正在加载私信…"
     /// 聊天里点朋友分享的视频 → 原生播放器（网页 ddMsg 通道触发）
     @State private var videoPlay: DYMessagePlay?
+    /// 私信里点开的图片（原生看大图）
+    @State private var photo: DYPhotoViewerTarget?
     /// 顶部头像栏 = 朋友（互相关注），来自 familiar/atlist，不是粉丝
     @State private var friends: [DYFriend] = []
     @State private var counts: [Int: Int] = [:]
@@ -781,6 +783,12 @@ struct DYMessagesScreen: View {
                     guard let sec = obj["sec"] as? String, !sec.isEmpty else { return }
                     DYLiveModel.log("DDMSGUSER intercept click sec=\(sec.prefix(12))")
                     Task { @MainActor in self.openUser(sec: sec) }
+                case "photo":
+                    let urls = ((obj["urls"] as? [String]) ?? []).compactMap(URL.init(string:)).filter { $0.scheme == "https" || $0.scheme == "http" }
+                    guard !urls.isEmpty else { return }
+                    let i = (obj["index"] as? NSNumber)?.intValue ?? 0
+                    DYLiveModel.log("DDPHOTO open n=\(urls.count) i=\(i)")
+                    Task { @MainActor in self.photo = DYPhotoViewerTarget(urls: urls, start: i) }
                 case "preview-open", "preview-close":
                     DYLiveModel.log("DDCHATPREVIEW \(obj["type"] as? String ?? "-") why=\(obj["why"] as? String ?? "-") closed=\(obj["closed"] as? Bool ?? false)")
                 case "msg-menu":
@@ -818,6 +826,7 @@ struct DYMessagesScreen: View {
                 }
             }
         }
+        .dyPhotoViewer($photo)
         .fullScreenCover(item: $videoPlay) { p in
             // 信息里点开的分享视频：一关掉就把它的声音彻底收掉（见 DYListPlayer.hardStopOnDismiss）
             DYListPlayer(bridge: bridge, title: p.item.desc.isEmpty ? "视频" : p.item.desc,

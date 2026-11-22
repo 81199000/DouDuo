@@ -113,6 +113,7 @@
 		B08CBE12D52FDFA54AB6347A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC7988669B7B20EB2EB040BE /* PrivacyInfo.xcprivacy */; };
 		B68211E3E80797D1FA1E1C10 /* DouyinLoginProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4346FF6A2383902E2A3DA80 /* DouyinLoginProbe.swift */; };
 		B6C12A97D054814FFFCCE8A0 /* DouyinVideoCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B7FB68E974359DCF77E02 /* DouyinVideoCache.swift */; };
+		BEE5A22C2C2DD5A8496C8697 /* DYPhotoViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E359CF1C55B73A97512BA23D /* DYPhotoViewer.swift */; };
 		C1166D7EF9108A4F07FDFA35 /* DYPagerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D70EC03370C3E82A74E8D1 /* DYPagerWindow.swift */; };
 		C1F616D391061A91893A35CD /* DYForwardLayoutProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 532CF765F5503BE70F2B7BBE /* DYForwardLayoutProbe.swift */; };
 		C2897DBD3C7E64EE0B0B7009 /* DYPictureInPicture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79B6E29A6530FCADAE181F08 /* DYPictureInPicture.swift */; };
@@ -294,6 +295,7 @@
 		DD959E8F961105A398387850 /* DYShareLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYShareLink.swift; sourceTree = "<group>"; };
 		DFA82DC2A7F234948CEC0BB9 /* DYSearchPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSearchPresentation.swift; sourceTree = "<group>"; };
 		E049F77CC7B7331FD0750ECD /* DDAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDAppearance.swift; sourceTree = "<group>"; };
+		E359CF1C55B73A97512BA23D /* DYPhotoViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPhotoViewer.swift; sourceTree = "<group>"; };
 		E4079BB937127E423770BACE /* DYMessageRowBoundsKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageRowBoundsKey.swift; sourceTree = "<group>"; };
 		E50B100019A096A959BC847E /* DouyinLiveAdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveAdaptiveLayout.swift; sourceTree = "<group>"; };
 		E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStreakBadge.swift; sourceTree = "<group>"; };
@@ -424,6 +426,7 @@
 				B6D70EC03370C3E82A74E8D1 /* DYPagerWindow.swift */,
 				D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */,
 				1AFCBE4FE0ED5F396B476B89 /* DYPassportVerify.swift */,
+				E359CF1C55B73A97512BA23D /* DYPhotoViewer.swift */,
 				79B6E29A6530FCADAE181F08 /* DYPictureInPicture.swift */,
 				33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */,
 				25E5006FCAA0A5D7900CB5F9 /* DYProductPill.swift */,
@@ -722,6 +725,7 @@
 				C1166D7EF9108A4F07FDFA35 /* DYPagerWindow.swift in Sources */,
 				5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */,
 				2AAE2117F06CAF6D6EFA1259 /* DYPassportVerify.swift in Sources */,
+				BEE5A22C2C2DD5A8496C8697 /* DYPhotoViewer.swift in Sources */,
 				C2897DBD3C7E64EE0B0B7009 /* DYPictureInPicture.swift in Sources */,
 				5751001D3873E34BD6392BEF /* DYPlaybackTelemetry.swift in Sources */,
 				86ED6F32CFC7BD5F75D0F790 /* DYProductPill.swift in Sources */,

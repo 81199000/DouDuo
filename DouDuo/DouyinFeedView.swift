@@ -6031,7 +6031,10 @@ struct DYCommentMedia: View {
     private var pics: [DYCommentImage] { comment.images ?? [] }
 
     var body: some View {
-        content.fullScreenCover(item: $viewer) { t in DYCommentImageViewer(target: t) }
+        // 评论图片也走原生看大图（照片 App 同款：缩放 / 双击 / 下滑关闭）
+        content.dyPhotoViewer(Binding(
+            get: { viewer.map { t in DYPhotoViewerTarget(urls: t.images.compactMap { URL(string: $0.full) }, start: t.start) } },
+            set: { if $0 == nil { viewer = nil } }))
     }
 
     private var content: some View {

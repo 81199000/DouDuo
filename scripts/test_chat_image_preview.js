@@ -1,36 +1,37 @@
 #!/usr/bin/env node
-// 私信看大图：横屏点图片后退不出来（老板 2026-11-22）。在 jsdom 风格假环境里跑生产脚本：
-// 出现全屏 fixed 浮层 + scale 大图 → 补关闭钮；点关闭钮 → 先点浮层里的 close 元素，没关再点底板，最后派发 Esc。
+// 私信点图片 → 原生看大图（老板 2026-11-22）：在 jsdom 里跑生产脚本，断言
+// ① 点消息气泡里的图片：网页自己的点击被吞掉，App 收到 {type:'photo', urls:[原图], index}
+// ② 头像 / 分享视频卡里的图片不拦  ③ 网页看大图层若还是冒出来，立刻派 Esc 收掉
 const fs = require('fs'), path = require('path'), assert = require('assert');
 let JSDOM; try { ({ JSDOM } = require('jsdom')); } catch (e) { console.log('SKIP jsdom 未安装'); process.exit(0); }
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYChatMessageBridge.swift'), 'utf8');
-const m = src.match(/enum DYChatImagePreviewClose \{\n    static let script = #"""\n([\s\S]*?)\n"""#/);
+const m = src.match(/enum DYChatImagePreviewClose \{[\s\S]*?static let script = #"""\n([\s\S]*?)\n"""#/);
 assert(m, '找不到 DYChatImagePreviewClose.script');
 const script = m[1].replace(/\\\\/g, '\\');
-const html = `<!doctype html><body>
-<div class="chatLight" style="position:fixed"><div class="componentsEntrywrapper"><img src="a.jpg"></div></div>
-</body>`;
+const html = `<!doctype html><body><div class="componentsRightPanelwrapper">
+  <div data-e2e="message-item"><img id="avatar" class="avatarImg" src="https://p3.douyinpic.com/av.jpg">
+    <div class="MessageItemImage"><img id="photo" src="ddimg://img/?u=x" data-dd-orig="https://p3.douyinpic.com/big.jpg"></div></div>
+  <div data-e2e="message-item"><div class="MessageItemShareAweme"><img id="card" src="https://p3.douyinpic.com/cover.jpg"></div></div>
+</div></body>`;
 (async () => {
-  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM(html, { url: 'https://www.douyin.com/chat', runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom; const { document } = window;
-  const posts = [];
+  const posts = []; let webOpened = 0, escs = 0;
   window.webkit = { messageHandlers: { ddMsg: { postMessage: s => posts.push(JSON.parse(s)) } } };
-  window.innerWidth = 1000; window.innerHeight = 800;
-  window.Element.prototype.getBoundingClientRect = function () { return this.__hidden ? { width: 0, height: 0 } : { width: 1000, height: 800 }; };
+  window.Element.prototype.getBoundingClientRect = () => ({ width: 120, height: 120 });
   window.eval(script);
-  // 看大图层：全屏 fixed，图片 transform scale，带 close 图标但点它不生效；点底板才关
-  const viewer = document.createElement('div');
-  viewer.style.position = 'fixed'; viewer.className = 'ftLHzHyB';
-  viewer.innerHTML = '<img style="transform: translate(-50%, -50%) scale(1)"><div class="oCSaecm_ closeIcon"></div>';
-  viewer.addEventListener('click', e => { if (e.target === viewer) viewer.__hidden = true; });
-  document.body.appendChild(viewer);
-  await new Promise(r => setTimeout(r, 50));
-  const btn = viewer.querySelector('.dd-preview-close');
-  assert(btn, '看大图层要补关闭钮');
-  assert(!document.querySelector('.chatLight .dd-preview-close'), '聊天主界面不该被当成看大图层');
-  btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
-  await new Promise(r => setTimeout(r, 700));
-  const last = posts.filter(p => p.type === 'preview-close').pop();
-  assert(last && last.closed, '点关闭钮后应关掉：' + JSON.stringify(posts));
-  console.log('PASS chat image preview close via', last.steps);
+  document.getElementById('photo').addEventListener('click', () => webOpened++);
+  window.addEventListener('keydown', e => { if (e.keyCode === 27) escs++; });
+  const click = id => document.getElementById(id).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  click('photo');
+  assert.equal(webOpened, 0, '网页自己的点击要被吞掉');
+  const p = posts.find(x => x.type === 'photo');
+  assert(p, '要发 photo 给 App');
+  assert.deepEqual(p.urls, ['https://p3.douyinpic.com/big.jpg'], '要给原图地址（data-dd-orig），不是 ddimg 缓存地址');
+  posts.length = 0; click('avatar'); click('card');
+  assert(!posts.some(x => x.type === 'photo'), '头像 / 分享卡不拦');
+  const leak = document.createElement('div'); leak.className = 'semi-image-preview'; document.body.appendChild(leak);
+  await new Promise(r => setTimeout(r, 30));
+  assert(escs > 0, '网页看大图层冒出来要立刻派 Esc');
+  console.log('PASS chat photo → native viewer');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });
