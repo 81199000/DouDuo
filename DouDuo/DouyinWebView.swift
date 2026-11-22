@@ -571,6 +571,9 @@ struct DouyinWebContainer: UIViewRepresentable {
             // 长按消息气泡 → 通知 App 弹「删除这条消息」
             cfg.userContentController.addUserScript(
                 WKUserScript(source: DYChatMessageMenu.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            // 点图片弹出的大图预览：网页版只能按 Esc 关，补关闭按钮 + 点黑底关闭
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: DYChatImagePreviewClose.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             // 仅 DEBUG：只读记录私信网页的数据来源与消息状态字段（DDIMPROBE），不改网页行为
             DYIMProbe.install(in: cfg)
             // 点头像/昵称交给 App 开原生作者主页（只装在私信网页；网页版照常跳网页主页）

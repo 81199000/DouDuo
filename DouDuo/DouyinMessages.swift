@@ -781,6 +781,8 @@ struct DYMessagesScreen: View {
                     guard let sec = obj["sec"] as? String, !sec.isEmpty else { return }
                     DYLiveModel.log("DDMSGUSER intercept click sec=\(sec.prefix(12))")
                     Task { @MainActor in self.openUser(sec: sec) }
+                case "preview-open", "preview-close":
+                    DYLiveModel.log("DDCHATPREVIEW \(obj["type"] as? String ?? "-") why=\(obj["why"] as? String ?? "-") closed=\(obj["closed"] as? Bool ?? false)")
                 case "msg-menu":
                     guard let token = obj["token"] as? String, !token.isEmpty else { return }
                     Task { @MainActor in self.deletingMessageToken = token }
