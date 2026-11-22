@@ -5,7 +5,7 @@ DouDuo 发版不需要发布管家：负责该版本的维护者（人或 Agent�
 ## 前置
 
 - 主干：`~/Projects/douduo`（`main`），remote `origin` = GitHub `81199000/DouDuo`（公开），`gitee` = Gitee `remon8/douduo`（国内镜像）。
-- `gh` 已登录；Gitee token 在 `~/.config/gitee_token.json`（不入库）。
+- `gh` 已登录；Gitee token 文件由 `GITEE_TOKEN_FILE` 指定（默认 `~/.config/douduo/gitee-token.json`，不入库）；装测试机的个人配置写在 `~/.config/douduo/local.env`（见 `scripts/install_duo.sh` 头注释）。
 - 版本号、构建号在 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`），发行说明写 `docs/releases/vX.Y.Z.md`。**发版不改 README**：首页只放功能与安装说明，不写版本号、不列版本流水，版本改动只进 `docs/releases/` 和 Release。
 
 ## 一键发版（推荐）

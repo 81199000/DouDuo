@@ -2,15 +2,15 @@
 """把 GitHub 上某个正式 Release（默认最新）同步到 Gitee 发行版：建发行版 + 上传 unsigned.ipa。
 
 前置：tag 已推到 gitee（git push gitee main && git push gitee vX.Y.Z）。
-凭据：~/.config/gitee_token.json 的 access_token（不入库）。
+凭据：GITEE_TOKEN_FILE（默认 ~/.config/douduo/gitee-token.json）的 access_token（不入库）。
 用法：python3 scripts/sync_gitee_release.py [vX.Y.Z]
 幂等：发行版已存在 / IPA 已挂上就跳过；最后匿名下载核对大小。
 """
-import json, pathlib, subprocess, sys, tempfile, urllib.error, urllib.request, uuid
+import json, os, pathlib, subprocess, sys, tempfile, urllib.error, urllib.request, uuid
 
 GH = "81199000/DouDuo"
 API = "https://gitee.com/api/v5/repos/remon8/douduo"
-TOK = json.loads((pathlib.Path.home() / ".config/gitee_token.json").read_text())["access_token"]
+TOK = json.loads(pathlib.Path(os.environ.get("GITEE_TOKEN_FILE", "~/.config/douduo/gitee-token.json")).expanduser().read_text())["access_token"]
 
 
 def gh(*args):

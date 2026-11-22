@@ -3,8 +3,8 @@
 // 不连网、不碰真抖音：发送按钮点下去走的是本地假 fetch。
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { JSDOM } = (() => {
-  const tries = [process.env.DOUDUO_JSDOM, 'jsdom', '~/node_modules/jsdom',
-                 '~/node_modules/.pnpm/jsdom@27.4.0/node_modules/jsdom'].filter(Boolean);
+  // 没装在仓库里就用 DOUDUO_JSDOM 指到本机任意 jsdom 目录
+  const tries = [process.env.DOUDUO_JSDOM, 'jsdom'].filter(Boolean);
   for (const t of tries) { try { return require(t); } catch (e) {} }
   throw new Error('jsdom not found; set DOUDUO_JSDOM');
 })();

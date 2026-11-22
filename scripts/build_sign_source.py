@@ -13,7 +13,7 @@
   python3 scripts/build_sign_source.py       # 重新生成两份源
   git add docs/source && git commit && git push origin main && git push gitee main
 """
-import argparse, json, pathlib, re, subprocess, sys, urllib.request
+import argparse, json, os, pathlib, re, subprocess, sys, urllib.request
 
 GH_REPO = "81199000/DouDuo"
 GITEE_REPO = "remon8/douduo"
@@ -57,7 +57,7 @@ def gh_releases(limit):
 
 def gitee_token():
     """Gitee API 匿名访问会 403；用发版凭据（不入库），没有就返回 None。"""
-    f = pathlib.Path.home() / ".config/gitee_token.json"
+    f = pathlib.Path(os.environ.get("GITEE_TOKEN_FILE", "~/.config/douduo/gitee-token.json")).expanduser()
     try:
         return json.loads(f.read_text())["access_token"]
     except Exception:

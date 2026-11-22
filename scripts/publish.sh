@@ -1,12 +1,12 @@
 #!/bin/zsh
 # DouDuo 一键发版：GitHub + Gitee 同步发行版，并更新全能签 / 轻松签软件源。
 #
-# 用法（只能在主干 ~/Projects/douduo 的 main 上跑）：
+# 用法（只能在主干仓库的 main 上跑）：
 #   scripts/publish.sh 1.6.0            # 版本号；构建号自动 +1
 #   scripts/publish.sh 1.6.0 --dry-run  # 只做检查 + 编译 + 测试，不打 tag、不推、不发
 #
-# 前置：docs/releases/v<版本>.md 已写好；gh 已登录；Gitee token 在
-#       ~/.config/gitee_token.json（不入库）；Vendor/VLCKit 已就位。
+# 前置：docs/releases/v<版本>.md 已写好；gh 已登录；Gitee token 文件由
+#       GITEE_TOKEN_FILE 指定（默认 ~/.config/douduo/gitee-token.json，不入库）；Vendor/VLCKit 已就位。
 # 步骤：检查 → 改版本号 → 未签名真机包（同时后台跑全部脚本测试）→ 提交 → tag →
 #       推 GitHub/Gitee → GitHub Release → Gitee 发行版 → 软件源 → 推送 → 匿名验收。
 # 任何一步失败立即停止；重跑是安全的（已发的 Release / Gitee 发行版 / 软件源都会跳过或覆盖）。
@@ -18,6 +18,8 @@ DRY=${2:-}
 TAG=v$VER
 NOTES=docs/releases/$TAG.md
 IPA=build/DouDuo-$VER-unsigned.ipa
+[[ -f ${DOUDUO_LOCAL_ENV:-$HOME/.config/douduo/local.env} ]] && source "${DOUDUO_LOCAL_ENV:-$HOME/.config/douduo/local.env}"   # 个人配置（不入库）
+export GITEE_TOKEN_FILE=${GITEE_TOKEN_FILE:-$HOME/.config/douduo/gitee-token.json}
 UA='Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'
 step() { print -P "\n%F{cyan}▶ $1%f"; }
 die()  { print -P "%F{red}❌ $1%f" >&2; exit 1; }
@@ -29,7 +31,7 @@ step "检查环境"
 [[ -z $(git status --porcelain --untracked-files=no) ]] || die "工作区有未提交改动"
 [[ -f $NOTES ]] || die "缺发行说明 $NOTES"
 [[ -d Vendor/VLCKit/VLCKit-all.xcframework ]] || die "缺 Vendor/VLCKit（./scripts/fetch-vlckit.sh 或从主干克隆）"
-[[ -f ~/.config/gitee_token.json ]] || die "缺 Gitee token"
+[[ -f $GITEE_TOKEN_FILE ]] || die "缺 Gitee token：$GITEE_TOKEN_FILE"
 gh auth status >/dev/null 2>&1 || die "gh 未登录"
 for c in xcodegen xcodebuild node python3; do command -v $c >/dev/null || die "缺 $c"; done
 git fetch -q origin --tags; git fetch -q gitee
