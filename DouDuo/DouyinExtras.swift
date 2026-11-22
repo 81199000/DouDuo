@@ -109,7 +109,7 @@ private struct DYReplyPage: Decodable { let status: Int; let items: [DYComment];
 @MainActor final class DYOnceFlag { var done = false; init() {} }
 
 private struct DYPublishResp: Decodable { let status: Int; let code: Int?; let msg: String?; let comment: DYComment?; let danmakuID: String?; let diagnostic: String?; var verify: String? = nil }
-private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String? }
+private struct DYUserResp: Decodable { let status: Int; let user: DYUser?; let msg: String?; var code: Int? = nil }
 private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 
 // MARK: - 接口
@@ -143,8 +143,15 @@ extension DouyinBridge {
     func selfProfile() async throws -> DYUser {
         let d = try await call(Self.selfJS, args: [:])
         let r = try JSONDecoder().decode(DYUserResp.self, from: d)
-        guard let u = r.user, !u.secUid.isEmpty else { throw DYError.bad(r.msg ?? "抖音未登录") }
-        return u
+        if let u = r.user, !u.secUid.isEmpty { return u }
+        // 只有抖音明确回了「未登录」才说未登录（工单 B17）：以前超时 / 断网 / 403 / 风控空包也报「抖音未登录」，
+        // 「我的」据此自动弹登录页、评论恢复页判成登录作废——隔天冷启动网络一慢，用户就以为每天都被退出了
+        if r.status < 0 { throw DYError.bad("读取账号资料超时或网络不通，请稍后重试") }
+        guard r.status == 200 else { throw DYError.blocked("HTTP \(r.status)") }
+        // 真未登录时抖音回 status_code 8 /「用户未登录」；既没错误码也没提示 = 被拦 / 空包，不是未登录
+        if let m = r.msg, !m.isEmpty { throw DYError.bad(m) }
+        if r.code == 8 { throw DYError.bad("抖音未登录") }
+        throw DYError.blocked(r.code.map { "资料接口 code=\($0)" } ?? "资料接口返回为空")
     }
 
     func userProfile(_ sec: String) async throws -> DYUser {
@@ -640,7 +647,7 @@ extension DouyinBridge {
     static let selfJS = userMap + #"""
     const r = await req('GET', '/aweme/v1/web/user/profile/self/?' + q({ publish_video_strategy_type: '2', source: 'channel_pc_web', personal_center_strategy: '1' }));
     const d = parse(r.t) || {};
-    return JSON.stringify({ status: r.s, user: umap(d.user), msg: d.status_msg || null });
+    return JSON.stringify({ status: r.s, user: umap(d.user), msg: d.status_msg || null, code: typeof d.status_code === 'number' ? d.status_code : null });
     """#
 
     static let otherJS = userMap + #"""
