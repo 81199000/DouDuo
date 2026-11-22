@@ -788,9 +788,14 @@ struct DYMessagesScreen: View {
                     let urls = ((obj["urls"] as? [String]) ?? []).compactMap(URL.init(string:))
                         .filter { ["https", "http", "data"].contains($0.scheme ?? "") }
                     let i = (obj["index"] as? NSNumber)?.intValue ?? 0
-                    DYLiveModel.log("DDPHOTO open n=\(urls.count) i=\(i) src=\(obj["src"] as? String ?? "-")")
-                    guard !urls.isEmpty else { return }
-                    Task { @MainActor in self.photo = DYPhotoViewerTarget(urls: urls, start: i) }
+                    let shown: [Data?] = ((obj["shown"] as? [Any]) ?? []).map { v in
+                        guard let s = v as? String, let comma = s.firstIndex(of: ",") else { return nil }
+                        return Data(base64Encoded: String(s[s.index(after: comma)...]), options: .ignoreUnknownCharacters)
+                    }
+                    DYLiveModel.log("DDPHOTO open n=\(urls.count) i=\(i) src=\(obj["src"] as? String ?? "-") shown=\(shown.compactMap { $0?.count }.map(String.init).joined(separator: ",")) sizes=\(obj["sizes"] as? String ?? "-")")
+                    guard !urls.isEmpty || shown.contains(where: { $0 != nil }) else { return }
+                    let pics = urls.isEmpty ? shown.map { _ in URL(string: "data:,")! } : urls
+                    Task { @MainActor in self.photo = DYPhotoViewerTarget(urls: pics, start: i, fallbacks: shown) }
                 case "photo-miss":
                     DYLiveModel.log("DDPHOTO miss cls=\(obj["cls"] as? String ?? "-") box=\(obj["box"] as? String ?? "-")")
                 case "preview-open", "preview-close":

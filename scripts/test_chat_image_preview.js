@@ -34,6 +34,8 @@ const html = `<!doctype html><body><div class="componentsRightPanelwrapper">
   inl.closest('[data-e2e="message-item"]').__reactProps$x = { message: { parsedContent: { aweType: 2702, resource_url: { origin_url_list: ['https://p3.douyinpic.com/orig.jpg'] } } } };
   posts.length = 0; click('inline');
   assert.deepEqual((posts.find(x => x.type === 'photo') || {}).urls, ['https://p3.douyinpic.com/orig.jpg'], 'base64 缩略图要换成 resource_url 原图');
+  assert.ok(Array.isArray((posts.find(x => x.type === 'photo') || {}).shown), '要带上已显示像素（shown）作兜底');
+  assert.ok(((posts.find(x => x.type === 'photo') || {}).shown || [])[0].startsWith('data:image/'), 'base64 缩略图直接作兜底');
   posts.length = 0; click('avatar'); click('card');
   assert(!posts.some(x => x.type === 'photo'), '头像 / 分享卡不拦');
   const leak = document.createElement('div'); leak.className = 'semi-image-preview'; document.body.appendChild(leak);

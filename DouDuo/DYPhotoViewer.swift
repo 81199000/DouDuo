@@ -9,6 +9,8 @@ struct DYPhotoViewerTarget: Identifiable {
     let id = UUID()
     let urls: [URL]
     let start: Int
+    /// 网页里已显示的图片像素（base64 解出来的），原图取不到时兜底
+    var fallbacks: [Data?] = []
 }
 
 struct DYPhotoViewer: UIViewControllerRepresentable {
@@ -16,7 +18,7 @@ struct DYPhotoViewer: UIViewControllerRepresentable {
     let onClose: () -> Void
 
     func makeUIViewController(context: Context) -> DYPhotoPagerController {
-        DYPhotoPagerController(urls: target.urls, start: target.start, onClose: onClose)
+        DYPhotoPagerController(urls: target.urls, fallbacks: target.fallbacks, start: target.start, onClose: onClose)
     }
     func updateUIViewController(_ vc: DYPhotoPagerController, context: Context) {}
 }
@@ -35,6 +37,7 @@ extension View {
 
 final class DYPhotoPagerController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
     private let urls: [URL]
+    private let fallbacks: [Data?]
     private var index: Int
     private let onClose: () -> Void
     private let pager = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal,
@@ -44,8 +47,9 @@ final class DYPhotoPagerController: UIViewController, UIPageViewControllerDataSo
     private let counter = UILabel()
     private var chromeHidden = false
 
-    init(urls: [URL], start: Int, onClose: @escaping () -> Void) {
+    init(urls: [URL], fallbacks: [Data?] = [], start: Int, onClose: @escaping () -> Void) {
         self.urls = urls
+        self.fallbacks = fallbacks
         self.index = min(max(start, 0), max(urls.count - 1, 0))
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
@@ -106,6 +110,7 @@ final class DYPhotoPagerController: UIViewController, UIPageViewControllerDataSo
     private func page(at i: Int) -> DYPhotoPage? {
         guard urls.indices.contains(i) else { return nil }
         let p = DYPhotoPage(url: urls[i], index: i)
+        p.fallback = fallbacks.indices.contains(i) ? fallbacks[i] : nil
         p.onSingleTap = { [weak self] in self?.toggleChrome() }
         p.onDismissProgress = { [weak self] f in self?.setDismissProgress(f) }
         p.onDismiss = { [weak self] in self?.close(animatedFromPage: true) }
@@ -155,6 +160,8 @@ final class DYPhotoPagerController: UIViewController, UIPageViewControllerDataSo
 final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     let url: URL
     let index: Int
+    /// 网页上已经显示出来的那张（截下来的像素），原图取不到时用它
+    var fallback: Data?
     var onSingleTap: (() -> Void)?
     var onDismissProgress: ((CGFloat) -> Void)?
     var onDismiss: (() -> Void)?
@@ -219,6 +226,12 @@ final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecogn
     }
 
     private func load() {
+        // 先把网页上已显示的那张铺上（秒开），原图拿到了再替换
+        if let fallback, let img = UIImage(data: fallback) {
+            spinner.stopAnimating()
+            imageView.image = img
+            layoutImage()
+        }
         Task { @MainActor in
             let raw = DYChatImageCache.originalURL(url.absoluteString) ?? url.absoluteString
             var data: Data?
@@ -232,10 +245,18 @@ final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecogn
                 var req = URLRequest(url: u, timeoutInterval: 20)
                 req.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
                 req.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")
-                data = try? await URLSession.shared.data(for: req).0
-                if let data { DYChatImageCache.shared.store(data, for: raw) }
+                do {
+                    let (d, resp) = try await URLSession.shared.data(for: req)
+                    let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+                    let type = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "-"
+                    DYLiveModel.log("DDPHOTO fetch http=\(code) bytes=\(d.count) type=\(type) host=\(u.host ?? "-") path=\(u.path.prefix(60)) ext=\(u.pathExtension)")
+                    if code == 200, UIImage(data: d) != nil { data = d; DYChatImageCache.shared.store(d, for: raw) }
+                } catch { DYLiveModel.log("DDPHOTO fetch err \(error.localizedDescription)") }
             }
+            // 网络原图取不到（加密 / 鉴权）时退回网页上已显示的那张（App 在点击时一并带过来）
+            if data == nil, let fallback { data = fallback }
             spinner.stopAnimating()
+            if data == nil, imageView.image != nil { return }   // 原图取不到，留着已显示的那张
             guard let data, let img = UIImage(data: data) else {
                 DYLiveModel.log("DDPHOTO load fail")
                 let l = UILabel(); l.text = "图片加载失败"; l.textColor = .white; l.sizeToFit()

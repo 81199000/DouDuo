@@ -201,8 +201,21 @@ enum DYChatImagePreviewClose {
     const imgs = [...msg.querySelectorAll('img')].filter(i => isPhotoMessage(i));
     const list = (imgs.length ? imgs : [img]);
     const urls = list.map(i => fullOf(i, msg)).filter(Boolean);
-    post({ type: 'photo', urls, index: Math.max(0, list.indexOf(img)),
-           src: urls.map(u => u.startsWith('data:') ? 'data' : 'net').join(',') });
+    // 私信图片是加密的：网页解密后才画到 <img> 上（data:/blob:）。把已显示的像素一并带给 App，原图取不到就用它。
+    const shown = list.map(i => {
+      const s = i.getAttribute('src') || '';
+      if (s.startsWith('data:image/')) return s;
+      try {
+        if (!i.naturalWidth) return null;
+        const c = document.createElement('canvas');
+        c.width = i.naturalWidth; c.height = i.naturalHeight;
+        c.getContext('2d').drawImage(i, 0, 0);
+        return c.toDataURL('image/jpeg', 0.92);
+      } catch (e) { return null; }
+    });
+    post({ type: 'photo', urls, shown, index: Math.max(0, list.indexOf(img)),
+           src: urls.map(u => u.startsWith('data:') ? 'data' : 'net').join(','),
+           sizes: list.map(i => (i.naturalWidth || 0) + 'x' + (i.naturalHeight || 0)).join(',') });
     armed = null;
   }, true);
   // 兜底：网页自己的看大图层（Semi ImagePreview / 全屏 fixed + scale 大图）冒出来就立刻关掉
