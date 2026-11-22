@@ -246,7 +246,7 @@ final class DouDuoUITests: XCTestCase {
             app.launchEnvironment.removeValue(forKey: "DOUDUO_SEARCH_FIXTURE")
         }
         app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-            "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "1.5.0"]
+            "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
         func settings() throws {
@@ -970,7 +970,7 @@ final class DouDuoUITests: XCTestCase {
             app.launchEnvironment[flag] = "1"
         }
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                                "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douyin_search_history_v1", "",
                                 "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -1053,7 +1053,6 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_HASHTAG_FIXTURE"] = "1"
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                                "-douyin_wide_landscape_v1", "NO",
                                 "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -1110,7 +1109,6 @@ final class DouDuoUITests: XCTestCase {
         // real recommended feed and real signed search API in this app session.
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                                "-douyin_wide_landscape_v1", "NO",
                                 "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -1233,7 +1231,7 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_SEARCH_FIXTURE"] = "1"
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                                "-douyin_wide_landscape_v1", "NO", "-douyin_search_history_v1", "",
+                                "-douyin_search_history_v1", "",
                                 "-douduo_dismissed_update_v1", "1.5.0"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -1329,7 +1327,6 @@ final class DouDuoUITests: XCTestCase {
         app.launchEnvironment["DOUDUO_SEARCH_FIXTURE"] = "1"
         app.launchEnvironment["DOUDUO_RESET_HASHTAG_FILTER"] = "1"
         app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                                "-douyin_wide_landscape_v1", "NO",
                                 "-douduo_dismissed_update_v1", "1.5.4", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -2184,7 +2181,7 @@ final class DouDuoUITests: XCTestCase {
             "DOUDUO_OFFLINE_FIXTURE_URL": fixtureURL, "DOUDUO_APPEARANCE": "system"
         ]
         app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                               "-douyin_wide_landscape_v1", "NO", "-douyin_playback_rate_v1", "1.25",
+                               "-douyin_playback_rate_v1", "1.25",
                                "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
 
@@ -2490,7 +2487,7 @@ final class DouDuoUITests: XCTestCase {
             "DOUDUO_OFFLINE_FIXTURE_URL": failingSource
         ]
         app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                               "-douyin_playback_rate_v1", "1", "-douyin_wide_landscape_v1", "NO",
+                               "-douyin_playback_rate_v1", "1",
                                "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
@@ -2518,7 +2515,7 @@ final class DouDuoUITests: XCTestCase {
             "DOUDUO_OFFLINE_FIXTURE_URL": fixtureURL, "DOUDUO_APPEARANCE": "system"
         ]
         app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                               "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let current = app.staticTexts["douyin.currentID"].firstMatch
@@ -2544,7 +2541,7 @@ final class DouDuoUITests: XCTestCase {
             "DOUDUO_TEST_OFFLINE": "1", "DOUDUO_TEST_RECONNECT_AFTER": "7"
         ]
         app.launchArguments = ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO",
-                               "-douyin_wide_landscape_v1", "NO", "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
+                               "-douduo_dismissed_update_v1", "9.9.9", "-duoduomain_tab_v1", "首页"]
         addTeardownBlock { app.terminate() }
         app.launch()
         let current = app.staticTexts["douyin.currentID"].firstMatch
@@ -5783,7 +5780,6 @@ extension DouDuoUITests {
         app.launchEnvironment["DOUDUO_CHROME_MODE"] = mode
         if forceWide {
             app.launchEnvironment["DOUDUO_FORCEWIDE"] = "1"
-            app.launchArguments += ["-douyin_wide_landscape_v1", "YES"]
         }
         if pinned { app.launchEnvironment["DOUDUO_VIDEO_ID"] = "7678628867820506406" }
         app.launchArguments += ["-duoduomain_tab_v1", "首页", "-douyin_muted_v1", "YES",

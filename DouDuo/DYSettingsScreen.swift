@@ -21,7 +21,6 @@ struct DYSettingsScreen: View {
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
-    @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
     @AppStorage(DYFeedExtras.adKey) private var feedAds = true
@@ -103,7 +102,6 @@ struct DYSettingsScreen: View {
                         }
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
-                    Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
                     Toggle("推荐里插入直播间", isOn: $feedLive).accessibilityIdentifier("settings.feed.live")
                     Toggle("推荐里显示广告", isOn: $feedAds).accessibilityIdentifier("settings.feed.ads")
                     Toggle("显示视频商品（小黄车）", isOn: $feedProduct).accessibilityIdentifier("settings.feed.product")

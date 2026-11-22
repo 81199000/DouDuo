@@ -11,7 +11,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 | 推荐流数据（共用） | `DouDuo/DYRecommendFeedHost.swift` | 刷新推荐、自动连播、不感兴趣、话题屏蔽、存档会话、上报观看、点赞收藏、预加载、未读数、打开搜索。**只写这一份。** |
 | 弹幕（共用） | `DouDuo/DYDanmakuInput.swift` | 拉弹幕、发弹幕、输入条。 |
 | 推荐页评论（共用） | `DouDuo/DYCommentStage.swift` | 评论怎么摆：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板、右划关闭。**评论位置只改这里**。 |
-| 推荐流横竖选片（共用） | `DYVideoFit.feedPlaysLandscape` + `DYFeedOrientation` | 「横屏时只放横屏内容」按什么算横屏。 |
+| 推荐流顺序（共用） | `DYFeedModel.fill` | 严格按服务端返回顺序进出候选池；不按横竖屏、图文类型或设备姿态重排、过滤。 |
 | 推荐页外壳 | `DYUpstreamFeedScreen`（默认/简洁/极简）、`DYClassicFeedScreen`（经典） | 只负责摆放：菜单、顶栏、评论面板位置。都遵守 `DYRecommendFeedHost`。 |
 | 视频页外壳 | `DYUpstreamVideoPage`、`DYClassicVideoPage` | 只负责按钮放在哪个容器里。 |
 
@@ -59,7 +59,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
   - 外屏叠放评论时状态栏让位（原「必须分开」第 4 条，已统一）
   - 坑：侧栏评论时视频区必须裁边（`DDClipIf`），否则播放器的环境光底（忽略安全区、铺满整屏）会盖住右侧评论栏 → 简洁内屏评论空白
   - 回归：`testOuterLandscapeVideoLiftsAboveCommentsInEveryMode`、`testInnerSideCommentsSwipeRightToCloseInEveryMode`、`testPhysicalHalfFoldCommentsHideSidebar`（四种模式）、`testCommentPresentationIsUnifiedAcrossLayouts`
-- [x] 推荐流横竖选片（老板 2026-11-17）：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
+- [x] 推荐流恢复服务端原序（2026-11-22）：取消 70% 竖屏穿插和「横屏只放横屏」，不再按播放区形态挑片。回归覆盖在 `scripts/test_menu_policy.py`
 - [x] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）：四种模式同一套经典评论几何（`playerLayout`），删掉非经典的 `upstreamBody`；只有菜单（经典系统导航栏 / 原生按钮）和简介面板按模式分。回归 `testListPlayerCommentsMatchFeedInEveryMode`、`testStandaloneCommentsRespectLayout`
 
 ## 验证分档（按改动大小，不默认跑模拟器）
@@ -78,7 +78,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 
 ```bash
 # 两个推荐页里不该再出现共用函数的副本（DouyinBridge / DYFeedModel 里的底层同名函数不算）
-grep -nE "private func (advance|applyHashtagFilter|dislike|focusCurrent|openSearch|playNext|refreshNoticeUnread|refreshRecommendations|remixUpcoming|reportWatch|saveSession|showToast|toggleCollect|toggleLike)\(" DouDuo/DouyinFeedView.swift
+grep -nE "private func (advance|applyHashtagFilter|dislike|focusCurrent|openSearch|playNext|refreshNoticeUnread|refreshRecommendations|reportWatch|saveSession|showToast|toggleCollect|toggleLike)\(" DouDuo/DouyinFeedView.swift
 # 应该没有输出（这些只在 DYRecommendFeedHost.swift 里）
 ```
 

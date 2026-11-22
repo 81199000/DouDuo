@@ -1527,74 +1527,25 @@ final class DYFeedModel: ObservableObject {
         if let currentID, items.contains(where: { $0.id == currentID }) { return currentID }
         let survivingIDs = Set(items.map(\.id))
         let next = previous.dropFirst(index).first { survivingIDs.contains($0.id) }?.id
-        if items.isEmpty { fill(6, relaxed: true); return items.first?.id }
+        if items.isEmpty { fill(6); return items.first?.id }
         return currentID == nil ? items.first?.id : (next ?? items.last?.id)
     }
 
-    /// 竖着看时按约 70% 竖屏均匀穿插（网页推荐接口本身竖屏只占 1～3 成，原序播放几乎全是横屏）；
-    /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
-    /// 横着看（屏幕/播放区比高宽）时只放横屏视频
-    @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
-    /// 当前播放区是不是横的（宽 > 高），由页面布局同步
-    var screenWide = false
-    /// 候选池：拉到了但横屏限定下暂时不放的（保持推荐原顺序），以及启动时本地已缓存没看过的
+    /// 已拿到、尚未播出的候选。只按服务端返回顺序进出，不按内容类型重排。
     var pool: [DYAweme] = []
     static let poolCap = 80
 
-    static func isPortrait(_ a: DYAweme) -> Bool { !a.images.isEmpty || a.isTallFrame }
-
-    /// 竖着看（或关掉横屏限定）时的竖屏目标占比。
-    static let portraitTarget = 0.7
-    /// 穿插额度（类似 Bresenham）：初值 1 - 目标，保证每次重排后第一条先放竖屏。
-    private var mixCredit = 1 - DYFeedModel.portraitTarget
-
-    /// 横屏限定时只要横屏。
-    var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
-    /// 当前竖屏目标：横屏限定 0，其余 70%。
-    var targetRatio: Double { landscapeOnlyActive ? 0 : Self.portraitTarget }
-
-    /// 从候选池往列表里排最多 maxN 条：竖横按目标比例均匀穿插（70% → 竖横竖竖横竖竖…），
-    /// 同方向内保持推荐原顺序；横屏限定时只取横屏。
-    /// relaxed = 比例凑不齐时照原顺序放（别让列表断粮）；横屏限定不放宽。
+    /// 从候选池按原顺序取最多 maxN 条。推荐流不在这里挑选横竖屏或调整比例。
     @discardableResult
-    func fill(_ maxN: Int, relaxed: Bool = false) -> Int {
+    func fill(_ maxN: Int) -> Int {
         pool = allowedRecommendations(pool)
-        let r = targetRatio
-        var n = 0
-        while n < maxN, !pool.isEmpty {
-            let idx: Int?
-            if r <= 0 {
-                idx = pool.firstIndex { !Self.isPortrait($0) }
-            } else if relaxed {
-                idx = 0
-            } else {
-                let wantPortrait = mixCredit + r >= 1 - 1e-9
-                idx = pool.firstIndex { Self.isPortrait($0) == wantPortrait }
-            }
-            guard let i = idx else { break }
-            let a = pool.remove(at: i)
-            items.append(a)
-            if r > 0 { mixCredit = (mixCredit + r - (Self.isPortrait(a) ? 1 : 0)).clamped(-1, 1) }
-            n += 1
-        }
+        let n = min(max(0, maxN), pool.count)
+        guard n > 0 else { return 0 }
+        items.append(contentsOf: pool.prefix(n))
+        pool.removeFirst(n)
         return n
-    }
-
-    /// 横屏限定开关 / 方向变了：当前条之后的重新排（当前这条不动，不打断播放）
-    /// keepAll = 原来排在后面的不能因为竖横比例凑不齐就被拿掉（启动时用：那几条是本地缓存好的，
-    /// 推荐还没拉回来之前只有它们能播；横屏限定时仍然只留横屏）。
-    func remix(after index: Int?, keepAll: Bool = false) {
-        let keep = (index ?? -1) + 1
-        guard keep <= items.count else { return }
-        let upcoming = Array(items[keep...])
-        items.removeSubrange(keep...)
-        pool = upcoming + pool
-        mixCredit = 1 - Self.portraitTarget
-        let placed = fill(max(upcoming.count, 6))
-        if keepAll, placed < upcoming.count { fill(upcoming.count - placed, relaxed: true) }
-        trimPool()
     }
 
     /// 启动时把本地已缓存、没看过、又不在列表里的放到候选池最前（秒开）
@@ -1604,12 +1555,8 @@ final class DYFeedModel: ObservableObject {
     }
 
     private func trimPool() {
-        // 超上限：先丢当前用得少的那一类里最早的（横屏限定丢竖屏；竖着看丢横屏，接口横屏本来就多）
-        while pool.count > Self.poolCap {
-            let dropPortrait = landscapeOnlyActive
-            if let i = pool.firstIndex(where: { Self.isPortrait($0) == dropPortrait }) { pool.remove(at: i) }
-            else { pool.removeFirst() }
-        }
+        // 只限制候选数量，不按横竖屏或内容类型淘汰；超出时保留最新拉回的服务端尾部。
+        if pool.count > Self.poolCap { pool.removeFirst(pool.count - Self.poolCap) }
     }
 
     func loadMore(_ bridge: DouyinBridge) async {
@@ -1647,10 +1594,8 @@ final class DYFeedModel: ObservableObject {
                 hasMore = r.hasMore || !r.items.isEmpty
                 added += fill(want - added)
             }
-            // 竖横凑不齐（如接口连着几页没竖屏）时按原顺序补，横屏限定不放宽
-            if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }
             trimPool()
-            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(String(format: "%.2f", targetRatio)) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
+            DYLiveModel.log("DDFEEDORDER added=\(added) pool=\(pool.count)")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
@@ -1658,7 +1603,7 @@ final class DYFeedModel: ObservableObject {
         }
     }
 
-    func reset() { items = []; hasMore = true; error = nil; pool = []; mixCredit = 1 - Self.portraitTarget }
+    func reset() { items = []; hasMore = true; error = nil; pool = [] }
 }
 
 private struct DYFeedHostFrameKey: PreferenceKey {
@@ -1783,7 +1728,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     /// 播放速度（更多 → 倍速）：全局速度，长按锁定只作用于单条视频，不写这里
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @State var noticeUnread = 0
-    @State private var wideToken = UUID()
 
     private var chrome: some View {
         let railMode = chromeMode.usesRail
@@ -1945,8 +1889,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     currentID = restored.currentID
                     scrollID = currentID
                 }
-                // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-                if currentIndex != nil { feed.remix(after: currentIndex, keepAll: true) }
                 await feed.loadMore(bridge)
                 if currentID == nil { currentID = feed.items.first?.id }
                 focusCurrent()
@@ -2047,7 +1989,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
-        .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()
@@ -2141,7 +2082,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @ViewBuilder
     private var layoutRoot: some View {
         GeometryReader { geo in
-            let wide = DYFeedOrientation.playAreaIsWide(geo)
             let panelW = sidePanelWidth(geo)
             // 右侧有评论栏时前摄落在评论栏上，顶栏不用再躲（默认模式的顶栏用）
             let nudge = panelW > 0 ? 0 : DYDuoMetrics.topBarLeftShift(geo)
@@ -2150,16 +2090,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 .onAppear { topNudge = nudge; topBarWidth = barW }
                 .onChange(of: nudge) { _, n in topNudge = n }
                 .onChange(of: barW) { _, v in withAnimation(.snappy) { topBarWidth = v } }
-                .onAppear { feed.screenWide = wide }
-                .onChange(of: wide) { _, w in
-                    // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
-                    let token = UUID(); wideToken = token
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        guard wideToken == token, feed.screenWide != w else { return }
-                        feed.screenWide = w
-                        remixUpcoming()
-                    }
-                }
         }
     }
 
@@ -3082,7 +3012,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     /// 全局播放速度；长按临时倍速不修改持久化偏好。
     @AppStorage("douyin_playback_rate_v1") private var playbackRate = 1.0
     @State var noticeUnread = 0
-    @State private var wideToken = UUID()
     @State private var topChrome = CGRect.zero
     /// Duo 横置（合屏外屏或完全展开内屏；半折不算）。
     @State private var duoLandscape = false
@@ -3195,8 +3124,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                     currentID = restored.currentID
                     scrollID = currentID
                 }
-                // 恢复的会话里「当前条之后」是上次的排法：按现在的方向 / 比例重排（当前这条不动）
-                if currentIndex != nil { feed.remix(after: currentIndex, keepAll: true) }
                 await feed.loadMore(bridge)
                 if currentID == nil { currentID = feed.items.first?.id }
                 focusCurrent()
@@ -3293,7 +3220,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
-        .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()
@@ -3433,9 +3359,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @ViewBuilder
     private var layoutRoot: some View {
         GeometryReader { geo in
-            let wide = DYFeedOrientation.playAreaIsWide(geo)
             flatArrangement(geo)
-                .onAppear { feed.screenWide = wide }
                 .onChange(of: geo.safeAreaInsets, initial: true) { _, value in
                     insets = value
                     if !showComments { compactHeaderInsets = value }
@@ -3458,15 +3382,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 .onGeometryChange(for: Bool.self) { proxy in
                     DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
                 } action: { duoLandscape = $0 }
-                .onChange(of: wide) { _, w in
-                    // 转屏过程中尺寸会抖几下，稳定 0.4 秒再重排
-                    let token = UUID(); wideToken = token
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        guard wideToken == token, feed.screenWide != w else { return }
-                        feed.screenWide = w
-                        remixUpcoming()
-                    }
-                }
         }
         .environment(\.dyExpandedCaptionID, captionItem == nil ? nil : commentAweme?.id)
         .environment(\.dyExpandVideoCaption, { item in
@@ -3889,10 +3804,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         Section { DYSettingsButton() }
     }
 
-}
-
-private extension Double {
-    func clamped(_ lo: Double, _ hi: Double) -> Double { Swift.min(Swift.max(self, lo), hi) }
 }
 
 struct DYUpstreamVideoPage: View {
@@ -6132,7 +6043,6 @@ extension DYFeedModel {
         try Task.checkCancellation()
         let previous = Set(items.map(\.id))
         let replacement = DYFeedModel(defaults: defaults)
-        replacement.screenWide = screenWide
         await replacement.loadMore(bridge)
         try Task.checkCancellation()
         if excludingCurrentItems {
@@ -6243,7 +6153,7 @@ extension DYFeedModel {
         return (id, positions)
     }
 
-    /// 启动秒开：先恢复上次会话；没有会话就从本地已缓存未看的视频按竖横比例挑 6 条。
+    /// 启动秒开：先恢复上次会话；没有会话就从本地已缓存未看的视频按加入顺序取 6 条。
     /// 返回要定位的当前条和各条进度；都没有返回 nil。
     func restoreForLaunch() -> (currentID: String?, positions: [String: Double])? {
         // 启动先清掉上次看过的缓存，避免重启后又被当成「待看」塞回推荐里
@@ -6257,10 +6167,8 @@ extension DYFeedModel {
             let cached = DYVideoCache.pendingSnapshot()
             if !cached.isEmpty {
                 seedPool(cached)
-                // 先按竖横比例排；比例凑不齐也照原顺序补满——推荐还没拉回来之前，只有这些本地缓存的能播。
-                // 以前凑不齐就停（真机日志：本地有 4 条却只排进 1 条），上滑没有下一条可去，像卡住。
-                let strict = fill(6)
-                if strict < 6 { fill(6 - strict, relaxed: true) }
+                // 按缓存记录顺序先放 6 条；推荐还没拉回来之前，只有这些本地缓存的能播。
+                fill(6)
                 markAccountState(cached)
                 result = (items.first?.id, [:])
                 DYLiveModel.log("DDCACHE 启动从缓存起播 n=\(items.count)/\(cached.count)")

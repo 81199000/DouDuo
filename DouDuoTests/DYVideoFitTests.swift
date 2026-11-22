@@ -170,15 +170,3 @@ struct PinchCase: Sendable {
     var committed: Bool?
 
 }
-
-@Suite("推荐流横竖选片")
-struct DYFeedOrientationTests {
-    /// 老板 2026-11-17：竖屏半折叠 = 横屏规则；横屏半折叠 = 竖屏规则
-    @Test func halfFoldFlipsFeedOrientation() {
-        #expect(!DYVideoFit.feedPlaysLandscape(window: CGSize(width: 466, height: 678), halfFolded: false))  // 外屏竖拿
-        #expect(DYVideoFit.feedPlaysLandscape(window: CGSize(width: 951, height: 669), halfFolded: false))   // 内屏横拿展开
-        #expect(!DYVideoFit.feedPlaysLandscape(window: CGSize(width: 669, height: 951), halfFolded: false))  // 内屏竖拿展开
-        #expect(DYVideoFit.feedPlaysLandscape(window: CGSize(width: 669, height: 951), halfFolded: true))    // 竖拿半折 → 横屏
-        #expect(!DYVideoFit.feedPlaysLandscape(window: CGSize(width: 951, height: 669), halfFolded: true))   // 横拿半折 → 竖屏
-    }
-}

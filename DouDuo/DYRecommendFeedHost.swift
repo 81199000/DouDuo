@@ -474,23 +474,6 @@ extension DYRecommendFeedHost {
         DYLiveModel.log("DDREFRESH ok n=\(feed.items.count) first=\(currentID ?? "-")")
     }
 
-    /// 当前条之后按新的方向/比例重排；不够就接着拉
-    func remixUpcoming() {
-        guard !feed.offlinePlayback, tab == .recommend || !feed.items.isEmpty else { return }
-        let keepAll: Bool
-        #if DEBUG
-        // 固定播放样本不会补拉推荐，布局切换时要保留后续测试视频。
-        keepAll = ProcessInfo.processInfo.environment["DOUDUO_PLAYBACK_FIXTURE"] == "1"
-        #else
-        keepAll = false
-        #endif
-        feed.remix(after: currentIndex, keepAll: keepAll)
-        DYLiveModel.log("DDMIX remix wide=\(feed.screenWide) upcoming=\(feed.items.count - (currentIndex ?? -1) - 1)")
-        if currentID == nil { currentID = feed.items.first?.id; scrollID = currentID }
-        lastFeedPull = .distantPast
-        focusCurrent()
-    }
-
     /// 换条时：上一条看完没有（≥95%，网页版同口径）+ 新一条起播 1.5 秒后上报
     func reportWatch(old: String?, new: String?) {
         if feed.finishedOfflineID == old { feed.finishedOfflineID = nil }
@@ -607,18 +590,3 @@ struct DYRefreshProbeAnchor: View {
     }
 }
 #endif
-
-/// 推荐流按横 / 竖选片的口径，四种界面共用（「横屏时只放横屏内容」开关据此生效）。
-/// 老板 2026-11-17 定：半折叠时横竖反过来——
-/// - 竖着拿半折（桌面姿态，上面放视频、下面评论）→ 视频区是横的，按**横屏**规则放
-/// - 横着拿半折（书本姿态，左边视频、右边评论）→ 视频区是竖的，按**竖屏**规则放
-/// - 没半折：看整个窗口宽 > 高
-/// （1.3.14 曾按视频块判断后又撤回，那次是「短视频变少」；这次是老板明确要求半折按反向选片。）
-enum DYFeedOrientation {
-    static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["DOUDUO_FORCEWIDE"] == "1" { return true }
-        #endif
-        return DYVideoFit.feedPlaysLandscape(window: geo.size, halfFolded: DYDuoMetrics.foldIsActive(geo))
-    }
-}
