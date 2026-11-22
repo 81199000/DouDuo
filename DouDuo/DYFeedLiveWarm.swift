@@ -31,7 +31,11 @@ final class DYFeedLiveWarm {
     static let maxWarm: TimeInterval = 60
 
     /// 省流量模式用流量时不预热；设置里关了「推荐里插入直播间」也不预热
-    static var allowed: Bool { DYFeedExtras.liveEnabled && !DYStream.saving }
+    static var allowed: Bool {
+        DYFeedExtras.liveEnabled && !DYStream.saving
+            // 有 VLC 停播卡在后台（≥2 个）或进程线程已经很多：先不预热，划到直播时再现连
+            && VLCPlayerCensus.releaseBacklog < 2 && !DYThreadGuard.pressured
+    }
 
     /// 按当前条更新：下一条是直播 → 预热它；否则把已有的预热停掉。
     /// ⚠️ 预热的正好是当前条（刚划到这间直播）时不能停：页面马上要接过去。

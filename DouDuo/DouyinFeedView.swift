@@ -2059,8 +2059,17 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             saveSession()
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
-            DYLiveModel.log(String(format: "DDMEM 常驻=%.0fMB 缓存条数=%d 暖机=%d 发热=%d 电量模式=%d", DYMemoryProbe.footprintMB, DYVideoCache.limit, DYPreloader.ahead,
-                                   ProcessInfo.processInfo.thermalState.rawValue, ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0))
+            let threads = DYThreadGuard.sample()
+            let vlc = VLCPlayerCensus.snapshot
+            DYLiveModel.log(String(format: "DDMEM 常驻=%.0fMB 缓存条数=%d 暖机=%d 发热=%d 电量模式=%d 线程=%d vlc建=%d vlc释放中=%d", DYMemoryProbe.footprintMB, DYVideoCache.limit, DYPreloader.ahead,
+                                   ProcessInfo.processInfo.thermalState.rawValue, ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0,
+                                   threads, vlc.created, vlc.releasing))
+            // 保险：线程过多时收掉预热（预热播放器 + 直播预热），只留正在看的这条，免得一路堆到卡死
+            if DYThreadGuard.pressured {
+                DYLiveModel.log("DDTHREADGUARD threads=\(threads) ≥ \(DYThreadGuard.limit)：收掉预热")
+                preloader.clear()
+                DYFeedLiveWarm.shared.release(reason: "threads")
+            }
         }
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }

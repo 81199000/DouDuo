@@ -115,6 +115,24 @@ enum DDAudioSessionGate {
 
 import MachO
 /// 内存/播放器数打点：判断「同时暖 N 个播放器」到底吃多少内存
+/// 进程线程数守卫（2026-11-23 卡死：刷 8 小时线程堆到 623 个，后台线程池 512 个上限被占满，主线程等不到回应被系统杀掉）。
+/// 每 30 秒采一次；过了 300 就算「有压力」——收掉预热、不再预热直播，只留正在看的这条。
+enum DYThreadGuard {
+    static let limit = 300
+    nonisolated(unsafe) private(set) static var last = 0
+    static var pressured: Bool { last >= limit }
+    @discardableResult
+    static func sample() -> Int {
+        var list: thread_act_array_t?
+        var n: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &list, &n) == KERN_SUCCESS, let list else { return last }
+        for i in 0..<Int(n) { mach_port_deallocate(mach_task_self_, list[i]) }
+        vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: list)), vm_size_t(Int(n) * MemoryLayout<thread_act_t>.stride))
+        last = Int(n)
+        return last
+    }
+}
+
 enum DYMemoryProbe {
     static var footprintMB: Double {
         var info = task_vm_info_data_t()
