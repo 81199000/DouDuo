@@ -239,7 +239,9 @@ final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecogn
                 // 内嵌 base64（私信图片缩略图）：直接解码
                 data = Data(base64Encoded: String(raw[raw.index(after: comma)...]), options: .ignoreUnknownCharacters)
             } else {
-                data = DYChatImageCache.shared.cachedData(for: raw)
+                // 私信图片缓存里存的可能是加密原图（网页解密后才画出来），解不出图就当没缓存
+                data = DYChatImageCache.shared.cachedData(for: raw).flatMap { UIImage(data: $0) != nil ? $0 : nil }
+                if data == nil { DYLiveModel.log("DDPHOTO cache miss-or-undecodable") }
             }
             if data == nil, url.scheme != "data", let u = URL(string: raw) {
                 var req = URLRequest(url: u, timeoutInterval: 20)
@@ -253,10 +255,12 @@ final class DYPhotoPage: UIViewController, UIScrollViewDelegate, UIGestureRecogn
                     if code == 200, UIImage(data: d) != nil { data = d; DYChatImageCache.shared.store(d, for: raw) }
                 } catch { DYLiveModel.log("DDPHOTO fetch err \(error.localizedDescription)") }
             }
-            // 网络原图取不到（加密 / 鉴权）时退回网页上已显示的那张（App 在点击时一并带过来）
-            if data == nil, let fallback { data = fallback }
+            // 网络原图取不到 / 解不出（加密 / 鉴权）时：已经铺上了网页显示的那张就留着，不提示失败
             spinner.stopAnimating()
-            if data == nil, imageView.image != nil { return }   // 原图取不到，留着已显示的那张
+            if (data.flatMap { UIImage(data: $0) }) == nil {
+                if imageView.image != nil { DYLiveModel.log("DDPHOTO keep shown"); return }
+                if let fallback, UIImage(data: fallback) != nil { data = fallback }
+            }
             guard let data, let img = UIImage(data: data) else {
                 DYLiveModel.log("DDPHOTO load fail")
                 let l = UILabel(); l.text = "图片加载失败"; l.textColor = .white; l.sizeToFit()
