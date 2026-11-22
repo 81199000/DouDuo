@@ -11,6 +11,22 @@
       "name": "DouDuo",
       "bundleIdentifier": "me.rrmm.douduo",
       "type": "1",
+      "version": "1.7.1",
+      "versionDate": "2026-11-22T09:04:08+00:00",
+      "versionDescription": "DouDuo 1.7.1 · 发布作品 · 收藏夹与批量管理 · 原生看大图\n\n包为未签名 IPA，需要自行签名安装。\n\n发布作品\n- 「我的」页新增「发布作品」：直接打开抖音官方创作者中心的上传页，用同一个登录，能发视频、发图文、管理作品。选封面、写标题、加话题、定时发布都在抖音自己的页面里完成。\n\n收藏\n- 点五角星收藏后，底部会出现「收藏成功　加入收藏夹 >」，点一下就能选收藏夹（和官方 App 一样），也能当场新建收藏夹。\n- 「我的 · 收藏」改成官方那样的分类：我的收藏夹 / 视频 / 音乐 / 合集 / 短剧。收藏夹可以新建、改名、设为私密、删除；合集和短剧可以批量取消收藏。\n\n我的 · 批量管理\n- 作品、喜欢、收藏三栏右侧多了「管理」，可以多选：作品能批量删除或改可见范围（公开 / 好友可见 / 私密）；喜欢能批量取消；收藏能批量取消或放进收藏夹。\n\n消息\n- 互动消息的筛选和网页版一致：全部消息 / 粉丝 / @我的 / 评论 / 赞 / 推荐。「@我的」会显示谁在哪里提到了你，点开直接跳到那条评论。\n- 长按通知可以删除；「某某等 N 人赞了你」可以点开看全部点赞的人。\n- 私密账号收到关注请求时，可以直接「通过 / 拒绝」。\n- 大屏展开竖屏时，互动消息顶部「全部互动」点不了：修复。\n\n看大图\n- 私信和评论里的图片改用原生看大图，手感和系统「照片」一样：双指缩放、双击放大、下滑关闭，多张可以左右切换。\n- 横屏时点开私信图片后退不出来：修复。\n\n其他\n- 长按评论可以翻译、复制。\n- 转发面板里新增「复制短链」（v.douyin.com 短链接）。\n\n关注不走失\n项目在 GitHub 81199000/DouDuo，点个 Star、关注 @81199000，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n…完整说明见发行版页面",
+      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
+      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
+      "lock": "0",
+      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.7.1/DouDuo-1.7.1-unsigned.ipa",
+      "isLanZouCloud": "0",
+      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
+      "tintColor": "FE2C55",
+      "size": "23321448"
+    },
+    {
+      "name": "DouDuo",
+      "bundleIdentifier": "me.rrmm.douduo",
+      "type": "1",
       "version": "1.7.0",
       "versionDate": "2026-11-21T18:21:56+00:00",
       "versionDescription": "DouDuo 1.7.0 · 更省电更顺 · 直播划到就播 · 广告与缓存修复\n\n包为未签名 IPA，需要自行签名安装。\n\n更省电、更顺\n- 刷久了手机发烫：同样刷视频，App 的耗电比上一版少了四成左右。后台没看到的私信页、进度环动画、环境光取色、空着的弹幕层都不再空转；手机发热时会自动暂停环境光、弹幕降到每秒 60 帧。\n- 视频快滑到位时卡一下：修复。\n- 极简模式的进度环不走：修复。\n\n直播\n- 推荐里下一条是直播时提前在后台连上，划到就有画面，不用再等转圈。\n- 从直播切走、退出 App 再回来时整个 App 卡死：修复。\n\n推荐\n- 推荐里的广告加回来了，简介下方标「广告」；不想看可以在设置里关掉「推荐里显示广告」。\n- 部分广告有声音没画面：修复。\n- 打开 App 时推荐没拉到，之后就一直划不动：修复，现在会自动补拉。\n\n缓存\n- 视频缓存不清理、越堆越大（有用户堆到 8GB 以上）：修复。现在会自动清理，边看边缓存的部分最多留约 300MB，升级后第一次打开就会清掉旧的。\n- 连 Wi-Fi 时不再整条提前下载长视频，省流量。\n- 设置里只保留「储存空间」页里的一个「清理缓存」按钮。\n\n关注不走失\n项目在 GitHub 81199000/DouDuo，点个 Star、关注 @81199000，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n- 耗电：在作者的 iPhone Duo 上用同一套自动划动、各测 40 秒，App 整体处理器占用从每秒约 1615 毫秒降到约 930–1017 毫秒（每次刷到的视频不同，数字有波动）。长时间使用的发热感受还要更多反馈。\n- 滑到位卡顿：真机自动连划 15 条没有出现卡顿记录；样本还不多。\n- 极简进度环：模拟器自动测试确认环在走。\n…完整说明见发行版页面",
@@ -70,22 +86,6 @@
       "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
       "tintColor": "FE2C55",
       "size": "22827179"
-    },
-    {
-      "name": "DouDuo",
-      "bundleIdentifier": "me.rrmm.douduo",
-      "type": "1",
-      "version": "1.6.6",
-      "versionDate": "2026-11-20T16:21:39+00:00",
-      "versionDescription": "DouDuo 1.6.6 · 推荐不再重复刷到看过的视频\n\n小修复版。包为未签名 IPA，需要自行签名安装。\n\n修复\n- 推荐里经常重复刷到看过的视频：1.6.5 改成边看边缓存后，正在看的视频要看到一半才缓存完，缓存完时被记成「没看过」，下次打开 App 又被排到推荐最前面。现在看过的一律记成已看，不会再塞回来。\n- 下拉刷新推荐后还可能刷到刚看过的：刷新时候选列表也排除当前已经在看的视频。\n\n更新\n- 检查更新改到 oneduo.app：App 内的新版本提示改读 oneduo.app，「去下载页」打开 oneduo.app，用一键签装新版，登录态保留。",
-      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
-      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
-      "lock": "0",
-      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.6.6/DouDuo-1.6.6-unsigned.ipa",
-      "isLanZouCloud": "0",
-      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
-      "tintColor": "FE2C55",
-      "size": "22829581"
     }
   ]
 }
