@@ -4,8 +4,9 @@ DouDuo 发版不需要发布管家：负责该版本的维护者（人或 Agent�
 
 ## 前置
 
-- 主干：`~/Projects/douduo`（`main`），remote `origin` = GitHub `81199000/DouDuo`（公开），`gitee` = Gitee `remon8/douduo`（国内镜像）。
-- `gh` 已登录；Gitee token 在 `~/.hermes/shared-credentials/gitee-remon8.json`（不入库）。
+- 主干为当前仓库根目录（`main`），remote `origin` / `gitee` 按自己的 fork 配置。
+- `gh` 已登录；Gitee token 文件由 `GITEE_TOKEN_FILE` 指定（默认 `~/.config/douduo/gitee-token.json`，不入库）。
+- 本地签名团队只在 Xcode / 环境变量中配置，不提交 `DEVELOPMENT_TEAM`、描述文件、证书或含本机用户名 / UDID 的配置。
 - 版本号、构建号在 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`），发行说明写 `docs/releases/vX.Y.Z.md`。**发版不改 README**：首页只放功能与安装说明，不写版本号、不列版本流水，版本改动只进 `docs/releases/` 和 Release。
 
 ## 一键发版（推荐）

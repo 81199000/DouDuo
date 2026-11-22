@@ -3,10 +3,9 @@
 // 不连网、不碰真抖音：发送按钮点下去走的是本地假 fetch。
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { JSDOM } = (() => {
-  const tries = [process.env.DOUDUO_JSDOM, 'jsdom', '/Users/zhanghongsheng/.hermes/hermes-agent/node_modules/jsdom',
-                 '/Users/zhanghongsheng/.hermes/hermes-workspace/node_modules/.pnpm/jsdom@27.4.0/node_modules/jsdom'].filter(Boolean);
+  const tries = [process.env.DOUDUO_JSDOM, 'jsdom'].filter(Boolean);
   for (const t of tries) { try { return require(t); } catch (e) {} }
-  throw new Error('jsdom not found; set DOUDUO_JSDOM');
+  throw new Error('jsdom not found; install jsdom or set DOUDUO_JSDOM=/absolute/path/to/jsdom');
 })();
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DYWebComposer.swift'), 'utf8');
 const m = src.match(/static let sendJS = #"""\n([\s\S]*?)\n\s*"""#/);

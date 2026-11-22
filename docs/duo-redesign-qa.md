@@ -2,7 +2,7 @@
 
 ## 对象与结论
 
-- 工作树 `/Users/zhanghongsheng/Projects/douduo-shayu`，分支 `shayu`；本地合并 redbao `7e96ee7`、baihu `de95f81`，后合并修复 `061cbc1`，当前验证业务提交 `eb1e2f0`。
+- 工作树为本仓库的本地工作副本，分支 `shayu`；本地合并 redbao `7e96ee7`、baihu `de95f81`，后合并修复 `061cbc1`，当前验证业务提交 `eb1e2f0`。
 - main 基线 `cdb95e13d2212ad0ca94f9b3af5acc0bbaa895e0`。
 - 前轮 postJS 重复声明已由上游修复，本轮集成 **BUILD SUCCEEDED**。但 UI 测试 **4 passed / 3 failed / 2 skipped**，故不满足发布验收，不能因编译成功宣布改版通过。
 - 业务代码未修改、未 push、未卸载 App；只改本报告和 UI 测试。现有 Vendor 软链未入提交。
@@ -54,9 +54,9 @@ xcodebuild test -project DouDuo.xcodeproj -scheme DouDuo -destination 'id=E696C9
 
 ## 3. 实机式模拟器观察与截图
 
-设备 `E696C9FB-6688-4855-8E2B-9017F0A09F83`。`simctl io enumerate` 识别外屏 display 1、内屏 display 3。最初无 Simulator 窗口，实际打开 Xcode 包内 `Contents/Applications/DeviceHub.app` 后，工具栏 Closed / Partially Open / Open 可点击，Open 后内屏确有图像；此前“内屏不可用”的限制已解除。
+使用一台 iPhone Duo 模拟器。`simctl io enumerate` 识别外屏 display 1、内屏 display 3。最初无 Simulator 窗口，实际打开 Xcode 包内 `Contents/Applications/DeviceHub.app` 后，工具栏 Closed / Partially Open / Open 可点击，Open 后内屏确有图像；此前“内屏不可用”的限制已解除。
 
-截图目录 **`/Users/zhanghongsheng/Projects/douduo-shayu/build/qa/`**（不入库）。程序枚举核实 **14张**：
+截图目录 **`build/qa/`**（不入库）。程序枚举核实 **14张**：
 
 | 页面 | 外屏1398×2034 | 内屏2853×2007 |
 |---|---|---|
@@ -76,7 +76,7 @@ xcodebuild test -project DouDuo.xcodeproj -scheme DouDuo -destination 'id=E696C9
 
 Partially Open 控件已能切换，但没有保存可核验的半折书本/桌面截图，也没有逐一验证折痕避让，因此 **半折书本/桌面布局未验证（需 Device Hub/真机继续验收）**；不能因切换按钮成功就判通过。内屏竖持、任意角度连续性、Split View、PiP、键盘连续性未测。
 
-GUI 轨迹：`/Users/zhanghongsheng/Applications/OpenGCUA/runs/20261107_143038_DouDuo_E696C9FB-6688-4855-8E2B-9_cdccd9`。最终回到 Closed；GUI 最后一次返回后的画面未另截图确认。
+GUI 轨迹保存在本机 OpenGCUA 运行目录（不入库）。最终回到 Closed；GUI 最后一次返回后的画面未另截图确认。
 
 ## 4. 接口证据与风险
 
