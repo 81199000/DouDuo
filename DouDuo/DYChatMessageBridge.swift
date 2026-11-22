@@ -117,3 +117,116 @@ extension DYChatWebBridge {
     }
     """#
 }
+
+/// 私信里点图片：不再让网页弹它自己的看大图层（触屏上没有关闭方式，关闭钮还被聊天头挡住，老板 2026-11-22），
+/// 改成在捕获阶段拦下点击，把这条消息里的图片原图地址交给 App，用原生 DYPhotoViewer 打开（照片 App 同款：
+/// 双指缩放、双击放大、下滑关闭）。只拦「消息气泡里的图片」：头像、表情、分享卡封面不拦（分享卡交给视频钩子）。
+/// 万一网页的看大图层还是出来了（别的入口），立刻按 Esc 收掉，不让它挡住界面。
+enum DYChatImagePreviewClose {
+    static let script = #"""
+(() => {
+  if (window.__ddPhotoHook) return; window.__ddPhotoHook = 1;
+  const post = o => { try { window.webkit.messageHandlers.ddMsg.postMessage(JSON.stringify(o)); } catch (e) {} };
+  const orig = img => (img.dataset && img.dataset.ddOrig) || img.currentSrc || img.getAttribute('src') || '';
+  // 图片消息（aweType 2702）气泡里的 <img> 常是内嵌 base64 缩略图（inline_pic），原图在消息 payload 的 resource_url 里。
+  // payload 从 React 节点上取（同视频钩子的取法），只认这条消息自己的。
+  const payloadOf = root => {
+    const seen = new Set();
+    for (let n = root, d = 0; n && d < 12; n = n.parentElement, d++) {
+      for (const k of Object.keys(n)) {
+        if (k.startsWith('__reactProps')) {
+          const m = n[k] && n[k].message;
+          if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+        }
+        if (!k.startsWith('__reactFiber') && !k.startsWith('__reactInternalInstance')) continue;
+        for (let f = n[k], depth = 0; f && depth < 24 && !seen.has(f); f = f.return, depth++) {
+          seen.add(f);
+          const m = f.memoizedProps && f.memoizedProps.message;
+          if (m) { try { return m.parsedContent || JSON.parse(m.content || 'null'); } catch (_) { return null; } }
+        }
+      }
+      if (n.matches && n.matches('[data-e2e="message-item"]')) break;
+    }
+    return null;
+  };
+  // resource_url 里可能是 {origin_url_list / large_url_list / medium_url_list / thumb_url_list / url_list}，取最大的一档
+  const bestURL = pl => {
+    const r = pl && pl.resource_url;
+    if (!r) return null;
+    if (typeof r === 'string') return /^https?:/.test(r) ? r : null;
+    const order = ['origin_url_list', 'large_url_list', 'url_list', 'medium_url_list', 'thumb_url_list'];
+    for (const k of order) { const l = r[k]; if (Array.isArray(l)) { const u = l.find(x => typeof x === 'string' && /^https?:/.test(x)); if (u) return u; } }
+    const all = []; const walk = (o, d) => { if (!o || d > 3) return; if (typeof o === 'string') { if (/^https?:/.test(o)) all.push(o); return; } if (typeof o === 'object') Object.values(o).forEach(v => walk(v, d + 1)); };
+    walk(r, 0);
+    return all[0] || null;
+  };
+  const fullOf = (img, msg) => {
+    const o = orig(img);
+    if (/^https?:/.test(o) && !/~tplv-[^/]*(?:resize|thumb)/.test(o)) return o;
+    return bestURL(payloadOf(msg)) || o;
+  };
+  // 真机 11-22：图片消息 = MessageItemImageImageBox > img.MessageItemImageImage（aweType 2702）。
+  // 先正向认图片消息；以前用「祖先类名含 avatar 就排除」，消息行外层类名带 Avatar，图片全被排除 → 点了没反应。
+  const isPhotoMessage = img => {
+    if (!img || img.tagName !== 'IMG') return null;
+    if (!/\/chat/.test(location.pathname)) return null;
+    const msg = img.closest('[data-e2e="message-item"], [class*="MessageItem"]');
+    if (!msg) return null;
+    if (img.closest('[class*="MessageItemImage"]')) return img.closest('[data-e2e="message-item"]') || msg;
+    // 其它没见过的图片消息：只看图片自己和它直接的盒子，不看整行祖先
+    const own = String(img.className || '') + ' ' + String((img.parentElement && img.parentElement.className) || '');
+    if (/avatar|emoji|sticker|ShareAweme|BulletBulletVideo|videoCard|VideoCard/i.test(own)) return null;
+    if (img.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"]')) return null;
+    const r = img.getBoundingClientRect();
+    if (r.width < 60 || r.height < 60) return null;
+    return msg;
+  };
+  const swallow = e => { e.preventDefault(); e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); };
+  let armed = null;
+  // pointerdown/mousedown 也要拦：网页有的版本在 mousedown / dblclick 上开看大图
+  ['pointerdown', 'mousedown', 'mouseup', 'dblclick'].forEach(t => document.addEventListener(t, e => {
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    if (isPhotoMessage(img)) { armed = img; swallow(e); }
+  }, true));
+  document.addEventListener('click', e => {
+    const img = e.target && e.target.closest ? e.target.closest('img') : null;
+    const msg = isPhotoMessage(img);
+    if (!msg) {
+      if (img && /\/chat/.test(location.pathname) && img.closest('[data-e2e="message-item"], [class*="MessageItem"]')) {
+        post({ type: 'photo-miss', cls: String(img.className || '').slice(0, 80), box: String((img.parentElement && img.parentElement.className) || '').slice(0, 80) });
+      }
+      armed = null; return;
+    }
+    swallow(e);
+    const imgs = [...msg.querySelectorAll('img')].filter(i => isPhotoMessage(i));
+    const list = (imgs.length ? imgs : [img]);
+    const urls = list.map(i => fullOf(i, msg)).filter(Boolean);
+    // 私信图片是加密的：网页解密后才画到 <img> 上（data:/blob:）。把已显示的像素一并带给 App，原图取不到就用它。
+    const shown = list.map(i => {
+      const s = i.getAttribute('src') || '';
+      if (s.startsWith('data:image/')) return s;
+      try {
+        if (!i.naturalWidth) return null;
+        const c = document.createElement('canvas');
+        c.width = i.naturalWidth; c.height = i.naturalHeight;
+        c.getContext('2d').drawImage(i, 0, 0);
+        return c.toDataURL('image/jpeg', 0.92);
+      } catch (e) { return null; }
+    });
+    post({ type: 'photo', urls, shown, index: Math.max(0, list.indexOf(img)),
+           src: urls.map(u => u.startsWith('data:') ? 'data' : 'net').join(','),
+           sizes: list.map(i => (i.naturalWidth || 0) + 'x' + (i.naturalHeight || 0)).join(',') });
+    armed = null;
+  }, true);
+  // 兜底：网页自己的看大图层（Semi ImagePreview / 全屏 fixed + scale 大图）冒出来就立刻关掉
+  const esc = () => { const ev = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
+    try { Object.defineProperty(ev, 'keyCode', { get: () => 27 }); Object.defineProperty(ev, 'which', { get: () => 27 }); } catch (e) {} return ev; };
+  const shell = el => !!(el.closest && el.closest('.chatDark, .chatLight, [class*="componentsEntrywrapper"]'));
+  new MutationObserver(() => {
+    const semi = document.querySelector('.semi-image-preview');
+    const big = [...document.querySelectorAll('img')].find(i => /scale\(/.test((i.style && i.style.transform) || '') && !shell(i));
+    if (semi || big) { window.dispatchEvent(esc()); document.dispatchEvent(esc()); post({ type: 'preview-close', why: 'web-viewer-suppressed' }); }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
+"""#
+}

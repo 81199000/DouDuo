@@ -468,6 +468,8 @@ private let ddVideoTapHookJS = #"""
       const t = ev.target;
       const pane = t.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
       if (!pane) return;
+      // 图片消息（MessageItemImage*）交给看大图钩子（DYChatImagePreviewClose），这里不管
+      if (String(t.className || '').includes('MessageItemImage') || String((t.parentElement && t.parentElement.className) || '').includes('MessageItemImage')) return;
       // 实测类名：分享视频卡 = MessageItemShareAweme* / BulletBulletVideo*
       let media = t.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"],[class*="ShareImage"],[class*="BulletBulletImage"],[class*="imageCard"],[class*="ImageCard"]');
       // 类名没覆盖到的分享卡：只要点在一条消息里，也照样试着从消息 payload 取作品 ID（取不到就交回网页）
@@ -571,6 +573,9 @@ struct DouyinWebContainer: UIViewRepresentable {
             // 长按消息气泡 → 通知 App 弹「删除这条消息」
             cfg.userContentController.addUserScript(
                 WKUserScript(source: DYChatMessageMenu.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            // 点图片弹出的大图预览：网页版只能按 Esc 关，补关闭按钮 + 点黑底关闭
+            cfg.userContentController.addUserScript(
+                WKUserScript(source: DYChatImagePreviewClose.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             // 仅 DEBUG：只读记录私信网页的数据来源与消息状态字段（DDIMPROBE），不改网页行为
             DYIMProbe.install(in: cfg)
             // 点头像/昵称交给 App 开原生作者主页（只装在私信网页；网页版照常跳网页主页）

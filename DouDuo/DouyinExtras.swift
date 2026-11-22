@@ -70,9 +70,26 @@ struct DYSug: Identifiable, Decodable, Equatable {
     let word: String
 }
 
+/// 「我的 · 收藏」分类，对应网页版 tQ：favorite_folder / video / music / compilation / playlet
+enum DYCollectSub: String, CaseIterable, Identifiable {
+    case folders, video, music, mix, series
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .folders: "我的收藏夹"
+        case .video: "视频"
+        case .music: "音乐"
+        case .mix: "合集"
+        case .series: "短剧"
+        }
+    }
+}
+
 enum DYListKind: String, CaseIterable, Identifiable {
     case post, like, collect, history, later
     var id: String { rawValue }
+    /// 网页版「批量管理」只在作品 / 喜欢 / 收藏三栏
+    var supportsBatch: Bool { self == .post || self == .like || self == .collect }
     var title: String {
         switch self {
         case .post: "作品"
@@ -1054,18 +1071,35 @@ struct DYGrid: View {
     var focusID: String? = nil
     /// 传了就支持下拉刷新（系统下拉转圈，等它返回才收起）
     var onRefresh: (() async -> Void)? = nil
+    /// 批量管理：非 nil 时进入多选，点格子切换勾选，不再打开播放
+    var selection: Binding<Set<String>>? = nil
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
     @State private var focusVisible = false
 
     @ViewBuilder
     private func gridButton(_ i: Int, _ a: DYAweme) -> some View {
-        let button = Button { onOpen(i) } label: { cell(a) }
+        let button = Button {
+            if let selection {
+                if selection.wrappedValue.contains(a.id) { selection.wrappedValue.remove(a.id) } else { selection.wrappedValue.insert(a.id) }
+            } else { onOpen(i) }
+        } label: {
+            cell(a).overlay(alignment: .topLeading) {
+                if let selection {
+                    let on = selection.wrappedValue.contains(a.id)
+                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                        .font(.title3).symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, on ? Color.pink : Color.black.opacity(0.35))
+                        .padding(6)
+                        .accessibilityIdentifier(on ? "douyin.grid.selected" : "douyin.grid.unselected")
+                }
+            }
+        }
             .buttonStyle(.plain)
             .accessibilityIdentifier("douyin.grid.item.\(a.id)")
             .id(a.id)
             .onAppear { if a.id == focusID { focusVisible = true } }
             .onDisappear { if a.id == focusID { focusVisible = false } }
-        if let onRemove, let removeTitle {
+        if selection == nil, let onRemove, let removeTitle {
             button.contextMenu {
                 Button(removeTitle, systemImage: "minus.circle", role: .destructive) { onRemove(a) }
                     .accessibilityIdentifier("douyin.grid.remove")
@@ -1384,6 +1418,7 @@ struct DYListPlayer: View {
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
+        .modifier(DYCollectPromptHost(owner: .list))
         .sheet(item: $authorSheet, onDismiss: { if !offlineLibrary { DDPlayback.shared.releaseCover() } }) { a in
             NavigationStack {
                 DYAuthorScreen(bridge: bridge, author: a, onWeb: { url in
@@ -1527,7 +1562,10 @@ struct DYListPlayer: View {
         if want { playback.collected.insert(id) } else { playback.collected.remove(id) }
         Task {
             let r = try? await bridge.favorite(id, add: want)
-            if case .ok = r { show(want ? "已收藏" : "已取消收藏"); return }
+            if case .ok = r {
+                if want { DYCollectPrompt.shared.show(id, owner: .list) } else { show("已取消收藏") }
+                return
+            }
             if want { playback.collected.remove(id) } else { playback.collected.insert(id) }
             show("收藏失败")
         }
@@ -1879,6 +1917,16 @@ struct DYMineScreen: View {
     /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
     @State private var showLogin = false
     @State private var showAccounts = false
+    /// 发布作品：开抖音创作者中心的上传页（DYUploadScreen），关掉后刷新作品列表
+    @State private var showUpload = false
+    /// 批量管理（作品 / 喜欢 / 收藏）：多选后删除、改可见范围、取消喜欢 / 收藏、放进收藏夹
+    @State private var managing = false
+    @State private var picked: Set<String> = []
+    @State private var batchBusy = false
+    @State private var confirmBatch: DYMineBatch?
+    @State private var moveTarget: [String]?
+    /// 「收藏」下的分类（网页版同款：收藏夹 / 视频 / 音乐 / 合集 / 短剧）
+    @State private var collectSub: DYCollectSub = .video
     /// 这次打开期间已经自动弹过登录：放在静态里——简洁 / 极简模式在信息 ⇄ 我的之间切换会重建「我的」，
     /// @State 会被重置，导致每切回来一次就再弹一次登录
     private static var autoLoginShownAt: Date?
@@ -1977,6 +2025,17 @@ struct DYMineScreen: View {
                 .accessibilityIdentifier("douyin.mine.title")
             }
             header.padding(.horizontal, 16).padding(.bottom, 12)
+            if user != nil {
+                Button { showUpload = true } label: {
+                    Label("发布作品", systemImage: "plus.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.pink)
+                .padding(.horizontal, 16).padding(.bottom, 10)
+                .accessibilityIdentifier("douyin.mine.upload")
+            }
 
             HStack(spacing: 22) {
                 ForEach(DYListKind.allCases) { k in
@@ -1993,12 +2052,42 @@ struct DYMineScreen: View {
             }
             .padding(.bottom, 6)
 
-            if kind == .history || manageMsg != nil {
+            if kind == .collect && !managing {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(DYCollectSub.allCases) { c in
+                            Button { collectSub = c } label: {
+                                Text(c.title).font(.caption.weight(collectSub == c ? .semibold : .regular))
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(Capsule().fill(Color.primary.opacity(collectSub == c ? 0.16 : 0.06)))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("douyin.mine.collect.\(c.rawValue)")
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 6)
+            }
+
+            if (kind.supportsBatch && !(kind == .collect && collectSub != .video)) || kind == .history || manageMsg != nil {
                 HStack(spacing: 10) {
                     if let manageMsg {
                         Text(manageMsg).font(.caption).foregroundStyle(.orange).lineLimit(2)
                     }
                     Spacer(minLength: 0)
+                    if kind.supportsBatch && !(kind == .collect && collectSub != .video) {
+                        if managing {
+                            Text("已选 \(picked.count)").font(.caption).foregroundStyle(.secondary)
+                            Button("全选") { picked = Set(models[kind]?.items.map(\.id) ?? []) }
+                                .font(.caption).accessibilityIdentifier("douyin.mine.batch.all")
+                            Button("完成") { managing = false; picked = [] }
+                                .font(.caption.weight(.semibold)).accessibilityIdentifier("douyin.mine.batch.done")
+                        } else {
+                            Button("管理", systemImage: "checklist") { managing = true; picked = []; manageMsg = nil }
+                                .font(.caption).accessibilityIdentifier("douyin.mine.batch")
+                        }
+                    }
                     if kind == .history {
                         Button(clearingHistory ? "清空中…" : "清空历史", systemImage: "trash") { confirmClearHistory = true }
                             .font(.caption)
@@ -2009,14 +2098,30 @@ struct DYMineScreen: View {
                 .padding(.horizontal, 16).padding(.bottom, 6)
             }
 
-            if let m = models[kind] {
+            if kind == .collect && collectSub != .video {
+                Group {
+                    switch collectSub {
+                    case .folders: DYCollectsFoldersScreen(bridge: bridge, onAuthor: onAuthor, embedded: true)
+                    case .music: DYCollectedMusicScreen(bridge: bridge, embedded: true)
+                    case .mix: DYCollectedMixesScreen(bridge: bridge, onAuthor: onAuthor, embedded: true)
+                    case .series: DYCollectedMixesScreen(bridge: bridge, onAuthor: onAuthor, series: true, embedded: true)
+                    case .video: EmptyView()
+                    }
+                }
+                .id(collectSub)
+                .scrollContentBackground(.hidden)
+            } else if let m = models[kind] {
                 DYMineList(model: m, showsPlayCount: kind == .post,
                            removeTitle: kind == .later ? "移出稍后再看" : nil,
                            onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil,
-                           onRefresh: { await pullRefresh(m) }) { i in
+                           onRefresh: { await pullRefresh(m) },
+                           selection: managing && kind.supportsBatch ? $picked : nil) { i in
                     open = DYListTarget(title: kind.title, items: m.items, start: i, model: m)
                 }
                 .id(kind)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if managing && kind.supportsBatch { batchBar(m) }
+                }
             }
         }
         .background(alignment: .top) {
@@ -2063,7 +2168,21 @@ struct DYMineScreen: View {
             DYAppLoginScreen()
         }
         .onAppear { ensure(kind) }
-        .onChange(of: kind) { _, k in manageMsg = nil; Self.cachedKind = k; ensure(k) }
+        .onChange(of: kind) { _, k in manageMsg = nil; managing = false; picked = []; Self.cachedKind = k; ensure(k) }
+        .confirmationDialog(confirmBatch?.title ?? "", isPresented: Binding(get: { confirmBatch != nil }, set: { if !$0 { confirmBatch = nil } }),
+                            titleVisibility: .visible) {
+            if let b = confirmBatch {
+                Button(b.button, role: b.destructive ? .destructive : nil) { Task { await runBatch(b) } }
+                    .accessibilityIdentifier("douyin.mine.batch.confirm")
+            }
+            Button("取消", role: .cancel) {}
+        } message: { Text(confirmBatch?.message ?? "") }
+        .sheet(item: Binding(get: { moveTarget.map { DYMoveRequest(ids: $0) } }, set: { moveTarget = $0?.ids })) { req in
+            DYCollectsFolderPicker(bridge: bridge, ids: req.ids) { msg in
+                manageMsg = msg; managing = false; picked = []
+            }
+        }
+
         .alert("清空观看历史？", isPresented: $confirmClearHistory) {
             Button("清空", role: .destructive) { Task { await clearHistory() } }
             Button("取消", role: .cancel) {}
@@ -2074,6 +2193,16 @@ struct DYMineScreen: View {
         }
         .fullScreenCover(item: $relations) { t in
             DYRelationsScreen(bridge: bridge, kind: t.kind, uid: t.user.uid, secUid: t.user.secUid, manageFollowers: true)
+        }
+        .fullScreenCover(isPresented: $showUpload, onDismiss: {
+            // 发完回来：作品数和「作品」栏重拉（抖音转码审核要一会儿，刚发的可能稍后才出现）
+            Task {
+                await refreshProfile()
+                models[.post] = nil; Self.cachedModels[.post] = nil
+                if kind == .post { ensure(.post) }
+            }
+        }) {
+            DYUploadScreen()
         }
     }
 
@@ -2121,6 +2250,67 @@ struct DYMineScreen: View {
             case .failed(let why): manageMsg = "没清掉：" + why
             }
         } catch { manageMsg = "没清掉：" + error.localizedDescription }
+    }
+
+    /// 批量管理底栏：按当前栏给能做的操作
+    private func batchBar(_ m: DYPagedModel) -> some View {
+        let ids = m.items.filter { picked.contains($0.id) }.map(\.id)
+        return HStack(spacing: 10) {
+            switch kind {
+            case .post:
+                Menu {
+                    ForEach([DYWorkAction.makePublic, .friendsOnly, .makePrivate], id: \.rawValue) { a in
+                        Button(a.title) { confirmBatch = .works(a, ids) }
+                    }
+                } label: { Label("可见范围", systemImage: "eye") }
+                    .accessibilityIdentifier("douyin.mine.batch.visibility")
+                Button("删除", systemImage: "trash", role: .destructive) { confirmBatch = .works(.delete, ids) }
+                    .accessibilityIdentifier("douyin.mine.batch.delete")
+            case .like:
+                Button("取消喜欢", systemImage: "heart.slash", role: .destructive) { confirmBatch = .unlike(ids) }
+                    .accessibilityIdentifier("douyin.mine.batch.unlike")
+            case .collect:
+                Button("放进收藏夹", systemImage: "folder.badge.plus") { moveTarget = ids }
+                    .accessibilityIdentifier("douyin.mine.batch.move")
+                Button("取消收藏", systemImage: "star.slash", role: .destructive) { confirmBatch = .uncollect(ids) }
+                    .accessibilityIdentifier("douyin.mine.batch.uncollect")
+            default: EmptyView()
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .buttonStyle(.bordered)
+        .disabled(ids.isEmpty || batchBusy)
+        .overlay { if batchBusy { ProgressView() } }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    /// 执行批量操作：抖音确认了才从列表里拿掉；部分失败的留着并说明
+    private func runBatch(_ b: DYMineBatch) async {
+        guard !batchBusy, let m = models[kind] else { return }
+        batchBusy = true
+        defer { batchBusy = false }
+        let chosen = m.items.filter { b.ids.contains($0.id) }
+        do {
+            let r: DYBatchResult
+            switch b {
+            case .works(let a, let ids): r = try await bridge.manageMyWorks(ids, action: a)
+            case .unlike: r = try await bridge.cancelLikes(chosen)
+            case .uncollect: r = try await bridge.cancelCollects(chosen)
+            }
+            switch r.result {
+            case .ok:
+                let done = Set(b.ids).subtracting(r.failedIDs)
+                if b.removesFromList { m.items.removeAll { done.contains($0.id) } }
+                manageMsg = r.failedIDs.isEmpty ? "\(b.button)完成（\(done.count) 条）" : "\(done.count) 条成功，\(r.failedIDs.count) 条没处理掉"
+                picked = Set(r.failedIDs)
+                if r.failedIDs.isEmpty { managing = false }
+                if case .works = b { await refreshProfile() }
+            case .notLoggedIn: manageMsg = "抖音未登录"
+            case .failed(let why): manageMsg = "\(b.button)失败：" + why
+            }
+        } catch { manageMsg = "\(b.button)失败：" + error.localizedDescription }
     }
 
     private func ensure(_ k: DYListKind) {
@@ -2177,11 +2367,12 @@ private struct DYMineList: View {
     var removeTitle: String? = nil
     var onRemove: ((DYAweme) -> Void)? = nil
     var onRefresh: (() async -> Void)? = nil
+    var selection: Binding<Set<String>>? = nil
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
                onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, showsPlayCount: showsPlayCount,
-               removeTitle: removeTitle, onRemove: onRemove, onRefresh: onRefresh)
+               removeTitle: removeTitle, onRemove: onRemove, onRefresh: onRefresh, selection: selection)
     }
 }
 
@@ -2694,7 +2885,10 @@ struct DYFollowFeed: View {
         if want { collected.insert(id) } else { collected.remove(id) }
         Task {
             let r = try? await bridge.favorite(id, add: want)
-            if case .ok = r { onToast(want ? "已收藏" : "已取消收藏"); return }
+            if case .ok = r {
+                if want { DYCollectPrompt.shared.show(id, owner: .feed) } else { onToast("已取消收藏") }
+                return
+            }
             if want { collected.remove(id) } else { collected.insert(id) }
             onToast("收藏失败")
         }

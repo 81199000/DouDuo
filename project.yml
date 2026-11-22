@@ -37,6 +37,9 @@ targets:
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 保存视频和图集到相册
+        INFOPLIST_KEY_NSCameraUsageDescription: 发布作品时拍摄视频或照片
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: 发布作品时录制视频的声音
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 发布作品时从相册选择视频或图片
     info:
       path: DouDuo/Info.plist
       properties:

@@ -26,10 +26,15 @@ struct DYNotice: Identifiable, Codable, Equatable {
     }
     /// 被回复的那条（通常是我的评论）原文，列表里灰字引用
     var quote: String? = nil
+    /// 赞通知合并的人数（「等 N 人」）；>1 时可点开看全部点赞的人
+    var diggCount: Int? = nil
+    var isFollowRequest: Bool { type == 98 }
 
     var isComment: Bool { type == 31 && (cid?.isEmpty == false) && (awemeID?.isEmpty == false) }
+    /// @我的（type 45）：评论里 @ 时带 cid，点开定位到那条评论；不给回复入口（拿不到一级评论 id，回错楼会挂空）
+    var isMention: Bool { type == 45 }
     var commentFocus: DYCommentFocus? {
-        guard isComment, let cid, let awemeID else { return nil }
+        guard isComment || (isMention && cid?.isEmpty == false && awemeID?.isEmpty == false), let cid, let awemeID else { return nil }
         return DYCommentFocus(awemeID: awemeID, cid: cid, parentCid: threadParent)
     }
 }
@@ -57,10 +62,17 @@ struct DYNoticeCount: Decodable {
     let count: Int
 }
 
+/// notice/count 的 interactive_group：网页筛选项 type（"25" 全部含推荐 / "26" 推荐…）→ 接口分组号
+struct DYNoticeInteractiveGroup: Decodable {
+    let type: String
+    let group: Int
+}
+
 private struct DYNoticeCountPage: Decodable {
     let status: Int
     let code: Int?
     let groups: [DYNoticeCount]
+    var inter: [DYNoticeInteractiveGroup]? = nil
     let msg: String?
 }
 
@@ -110,6 +122,10 @@ extension DouyinBridge {
         let p = try JSONDecoder().decode(DYNoticeCountPage.self, from: d)
         if p.code == 8 { throw DYError.bad("抖音未登录") }
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
+        if let inter = p.inter, !inter.isEmpty {
+            DYNoticeGroupMap.update(inter)
+            DYLiveModel.log("DDNOTICE groups " + inter.map { "\($0.type)=\($0.group)" }.joined(separator: ","))
+        }
         return p.groups
     }
 
@@ -201,7 +217,9 @@ extension DouyinBridge {
     const d = parse(r.t) || {};
     const raw = d.notice_count || d.notice_count_list || [];
     const groups = raw.map(x => ({ group: Number(x.group ?? x.notice_group ?? 0), count: Number(x.count || 0) }));
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, groups, msg: d.status_msg || null });
+    // 网页版用它把「推荐」等筛选项映射到分组号（type 是字符串 "25"/"26"…）
+    const inter = (d.interactive_group || []).map(x => ({ type: String(x.type ?? ''), group: Number(x.group || 0) })).filter(x => x.type && x.group);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, groups, inter, msg: d.status_msg || null });
     """#
 
     private static let noticeListJS = #"""
@@ -222,7 +240,7 @@ extension DouyinBridge {
       const gn = n.general_notice || {};
       const inn = n.interactive_notice || {};
       let name = '', avatar = null, action = gn.title || '通知', detail = gn.content || '', cover = null, awemeID = n.aweme_id ? String(n.aweme_id) : null, author = null, images = null;
-      let cid = null, parentCid = null, quote = null;
+      let cid = null, parentCid = null, quote = null, diggCount = 0;
       if (t === 31 && n.comment) {
         const c = n.comment.comment || {};
         const u = c.user || {};
@@ -249,7 +267,8 @@ extension DouyinBridge {
       } else if (t === 41 && n.digg) {
         const users = n.digg.from_user || [];
         const u = users[0] || {};
-        const extra = (n.digg.merge_count || users.length) > 1 ? ' 等' + (n.digg.merge_count || users.length) + '人' : '';
+        diggCount = Number(n.digg.merge_count || users.length || 0);
+        const extra = diggCount > 1 ? ' 等' + diggCount + '人' : '';
         name = (u.nickname || '') + extra;
         avatar = first(u.avatar_thumb);
         action = '赞了你的作品';
@@ -257,18 +276,32 @@ extension DouyinBridge {
         cover = coverOf(n.digg.aweme);
         awemeID = (n.digg.aweme && n.digg.aweme.aweme_id && String(n.digg.aweme.aweme_id)) || awemeID;
         author = authorOf(u);
-      } else if (t === 33 && n.follow) {
+      } else if ((t === 33 || t === 98) && n.follow) {
+        // 98 = 关注请求（私密账号）：网页版可「通过 / 拒绝」
         const u = n.follow.from_user || {};
         name = u.nickname || '';
         avatar = first(u.avatar_thumb);
-        action = '关注了你';
+        action = t === 98 ? '请求关注你' : '关注了你';
         detail = n.follow.content || '';
         author = authorOf(u);
-      } else if (t === 9009) {
+      } else if (t === 45 && n.at) {
+        // @我的：网页版 at{user_info, sub_type 0/1 发作品时 @ / 2 评论里 @, content, aweme, schema_url 带 cid, comment_status 0=已删}
+        const at = n.at;
+        const u = at.user_info || {};
+        name = u.remark_name || u.nickname || '';
+        avatar = first(u.avatar_thumb);
+        action = Number(at.sub_type || 0) === 2 ? '在评论中提到了你' : '在发布作品时提到了你';
+        detail = (at.comment_status === 0) ? (Number(at.sub_type || 0) === 2 ? '此评论已删除' : '此作品已删除') : (at.content || gn.content || '');
+        cover = coverOf(at.aweme);
+        awemeID = (n.aweme_id ? String(n.aweme_id) : null) || (at.aweme && at.aweme.aweme_id ? String(at.aweme.aweme_id) : null);
+        const m = String(at.schema_url || '').match(/cid=(\d+)/);
+        cid = (Number(at.sub_type || 0) === 2 && m) ? m[1] : null;
+        author = authorOf(u);
+      } else if (t === 9009 || t === 9002 || t === 514 || t === 9067) {
         const u = (inn.from_user && inn.from_user[0]) || {};
         name = u.nickname || inn.author || '';
         avatar = first(u.avatar_thumb) || urlOf(inn.avatar_url);
-        action = '推荐了你的视频';
+        action = t === 9009 ? '推荐了你的视频' : (inn.title || gn.title || '推荐了作品');
         detail = inn.content || inn.desc || gn.content || '';
         cover = urlOf(inn.image_url) || coverOf(inn.aweme);
         awemeID = (inn.aweme && inn.aweme.aweme_id && String(inn.aweme.aweme_id)) || awemeID;
@@ -282,7 +315,7 @@ extension DouyinBridge {
       return {
         id: String(n.nid_str || n.nid || (t + '-' + (n.create_time || 0))),
         type: t, time: n.create_time || 0, name, avatar, action, detail, cover, images: (images && images.length) ? images : null, awemeID, author,
-        hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote
+        hasRead: !!(n.has_read || n.read_time), cid, parentCid, quote, diggCount: diggCount || null
       };
     };
     const r = await req('GET', '/aweme/v1/web/notice/?' + q({

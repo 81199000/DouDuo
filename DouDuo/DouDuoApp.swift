@@ -203,6 +203,7 @@ struct DouDuoApp: App {
             .overlay(alignment: .topLeading) { DDAppearanceStateProbe() }
             #endif
             .modifier(DYHingeStateRoot())
+            .modifier(DYCollectPromptHost(owner: .feed))
             .task(id: scenePhase) {
                 if scenePhase == .active { await DYOfflineDownloads.shared.refreshRetention() }
             }
