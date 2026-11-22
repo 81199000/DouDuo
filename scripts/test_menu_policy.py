@@ -294,7 +294,16 @@ remix.landscapeWhenWide = false
 remix.remix(after: 0)
 precondition(remix.items.map(\.id) == ["current", "upcoming-tall", "upcoming-wide"], "\(remix.items.map(\.id))")
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
-print("PASS 70% portrait interleave; per-orientation order kept; relaxed fallback; landscape-only filter; toggle back; remix; gallery classification")
+// 5) 关掉「竖屏时固定 70% 竖屏」：竖着看按推荐原顺序，不再穿插
+preferences.removePersistentDomain(forName: suiteName)
+let plain = DYFeedModel()
+plain.portraitMix = false
+plain.pool = (0..<10).map { DYAweme(id: "p\($0)", isTallFrame: $0 % 5 == 0) }
+precondition(plain.targetRatio == nil)
+precondition(plain.fill(6) == 6 && plain.items.map(\.id) == (0..<6).map { "p\($0)" }, "off should keep original order")
+plain.screenWide = true
+precondition(plain.targetRatio == 0, "landscape-only still wins when wide")
+print("PASS 70% portrait interleave; toggle off keeps original order; per-orientation order kept; relaxed fallback; landscape-only filter; toggle back; remix; gallery classification")
 '''
         scratch = Path(tempfile.gettempdir())
         scratch.mkdir(parents=True, exist_ok=True)

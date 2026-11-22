@@ -1546,6 +1546,8 @@ final class DYFeedModel: ObservableObject {
     /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
+    /// 竖着看时固定约 70% 竖屏（老板 2026-11-22 要求做成开关）；关掉 = 按抖音推荐原顺序播放
+    @AppStorage("douyin_portrait_mix_v1") var portraitMix = true
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
     /// 当前播放区是不是横的（宽 > 高），由页面布局同步
@@ -1563,8 +1565,8 @@ final class DYFeedModel: ObservableObject {
 
     /// 横屏限定时只要横屏。
     var landscapeOnlyActive: Bool { screenWide && landscapeWhenWide }
-    /// 当前竖屏目标：横屏限定 0，其余 70%。
-    var targetRatio: Double { landscapeOnlyActive ? 0 : Self.portraitTarget }
+    /// 当前竖屏目标：横屏限定 0；开了「固定 70% 竖屏」为 0.7；关掉为 nil（按推荐原顺序）。
+    var targetRatio: Double? { landscapeOnlyActive ? 0 : (portraitMix ? Self.portraitTarget : nil) }
 
     /// 从候选池往列表里排最多 maxN 条：竖横按目标比例均匀穿插（70% → 竖横竖竖横竖竖…），
     /// 同方向内保持推荐原顺序；横屏限定时只取横屏。
@@ -1572,7 +1574,13 @@ final class DYFeedModel: ObservableObject {
     @discardableResult
     func fill(_ maxN: Int, relaxed: Bool = false) -> Int {
         pool = allowedRecommendations(pool)
-        let r = targetRatio
+        guard let r = targetRatio else {
+            // 关掉固定比例：按推荐原顺序放
+            let n = min(maxN, pool.count)
+            items.append(contentsOf: pool.prefix(n))
+            pool.removeFirst(n)
+            return n
+        }
         var n = 0
         while n < maxN, !pool.isEmpty {
             let idx: Int?
@@ -1661,7 +1669,7 @@ final class DYFeedModel: ObservableObject {
             // 竖横凑不齐（如接口连着几页没竖屏）时按原顺序补，横屏限定不放宽
             if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }
             trimPool()
-            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(String(format: "%.2f", targetRatio)) landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
+            DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(targetRatio.map { String(format: "%.2f", $0) } ?? "off") landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
                 ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
         } catch {
@@ -2059,6 +2067,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
+        .onChange(of: feed.portraitMix) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()
@@ -3305,6 +3314,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
         .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
+        .onChange(of: feed.portraitMix) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()

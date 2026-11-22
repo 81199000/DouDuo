@@ -22,6 +22,7 @@ struct DYSettingsScreen: View {
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = true
+    @AppStorage("douyin_portrait_mix_v1") private var portraitMix = true
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
     @AppStorage(DYFeedExtras.adKey) private var feedAds = true
@@ -103,6 +104,7 @@ struct DYSettingsScreen: View {
                         }
                     }
                     .accessibilityIdentifier("douyin.hashtags.manage")
+                    Toggle("竖屏时固定 70% 竖屏视频", isOn: $portraitMix).accessibilityIdentifier("settings.portrait.mix")
                     Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).accessibilityIdentifier("douyin.landscape.only")
                     Toggle("推荐里插入直播间", isOn: $feedLive).accessibilityIdentifier("settings.feed.live")
                     Toggle("推荐里显示广告", isOn: $feedAds).accessibilityIdentifier("settings.feed.ads")
@@ -110,7 +112,7 @@ struct DYSettingsScreen: View {
                 } header: {
                     Text("推荐与内容")
                 } footer: {
-                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
+                    Text("刷新推荐会换一批，当前在看的这条保留。标签过滤只作用于推荐页。\n「固定 70% 竖屏」：竖着看时推荐里约七成是竖屏视频（抖音网页推荐本身竖屏只有一到三成）；关掉则按抖音原顺序播放。\n关掉「插入直播间」后推荐里不再出现直播；关掉「显示广告」后推荐里不再出现广告（开着时广告在简介下方标「广告」）；关掉「商品」后视频上不显示商品胶囊。")
                 }
 
                 Section {
