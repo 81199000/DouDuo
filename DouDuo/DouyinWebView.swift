@@ -469,7 +469,7 @@ private let ddVideoTapHookJS = #"""
       const pane = t.closest('[class*="componentsRightPanel"],[class*="rightPanel"]');
       if (!pane) return;
       // 图片消息（MessageItemImage*）交给看大图钩子（DYChatImagePreviewClose），这里不管
-      if (t.closest('[class*="MessageItemImage"]')) return;
+      if (String(t.className || '').includes('MessageItemImage') || String((t.parentElement && t.parentElement.className) || '').includes('MessageItemImage')) return;
       // 实测类名：分享视频卡 = MessageItemShareAweme* / BulletBulletVideo*
       let media = t.closest('[class*="ShareAweme"],[class*="BulletBulletVideo"],[class*="videoCard"],[class*="VideoCard"],[class*="ShareImage"],[class*="BulletBulletImage"],[class*="imageCard"],[class*="ImageCard"]');
       // 类名没覆盖到的分享卡：只要点在一条消息里，也照样试着从消息 payload 取作品 ID（取不到就交回网页）
