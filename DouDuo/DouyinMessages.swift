@@ -3181,6 +3181,7 @@ struct DYForwardScreen: View {
     @State private var showContacts = false
     @State private var groupsOnly = false
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
     @State private var showLogin = false
     @State private var showOtherApps = false
     @State private var copiedLink = false
@@ -3270,6 +3271,29 @@ struct DYForwardScreen: View {
         }
         .sheet(isPresented: $showContacts) {
             NavigationStack {
+                VStack(spacing: 0) {
+                // 自己画的搜索框（不用 .searchable）：转发面板是全屏层里再弹的表单，后面还挂着隐藏网页，
+                // 系统搜索栏在这里点了不出键盘（老板 11-23）。整条可点，点了直接给输入框焦点。
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.themeTextSecondary)
+                    TextField("搜索", text: $query)
+                        .focused($searchFocused)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.search)
+                        .accessibilityIdentifier("douyin.forward.search.field")
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.themeTextSecondary) }
+                            .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12).frame(height: 40)
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(Rectangle())
+                .onTapGesture { searchFocused = true }
+                // 记一笔：万一还是不出键盘，日志能看出是焦点没给上还是被别处抢走
+                .onChange(of: searchFocused) { _, f in DYLiveModel.log("DDFWDSEARCH focused=\(f)") }
+                .padding(.horizontal, 16).padding(.vertical, 8)
                 List {
                     // 官方同款：搜索框下先给「我的群聊」入口（全部朋友视图、没在搜索时）
                     if !groupsOnly, query.isEmpty, model.contacts.contains(where: { $0.kind == 2 }) {
@@ -3308,7 +3332,8 @@ struct DYForwardScreen: View {
                     }
                 }
                 .listStyle(.plain)
-                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索")
+                .scrollDismissesKeyboard(.immediately)
+                }
                 .navigationTitle(groupsOnly ? "选择群聊" : "选择朋友")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showContacts = false } } }
             }

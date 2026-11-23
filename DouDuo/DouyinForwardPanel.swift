@@ -93,7 +93,8 @@ struct DYClassicNativeForwardPanel: View {
     private var contactRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: WuWeiDesign.Spacing.sm) {
-                ForEach(contacts) { contact in
+                // 只排最近联系的 10 个，其余从末尾「更多」里搜（老板 11-23）
+                ForEach(Array(contacts.prefix(10))) { contact in
                     Button { onContact(contact) } label: {
                         VStack(spacing: WuWeiDesign.Spacing.sm) {
                             CachedAsyncImage(url: contact.avatar.flatMap(URL.init(string:))) { image in
@@ -309,7 +310,8 @@ struct DYUpstreamNativeForwardPanel: View {
     private var contactRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: WuWeiDesign.Spacing.sm) {
-                ForEach(contacts) { contact in
+                // 只排最近联系的 10 个，其余从末尾「更多」里搜（老板 11-23）
+                ForEach(Array(contacts.prefix(10))) { contact in
                     Button { onContact(contact) } label: {
                         VStack(spacing: WuWeiDesign.Spacing.sm) {
                             CachedAsyncImage(url: contact.avatar.flatMap(URL.init(string:))) { image in
