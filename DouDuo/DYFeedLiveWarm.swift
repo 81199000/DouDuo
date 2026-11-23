@@ -124,6 +124,41 @@ final class DYFeedLiveWarm {
     }
     private static var retired: [Handle] = []
 
+    /// 离开直播：声音立刻拉到 0，真正停播往后挪这么久。
+    /// 11-24 真机：停直播和下一条视频开播撞在同一刻时，缓冲够了的视频也要等 0.5–1.4 秒才起播（平时 0.03 秒）
+    static let stopDelay: TimeInterval = 0.6
+    private static var pendingStops: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private static var lingering: [VLCPlayerController] = []
+
+    /// 预热接过来的那一路：先静音，0.6 秒后再停播回收
+    static func disposeLater(_ h: Handle) {
+        h.controller.onError = nil
+        h.controller.mediaPlayer.audio?.volume = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + stopDelay) { dispose(h) }
+    }
+
+    /// 页面自己连的那一路：先静音，0.6 秒后再停播；停完再留 10 秒才放（同 dispose 的说明，防主线程析构卡死）
+    static func stopLater(_ c: VLCPlayerController) {
+        c.onError = nil
+        c.mediaPlayer.audio?.volume = 0
+        let key = ObjectIdentifier(c)
+        pendingStops[key]?.cancel()
+        let work = DispatchWorkItem {
+            pendingStops[key] = nil
+            c.stop()
+            DDAudioSessionGate.noteVLCStopping()
+            lingering.append(c)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { lingering.removeAll { $0 === c } }
+        }
+        pendingStops[key] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + stopDelay, execute: work)
+    }
+
+    /// 0.6 秒内又划回这间直播：取消还没执行的停播（否则刚重新开播就被停掉）
+    static func cancelPendingStop(_ c: VLCPlayerController) {
+        pendingStops.removeValue(forKey: ObjectIdentifier(c))?.cancel()
+    }
+
     private static var window: UIWindow? {
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows).first { $0.isKeyWindow }

@@ -492,6 +492,34 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
         return false
     }
 
+    /// 只把开头（预热范围：Wi-Fi 约 6 秒）下好。整条预下之前先跑这个，保证后面一两条划到就能起播。
+    /// 11-24 真机：慢起播的 13 条里 9 条当时正在整条下别的视频，下一条的开头被挤得只剩 1 秒左右；
+    /// 看直播时直播流也在抢网速，直播后面那条划到时常常只缓冲了 0.8–1 秒。
+    func fillHead(_ item: DYAweme, remote: URL) async {
+        let key = DYStreamStore.shared.register(item, remote: remote)
+        guard let e = DYStreamStore.shared.entry(key) else { return }
+        do { try await ensureInfo(e) } catch { return }
+        while !Task.isCancelled {
+            // horizon 自己要拿 e.lock（NSLock 不可重入），先在锁外算
+            guard let horizon = DYStreamStore.shared.horizon(e) else { return }
+            e.lock.lock()
+            guard let total = e.total else { e.lock.unlock(); return }
+            let limit = min(total, horizon)
+            let need = DYStreamPlan.contiguous(from: 0, in: e.ranges)
+            if need >= limit { e.lock.unlock(); return }
+            var end = min(limit, need + DYStreamPlan.chunkBytes)
+            if let next = DYStreamPlan.nextCachedStart(after: need, in: e.ranges) { end = min(end, next) }
+            let fetch = need..<end
+            let busy = e.inflight.contains { $0.overlaps(fetch) }
+            if !busy { e.inflight.append(fetch) }
+            e.lock.unlock()
+            // 播放器（预热的那个）正在要这段：等它下完再看
+            if busy { try? await Task.sleep(for: .milliseconds(150)); continue }
+            defer { e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock() }
+            do { try await download(e, fetch, sink: nil) } catch { return }
+        }
+    }
+
     func resourceLoader(_ loader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource req: AVAssetResourceLoadingRequest) -> Bool {
         guard let url = req.request.url, let streamKey = DYStream.id(of: url), let e = DYStreamStore.shared.entry(streamKey) else { return false }
         let key = ObjectIdentifier(req)

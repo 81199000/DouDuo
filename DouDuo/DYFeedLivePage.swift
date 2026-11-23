@@ -131,6 +131,18 @@ struct DYFeedLivePage: View {
             h.controller.outputMuted = muted
             if muted { h.controller.mediaPlayer.audio?.isMuted = true }
             h.controller.mediaPlayer.audio?.volume = muted ? 0 : 100
+            // 预热时音量 0，VLC 已经把后面一两秒的音频按 0 音量排进了输出缓冲；只把音量拉回 100，
+            // 要等这段无声的放完才听得到（老板 11-24：「进直播一两秒才有声音」）。关一下音轨再选回来＝丢掉这段，从现在起重新出声
+            let track = h.controller.mediaPlayer.currentAudioTrackIndex
+            if !muted, track >= 0 {
+                let c = h.controller
+                c.mediaPlayer.currentAudioTrackIndex = -1
+                Task { @MainActor in
+                    c.mediaPlayer.currentAudioTrackIndex = track
+                    c.mediaPlayer.audio?.volume = 100
+                    DYLiveModel.log("DDLIVEAUDIO flush room=\(live.roomID.suffix(6)) track=\(track) vol=\(c.mediaPlayer.audio?.volume ?? -9)")
+                }
+            }
             h.controller.onError = {
                 Task { @MainActor in
                     // 预热那一路断了：丢掉它，走现连
@@ -148,7 +160,10 @@ struct DYFeedLivePage: View {
         let s = sources[sourceIndex]
         failed = false
         started = true
+        // 刚离开 0.6 秒内又划回来：取消还没执行的停播；离开时音量拉到了 0，这里拉回来
+        DYFeedLiveWarm.cancelPendingStop(player)
         player.outputMuted = muted
+        if !muted { restoreVolume(player) }
         player.onError = { [sourceIndex] in
             Task { @MainActor in
                 // 当前线路起不来就换下一条（FLV → HLS / 换清晰度），全挂了显示「加载失败」
@@ -189,10 +204,19 @@ struct DYFeedLivePage: View {
         let t0 = CACurrentMediaTime()
         defer { let ms = Int((CACurrentMediaTime() - t0) * 1000); if ms > 8 { DYLiveModel.log("DDFEEDLIVE stop-main=\(ms)ms") } }
         started = false
-        if let w = warm { warm = nil; DYFeedLiveWarm.dispose(w); return }
-        player.onError = nil
-        player.stop()
-        // VLC 停播（异步）会把音频会话关掉：通知当前短视频检查自己是否被意外停住
-        DDAudioSessionGate.noteVLCStopping()
+        // 先静音、0.6 秒后再停播：别跟下一条视频开播撞在同一刻（见 DYFeedLiveWarm.stopDelay）
+        if let w = warm { warm = nil; DYFeedLiveWarm.disposeLater(w); return }
+        DYFeedLiveWarm.stopLater(player)
+    }
+
+    /// 离开时把音量拉到了 0：重新开播后音频输出建好前设音量无效，前 3 秒盯着拉回 100（用户静音时不动）
+    private func restoreVolume(_ c: VLCPlayerController) {
+        Task { @MainActor [weak c] in
+            for _ in 0..<30 {
+                guard let c, !muted else { return }
+                if let a = c.mediaPlayer.audio, a.volume == 0 { a.volume = 100 }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 }

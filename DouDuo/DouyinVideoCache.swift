@@ -162,8 +162,17 @@ actor DYVideoCache {
         // 边下边播时当前这条由播放器自己边播边存，整条下载只管后面的，免得同一条下两遍
         let plan = Self.streamingPlan(Self.plan(current: target, ahead: follow), items: candidates, streaming: DYStream.enabled)
             .filter { !(DYStream.enabled && current != nil && $0 == target.id) }
+        // 边下边播时：先把后面两条的开头下好，再整条预下（整条下载会把下一条的开头挤掉，见 fillHead）
+        let heads = DYStream.enabled
+            ? Array(rest.prefix(2)).filter { $0.images.isEmpty && $0.play != nil && Self.localURL($0.id) == nil }
+            : []
         job = Task { [weak self] in
             await previous?.value
+            guard self != nil else { return }
+            for a in heads {
+                guard !Task.isCancelled else { return }
+                if let u = a.play.flatMap(URL.init(string:)) { await DYStreamLoader.shared.fillHead(a, remote: u) }
+            }
             guard let self else { return }
             for id in plan {
                 guard !Task.isCancelled else { return }
