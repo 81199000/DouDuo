@@ -650,7 +650,7 @@ extension DouyinBridge {
     """#
 
     static let postJS = listTail + #"""
-    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
+    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + qPost({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
     const d = parse(r.t) || {};
     // 自己的作品：origin_cover 是全黑占位图（2026-11-16 实测 360×721 全 0），改用 cover
     (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });

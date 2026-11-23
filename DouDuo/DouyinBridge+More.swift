@@ -349,7 +349,7 @@ extension DouyinBridge {
     """#
 
     private static let authorPostJS = #"""
-    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + q({
+    const r = await req('GET', '/aweme/v1/web/aweme/post/?' + qPost({
       sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1',
       need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18'
     }));

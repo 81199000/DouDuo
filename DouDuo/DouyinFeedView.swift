@@ -1075,6 +1075,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     };
     const first = o => (o && o.url_list && o.url_list[0]) || null;
     const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
+    // 作品列表 /aweme/v1/web/aweme/post/ 专用：带 os_name=Mac OS 时抖音回 200 空包（2026-11-23 实测，其它参数不变、
+    // 只去掉 os_name 就有作品；主页资料等接口不受影响）→ 主页作品一直「这里还没有内容」（工单 B34）
+    const qPost = s => { const o = Object.assign({}, base, s); delete o.os_name; return new URLSearchParams(o).toString(); };
     // 直连 CDN（douyinvod）优先：实测首字节 0.27–0.30s；www.douyin.com/aweme/v1/play/ 多跳一次 0.95–1.85s
     const pickPlay = l => (l || []).find(u => !u.includes('/aweme/v1/play/')) || (l && l[0]) || null;
     const pickRedirect = l => (l || []).find(u => u.includes('/aweme/v1/play/')) || null;
