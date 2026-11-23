@@ -1313,8 +1313,9 @@ final class DYPreloader {
     static var ahead: Int {
         // 省流量模式 + 用流量：只预热下一条（每条只取开头几秒）
         if DYStream.saving { return 1 }
-        // 边下边播时预热只取开头几秒，暖 3 条足够；以前跟缓存条数走（整条下载时代）
-        if DYStream.enabled { return 3 }
+        // 边下边播时预热只取开头几秒。Wi-Fi 暖 5 条、流量 3 条（老板 11-24：Wi-Fi 下快速连划，暖 3 条时
+        // 后面的条划到前才开始下，真机 118 条里慢的 10 条划到时只缓冲了 1–2 秒、起播等 1.3–3.5 秒）
+        if DYStream.enabled { return DYNetPath.shared.cellular ? 3 : 5 }
         let n = DYVideoCache.limit
         return min(max(n, 3), 10)
     }

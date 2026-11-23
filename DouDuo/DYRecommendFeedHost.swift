@@ -362,7 +362,10 @@ extension DYRecommendFeedHost {
         // 后面不足「缓存条数」就继续拉推荐（至少保证 6 条，节流 4 秒一次）
         let want = max(6, min(DYVideoCache.limit, 60))
         // 正在拉的时候不重复发起，也不占用节流窗口（否则这一批拉完后要白等 4 秒才接着拉）
-        if feed.items.count - i - 1 < want, !feed.loading, Date().timeIntervalSince(lastFeedPull) > 4 {
+        // 后面只剩 3 条以内时节流缩到 1.5 秒：「不再推荐看过的」会筛掉近一半新推的，快划时 4 秒节流跟不上，
+        // 新条到了才开始预热，划到时只缓冲了 1 秒多（11-24 真机：一页 3 条筛掉 2 条后紧接着就划到了）
+        let left = feed.items.count - i - 1
+        if left < want, !feed.loading, Date().timeIntervalSince(lastFeedPull) > (left <= 3 ? 1.5 : 4) {
             lastFeedPull = Date()
             Task {
                 await feed.loadMore(bridge)

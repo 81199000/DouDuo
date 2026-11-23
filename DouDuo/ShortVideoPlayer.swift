@@ -892,7 +892,8 @@ struct PlayerPage: View {
                 // 先开播：已缓冲够就跳过 AVPlayer 的「评估缓冲速率」等待，直接按目标速率走（抖音同款「零首帧」的关键）
                 DDAudioSessionGate.ensureActive()
                 isPlaying = true
-                if DYPlaybackTelemetry.bufferedAhead(p) >= 1.5, p.currentItem?.status == .readyToPlay,
+                // 有 1 秒就直接播（原 1.5 秒）：不够时系统会先「攒够再播」，1–1.5 秒那几条白等 1 秒多（11-24 真机日志）
+                if DYPlaybackTelemetry.bufferedAhead(p) >= 1.0, p.currentItem?.status == .readyToPlay,
                    seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
                     p.isMuted = seamAudio.mode == .noAudio || muted
                     p.playImmediately(atRate: playRate)
