@@ -86,13 +86,17 @@ enum DYCollectSub: String, CaseIterable, Identifiable {
 }
 
 enum DYListKind: String, CaseIterable, Identifiable {
-    case post, like, collect, history, later
+    // 「私密作品」单独一栏（老板 11-23，网页版同款：作品 / 私密作品 / …，接口 /aweme/v1/web/private/aweme/）
+    case post, secret, like, collect, history, later
     var id: String { rawValue }
-    /// 网页版「批量管理」只在作品 / 喜欢 / 收藏三栏
-    var supportsBatch: Bool { self == .post || self == .like || self == .collect }
+    /// 网页版「批量管理」在作品 / 私密作品 / 喜欢 / 收藏
+    var supportsBatch: Bool { self == .post || self == .secret || self == .like || self == .collect }
+    /// 作品类（可见范围 / 删除）
+    var isWorks: Bool { self == .post || self == .secret }
     var title: String {
         switch self {
         case .post: "作品"
+        case .secret: "私密作品"
         case .like: "喜欢"
         case .collect: "收藏"
         case .history: "历史"
@@ -166,6 +170,9 @@ extension DouyinBridge {
         case .post:
             let sec = try await selfSecUid()
             return try await list(Self.postJS, ["sec": sec, "cursor": cursor])
+        case .secret:
+            _ = try await selfSecUid()   // 没登录先报未登录
+            return try await list(Self.privateJS, ["cursor": cursor])
         case .like:
             let sec = try await selfSecUid()
             return try await list(Self.likeJS, ["sec": sec, "cursor": cursor])
@@ -660,6 +667,14 @@ extension DouyinBridge {
     const r = await req('GET', '/aweme/v1/web/aweme/post/?' + qPost({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
     const d = parse(r.t) || {};
     // 自己的作品：origin_cover 是全黑占位图（2026-11-16 实测 360×721 全 0），改用 cover
+    (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });
+    return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
+    """#
+
+    /// 私密作品（网页版「私密作品」栏同一接口；只有自己能看）
+    static let privateJS = listTail + #"""
+    const r = await req('GET', '/aweme/v1/web/private/aweme/?' + qPost({ max_cursor: cursor, min_cursor: '0', count: '18' }));
+    const d = parse(r.t) || {};
     (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });
     return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
     """#
@@ -2118,7 +2133,7 @@ struct DYMineScreen: View {
                 .id(collectSub)
                 .scrollContentBackground(.hidden)
             } else if let m = models[kind] {
-                DYMineList(model: m, showsPlayCount: kind == .post,
+                DYMineList(model: m, showsPlayCount: kind.isWorks,
                            removeTitle: kind == .later ? "移出稍后再看" : nil,
                            onRemove: kind == .later ? { a in Task { await removeLater(a, from: m) } } : nil,
                            onRefresh: { await pullRefresh(m) },
@@ -2264,7 +2279,7 @@ struct DYMineScreen: View {
         let ids = m.items.filter { picked.contains($0.id) }.map(\.id)
         return HStack(spacing: 10) {
             switch kind {
-            case .post:
+            case .post, .secret:
                 Menu {
                     ForEach([DYWorkAction.makePublic, .friendsOnly, .makePrivate], id: \.rawValue) { a in
                         Button(a.title) { confirmBatch = .works(a, ids) }
@@ -2313,7 +2328,14 @@ struct DYMineScreen: View {
                 manageMsg = r.failedIDs.isEmpty ? "\(b.button)完成（\(done.count) 条）" : "\(done.count) 条成功，\(r.failedIDs.count) 条没处理掉"
                 picked = Set(r.failedIDs)
                 if r.failedIDs.isEmpty { managing = false }
-                if case .works = b { await refreshProfile() }
+                if case .works(let a, _) = b {
+                    await refreshProfile()
+                    // 改了可见范围：作品 ⇄ 私密作品 两栏都可能变，另一栏下次进来重拉
+                    if a != .delete {
+                        m.items.removeAll { done.contains($0.id) && ((kind == .secret) != (a == .makePrivate)) }
+                        for other in [DYListKind.post, .secret] where other != kind { models[other] = nil; Self.cachedModels[other] = nil }
+                    }
+                }
             case .notLoggedIn: manageMsg = "抖音未登录"
             case .failed(let why): manageMsg = "\(b.button)失败：" + why
             }
