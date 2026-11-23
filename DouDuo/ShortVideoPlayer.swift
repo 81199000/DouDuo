@@ -176,7 +176,7 @@ final class DDPlayback {
         let s = starters.filter { id, _ in let l = coverLevels[id] ?? 0; return l > 0 && coverDepth <= l }.map(\.value)
         lock.unlock()
         guard !s.isEmpty else { return }
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
         try? AVAudioSession.sharedInstance().setActive(true)
         s.forEach { $0() }
     }
@@ -186,7 +186,7 @@ final class DDPlayback {
         ddWrite("DDBG resumeAll count=\(s.count)")
         #endif
         if !s.isEmpty {
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
         }
         s.forEach { $0() }
@@ -882,7 +882,7 @@ struct PlayerPage: View {
                 return
             }
             if active, shouldFastStart(p) {
-                try? AVAudioSession.sharedInstance().setCategory(.playback)
+                try? AVAudioSession.sharedInstance().setCategory(.playback, options: DYLaunchMute.sessionOptions)
                 try? AVAudioSession.sharedInstance().setActive(true)
                 startFast(hd: p)
                 return
@@ -1277,7 +1277,7 @@ struct PlayerPage: View {
         }
         let shouldPlay = canControlPlayback && !userPaused
         if shouldPlay, shouldFastStart(p) {
-            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             startFast(hd: p)
             return
@@ -1285,7 +1285,7 @@ struct PlayerPage: View {
         isPlaying = shouldPlay
         bindSeamlessAudio(to: p, initialPos: initialResumePosition, active: isActive, playing: shouldPlay)
         if shouldPlay {
-            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             p.rate = playRate
         }
@@ -1636,7 +1636,7 @@ struct PlayerPage: View {
         }
         guard DYResumePolicy.shouldResumeAfterBackground(userPaused: userPaused) else { return }
         if let v = vlc {
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             v.mediaPlayer.audio?.isMuted = muted
             v.resume(); isPlaying = true
@@ -1644,7 +1644,7 @@ struct PlayerPage: View {
             return
         }
         if let p = player {
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             isPlaying = true
             seamAudio.play(rate: playRate, muted: muted)

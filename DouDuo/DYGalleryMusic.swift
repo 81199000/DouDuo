@@ -43,7 +43,7 @@ final class DYGalleryAudio: ObservableObject {
         p.isMuted = mutedNow
         if wantsPlay {
             if DDPlayback.shared.coverHold { return }
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             if p.rate == 0 { p.play() }
         } else {

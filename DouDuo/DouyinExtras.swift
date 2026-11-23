@@ -2543,7 +2543,8 @@ struct DYAuthorScreen: View {
         .background(Color.ddBackground)
         // 整页右滑返回（工单 B30）：经典模式是在推荐页任意位置左滑进来的，返回也要在任意位置右滑都认，
         // 不能只认最左 22pt；内屏右半屏窗格也一样能右滑关掉（整页手势不挂在分界线上，不会误触）。
-        .dySwipeBack { close() }
+        // 主页里点开了作品（全屏层在上面）时不认整页右滑，免得关主页和关作品撞在一起
+        .dySwipeBack(enabled: player == nil) { close() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.author.panel")
         .navigationBarBackButtonHidden()
@@ -2619,7 +2620,13 @@ struct DYAuthorScreen: View {
         DYLiveModel.log("DDAUTHOR recent not found id=\(id) n=\(posts.count)")
     }
 
-    private func close() { if let onClose { onClose() } else { dismiss() } }
+    @State private var closing = false
+    /// 右滑和系统整页返回可能同时触发：只关一次，避免连退两层把推荐页的状态弄乱
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        if let onClose { onClose() } else { dismiss() }
+    }
 
     /// 自己的主页不给拉黑入口；没登录（认不出我是谁）时也不给
     private var canBlock: Bool {

@@ -31,7 +31,7 @@ assert "unseen(" not in (ROOT / "DouDuo/DouyinExtras.swift").read_text()
 
 # --- 运行真实 DYSeenHistory ---
 unseen_fn = FEED[FEED.index("    nonisolated(unsafe) static var isSeen"):FEED.index("        return kept\n    }") + len("        return kept\n    }")]
-harness = SEEN + '''
+harness = SEEN[:SEEN.index("/// 粉丝许愿（11-23）")] + '''
 struct DYAweme { let id: String }
 enum DYLiveModel { static func log(_ s: String) {} }
 final class DYFeedModel {

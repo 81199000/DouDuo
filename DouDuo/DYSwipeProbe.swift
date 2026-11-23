@@ -75,7 +75,7 @@ enum DDAudioSessionGate {
     static func ensureActive() {
         let s = AVAudioSession.sharedInstance()
         if active, s.category == .playback { return }
-        try? s.setCategory(.playback)
+        try? s.setCategory(.playback, options: DYLaunchMute.sessionOptions)
         try? s.setActive(true)
         active = true
     }

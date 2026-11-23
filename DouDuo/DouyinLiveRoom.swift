@@ -547,7 +547,7 @@ final class DYLiveModel: ObservableObject {
     @discardableResult
     private func activatePlaybackSession() -> Bool {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try AVAudioSession.sharedInstance().setActive(true)
             return true
         } catch {

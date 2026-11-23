@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// 「看过的视频不再推荐」（老板 2026-11-22：只要划到就算看过）。
@@ -102,5 +103,32 @@ final class DYSeenHistory: @unchecked Sendable {
         let f = Self.dir.appendingPathComponent(scope + ".txt")
         try? order.joined(separator: "\n").write(to: f, atomically: true, encoding: .utf8)
         dirty = false
+    }
+}
+
+/// 粉丝许愿（11-23）：「打开抖音时默认静音播放」——开着时每次启动把全局静音打开，并且不打断别的 App 正在放的音乐。
+enum DYLaunchMute {
+    static let key = "douyin_launch_muted_v1"
+    static let mutedKey = "douyin_muted_v1"
+    nonisolated(unsafe) private static var lastMuted: Bool?
+    nonisolated(unsafe) private static var observer: NSObjectProtocol?
+
+    /// 静音时音频会话带「与其他 App 混音」：不打断用户自己在放的音乐（原生抖音同款）；取消静音恢复独占
+    static var sessionOptions: AVAudioSession.CategoryOptions {
+        UserDefaults.standard.bool(forKey: mutedKey) ? [.mixWithOthers] : []
+    }
+
+    static func apply() {
+        if UserDefaults.standard.bool(forKey: key) { UserDefaults.standard.set(true, forKey: mutedKey) }
+        lastMuted = UserDefaults.standard.bool(forKey: mutedKey)
+        // 静音开关一变就重设会话类别（静音→混音不打断别的 App；取消静音→恢复正常出声）
+        observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { _ in
+            let now = UserDefaults.standard.bool(forKey: mutedKey)
+            guard now != lastMuted else { return }
+            lastMuted = now
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.playback, mode: .moviePlayback, options: sessionOptions)
+            if !now { try? s.setActive(true) }
+        }
     }
 }

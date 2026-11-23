@@ -134,7 +134,7 @@ final class DDAudioEngineHub {
     func ensureRunning() throws {
         #if canImport(UIKit)
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
         try? session.setActive(true)
         #endif
         if !engine.isRunning {

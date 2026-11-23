@@ -1929,7 +1929,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 return
             }
             #endif
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
@@ -3208,7 +3208,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 return
             }
             #endif
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
@@ -3513,6 +3513,13 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 }
                 .onChange(of: authorWorkOpen) { _, open in
                     if !open { supportsSidePanel = measuredSidePanel }
+                }
+                // 老板 11-23：经典模式左滑进主页、右滑回来后菜单键没了。主页关掉时如果「主页里点开的作品」标记没收回
+                // （右滑关主页和作品全屏层的关闭撞在一起，onDismiss 没走到），authorWorkOpen 一直为真 →
+                // 推荐页一直当成「被盖住」，当前视频不发菜单按钮。主页一关就把它收回。
+                .onChange(of: authorTarget?.id) { _, id in
+                    DYLiveModel.log("DDAUTHORPANE \(id == nil ? "close" : "open") workOpen=\(authorWorkOpen) side=\(supportsSidePanel)")
+                    if id == nil, authorWorkOpen { authorWorkOpen = false }
                 }
                 .onGeometryChange(for: Bool.self) { proxy in
                     DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
@@ -5971,6 +5978,14 @@ struct DYCommentPanel: View {
             target = (replies[top] ?? []).contains { $0.id == f.cid } ? f.cid : top
         }
         if target == nil || target == top, page.contains(where: { $0.id == f.cid }) { target = f.cid }
+        // 「@我的」通知只带被 @ 那条的 cid，不知道它是不是楼中楼（parentCid 为空）。
+        // 接口把它挂在某条一级评论的 reply_comment 里回来时，上面两步都找不到 → 误报「已删除」（粉丝反馈 11-23）。
+        // 兜底：在本页所有一级评论的 pinned 里找它，找到就按楼中楼展开并定位。
+        if target == nil, let owner = page.first(where: { ($0.pinned ?? []).contains { $0.id == f.cid } }), let pinned = owner.pinned {
+            replies[owner.id] = pinned
+            replyMore[owner.id] = owner.replies > pinned.count
+            target = f.cid
+        }
         guard let target else {
             focusMiss = true
             DYLiveModel.log("DDFOCUS miss aweme=\(f.awemeID) cid=\(f.cid) parent=\(f.parentCid ?? "-")")
