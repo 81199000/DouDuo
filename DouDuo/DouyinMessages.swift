@@ -2465,11 +2465,16 @@ struct DYNoticeListScreen: View {
                 } label: {
                     Label(open ? "收起" : "展开", systemImage: open ? "chevron.up" : "chevron.down")
                         .labelStyle(.titleAndIcon)
+                        // 老板 11-23：「展开」常点不到——按钮上下各留 10pt 可点区域，和正文/下一条拉开
+                        .padding(.vertical, 10).padding(.trailing, 8)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("douyin.notice.expand")
             }
             Button { startReply(n) } label: {
                 Label(replied.contains(n.id) ? "已回复" : "回复", systemImage: "arrowshape.turn.up.left")
+                    .padding(.vertical, 10).padding(.trailing, 8)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("douyin.notice.reply")
             Spacer(minLength: 0)
@@ -2479,8 +2484,9 @@ struct DYNoticeListScreen: View {
         .foregroundStyle(Color.primary.opacity(0.7))
         .padding(.leading, 70)
         .padding(.trailing, 16)
-        .padding(.top, -4)
-        .padding(.bottom, 12)
+        // 按钮自己带了上下 10pt 点按区，外边距相应收一点，整行视觉间距比原来宽松但不至于空
+        .padding(.top, 0)
+        .padding(.bottom, 4)
     }
 
     private func reload(reset: Bool) async {

@@ -307,13 +307,20 @@ struct DYExpandableTitle: View {
                         .hidden().accessibilityHidden(true)
                 }
                 .accessibilityIdentifier("douyin.description")
+                // 老板 11-23：「展开」两个字太小常点不到——点标题正文本身也展开/收起（话题链接仍是搜索，SwiftUI 链接优先吃掉点按）
+                .contentShape(Rectangle())
+                .onTapGesture { if canExpand { withAnimation(.snappy) { expanded.toggle() } } }
             ZStack {
                 if canExpand {
-                    Button(expanded ? "收起" : "展开") { expanded.toggle() }
+                    Button(expanded ? "收起" : "展开") { withAnimation(.snappy) { expanded.toggle() } }
                         .font(.caption)
                         .foregroundStyle(secondary)
                         .fixedSize()
                         .buttonStyle(.plain)
+                        // 点按区域上下左右各放大，按钮本身视觉大小不变
+                        .padding(.vertical, 10).padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                        .padding(.vertical, -10).padding(.horizontal, -8)
                         .accessibilityIdentifier("douyin.description.toggle")
                 }
             }
