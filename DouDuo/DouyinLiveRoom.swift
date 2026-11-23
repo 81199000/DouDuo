@@ -1050,6 +1050,8 @@ struct DYLiveFeed: View {
     @State private var sendError: String?
     @State private var showCategories = false
     @State private var showFollowLive = false
+    /// 直播间里点了主播：打开原生主播主页（工单 B32）
+    @State private var liveAuthor: DYAweme.Author?
     /// 「发现更多」只放分类。关注开播走旁边的「关注直播」。
     @State private var showDiscover = false
     /// 关注主播头像条：默认收起，只显示「N 位正在直播」胶囊；点胶囊展开，选了主播或离开直播页就收起。
@@ -1305,6 +1307,16 @@ struct DYLiveFeed: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $liveAuthor, onDismiss: { DDPlayback.shared.releaseCover() }) { author in
+            NavigationStack {
+                DYAuthorScreen(bridge: bridge, author: author, onWeb: { url in
+                    liveAuthor = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onWeb(url) }
+                })
+            }
+            // 主页里可能点开作品播放：先把直播停住，关掉主页再接上
+            .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }
         }
         .sheet(isPresented: $showFollowLive) {
             DYFollowLiveSheet(bridge: bridge) { room in
@@ -1748,7 +1760,8 @@ struct DYLiveFeed: View {
                                    videoPane: video, interactionPane: interaction,
                                    ambientAxis: model.currentID == room.id ? ambientAxis : nil,
                                    splitRole: splitRole, splitAction: splitAction,
-                                   isolationID: "\(bridge.followSession):\(room.id)")
+                                   isolationID: "\(bridge.followSession):\(room.id)",
+                                   bridge: bridge, onAuthor: { liveAuthor = $0 })
                         .containerRelativeFrame([.horizontal, .vertical])
                         .contentShape(Rectangle())
                         .accessibilityHidden(model.currentID != room.id)
@@ -1898,7 +1911,19 @@ private struct DYLiveRoomPage: View {
     var splitRole: DYLiveLayoutToggleRole = .hidden
     var splitAction: () -> Void = {}
     var isolationID: String
+    /// 关注主播 / 读关注状态用（工单 B32）
+    @ObservedObject var bridge: DouyinBridge
+    /// 点主播头像/昵称：打开原生主播主页
+    var onAuthor: (DYAweme.Author) -> Void = { _ in }
+    @State private var followBusy = false
+    @State private var followMsg: String?
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
+    private var ownerFollowed: Bool {
+        guard let author = room.ownerAuthor else { return false }
+        return author.secUid.flatMap { bridge.authorFollowStates[$0] }
+            ?? author.uid.flatMap { bridge.authorFollowStates[$0] }
+            ?? ((author.follow ?? 0) > 0)
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -2068,15 +2093,62 @@ private struct DYLiveRoomPage: View {
             if showsClose {
                 backCapsule(action: model.leaveRoom, id: "live.room.close")
             }
-            HStack(spacing: 8) {
-                avatar
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text("\(room.viewers) 在看").font(.caption2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Button {
+                        if let author = room.ownerAuthor { onAuthor(author) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            avatar
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text("\(room.viewers) 在看").font(.caption2)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(room.ownerAuthor == nil)
+                    .accessibilityLabel("主播 \(room.owner)，打开主页")
+                    .accessibilityIdentifier("live.room.owner")
+                    if room.ownerAuthor != nil, !ownerFollowed {
+                        Button { Task { await followOwner() } } label: {
+                            ZStack {
+                                Text("关注").opacity(followBusy ? 0 : 1)
+                                if followBusy { ProgressView().controlSize(.mini).tint(.white) }
+                            }
+                            .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                            .padding(.horizontal, 12).frame(height: 28)
+                            .background(Capsule().fill(theme.status.danger.color(for: scheme)))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(followBusy)
+                        .accessibilityLabel("关注 \(room.owner)")
+                        .accessibilityIdentifier("live.room.follow")
+                    }
                 }
-            }.padding(.trailing, 12).padding(.leading, 4).padding(.vertical, 4).foregroundStyle(.primary).ddMediaGlassCapsule()
+                .padding(.trailing, room.ownerAuthor != nil && !ownerFollowed ? 4 : 12).padding(.leading, 4).padding(.vertical, 4)
+                .foregroundStyle(.primary).ddMediaGlassCapsule()
+                if let followMsg {
+                    Text(followMsg).font(.caption2).foregroundStyle(theme.status.warning.color(for: scheme))
+                        .themeShadow(.mediaLabel)
+                }
+            }
             Spacer(minLength: 8)
         }
+    }
+
+    private func followOwner() async {
+        guard let author = room.ownerAuthor, !followBusy, !ownerFollowed else { return }
+        followBusy = true
+        defer { followBusy = false }
+        let failure: String?
+        do { failure = try await bridge.followVideoAuthor(author) } catch { failure = "关注失败：" + error.localizedDescription }
+        DYLiveModel.log("DDLIVE_FOLLOW room=\(room.id) ok=\(failure == nil)")
+        followMsg = failure
+        guard failure != nil else { return }
+        try? await Task.sleep(for: .seconds(3))
+        if followMsg == failure { followMsg = nil }
     }
     /// 和 douyin.web.back / douyin.mine.back / douyin.messages.back 同一套返回键语义：
     /// 「返回」标题 + chevron.backward 符号 + 胶囊底。直播间只保留这一颗，不再叠加系统侧栏返回。

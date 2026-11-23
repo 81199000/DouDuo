@@ -2534,7 +2534,9 @@ struct DYAuthorScreen: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .background(Color.ddBackground)
-        .dyEdgeBack(enabled: edgeBackEnabled) { close() }
+        // 整页右滑返回（工单 B30）：经典模式是在推荐页任意位置左滑进来的，返回也要在任意位置右滑都认，
+        // 不能只认最左 22pt；内屏右半屏窗格也一样能右滑关掉（整页手势不挂在分界线上，不会误触）。
+        .dySwipeBack { close() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("douyin.author.panel")
         .navigationBarBackButtonHidden()
@@ -2611,8 +2613,6 @@ struct DYAuthorScreen: View {
     }
 
     private func close() { if let onClose { onClose() } else { dismiss() } }
-    /// 经典模式右半屏博主窗格（onClose 由宿主给）左缘是分界线，不挂边缘返回
-    private var edgeBackEnabled: Bool { onClose == nil }
 
     /// 自己的主页不给拉黑入口；没登录（认不出我是谁）时也不给
     private var canBlock: Bool {
