@@ -3034,6 +3034,21 @@ struct DouyinFeedScreen: View {
         .background(alignment: .topLeading) {
             DYDMMonitorHost()
         }
+        // 老板 11-23：设置里开了「打开时默认静音」，每次进 App（冷启动 + 从后台回来）都提示一下现在是静音
+        .task { DYLaunchMute.announce(shared.feed) }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            DYLaunchMute.announce(shared.feed)
+        }
+    }
+}
+
+extension DYLaunchMute {
+    static let notice = "已静音播放 · 在菜单里可取消静音"
+    /// 开着「默认静音」且当前确实静音时才提示（用户在菜单里取消了静音就不再提示）
+    @MainActor static func announce(_ feed: DYFeedModel) {
+        guard UserDefaults.standard.bool(forKey: key), UserDefaults.standard.bool(forKey: mutedKey) else { return }
+        // 首屏刚出来时让开 0.6 秒，免得和启动画面挤在一起
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { feed.showToast(notice) }
     }
 }
 
