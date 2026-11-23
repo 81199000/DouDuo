@@ -103,7 +103,7 @@ enum DYFollowLiveScripts {
     const toRoom = (room, roomRid) => {
       const su = room.stream_url || {}, o = room.owner || {};
       return { id: String(room.id_str || room.id || ''), webRid: String(roomRid || o.web_rid || ''), title: room.title || '',
-        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover), ownerSec: o.sec_uid || null, ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 1,
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     };
@@ -132,7 +132,7 @@ enum DYFollowLiveScripts {
     const toRoom = (room, roomRid) => {
       const su = room.stream_url || {}, o = room.owner || {};
       return { id: String(room.id_str || room.id || ''), webRid: String(roomRid || o.web_rid || ''), title: room.title || '',
-        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover), ownerSec: o.sec_uid || null, ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 0,
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     };
@@ -152,6 +152,10 @@ struct DYFollowMetadata: Equatable {
     var cover: String?
     var viewers: String
     var portrait: Bool
+    /// 主播 sec_uid / uid / 关注状态（直播间关注、进主播主页用）
+    var ownerSec: String? = nil
+    var ownerUID: String? = nil
+    var ownerFollow: Int? = nil
 
     func fillingEmpty(from fallback: DYFollowMetadata) -> DYFollowMetadata {
         DYFollowMetadata(
@@ -162,7 +166,11 @@ struct DYFollowMetadata: Equatable {
             avatar: avatar ?? fallback.avatar,
             cover: cover ?? fallback.cover,
             viewers: viewers.isEmpty ? fallback.viewers : viewers,
-            portrait: portrait)
+            portrait: portrait,
+            ownerSec: ownerSec?.isEmpty == false ? ownerSec : fallback.ownerSec,
+            ownerUID: ownerUID?.isEmpty == false ? ownerUID : fallback.ownerUID,
+            // 任一来源说已关注就算已关注（关注列表进来的房间，进房接口可能不带 follow_info）
+            ownerFollow: max(ownerFollow ?? 0, fallback.ownerFollow ?? 0) > 0 ? max(ownerFollow ?? 0, fallback.ownerFollow ?? 0) : (ownerFollow ?? fallback.ownerFollow))
     }
 }
 

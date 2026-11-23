@@ -14,7 +14,8 @@ enum DYFeedExtras {
 extension DYAweme.FeedLive {
     var room: DYLiveRoom {
         DYLiveRoom(id: roomID, webRid: webRid, title: title, owner: owner, avatar: avatar, cover: cover,
-                   viewers: viewers, hls: hls, flv: flv, portrait: portrait, def: def)
+                   viewers: viewers, hls: hls, flv: flv, portrait: portrait, def: def,
+                   ownerSec: ownerSec, ownerUID: ownerUID, ownerFollow: ownerFollow)
     }
 }
 
