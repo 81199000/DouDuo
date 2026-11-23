@@ -71,6 +71,9 @@ struct DYAweme: Identifiable, Codable, Equatable, Sendable {
         var flv: [String: String] = [:]
         var portrait: Bool = true
         var def: String? = nil
+        var ownerSec: String? = nil
+        var ownerUID: String? = nil
+        var ownerFollow: Int? = nil
     }
     /// 视频挂的商品（小黄车）。来自 anchor_info.extra；没有商品为 nil。可选以兼容旧会话。
     var product: Product? = nil
@@ -176,6 +179,17 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     var flv: [String: String]? = nil
     let portrait: Bool
     var def: String? = nil
+    /// 主播 sec_uid / uid / 关注状态：直播间顶部「关注」和点主播进主页用（工单 B32）。旧数据没有就是 nil。
+    var ownerSec: String? = nil
+    var ownerUID: String? = nil
+    var ownerFollow: Int? = nil
+
+    /// 直播间主播当作作者用：打开原生主页、关注都走视频作者同一套。没有 sec_uid 时返回 nil。
+    var ownerAuthor: DYAweme.Author? {
+        guard let sec = ownerSec, !sec.isEmpty else { return nil }
+        return DYAweme.Author(name: owner, avatar: avatar, secUid: sec,
+                              uid: ownerUID?.isEmpty == false ? ownerUID : nil, follow: ownerFollow)
+    }
 
     var bestHLS: URL? {
         for k in ["HD1", "FULL_HD1", "SD2", "SD1"] { if let s = hls[k], let u = URL(string: s) { return u } }
@@ -186,18 +200,21 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
 
 extension DYLiveRoom {
     var followMetadata: DYFollowMetadata {
-        DYFollowMetadata(id: id, webRid: webRid, title: title, owner: owner, avatar: avatar, cover: cover, viewers: viewers, portrait: portrait)
+        DYFollowMetadata(id: id, webRid: webRid, title: title, owner: owner, avatar: avatar, cover: cover, viewers: viewers, portrait: portrait,
+                         ownerSec: ownerSec, ownerUID: ownerUID, ownerFollow: ownerFollow)
     }
 
     init(_ metadata: DYFollowMetadata) {
         self.init(id: metadata.id, webRid: metadata.webRid, title: metadata.title, owner: metadata.owner,
-                  avatar: metadata.avatar, cover: metadata.cover, viewers: metadata.viewers, hls: [:], portrait: metadata.portrait)
+                  avatar: metadata.avatar, cover: metadata.cover, viewers: metadata.viewers, hls: [:], portrait: metadata.portrait,
+                  ownerSec: metadata.ownerSec, ownerUID: metadata.ownerUID, ownerFollow: metadata.ownerFollow)
     }
 
     init(playback resolved: DYLiveRoom, fallback: DYLiveRoom) {
         let meta = resolved.followMetadata.fillingEmpty(from: fallback.followMetadata)
         self.init(id: meta.id, webRid: meta.webRid, title: meta.title, owner: meta.owner, avatar: meta.avatar,
-                  cover: meta.cover, viewers: meta.viewers, hls: resolved.hls, flv: resolved.flv, portrait: meta.portrait, def: resolved.def)
+                  cover: meta.cover, viewers: meta.viewers, hls: resolved.hls, flv: resolved.flv, portrait: meta.portrait, def: resolved.def,
+                  ownerSec: meta.ownerSec, ownerUID: meta.ownerUID, ownerFollow: meta.ownerFollow)
     }
 }
 
@@ -925,7 +942,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const items = arr.filter(it => it && it.room && it.room.stream_url).map(it => {
       const room = it.room, su = room.stream_url || {}, o = room.owner || {};
       return { id: String(room.id_str || room.id), webRid: String(it.web_rid || o.web_rid || ''), title: room.title || '',
-        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover), ownerSec: o.sec_uid || null, ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 0,
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || (room.user_count ? String(room.user_count) : ''),
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     }).filter(x => Object.keys(x.hls).length > 0 || Object.keys(x.flv).length > 0);
@@ -946,7 +963,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     const items = d.data.filter(it => it && it.type === 1 && it.data && it.data.stream_url).map(it => {
       const room = it.data, su = room.stream_url || {}, o = room.owner || {};
       return { id: String(room.id_str || room.id), webRid: String(it.web_rid || o.web_rid || ''), title: room.title || '',
-        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover),
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover), ownerSec: o.sec_uid || null, ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 0,
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || '',
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     }).filter(x => Object.keys(x.hls).length > 0 || Object.keys(x.flv).length > 0);
@@ -1183,7 +1200,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         author: { name: o.nickname || '', avatar: first(o.avatar_thumb), secUid: o.sec_uid || null, uid: o.id_str || (o.id ? String(o.id) : null), follow: (o.follow_info && o.follow_info.follow_status) || 0 },
         stats: { digg: 0, comment: 0, collect: 0, share: 0 }, music: '', userDigged: 0, isCollect: 0, awemeType: 101,
         live: { roomID: String(rd.id_str || rd.id), webRid: String(o.web_rid || rd.web_rid || (a.cell_room && a.cell_room.web_rid) || ''), title: liveTitle,
-          owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null } };
+          owner: o.nickname || '', avatar: first(o.avatar_thumb), cover, viewers, hls, flv, portrait, def: su.default_resolution || null, ownerSec: o.sec_uid || null, ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 0 } };
     };
     // 广告不再丢：带 isAd 标记交给原生侧，设置里关了「推荐里显示广告」再过滤（以前 a.is_ads / raw_ad_data 直接丢）
     const items = raw.map(a => !a ? null : (a.cell_room ? mapLiveCard(a) : (a.video ? Object.assign(mapA(a), (a.is_ads || a.raw_ad_data) ? { isAd: true } : {}) : null))).filter(Boolean);
