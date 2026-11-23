@@ -57,7 +57,7 @@ private extension Double {
             check(filter.add(input) == .invalid, "invalid input rejected: " + input)
         }
         check(filter.blocks(description: "随拍 #TRAVEL"), "case insensitive block")
-        check(!filter.blocks(description: "我喜欢 travel") && !filter.blocks(description: "#traveler"), "not a prose/substring filter")
+        check(filter.blocks(description: "我喜欢 TRAVEL vlog") && filter.blocks(description: "#traveler") && !filter.blocks(description: "去旅游"), "keyword matches caption text and longer tags")
         let restored = DYHashtagFilter(rawValue: filter.rawValue)
         check(restored.tags == filter.tags && restored.blocks(description: "#Travel"), "JSON storage round trip")
         check(DYHashtagFilter(rawValue: "bad json").tags.isEmpty, "damaged storage safely ignored")
@@ -72,15 +72,17 @@ private extension Double {
                 isCollect: nil, hashtagNames: tags)
         }
         let cat = item("cat", "#猫")
-        let kitten = item("kitten", "#猫咪")
-        let prose = item("prose", "一只猫")
+        let kitten = item("kitten", "#狗狗 散步")
+        let prose = item("prose", "一只狗")
+        let longer = item("longer", "#猫咪推荐 好可爱")
+        let sentence = item("sentence", "今天遇到一只猫")
         let metadata = item("metadata", "今日记录", tags: ["猫"])
         let defaults = UserDefaults(suiteName: "DouDuoHashtagTests." + UUID().uuidString)!
         defer { defaults.removeObject(forKey: DYHashtagFilter.storageKey) }
         filter = DYHashtagFilter(); _ = filter.add("猫")
         defaults.set(filter.rawValue, forKey: DYHashtagFilter.storageKey)
         let model = DYFeedModel(defaults: defaults)
-        check(model.allowedRecommendations([cat, kitten, prose, metadata]).map(\.id) == ["kitten", "prose"], "caption and platform metadata, whole tags only")
+        check(model.allowedRecommendations([cat, kitten, prose, metadata, longer, sentence]).map(\.id) == ["kitten", "prose"], "keyword blocks exact tag, longer tag, caption text and platform metadata")
         model.seedPool([cat, kitten, metadata]); model.fill(6)
         check(model.items.map(\.id) == ["kitten"], "cached seed filtered")
         model.items = [prose, cat, kitten, metadata]; model.pool = [cat, metadata]

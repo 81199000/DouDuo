@@ -18,7 +18,7 @@ struct DYHashtagFilterScreen: View {
             Form {
                 Section {
                     HStack(spacing: 12) {
-                        TextField("例如：美食或 #美食", text: $input)
+                        TextField("例如：美食、vlog、旅行", text: $input)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .submitLabel(.done)
@@ -31,22 +31,22 @@ struct DYHashtagFilterScreen: View {
                             .frame(minWidth: 44, minHeight: 44)
                             .fixedSize()
                             .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .accessibilityLabel("添加屏蔽标签")
+                            .accessibilityLabel("添加屏蔽关键词")
                             .accessibilityIdentifier("douyin.hashtags.add")
                     }
                 } header: {
-                    Text("添加标签")
+                    Text("添加关键词")
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
                         if let feedback {
                             Text(feedback)
                                 .accessibilityIdentifier("douyin.hashtags.feedback")
                         }
-                        Text("每次输入一个完整标签，可省略 #。只过滤推荐页，忽略英文字母大小写；搜索、关注和作者作品不受影响。")
+                        Text("标题或话题标签里只要含有这个词就屏蔽，例如屏蔽「美食」，#美食推荐、美食探店 也会被屏蔽。每次输入一个词，可省略 #；忽略英文大小写。只过滤推荐页，搜索、关注和作者作品不受影响。")
                     }
                 }
                 if !currentTags.isEmpty {
-                    Section("当前视频的标签") {
+                    Section("当前视频的标签（点一下加为关键词）") {
                         ScrollView(.horizontal) {
                             HStack(spacing: 8) {
                                 ForEach(currentTags, id: \.self) { tag in
@@ -71,7 +71,7 @@ struct DYHashtagFilterScreen: View {
                 }
                 Section {
                     if filter.tags.isEmpty {
-                        Text("尚未屏蔽任何标签").foregroundStyle(.secondary)
+                        Text("尚未屏蔽任何关键词").foregroundStyle(.secondary)
                     } else {
                         FlowLayout(spacing: 8) {
                             ForEach(filter.tags, id: \.self) { tag in
@@ -81,20 +81,20 @@ struct DYHashtagFilterScreen: View {
                                     rawValue = updated.rawValue
                                     feedback = nil
                                 } label: {
-                                    tagChip(tag, symbol: "xmark.circle.fill")
+                                    tagChip(tag, symbol: "xmark.circle.fill", hash: false)
                                 }
                                 .buttonStyle(.plain)
-                                .accessibilityLabel("取消屏蔽 #" + tag)
+                                .accessibilityLabel("取消屏蔽 " + tag)
                             }
                         }
                     }
                 } header: {
                     Text("已屏蔽（\(filter.tags.count)）")
                 } footer: {
-                    Text("添加后立即生效，并保存在本机。点按已屏蔽标签可取消屏蔽，相关视频可再次出现在新推荐中。")
+                    Text("添加后立即生效，并保存在本机。点按已屏蔽的关键词可取消屏蔽，相关视频可再次出现在新推荐中。")
                 }
             }
-            .navigationTitle("按标签过滤视频")
+            .navigationTitle("按关键词屏蔽视频")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if !embedded {
@@ -106,9 +106,9 @@ struct DYHashtagFilterScreen: View {
             }
     }
 
-    private func tagChip(_ tag: String, symbol: String, selected: Bool = false) -> some View {
+    private func tagChip(_ tag: String, symbol: String, selected: Bool = false, hash: Bool = true) -> some View {
         HStack(spacing: 8) {
-            Text("#" + tag)
+            Text(hash ? "#" + tag : tag)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(selected ? .secondary : .primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -129,11 +129,11 @@ struct DYHashtagFilterScreen: View {
         case .added:
             rawValue = updated.rawValue
             input = ""
-            feedback = "已添加，推荐页将过滤含此标签的视频"
+            feedback = "已添加，推荐页将屏蔽标题或标签含此词的视频"
         case .duplicate:
-            feedback = "该标签已在屏蔽列表中"
+            feedback = "这个词已在屏蔽列表中"
         case .invalid:
-            feedback = "请输入一个有效标签，不要只输入 # 或一次输入多个标签"
+            feedback = "请输入一个有效的词，不要只输入 # 或一次输入多个词"
         }
     }
 }

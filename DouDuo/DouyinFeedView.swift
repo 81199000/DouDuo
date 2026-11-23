@@ -1668,7 +1668,7 @@ final class DYFeedModel: ObservableObject {
                 let seen = Set(items.map(\.id))
                 items += allowedRecommendations(Self.hashtagFixtures).filter { !seen.contains($0.id) }
             }
-            error = items.isEmpty ? "暂时没有符合标签过滤条件的推荐" : nil
+            error = items.isEmpty ? "暂时没有符合屏蔽关键词条件的推荐" : nil
             return
         }
         #endif
@@ -1700,7 +1700,7 @@ final class DYFeedModel: ObservableObject {
             trimPool()
             DYLiveModel.log("DDMIX added=\(added) pool=\(pool.count) ratio=\(targetRatio.map { String(format: "%.2f", $0) } ?? "off") landscapeOnly=\(landscapeOnlyActive) wide=\(screenWide) recent=\(items.suffix(20).filter(Self.isPortrait).count)/\(min(20, items.count))")
             error = (items.isEmpty && added == 0) ? (DYHashtagFilter(rawValue: defaults.string(forKey: DYHashtagFilter.storageKey) ?? "").tags.isEmpty
-                ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合标签过滤条件的推荐，可调整屏蔽标签或稍后重试") : nil
+                ? "暂时没刷到推荐，登录后或稍后再试" : "暂时没有符合屏蔽关键词条件的推荐，可调整屏蔽关键词或稍后重试") : nil
         } catch {
             if !offlinePlayback, epoch == offlineEpoch, items.isEmpty { self.error = error.localizedDescription }
         }

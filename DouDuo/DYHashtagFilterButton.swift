@@ -6,7 +6,7 @@ struct DYHashtagFilterButton: View {
 
     var body: some View {
         if let present {
-            Button("按标签过滤视频", systemImage: "number") { present(tags) }
+            Button("按关键词屏蔽视频", systemImage: "eye.slash") { present(tags) }
                 .accessibilityIdentifier("douyin.hashtags.manage")
         }
     }
