@@ -44,7 +44,8 @@ struct DYSettingsScreen: View {
     @State private var showNotes = false
     @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
 
-    private static let cacheChoices: [(Int, String)] = [(5, "5 条"), (10, "10 条"), (20, "20 条"), (50, "50 条"), (100, "100 条"), (0, "关闭")]
+    /// 老板 11-24：只留 1 / 5 / 10 三档（提前备的播放器上限就是 10，再多没意义）
+    private static let cacheChoices: [(Int, String)] = [(1, "1 条"), (5, "5 条"), (10, "10 条")]
 
     var body: some View {
         NavigationStack {
@@ -158,6 +159,8 @@ struct DYSettingsScreen: View {
                         ForEach(Self.cacheChoices, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     .accessibilityIdentifier("settings.cache.count")
+                    // 旧版存的 0 / 20 / 50 / 100 不在新选项里（选择器会显示空白）：打开设置时归到最近一档
+                    .onAppear { if cacheCount != DYVideoCache.limit { cacheCount = DYVideoCache.limit } }
                     NavigationLink {
                         DYOfflineDownloadScreen(candidateSource: offlineCandidateSource, interactionBridge: offlineInteractionBridge)
                     } label: {

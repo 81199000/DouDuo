@@ -63,9 +63,9 @@ actor DYVideoCache {
         return (files ?? []).filter { $0.pathExtension == "head" }
     }
 
-    nonisolated static var limit: Int {
-        (UserDefaults.standard.object(forKey: countKey) as? Int) ?? defaultCount
-    }
+    /// 设置只有 1 / 5 / 10 三档（老板 11-24）。旧版存的值就近归档：0（关闭）→ 1，6–9 → 10 以下取 5，20/50/100 → 10
+    nonisolated static var limit: Int { normalized((UserDefaults.standard.object(forKey: countKey) as? Int) ?? defaultCount) }
+    nonisolated static func normalized(_ v: Int) -> Int { v <= 1 ? 1 : (v < 10 ? 5 : 10) }
 
     /// 已经整条下完的本地文件
     nonisolated static func localURL(_ id: String) -> URL? {
