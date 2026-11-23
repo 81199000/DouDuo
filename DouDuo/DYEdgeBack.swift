@@ -37,34 +37,9 @@ struct DYEdgeBackStrip: ViewModifier {
     }
 }
 
-/// 整页右滑返回：页面任意位置横向右滑都返回（同 iOS 26 系统整页返回）。
-/// 用 simultaneousGesture 挂在整页上，只认横向明显大于纵向的右滑，不抢列表的上下滚动。
-/// 给「左滑进来」的页面用：推荐页任意位置左滑进作者主页，返回也不该只认最左 22pt（工单 B30）。
-struct DYSwipeBackGesture: ViewModifier {
-    var enabled = true
-    let action: () -> Void
-
-    func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            DragGesture(minimumDistance: 16, coordinateSpace: .global)
-                .onEnded { v in
-                    if DYEdgeBackStrip.shouldGoBack(translation: v.translation, predicted: v.predictedEndTranslation) {
-                        action()
-                    }
-                },
-            including: enabled ? .all : .none
-        )
-    }
-}
-
 extension View {
     /// 左缘右滑返回上一层（`enabled = false` 时不挂感应带，不占左缘）。
     func dyEdgeBack(enabled: Bool = true, _ action: @escaping () -> Void) -> some View {
         modifier(DYEdgeBackStrip(enabled: enabled, action: action))
-    }
-
-    /// 整页右滑返回（`enabled = false` 时不识别）。不要和 dyEdgeBack 叠在同一页，否则一次右滑会返回两次。
-    func dySwipeBack(enabled: Bool = true, _ action: @escaping () -> Void) -> some View {
-        modifier(DYSwipeBackGesture(enabled: enabled, action: action))
     }
 }

@@ -3514,13 +3514,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                 .onChange(of: authorWorkOpen) { _, open in
                     if !open { supportsSidePanel = measuredSidePanel }
                 }
-                // 老板 11-23：经典模式左滑进主页、右滑回来后菜单键没了。主页关掉时如果「主页里点开的作品」标记没收回
-                // （右滑关主页和作品全屏层的关闭撞在一起，onDismiss 没走到），authorWorkOpen 一直为真 →
-                // 推荐页一直当成「被盖住」，当前视频不发菜单按钮。主页一关就把它收回。
-                .onChange(of: authorTarget?.id) { _, id in
-                    DYLiveModel.log("DDAUTHORPANE \(id == nil ? "close" : "open") workOpen=\(authorWorkOpen) side=\(supportsSidePanel)")
-                    if id == nil, authorWorkOpen { authorWorkOpen = false }
-                }
                 .onGeometryChange(for: Bool.self) { proxy in
                     DYDuoMetrics.isDuoHardware && !DYDuoMetrics.foldIsActive(proxy) && proxy.size.width > proxy.size.height
                 } action: { duoLandscape = $0 }
