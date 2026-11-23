@@ -888,9 +888,11 @@ struct DYMessagesScreen: View {
             } else {
             DYAdaptiveActionRail { systemEdge in
                 GeometryReader { safe in
-                    let edge = HorizontalEdge.trailing
-                    // 系统竖栏也在右边时，栏居中到那一列；系统竖栏在左边（横屏）时右边没有系统列，离边 12
-                    let column = systemEdge == .trailing ? safe.safeAreaInsets.trailing : 0
+                    // 全屏时一律放右边（老板定）。分屏且系统竖栏在左（DouDuo 在左半屏）时跟视频页一样进左边那一列，
+                    // 否则左边那一列空着成黑边、侧栏挤在中间（粉丝反馈 11-23，老板截图确认）
+                    let edge: HorizontalEdge = systemEdge == .leading && DYWindowSplit.isSplit ? .leading : .trailing
+                    // 系统竖栏和侧栏同一边时，栏居中到那一列；不同边时离边 12
+                    let column = systemEdge == edge ? (edge == .leading ? safe.safeAreaInsets.leading : safe.safeAreaInsets.trailing) : 0
                     // 跟视频页同一公式：有系统竖栏时栏居中在那一列（+光学微调）；没有时离边 12
                     let outer = column > 0 ? max(0, (column - Self.railWidth) / 2 + theme.media.expandedRailOpticalInset) : 12
                     // 内容区右侧要让出：栏宽 + 栏外留白 − 系统竖栏本身（那一列内容区本来就不占）
@@ -1072,7 +1074,7 @@ struct DYMessagesScreen: View {
         // 跟视频页右侧栏同一套避让：状态栏（时间/信号环）显示时是系统遮挡区，
         // 聊天页多一颗「更多」栏变高，返回键会顶进去被盖住。只量栏本身（不含 Spacer），
         // 被挡住就整列往下让，最多让进底部 92pt 留白；状态栏隐藏时不动。
-        .modifier(DYRailReservedNudge(railEdge: .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
+        .modifier(DYRailReservedNudge(railEdge: DYWindowSplit.isSplit ? .leading : .trailing, verticalSpace: 0...92, disabled: keyboardFrame != nil))
         // 底部位置跟视频页一致：离底 92pt。
         // 键盘弹出时底部安全区（home 条那一段）消失，贴底排的栏会被顶上去一截 —— 补回来，栏就不动。
         .padding(.bottom, keyboardFrame == nil ? 92 : 92 - keyboardBottomInset)
@@ -3218,7 +3220,8 @@ struct DYForwardScreen: View {
                              actions: actions,
                              onContact: selectRecipient,
                              onAction: perform, onClose: { dismiss() },
-                             selectedID: selected?.id, composer: shareComposer)
+                             selectedID: selected?.id, composer: shareComposer,
+                             onMore: model.contacts.isEmpty ? nil : { groupsOnly = false; query = ""; showContacts = true })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background {
                 // Only the system sheet draws glass. Keep the signing/sending
@@ -3241,7 +3244,8 @@ struct DYForwardScreen: View {
                                      status: accountPrepared ? (model.sendIssue ?? (selected != nil && !model.sending ? "" : model.message)) : "正在恢复朋友缓存…", actions: accountPrepared ? actions : [],
                                      onContact: selectRecipient,
                                      onAction: perform, onClose: { dismiss() },
-                                     selectedID: selected?.id, composer: shareComposer)
+                                     selectedID: selected?.id, composer: shareComposer,
+                                     onMore: model.contacts.isEmpty ? nil : { groupsOnly = false; query = ""; showContacts = true })
                     .frame(width: max(0, min(560, geo.size.width - 32)))
                 // 挂载真实官方分享组件，保留React事件与鉴权，但不让网页进入用户界面或无障碍树。
                 if onlineActionsAllowed && accountPrepared && !model.layoutFixture {
@@ -3266,20 +3270,45 @@ struct DYForwardScreen: View {
         }
         .sheet(isPresented: $showContacts) {
             NavigationStack {
-                List(visibleContacts) { contact in
-                    Button {
-                        showContacts = false
-                        selectRecipient(contact)
-                    } label: {
-                        HStack {
+                List {
+                    // 官方同款：搜索框下先给「我的群聊」入口（全部朋友视图、没在搜索时）
+                    if !groupsOnly, query.isEmpty, model.contacts.contains(where: { $0.kind == 2 }) {
+                        Button { groupsOnly = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.2.fill").font(.body)
+                                    .frame(width: 44, height: 44)
+                                    .background(Color(uiColor: .tertiarySystemFill), in: Circle())
+                                Text("我的群聊").foregroundStyle(.themeTextPrimary)
+                                Spacer()
+                                Text("\(model.contacts.filter { $0.kind == 2 }.count)").foregroundStyle(.themeTextSecondary)
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.themeTextSecondary)
+                            }
+                        }
+                        .accessibilityIdentifier("douyin.forward.groups")
+                    }
+                    ForEach(visibleContacts) { contact in
+                        HStack(spacing: 12) {
                             CachedAsyncImage(url: contact.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
                                 placeholder: { Image(systemName: contact.kind == 2 ? "person.2.circle" : "person.circle") }
                                 .frame(width: 44, height: 44).clipShape(Circle())
-                            Text(contact.name).foregroundStyle(.themeTextPrimary)
+                            Text(contact.name).foregroundStyle(.themeTextPrimary).lineLimit(1)
+                            Spacer(minLength: 8)
+                            // 点「发送」= 选中这个人回到分享面板（面板里可捎句话再发，走原来那套确认/防重复）
+                            Button("发送") {
+                                showContacts = false
+                                selectRecipient(contact)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(theme.status.danger.color(for: scheme))
+                            .accessibilityIdentifier("douyin.forward.search.send.\(contact.id)")
                         }
                     }
+                    if visibleContacts.isEmpty, !query.isEmpty {
+                        Text("已加载的朋友里没有「\(query)」").font(.footnote).foregroundStyle(.themeTextSecondary)
+                    }
                 }
-                .searchable(text: $query, prompt: "搜索已加载的朋友或群")
+                .listStyle(.plain)
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索")
                 .navigationTitle(groupsOnly ? "选择群聊" : "选择朋友")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showContacts = false } } }
             }
@@ -3999,5 +4028,16 @@ struct DYForwardMenu: View {
         web.pauseAllMediaPlayback { }
         web.evaluateJavaScript(pauseJS) { _, _ in }
         DYLiveModel.log("DDCHATMEDIA pause reason=\(reason)")
+    }
+}
+
+
+/// 当前窗口是否处于分屏（窗口比整块屏幕窄）。只用来决定信息/我的页侧栏放哪边。
+enum DYWindowSplit {
+    @MainActor static var isSplit: Bool {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first else { return false }
+        return window.bounds.width < scene.screen.bounds.width - 1
     }
 }
