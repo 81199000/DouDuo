@@ -133,14 +133,14 @@ final class DYFeedLiveWarm {
     /// 预热接过来的那一路：先静音，0.6 秒后再停播回收
     static func disposeLater(_ h: Handle) {
         h.controller.onError = nil
-        h.controller.mediaPlayer.audio?.volume = 0
+        silenceNow(h.controller)
         DispatchQueue.main.asyncAfter(deadline: .now() + stopDelay) { dispose(h) }
     }
 
     /// 页面自己连的那一路：先静音，0.6 秒后再停播；停完再留 10 秒才放（同 dispose 的说明，防主线程析构卡死）
     static func stopLater(_ c: VLCPlayerController) {
         c.onError = nil
-        c.mediaPlayer.audio?.volume = 0
+        silenceNow(c)
         let key = ObjectIdentifier(c)
         pendingStops[key]?.cancel()
         let work = DispatchWorkItem {
@@ -152,6 +152,14 @@ final class DYFeedLiveWarm {
         }
         pendingStops[key] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + stopDelay, execute: work)
+    }
+
+    /// 划走那一刻就没声：只把音量拉到 0 不够——VLC 已把后面一两秒按原音量排进输出（蓝牙还要再晚一截），
+    /// 会接着响完（老板 11-24：「划到下个视频不会直接结束直播的声音」）。静音会停掉并清空音频输出，立刻无声。
+    static func silenceNow(_ c: VLCPlayerController) {
+        c.mediaPlayer.audio?.volume = 0
+        c.mediaPlayer.audio?.isMuted = true
+        DYLiveModel.log("DDLIVEAUDIO leave-mute vol=\(c.mediaPlayer.audio?.volume ?? -9) mute=\(c.mediaPlayer.audio?.isMuted == true ? 1 : 0)")
     }
 
     /// 0.6 秒内又划回这间直播：取消还没执行的停播（否则刚重新开播就被停掉）

@@ -202,7 +202,10 @@ struct DYFeedLivePage: View {
         Task { @MainActor [weak c] in
             for _ in 0..<30 {
                 guard let c, !muted else { return }
-                if let a = c.mediaPlayer.audio, a.volume == 0 { a.volume = 100 }
+                if let a = c.mediaPlayer.audio {
+                    if a.isMuted { a.isMuted = false }   // 离开时静音过（DYFeedLiveWarm.silenceNow）
+                    if a.volume == 0 { a.volume = 100 }
+                }
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }

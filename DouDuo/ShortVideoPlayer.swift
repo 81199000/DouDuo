@@ -147,6 +147,8 @@ final class DDPlayback {
         }
         let keepSession = Self.bgPlay || retainers.contains { $0() }
         if !keepSession {
+            if Thread.isMainThread { MainActor.assumeIsolated { DDAudioKeepAlive.release() } }
+            else { DispatchQueue.main.sync { MainActor.assumeIsolated { DDAudioKeepAlive.release() } } }
             DDAudioSessionGuard.allowDeactivate {
                 try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             }

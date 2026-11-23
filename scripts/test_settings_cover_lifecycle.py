@@ -49,6 +49,7 @@ final class AVAudioSession {
     func setCategory(_ category: Category, mode: Mode, options: CategoryOptions = []) throws {}
 }
 enum DYLaunchMute { static var sessionOptions: AVAudioSession.CategoryOptions { [] } }
+@MainActor enum DDAudioKeepAlive { static func release() {}; static func start() {} }
 enum DDAudioSessionGuard { static func allowDeactivate(_ body: () -> Void) { body() } }
 @MainActor final class DDAudioEngineHub {
     static let shared = DDAudioEngineHub()

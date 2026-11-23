@@ -23,4 +23,11 @@ check("currentAudioTrackIndex = -1" not in page, "接过预热直播时不再关
 check("func fillHead(" in stream, "有只下开头的 fillHead")
 job = cache[cache.index("let heads = DYStream.enabled"):]
 check(job.index("fillHead") < job.index("for id in plan"), "整条预下前先下后面两条的开头")
+probe = (R / "DYSwipeProbe.swift").read_text()
+check("audio?.isMuted = true" in warm[warm.index("static func silenceNow"):], "离开直播立刻静音（清空已排好的音频）")
+check("silenceNow(h.controller)" in warm and "silenceNow(c)" in warm, "两条离开路径都立刻静音")
+check("a.isMuted = false" in page, "0.6 秒内划回来会取消静音")
+check("enum DDAudioKeepAlive" in probe and "AVAudioSourceNode" in probe, "有静音保活（参照 GuoDuo）")
+check("DDAudioKeepAlive.start()" in probe[probe.index("static func ensureActive"):], "起播激活会话时拉起保活")
+check("DDAudioKeepAlive.release()" in (R / "ShortVideoPlayer.swift").read_text(), "交还音频会话时停保活")
 sys.exit(1 if fails else 0)

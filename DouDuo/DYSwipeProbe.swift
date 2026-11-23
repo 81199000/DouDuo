@@ -68,6 +68,70 @@ enum DYSwipeProbe {
 }
 
 import AVFoundation
+import UIKit
+
+/// 静音保活（照搬 GuoDuo 540ee7b）：前台时常开一路全零音频，音频输出链路一直不断。
+/// GuoDuo 真机（蓝牙耳机）：每换一集 AVPlayer 都要重新拉起蓝牙音频链路，画面等声音约 1.4 秒；挂上后切集 1.7 → 0.5 秒。
+/// DouDuo 老板 11-24：蓝牙下进直播一两秒才有声、离开直播声音拖尾——直播（VLC）和视频（AVPlayer）来回切，
+/// 每次都是另一个播放器重新起音频输出，链路空下来就要重连。全零样本不出声；进后台一律停。
+@MainActor enum DDAudioKeepAlive {
+    private static var engine: AVAudioEngine?
+    private static var observers: [NSObjectProtocol] = []
+    private static var wanted = false
+    private static let lifecycle: [NSObjectProtocol] = {
+        let nc = NotificationCenter.default
+        return [
+            nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { stop() }
+            },
+            nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { if wanted { start() } }
+            },
+        ]
+    }()
+
+    static func start() {
+        _ = lifecycle
+        wanted = true
+        guard UIApplication.shared.applicationState != .background else { return }
+        if let engine { if !engine.isRunning { try? engine.start() }; return }
+        let e = AVAudioEngine()
+        let fmt = e.outputNode.inputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0 else { return }
+        let src = AVAudioSourceNode(format: fmt) { silence, _, _, abl in
+            for b in UnsafeMutableAudioBufferListPointer(abl) { if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) } }
+            silence.pointee = true
+            return noErr
+        }
+        e.attach(src)
+        e.connect(src, to: e.mainMixerNode, format: fmt)
+        do { try e.start() } catch { DYLiveModel.log("DDKEEPALIVE start-fail \(error.localizedDescription)"); return }
+        engine = e
+        DYLiveModel.log("DDKEEPALIVE on rate=\(Int(fmt.sampleRate)) ch=\(fmt.channelCount) 输出=\(DDAudioSessionGate.routeName)")
+        let nc = NotificationCenter.default
+        // 换耳机 / 来电打断后引擎会停：重新拉起（格式变化直接重建）
+        observers = [
+            nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { _ in
+                MainActor.assumeIsolated { stop(); start() }
+            },
+            nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
+                let ended = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
+                MainActor.assumeIsolated { if ended, let engine, !engine.isRunning { try? engine.start() } }
+            },
+        ]
+    }
+
+    /// 交还音频会话时：停掉，且回前台不自动拉起（等下一次起播再开）
+    static func release() { wanted = false; stop() }
+
+    static func stop() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        engine?.stop()
+        engine = nil
+    }
+}
+
 /// 音频会话只激活一次：每次滑动都同步调 setCategory/setActive(true) 会在主线程阻塞几到几十毫秒
 @MainActor
 enum DDAudioSessionGate {
@@ -78,6 +142,7 @@ enum DDAudioSessionGate {
         try? s.setCategory(.playback, options: DYLaunchMute.sessionOptions)
         try? s.setActive(true)
         active = true
+        DDAudioKeepAlive.start()
     }
     /// 不看缓存标记，直接再激活一次（便宜）。VLC 停播时会把音频会话关掉（setActive:NO），
     /// 这里的 active 标记却还是 true → 下一条短视频 play 后一直停着（2026-11-20 真机：
