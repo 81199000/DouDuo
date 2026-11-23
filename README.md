@@ -8,6 +8,13 @@
 
 > ⭐ **点个 Star，再关注 [@81199000](https://github.com/81199000)，避免走失。** 官网 **[oneduo.app](https://oneduo.app)** 是长期固定入口，以后仓库再搬家也能从官网找到。
 
+## 同系列项目
+
+- **[DouDuo](https://github.com/81199000/DouDuo)**（本项目）：第三方抖音客户端，原生 SwiftUI，适配折叠屏内屏 / iPad，推荐、评论、私信、直播都能用。
+- **[GuoDuo](https://github.com/81199000/GuoDuo)**：红果短剧第三方客户端，原生播放，适配折叠屏内屏 / iPad，支持弹幕和选集。
+- **[一键签 OneDuo](https://github.com/81199000/OneDuo)**：Windows / Mac 装机工具，用自己的 Apple ID 免费把上面这些 App 签名装到手机，到期自动续签、有新版自动更新。
+- 官网 **[oneduo.app](https://oneduo.app)**：三个项目的统一下载入口。
+
 官方抖音 App 在折叠屏内屏、iPad 上不适配，网页版又总是跳 App，所以有了它。界面和播放全部原生（SwiftUI + AVPlayer，VLC 兜底）。
 
 ![DouDuo：默认 / 简洁 / 极简 / 经典 四种界面](docs/screenshots/hero.png)
