@@ -122,6 +122,10 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
     /// VLC 线程停在 input_Close / ca_Flush）。所以最后一次释放必须交给后台线程，跟 installFreshPlayer 换代时一样。
     deinit {
         guard let player = mediaPlayer else { return }
+        // ⚠️ activePlayer 里还有一份强引用：不先清掉，控制器的成员在 deinit 之后（主线程）才释放，
+        // 后台那份先放完时，最后一次释放就落在 activePlayer 上 → 主线程 libvlc_media_player_destroy 卡死
+        // （2026-11-23 14:01 Duo：退后台时直播预热被丢弃，10 秒后控制器析构，主线程卡 20 秒被系统杀）。
+        activePlayer.suspendAcceptance()
         player.delegate = nil
         player.drawable = nil
         let release = VLCPlayerRelease()

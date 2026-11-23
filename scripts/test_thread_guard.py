@@ -28,3 +28,9 @@ t = FEED[FEED.index("let threads = DYThreadGuard.sample()"):]
 t = t[:t.index("DYFeedLiveWarm.shared.release(reason: \"threads\")") + 60]
 assert "线程=%d vlc建=%d vlc释放中=%d" in t and "preloader.clear()" in t and "if DYThreadGuard.pressured" in t
 print("OK thread guard: shared libVLC, release census, warm gating, 30s sampling + valve")
+
+# 6) 控制器析构时先清掉 activePlayer 的强引用（11-23 14:01 卡死：最后一次释放落在主线程）
+d = VLC[VLC.index("    deinit {"):]
+d = d[:d.index("DispatchQueue.global(qos: .utility).async")]
+assert "activePlayer.suspendAcceptance()" in d and d.index("activePlayer.suspendAcceptance()") < d.index("release.player = player"), "deinit 必须先清 activePlayer"
+print("OK deinit drops activePlayer before background release")
