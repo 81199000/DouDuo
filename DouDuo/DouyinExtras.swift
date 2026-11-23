@@ -169,7 +169,14 @@ extension DouyinBridge {
         switch kind {
         case .post:
             let sec = try await selfSecUid()
-            return try await list(Self.postJS, ["sec": sec, "cursor": cursor])
+            // 私密作品在接口里被筛掉后，一页可能空了：接着往后拉（最多 5 页），免得列表以为到底了停在半路
+            var cur = cursor
+            for _ in 0..<5 {
+                let r = try await list(Self.postJS, ["sec": sec, "cursor": cur])
+                if !r.items.isEmpty || !r.hasMore || r.cursor == cur { return r }
+                cur = r.cursor
+            }
+            return try await list(Self.postJS, ["sec": sec, "cursor": cur])
         case .secret:
             _ = try await selfSecUid()   // 没登录先报未登录
             return try await list(Self.privateJS, ["cursor": cursor])
@@ -668,7 +675,10 @@ extension DouyinBridge {
     const d = parse(r.t) || {};
     // 自己的作品：origin_cover 是全黑占位图（2026-11-16 实测 360×721 全 0），改用 cover
     (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });
-    return pack(r, d, d.aweme_list, d.max_cursor, d.has_more);
+    // 私密作品单独在「私密作品」栏，这里不再混着显示（老板 11-23）。
+    // status.private_status：0 公开 / 1 私密 / 2 好友可见（网页版枚举）；好友可见仍留在「作品」
+    const list = (d.aweme_list || []).filter(a => !(a && a.status && Number(a.status.private_status) === 1));
+    return pack(r, d, list, d.max_cursor, d.has_more);
     """#
 
     /// 私密作品（网页版「私密作品」栏同一接口；只有自己能看）
