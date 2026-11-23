@@ -3181,7 +3181,6 @@ struct DYForwardScreen: View {
     @State private var showContacts = false
     @State private var groupsOnly = false
     @State private var query = ""
-    @FocusState private var searchFocused: Bool
     @State private var showLogin = false
     @State private var showOtherApps = false
     @State private var copiedLink = false
@@ -3276,11 +3275,10 @@ struct DYForwardScreen: View {
                 // 系统搜索栏在这里点了不出键盘（老板 11-23）。整条可点，点了直接给输入框焦点。
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.themeTextSecondary)
-                    TextField("搜索", text: $query)
-                        .focused($searchFocused)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.search)
+                    // UIKit 输入框：打开就自己要焦点弹键盘（SwiftUI TextField 在这层叠的弹窗里点了没反应，
+                    // 日志里一次焦点变化都没有——老板 11-23 两次反馈）
+                    DYForwardSearchField(text: $query, autoFocus: true)
+                        .frame(maxWidth: .infinity)
                         .accessibilityIdentifier("douyin.forward.search.field")
                     if !query.isEmpty {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.themeTextSecondary) }
@@ -3290,9 +3288,7 @@ struct DYForwardScreen: View {
                 .padding(.horizontal, 12).frame(height: 40)
                 .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(Rectangle())
-                .onTapGesture { searchFocused = true }
-                // 记一笔：万一还是不出键盘，日志能看出是焦点没给上还是被别处抢走
-                .onChange(of: searchFocused) { _, f in DYLiveModel.log("DDFWDSEARCH focused=\(f)") }
+                .onAppear { DYLiveModel.log("DDFWDSEARCH sheet-appear contacts=\(model.contacts.count)") }
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 List {
                     // 官方同款：搜索框下先给「我的群聊」入口（全部朋友视图、没在搜索时）
@@ -4064,5 +4060,52 @@ enum DYWindowSplit {
                 ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
               let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first else { return false }
         return window.bounds.width < scene.screen.bounds.width - 1
+    }
+}
+
+
+/// 分享「更多」里的搜索框：UIKit UITextField，出现后主动 becomeFirstResponder（弹键盘），点它也一定能编辑。
+/// 每一步都记日志（DDFWDSEARCH），万一还不出键盘能看出卡在哪。
+struct DYForwardSearchField: UIViewRepresentable {
+    @Binding var text: String
+    var autoFocus = false
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeUIView(context: Context) -> UITextField {
+        let f = UITextField()
+        f.placeholder = "搜索"
+        f.borderStyle = .none
+        f.clearButtonMode = .never
+        f.returnKeyType = .search
+        f.autocapitalizationType = .none
+        f.autocorrectionType = .no
+        f.font = .preferredFont(forTextStyle: .body)
+        f.delegate = context.coordinator
+        f.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        f.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        if autoFocus {
+            // 弹窗动画结束后再要焦点，过早要会被系统拒绝
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak f] in
+                guard let f else { return }
+                let ok = f.becomeFirstResponder()
+                DYLiveModel.log("DDFWDSEARCH auto-focus ok=\(ok) window=\(f.window != nil)")
+            }
+        }
+        return f
+    }
+
+    func updateUIView(_ f: UITextField, context: Context) {
+        if f.text != text { f.text = text }
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        @objc func changed(_ f: UITextField) { text.wrappedValue = f.text ?? "" }
+        func textFieldDidBeginEditing(_ f: UITextField) { DYLiveModel.log("DDFWDSEARCH begin-editing") }
+        func textFieldDidEndEditing(_ f: UITextField) { DYLiveModel.log("DDFWDSEARCH end-editing") }
+        func textFieldShouldReturn(_ f: UITextField) -> Bool { f.resignFirstResponder(); return true }
     }
 }
