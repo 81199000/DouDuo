@@ -6002,3 +6002,32 @@ extension DouDuoUITests {
         attach(app, "chat-keyboard-down")
     }
 }
+
+final class DYForwardSearchKeyboardTests: XCTestCase {
+    /// 老板 11-23：分享「更多」里的搜索框调不出键盘。合成联系人，不发任何消息。
+    func testMoreSearchShowsKeyboard() throws {
+        for mode in ["classic", "duoClassic"] {
+            let app = XCUIApplication()
+            app.launchEnvironment = ["DOUDUO_SHARE_LAYOUT": "1", "DOUDUO_FORWARD_LAYOUT_FIXTURE": "1",
+                                     "DOUDUO_MESSAGE_FIXTURE": "1", "DOUDUO_CHROME_MODE": mode]
+            app.launchArguments += ["-douyin_muted_v1", "YES", "-douyin_autoplay_v1", "NO"]
+            app.launch()
+            XCTAssertTrue(app.buttons["douyin.share"].waitForExistence(timeout: 10))
+            app.buttons["douyin.share"].tap()
+            let more = app.buttons["douyin.forward.more"]
+            XCTAssertTrue(more.waitForExistence(timeout: 10), "\(mode): 横排末尾要有「更多」")
+            more.tap()
+            let field = app.textFields["douyin.forward.search.field"]
+            XCTAssertTrue(field.waitForExistence(timeout: 5), "\(mode): 搜索框要出来")
+            sleep(2)
+            let shot1 = XCTAttachment(screenshot: app.screenshot()); shot1.name = "\(mode)-after-open"; shot1.lifetime = .keepAlways; add(shot1)
+            let kbAuto = app.keyboards.firstMatch.exists
+            if !kbAuto { field.tap(); sleep(2) }
+            let shot2 = XCTAttachment(screenshot: app.screenshot()); shot2.name = "\(mode)-after-tap"; shot2.lifetime = .keepAlways; add(shot2)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3), "\(mode): 键盘要弹出（auto=\(kbAuto)）")
+            app.typeText("青")
+            XCTAssertTrue(app.staticTexts["青禾"].waitForExistence(timeout: 3), "\(mode): 输入后能搜到")
+            app.terminate()
+        }
+    }
+}

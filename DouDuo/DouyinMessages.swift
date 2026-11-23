@@ -3328,7 +3328,6 @@ struct DYForwardScreen: View {
                     }
                 }
                 .listStyle(.plain)
-                .scrollDismissesKeyboard(.immediately)
                 }
                 .navigationTitle(groupsOnly ? "选择群聊" : "选择朋友")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showContacts = false } } }
@@ -4100,12 +4099,40 @@ struct DYForwardSearchField: UIViewRepresentable {
         if f.text != text { f.text = text }
     }
 
+    /// 页面关掉/点了「发送」：允许收键盘
+    static func dismantleUIView(_ f: UITextField, coordinator: Coordinator) {
+        coordinator.allowEnd = true
+        f.resignFirstResponder()
+    }
+
     final class Coordinator: NSObject, UITextFieldDelegate {
         var text: Binding<String>
         init(text: Binding<String>) { self.text = text }
         @objc func changed(_ f: UITextField) { text.wrappedValue = f.text ?? "" }
-        func textFieldDidBeginEditing(_ f: UITextField) { DYLiveModel.log("DDFWDSEARCH begin-editing") }
+        /// 只有用户自己收键盘（点键盘上的搜索/回车、点「发送」、关页）才放焦点。
+        /// 真机日志：焦点给上后 1 秒内就被别处抢走、反复如此（后台还挂着官方分享网页、推荐流在刷），键盘根本出不来。
+        var allowEnd = false
+        func textFieldDidBeginEditing(_ f: UITextField) { allowEnd = false; DYLiveModel.log("DDFWDSEARCH begin-editing") }
+        func textFieldShouldEndEditing(_ f: UITextField) -> Bool {
+            if allowEnd || f.window == nil { return true }
+            // 被别处抢焦点：拒绝，并记下是谁想抢
+            DispatchQueue.main.async {
+                let thief = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                    .flatMap(\.windows).compactMap { $0.dyFirstResponderName }.first ?? "-"
+                DYLiveModel.log("DDFWDSEARCH refused-steal by=\(thief)")
+            }
+            return false
+        }
         func textFieldDidEndEditing(_ f: UITextField) { DYLiveModel.log("DDFWDSEARCH end-editing") }
-        func textFieldShouldReturn(_ f: UITextField) -> Bool { f.resignFirstResponder(); return true }
+        func textFieldShouldReturn(_ f: UITextField) -> Bool { allowEnd = true; f.resignFirstResponder(); return true }
+    }
+}
+
+private extension UIView {
+    /// 当前第一响应者的类名（排查谁抢了焦点）
+    var dyFirstResponderName: String? {
+        if isFirstResponder { return String(describing: type(of: self)) }
+        for sub in subviews { if let n = sub.dyFirstResponderName { return n } }
+        return nil
     }
 }
