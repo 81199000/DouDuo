@@ -18,7 +18,8 @@ check("player.stop()" not in stop and "DYFeedLiveWarm.dispose(w)" not in stop, "
 check(re.search(r"static let stopDelay: TimeInterval = 0\.[4-9]", warm) is not None, "停播延后 0.4–0.9 秒")
 check("audio?.volume = 0" in warm[warm.index("static func stopLater"):], "延后停播前先把音量拉到 0")
 check("cancelPendingStop(player)" in page, "0.6 秒内划回来会取消停播")
-check("currentAudioTrackIndex = -1" in page and "DDLIVEAUDIO flush" in page, "接过预热直播时丢掉无声缓冲")
+# 11-24 真机：关音轨再选回＝音频解码器重建，静音 1.2 秒还丢 14 块，比不动更糟 → 不许再这么做
+check("currentAudioTrackIndex = -1" not in page, "接过预热直播时不再关开音轨")
 check("func fillHead(" in stream, "有只下开头的 fillHead")
 job = cache[cache.index("let heads = DYStream.enabled"):]
 check(job.index("fillHead") < job.index("for id in plan"), "整条预下前先下后面两条的开头")

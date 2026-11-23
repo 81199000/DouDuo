@@ -131,18 +131,6 @@ struct DYFeedLivePage: View {
             h.controller.outputMuted = muted
             if muted { h.controller.mediaPlayer.audio?.isMuted = true }
             h.controller.mediaPlayer.audio?.volume = muted ? 0 : 100
-            // 预热时音量 0，VLC 已经把后面一两秒的音频按 0 音量排进了输出缓冲；只把音量拉回 100，
-            // 要等这段无声的放完才听得到（老板 11-24：「进直播一两秒才有声音」）。关一下音轨再选回来＝丢掉这段，从现在起重新出声
-            let track = h.controller.mediaPlayer.currentAudioTrackIndex
-            if !muted, track >= 0 {
-                let c = h.controller
-                c.mediaPlayer.currentAudioTrackIndex = -1
-                Task { @MainActor in
-                    c.mediaPlayer.currentAudioTrackIndex = track
-                    c.mediaPlayer.audio?.volume = 100
-                    DYLiveModel.log("DDLIVEAUDIO flush room=\(live.roomID.suffix(6)) track=\(track) vol=\(c.mediaPlayer.audio?.volume ?? -9)")
-                }
-            }
             h.controller.onError = {
                 Task { @MainActor in
                     // 预热那一路断了：丢掉它，走现连
