@@ -4149,6 +4149,7 @@ struct DYUpstreamVideoPage: View {
         .preference(key: DYFeedInputActivePreference.self, value: isCurrent && dm.showInput)
         .preference(key: DYFeedComposerPreference.self, value: composerEntry)
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
+        .preference(key: DYTouchpadActionsKey.self, value: isCurrent && onBack == nil ? DYTouchpadActions(id: item.id, view: AnyView(actions(fg))) : nil)
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in
             if !c { dm.showInput = false }
@@ -4650,6 +4651,8 @@ struct DYClassicVideoPage: View {
         }
         .preference(key: DYActiveVideoActionsKey.self,
                     value: systemBars && isCurrent && !inlineNavigation ? toolbarActions(fg) : nil)
+        .preference(key: DYTouchpadActionsKey.self,
+                    value: isCurrent && !inlineNavigation ? DYTouchpadActions(id: item.id, view: AnyView(actions(fg).padding(.vertical, 8).ddMediaGlassCapsule())) : nil)
         .overlay(alignment: .bottom) {
             if dm.showInput { DYDanmakuBar(model: dm, focused: $danmakuFocused, onSend: sendDanmaku).padding(.bottom, max(insets.bottom, 0) + 4) }
         }

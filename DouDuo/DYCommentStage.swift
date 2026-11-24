@@ -87,6 +87,10 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                             .opacity(padActive ? 0 : 1)
                             .allowsHitTesting(!padActive)
                             .background(DYTouchSniffer { lastTouch = Date() })
+                    } else {
+                        // 刷到直播间：没有评论。⚠️ 这里不能空着——空 Group 上挂的 frame / overlay（触控板）整块不渲染，
+                        // 11-24 老板：「刷到直播间触控板就滑动不了下个视频」就是这个
+                        Color.black
                     }
                 }
                 .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
@@ -114,26 +118,37 @@ struct DYCommentStage<Feed: View, Author: View>: View {
             }
         }
         .frame(width: w, height: h, alignment: .topLeading)
+        .overlayPreferenceValue(DYTouchpadActionsKey.self, alignment: .topLeading) { actions in
+            if padActive, aweme != nil, let actions {
+                actions.view
+                    .fixedSize()
+                    .padding(.trailing, 12 + layout.trailingInset)
+                    .frame(width: layout.paneSize.width, height: layout.paneSize.height, alignment: .trailing)
+                    .padding(.leading, layout.paneOrigin.x)
+                    .padding(.top, layout.paneOrigin.y)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("douyin.touchpad.rail")
+            }
+        }
         .onChange(of: layout.resident, initial: true) { _, resident in
             onLayout(resident, layout.resident && layout.sideBySide)
         }
         .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
             onLayout(layout.resident, bookFold)
         }
-        // 进入半折叠先给评论，4 秒后变触控板；离开半折叠复位。换视频不复位（老板选 B：连着刷不闪评论）
+        // 折成半折叠直接是触控板，点了才出评论（老板 11-24 改）；评论 4 秒没碰再回触控板。换视频不复位
         .onChange(of: padLayout, initial: true) { _, on in
             DYLiveModel.log("DDTOUCHPAD layout=\(on ? "半折叠上下分" : "其他")")
             padTimer?.cancel()
-            padShown = false
-            if on { armPad() }
+            padShown = on
         }
         // 从直播间划回视频：保持触控板（老板选 B，连着刷不闪评论）
         .onChange(of: liveHere) { _, live in
             if live, padLayout { padTimer?.cancel(); padShown = true }
         }
-        // 点了视频上的评论按钮：回到评论
-        .onChange(of: showComments) { _, on in
-            if on, padShown { withAnimation(.easeInOut(duration: 0.25)) { padShown = false }; armPad() }
+        // 点了右侧菜单的评论键（它是 toggle）：不管开关往哪边变，都回到评论
+        .onChange(of: showComments) { _, _ in
+            if padShown, padLayout { withAnimation(.easeInOut(duration: 0.25)) { padShown = false }; lastTouch = Date(); armPad() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in

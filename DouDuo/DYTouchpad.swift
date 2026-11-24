@@ -50,6 +50,15 @@ final class DYTouchpadHold {
     var composing = false
 }
 
+/// 当前条把自己的右侧按钮栏交给触控板（视频页 isCurrent 时发；评论打开时视频上的按钮栏本来就收起）
+struct DYTouchpadActions { let id: String; let view: AnyView }
+struct DYTouchpadActionsKey: PreferenceKey {
+    static var defaultValue: DYTouchpadActions? { nil }
+    static func reduce(value: inout DYTouchpadActions?, nextValue: () -> DYTouchpadActions?) {
+        if value == nil { value = nextValue() }
+    }
+}
+
 extension EnvironmentValues {
     /// 半折叠下半屏正显示触控板：播放器不在画面上画弹幕，改推给触控板
     @Entry var dyTouchpadEngaged = false

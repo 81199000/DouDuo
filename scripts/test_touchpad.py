@@ -17,7 +17,7 @@ check("let padLayout = layout.resident && layout.showsPane && !layout.sideBySide
       "只在竖屏半折叠上视频下评论时（书本式 / 作者页不变）")
 # 老板选 1B：换视频不复位
 i = stage.index(".onChange(of: padLayout, initial: true)")
-check("padShown = false" in stage[i:i+200] and ".onChange(of: aweme" not in stage and ".onChange(of: aweme?.id" not in stage,
+check("padShown = on" in stage[i:i+260] and ".onChange(of: aweme" not in stage and ".onChange(of: aweme?.id" not in stage,
       "换视频不闪回评论，只有进出半折叠才复位")
 check('keyboardUp ? "键盘弹着" : DYTouchpadHold.shared.composing ? "正在回复" : idle < Self.padDelay ? "" : "ok"' in stage,
       "打字 / 写回复 / 4 秒内碰过评论时不切")
@@ -45,4 +45,11 @@ check("let liveHere = aweme == nil && onLiveTap != nil" in stage and "|| liveHer
 check("if liveHere { DYLiveModel.log(\"DDTOUCHPAD tap → 进直播间\"); onLiveTap?(); return }" in stage, "直播间单击进直播间")
 check("if live, padLayout { padTimer?.cancel(); padShown = true }" in stage, "从直播间划回视频保持触控板")
 check(feed.count("onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil") == 2, "两个推荐界面都接直播间")
+# 11-24 第三轮：折成半折叠直接触控板；直播间下半屏不能是空 Group；右侧液态玻璃菜单
+check("padShown = on" in stage and "if on { armPad() }" not in stage, "进半折叠直接是触控板，点了才出评论")
+j = stage.index("} else if let cur = aweme {")
+check("} else {\n" in stage[j:j+1400] and "Color.black" in stage[j:j+1400], "直播间下半屏有底，触控板挂得上")
+check("overlayPreferenceValue(DYTouchpadActionsKey.self" in stage and "if padActive, aweme != nil, let actions" in stage, "触控板右侧显示菜单栏（直播间不显示）")
+check(feed.count("preference(key: DYTouchpadActionsKey.self") == 2, "两种视频页都交出按钮栏")
+check("ddMediaGlassCapsule()))" in feed, "经典按钮栏包液态玻璃")
 sys.exit(1 if fails else 0)
