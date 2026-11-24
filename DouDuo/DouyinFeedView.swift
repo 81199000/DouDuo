@@ -5534,7 +5534,7 @@ struct DYCommentPanel: View {
         .onChange(of: draft) { _, text in DYCommentDraftStore.save(currentDraftKey, text: text) }
         .onChange(of: replyTo?.id) { _, _ in switchDraftTarget() }
         // 选着要回复的人 / 输入框里有字：半折叠下半屏不切成触控板（DYTouchpad）
-        .onChange(of: replyTo != nil || !draft.isEmpty, initial: true) { _, busy in DYTouchpadHold.shared.composing = busy }
+        .onChange(of: replyTo != nil, initial: true) { _, busy in DYTouchpadHold.shared.composing = busy }
         .onDisappear { DYTouchpadHold.shared.composing = false }
         .alert("这条可能已经发出去了", isPresented: Binding(get: { confirmResend != nil }, set: { if !$0 { confirmResend = nil } })) {
             Button("仍要重发") { if let id = confirmResend { Task { await deliver(id) } }; confirmResend = nil }

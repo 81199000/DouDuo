@@ -205,17 +205,18 @@ struct DYCornerBrackets: View {
     }
 }
 
-/// 只「听」触摸、不拦截：评论区里手指按下 / 全部抬起时回调（按着滑评论不算「没人碰」）。挂在 window 上按自身范围过滤。
+/// 只「听」触摸、不拦截：评论区里手指按下 / 移动就回调（记「最后一次碰」的时刻）。挂在 window 上按自身范围过滤。
+/// ⚠️ 不能记「按着 / 抬起」这种开关状态：评论区换视频、折叠角度变化时会被重建，按着的那根手指的抬起事件就丢了，
+/// 开关卡在「按着」→ 触控板再也不出来（老板 11-24 实测：第二版装上后「都不会进入触控板模式了」）。
 struct DYTouchSniffer: UIViewRepresentable {
-    /// true = 按下，false = 抬起
-    var onTouch: (Bool) -> Void
+    var onTouch: () -> Void
     func makeUIView(context: Context) -> SnifferView {
         let v = SnifferView(); v.isUserInteractionEnabled = false; v.onTouch = onTouch; return v
     }
     func updateUIView(_ v: SnifferView, context: Context) { v.onTouch = onTouch }
 
     final class SnifferView: UIView {
-        var onTouch: (Bool) -> Void = { _ in }
+        var onTouch: () -> Void = {}
         private var recognizer: Recognizer?
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -235,21 +236,21 @@ struct DYTouchSniffer: UIViewRepresentable {
     /// 一直停在 possible、和谁都同时识别，所以不影响评论区滚动 / 点按；手指全抬起才 failed 复位
     final class Recognizer: UIGestureRecognizer, UIGestureRecognizerDelegate {
         weak var owner: SnifferView?
-        private var inside = false
-        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-            if !inside, let o = owner, o.window != nil, touches.contains(where: { o.bounds.contains($0.location(in: o)) }) {
-                inside = true; o.onTouch(true)
-            }
+        private var lastPing: CFTimeInterval = 0
+        private func ping(_ touches: Set<UITouch>) {
+            guard let o = owner, o.window != nil, touches.contains(where: { o.bounds.contains($0.location(in: o)) }) else { return }
+            let now = CACurrentMediaTime()
+            guard now - lastPing > 0.25 else { return }   // 滑动时别每帧都回调
+            lastPing = now; o.onTouch()
         }
-        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { finish(event) }
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { ping(touches) }
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) { ping(touches) }
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { ping(touches); finish(event) }
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { finish(event) }
         private func finish(_ event: UIEvent) {
             let left = (event.allTouches ?? []).filter { $0.phase != .ended && $0.phase != .cancelled }
-            guard left.isEmpty else { return }
-            if inside { inside = false; owner?.onTouch(false) }
-            state = .failed
+            if left.isEmpty { state = .failed }
         }
-        override func reset() { super.reset(); if inside { inside = false; owner?.onTouch(false) } }
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool { false }
     }

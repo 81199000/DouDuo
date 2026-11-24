@@ -42,7 +42,8 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     @State private var padShown = false
     @State private var padTimer: Task<Void, Never>?
     @State private var keyboardUp = false
-    @State private var touching = false
+    /// 最后一次碰评论区的时刻（不存「按着」开关，见 DYTouchSniffer）
+    @State private var lastTouch = Date.distantPast
     static var padDelay: Double { 4 }
 
     var body: some View {
@@ -85,10 +86,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                             .id(cur.id)
                             .opacity(padActive ? 0 : 1)
                             .allowsHitTesting(!padActive)
-                            .background(DYTouchSniffer { down in
-                                touching = down
-                                if padLayout && !padShown { armPad() }
-                            })
+                            .background(DYTouchSniffer { lastTouch = Date() })
                     }
                 }
                 .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
@@ -100,6 +98,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                         DYTouchpadPane(onTap: {
                             if liveHere { DYLiveModel.log("DDTOUCHPAD tap → 进直播间"); onLiveTap?(); return }
                             withAnimation(.easeInOut(duration: 0.25)) { padShown = false }
+                            lastTouch = Date()
                             armPad()
                         }, onPage: onPage, hint: liveHere ? "轻点进入直播间" : nil)
                         .transition(.opacity)
@@ -123,6 +122,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         }
         // 进入半折叠先给评论，4 秒后变触控板；离开半折叠复位。换视频不复位（老板选 B：连着刷不闪评论）
         .onChange(of: padLayout, initial: true) { _, on in
+            DYLiveModel.log("DDTOUCHPAD layout=\(on ? "半折叠上下分" : "其他")")
             padTimer?.cancel()
             padShown = false
             if on { armPad() }
@@ -138,7 +138,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardUp = false
-            if padLayout && !padShown { armPad() }
+            lastTouch = Date()
         }
         .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
@@ -158,17 +158,24 @@ struct DYCommentStage<Feed: View, Author: View>: View {
 }
 
 extension DYCommentStage {
-    /// 重新计时：4 秒内没再碰评论区、也没在打字 → 淡成触控板
+    /// 重新计时：评论区 4 秒没人碰、没在打字 / 写回复 → 淡成触控板。每 0.5 秒看一次，不靠「按下 / 抬起」配对
     fileprivate func armPad() {
         padTimer?.cancel()
+        let armed = Date()
         padTimer = Task { @MainActor in
+            var lastReason = ""
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Self.padDelay))
+                try? await Task.sleep(for: .milliseconds(500))
                 if Task.isCancelled { return }
-                if keyboardUp || touching || DYTouchpadHold.shared.composing { continue }
-                withAnimation(.easeInOut(duration: 0.35)) { padShown = true }
-                DYLiveModel.log("DDTOUCHPAD on（评论 \(Int(Self.padDelay)) 秒没动）")
-                return
+                let idle = Date().timeIntervalSince(max(armed, lastTouch))
+                let reason = keyboardUp ? "键盘弹着" : DYTouchpadHold.shared.composing ? "正在回复" : idle < Self.padDelay ? "" : "ok"
+                if reason == "ok" {
+                    withAnimation(.easeInOut(duration: 0.35)) { padShown = true }
+                    DYLiveModel.log("DDTOUCHPAD on（评论 \(Int(Self.padDelay)) 秒没动）")
+                    return
+                }
+                if !reason.isEmpty, reason != lastReason { DYLiveModel.log("DDTOUCHPAD 先不切：\(reason)") }
+                lastReason = reason
             }
         }
     }

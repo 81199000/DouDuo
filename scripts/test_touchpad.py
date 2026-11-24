@@ -19,7 +19,11 @@ check("let padLayout = layout.resident && layout.showsPane && !layout.sideBySide
 i = stage.index(".onChange(of: padLayout, initial: true)")
 check("padShown = false" in stage[i:i+200] and ".onChange(of: aweme" not in stage and ".onChange(of: aweme?.id" not in stage,
       "换视频不闪回评论，只有进出半折叠才复位")
-check("if keyboardUp || touching || DYTouchpadHold.shared.composing { continue }" in stage, "打字 / 按着评论 / 写回复时不切")
+check('keyboardUp ? "键盘弹着" : DYTouchpadHold.shared.composing ? "正在回复" : idle < Self.padDelay ? "" : "ok"' in stage,
+      "打字 / 写回复 / 4 秒内碰过评论时不切")
+# 11-24 回归：不能用「按着 / 抬起」开关（评论区重建丢抬起 → 永远不切）
+check("touching" not in stage and "lastTouch = Date()" in stage and "func touchesMoved" in pad, "按最后一次碰的时刻计时，不存按着状态")
+check("DYTouchpadHold.shared.composing = busy" in feed and "replyTo != nil || !draft.isEmpty" not in feed, "存着的草稿不挡触控板，只有选了回复对象才挡")
 check(".background(DYTouchSniffer" in stage and "cancelsTouchesInView = false" in pad and "shouldRecognizeSimultaneouslyWith" in pad,
       "碰评论区重新计时且不拦截评论区手势")
 check("DYTouchpadPane(onTap: {" in stage and "padShown = false" in stage[stage.index("DYTouchpadPane(onTap: {"):stage.index("DYTouchpadPane(onTap: {")+320],
