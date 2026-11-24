@@ -904,6 +904,7 @@ struct PlayerPage: View {
                 DYSwipeProbe.rate()
                 let shown = firstFrame
                 telemetry.begin(p, id: id, duration: knownDuration)
+                kickIfOverCautious(p)
                 DYLiveModel.log("DDFRAME \(id) shown=\(shown) t=\(String(format: "%.2f", p.currentTime().seconds)) audio=\(seamAudio.mode)")
                 #if DEBUG
                 logSwipeStart(p)
@@ -1570,6 +1571,25 @@ struct PlayerPage: View {
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
     /// 避免把仍在出声的直播会话一起拆掉。「后台播放」打开时这里直接返回。
     /// 应该在播（当前条、没被用户暂停、能控制播放）却 rate=0：多半是别的播放器把音频会话关了，重新激活接着播
+    /// 起播「过度谨慎」兜底（老板 11-24：划到后停在第一帧 2–4 秒）。
+    /// 真机 DDWAIT：已缓冲 9–29 秒、st=readyToPlay、rate=1，可 AVPlayer 还在 waitingToMinimizeStalls——
+    /// 它按边下边播「一段一段到」估出来的下载速度判断会卡，于是一直不肯起播，最后 2.8–3.8 秒才放行。
+    /// 缓冲已经够 2 秒以上就别等它的估算：直接 playImmediately（真不够时它会正常进缓冲，不会出错）。
+    private func kickIfOverCautious(_ p: AVPlayer) {
+        for delay in [0.25, 0.6, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard player === p, isActive, isPlaying, !userPaused, vlc == nil,
+                      p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                      p.reasonForWaitingToPlay == .toMinimizeStalls,
+                      p.currentItem?.status == .readyToPlay else { return }
+                let buf = DYPlaybackTelemetry.bufferedAhead(p)
+                guard buf >= 2 else { return }
+                p.playImmediately(atRate: playRate)
+                DYLiveModel.log("DDKICK \(id.suffix(6)) +\(delay)s buf=\(String(format: "%.1f", buf))s 跳过「怕卡」等待直接起播")
+            }
+        }
+    }
+
     private func resumeIfStolen(reason: String = "tick") {
         guard vlc == nil, let p = player, canControlPlayback, isPlaying, !userPaused else { return }
         guard p.rate == 0, p.currentItem?.status == .readyToPlay else { return }
