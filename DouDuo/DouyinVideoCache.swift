@@ -133,9 +133,10 @@ actor DYVideoCache {
 
     func focus(current: DYAweme?, ahead: [DYAweme]) {
         guard !clearing, !manualBatch else { return }
-        // 边下边播开着且在用流量：不再整条预下载（省流量的关键）。开头几秒由预热播放器经 ddstream 取，
-        // 看完的条由边下边播自然拼成完整文件再收进来。Wi-Fi 下照旧整条预下后面几条（启动秒开池靠它）
-        if DYStream.enabled, DYNetPath.shared.cellular {
+        // 整条下几条看流量策略（DYNetPolicy）：用流量且省流量开 → 0（开头几秒由预热播放器经 ddstream 取，
+        // 看完的条由边下边播自然拼成完整文件再收进来）；Wi-Fi 省流量关 → 按预缓存数量整条下
+        let whole = DYNetPolicy.current.whole
+        if DYStream.enabled, DYNetPath.shared.cellular, whole == 0 {
             job?.cancel(); job = nil; jobID = nil
             prepare()
             return
@@ -153,14 +154,15 @@ actor DYVideoCache {
         }
         guard let target = current ?? ahead.first else { return }
         let rest = current == nil ? Array(ahead.dropFirst()) : ahead
-        let follow = Array(rest.prefix(Self.headPrefetch))
+        let follow = Array(rest.prefix(whole))
         let candidates = [target] + follow
         focusedItems = candidates
         if jobID == target.id { return }
         previous?.cancel()
         jobID = target.id
-        // 边下边播时当前这条由播放器自己边播边存，整条下载只管后面的，免得同一条下两遍
-        let plan = Self.streamingPlan(Self.plan(current: target, ahead: follow), items: candidates, streaming: DYStream.enabled)
+        // 边下边播时当前这条由播放器自己边播边存，整条下载只管后面的，免得同一条下两遍。
+        // 省流量（whole=0）时一条都不整条下；关掉省流量就按设置条数整条下（长视频也下，仍受 30 分钟 / 400MB 上限）
+        let plan = (whole == 0 ? [] : Self.plan(current: target, ahead: follow))
             .filter { !(DYStream.enabled && current != nil && $0 == target.id) }
         // 边下边播时：先把后面两条的开头下好，再整条预下（整条下载会把下一条的开头挤掉，见 fillHead）
         let heads = DYStream.enabled
@@ -183,16 +185,8 @@ actor DYVideoCache {
         }
     }
 
-    /// 边下边播开着时，Wi-Fi 整条预下只留短视频（≤90 秒）：长视频靠边下边播取开头几秒，划到再往后下。
-    /// 以前 Wi-Fi 下会把后面 30 分钟以内的长视频整条下完——实测一条 12 分钟的只看了 2 秒就下了 105MB（老板 11-21）。
-    nonisolated static func streamingPlan(_ plan: [String], items: [DYAweme], streaming: Bool) -> [String] {
-        guard streaming else { return plan }
-        return plan.filter { id in
-            guard let a = items.first(where: { $0.id == id }) else { return false }
-            return a.duration > 0 && a.duration <= blockingDuration
-        }
-    }
-
+    /// Wi-Fi 省流量关时按预缓存数量整条下（含长视频，受 30 分钟 / 400MB 上限）。省流量开时一条都不整条下。
+    /// （11-21 曾因「12 分钟的只看 2 秒就下了 105MB」改成只下短视频；11-24 老板改为交给开关决定）
     /// 整条缓存的顺序（纯函数，脚本测试直接跑）：
     /// 先下一条、当前、再后面一条里的短视频（≤90 秒），再补长视频（当前 → 下一条 → 后面），超 10 分钟的不排。
     nonisolated static func plan(current: DYAweme, ahead: [DYAweme]) -> [String] {

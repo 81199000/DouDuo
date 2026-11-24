@@ -104,7 +104,7 @@ class StreamPlan(unittest.TestCase):
         # 划到就算当前条（不等起播），否则长视频互相等永远起不来
         self.assertIn("DYStreamStore.shared.activate(id", PLAYER)
         # 用流量时不再整条预下载
-        self.assertIn("if DYStream.enabled, DYNetPath.shared.cellular {", CACHE)
+        self.assertIn("if DYStream.enabled, DYNetPath.shared.cellular, whole == 0 {", CACHE)
         # 看完拼齐 → 收进正式缓存
         self.assertIn("func adoptStreamed(", CACHE)
         # 不同清晰度不混字节

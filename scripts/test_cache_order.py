@@ -59,26 +59,41 @@ print("PASS cache order: long current never downloaded (no bandwidth fight); nex
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         print(r.stdout.strip())
 
-    def test_streaming_plan_short_only(self):
-        """边下边播开着：整条预下只留 ≤90 秒的，长视频不整条下（12 分钟只看 2 秒却下了 105MB，11-21）"""
-        fn = extract(CACHE, "    nonisolated static func streamingPlan(").replace("nonisolated static func", "func")
-        harness = r'''
-import Foundation
-struct DYAweme { let id: String; var duration: Double }
-let blockingDuration: Double = 90
-''' + fn + r'''
-let items = [DYAweme(id: "a", duration: 30), DYAweme(id: "b", duration: 759), DYAweme(id: "c", duration: 90), DYAweme(id: "d", duration: 0)]
-var p = streamingPlan(["a", "b", "c", "d"], items: items, streaming: true)
-precondition(p == ["a", "c"], "\\(p)")
-p = streamingPlan(["a", "b", "c"], items: items, streaming: false)
-precondition(p == ["a", "b", "c"], "关掉边下边播时保持原样 \\(p)")
-print("PASS streaming plan: long videos not prefetched whole when streaming")
+    def test_net_policy(self):
+        """11-24 老板定：Wi-Fi / 蜂窝各一个省流量开关，按开关 × 网络决定清晰度 / 提前备几条 / 整条下几条（把正式代码编出来真跑）"""
+        src = (ROOT / "DouDuo/DYStreamCache.swift").read_text()
+        a = src.index("enum DYNetPolicy {"); b = src.index("    static var current: Plan {", a)
+        fn = src[a:b] + "}\n"
+        harness = "import Foundation\n" + fn + r'''
+typealias P = DYNetPolicy.Plan
+func plan(_ cell: Bool, _ wifiSaver: Bool, _ cellSaver: Bool, _ n: Int, streaming: Bool = true) -> P {
+    DYNetPolicy.plan(cellular: cell, wifiSaver: wifiSaver, cellSaver: cellSaver, streaming: streaming, limit: n)
+}
+// Wi-Fi 省流量关（默认）：按设置条数整条下
+precondition(plan(false, false, true, 10) == P(lowQuality: false, preload: 10, whole: 10))
+precondition(plan(false, false, true, 5) == P(lowQuality: false, preload: 5, whole: 5))
+// Wi-Fi 省流量开：按设置条数备开头，不整条下
+precondition(plan(false, true, true, 10) == P(lowQuality: false, preload: 10, whole: 0))
+// 蜂窝省流量开（默认）：低一档、只备 1 条开头
+precondition(plan(true, false, true, 10) == P(lowQuality: true, preload: 1, whole: 0))
+// 蜂窝省流量关：高清 + 2 条整条
+precondition(plan(true, false, false, 10) == P(lowQuality: false, preload: 2, whole: 2))
+precondition(plan(true, true, false, 1) == P(lowQuality: false, preload: 2, whole: 2), "蜂窝不看预缓存数量")
+// 条数夹在 1…10
+precondition(plan(false, false, true, 50).preload == 10 && plan(false, false, true, 0).preload == 1)
+// 关了边下边播：按条数整条下
+precondition(plan(true, false, true, 5, streaming: false) == P(lowQuality: false, preload: 5, whole: 5))
+print("PASS net policy: wifi/cellular saver x network")
 '''
         with tempfile.TemporaryDirectory() as d:
-            f = Path(d) / "SP.swift"; f.write_text(harness)
+            f = Path(d) / "NP.swift"; f.write_text(harness)
             r = subprocess.run(["swift", str(f)], text=True, capture_output=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         print(r.stdout.strip())
+        cache = CACHE
+        self.assertIn("let whole = DYNetPolicy.current.whole", cache)
+        self.assertIn("let follow = Array(rest.prefix(whole))", cache)
+        self.assertIn("DYNetPolicy.current.preload", (ROOT / "DouDuo/DouyinFeedView.swift").read_text())
 
     def test_telemetry_is_release(self):
         tel = (ROOT / "DouDuo/DYPlaybackTelemetry.swift").read_text()

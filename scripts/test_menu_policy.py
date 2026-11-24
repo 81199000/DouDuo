@@ -167,8 +167,9 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
         # 老板 11-19 重排：界面 → 播放与弹幕 → 推荐与内容 → 评论与私信 → 缓存与离线 → 账号 → 关于
-        order = ['Text("界面")', 'Text("播放与弹幕")', 'Text("推荐与内容")', 'Text("评论与私信")',
-                 'Text("缓存与离线")', 'Text("账号")', 'Text("关于")']
+        # 11-24 老板重排：评论开关收进「高级设置」，私信通知并入「账号与私信」，缓存区改名「流量与缓存」
+        order = ['Text("界面")', 'Text("播放与弹幕")', 'Text("推荐与内容")', 'Text("流量与缓存")',
+                 'Text("账号与私信")', 'Label("高级设置"', 'Text("关于")']
         for section in ['Label("刷新推荐"'] + order:
             self.assertIn(section, screen)
         idx = [screen.index(t) for t in order]
@@ -251,6 +252,7 @@ for (wide, only) in [(false, false), (false, true), (true, false)] {
     preferences.removePersistentDomain(forName: suiteName)
     preferences.set(only, forKey: "douyin_wide_landscape_v1")
     let feed = DYFeedModel()
+    feed.portraitMix = true   // 11-24 起默认关，这里显式打开测穿插
     feed.screenWide = wide
     // 接口式素材：竖屏只占 1/5
     feed.pool = (0..<100).map { DYAweme(id: "r\($0)", isTallFrame: $0 % 5 == 0) }
@@ -285,6 +287,7 @@ wide.landscapeWhenWide = false
 precondition(!wide.landscapeOnlyActive && wide.fill(3, relaxed: true) == 3 && wide.items.suffix(3).map(\.id) == ["w0", "w2", "w4"])
 // 4) remix：当前条不动，后面的按当前规则重排
 let remix = DYFeedModel()
+remix.portraitMix = true   // 原用例假设 70% 竖屏开着：关掉限定后按竖屏优先重排
 remix.items = [DYAweme(id: "current", isTallFrame: true), DYAweme(id: "upcoming-tall", isTallFrame: true), DYAweme(id: "upcoming-wide")]
 remix.screenWide = true
 remix.landscapeWhenWide = true
@@ -295,14 +298,16 @@ remix.landscapeWhenWide = false
 remix.remix(after: 0)
 precondition(remix.items.map(\.id) == ["current", "upcoming-tall", "upcoming-wide"], "\(remix.items.map(\.id))")
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
-// 5) 关掉「竖屏时固定 70% 竖屏」：竖着看按推荐原顺序，不再穿插
+// 5) 「竖屏时固定 70% 竖屏」「横屏只放横屏」默认都关（老板 11-24）：竖着看按推荐原顺序，不再穿插
 preferences.removePersistentDomain(forName: suiteName)
 let plain = DYFeedModel()
-plain.portraitMix = false
+precondition(!plain.portraitMix && !plain.landscapeWhenWide, "11-24 起两个筛选默认关")
 plain.pool = (0..<10).map { DYAweme(id: "p\($0)", isTallFrame: $0 % 5 == 0) }
 precondition(plain.targetRatio == nil)
 precondition(plain.fill(6) == 6 && plain.items.map(\.id) == (0..<6).map { "p\($0)" }, "off should keep original order")
 plain.screenWide = true
+precondition(plain.targetRatio == nil, "both off: wide also keeps original order")
+plain.landscapeWhenWide = true
 precondition(plain.targetRatio == 0, "landscape-only still wins when wide")
 print("PASS 70% portrait interleave; toggle off keeps original order; per-orientation order kept; relaxed fallback; landscape-only filter; toggle back; remix; gallery classification")
 '''
