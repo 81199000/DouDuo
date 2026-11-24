@@ -18,9 +18,14 @@ enum DYStream {
     /// 设置里的「省流量模式」：用流量时降一档清晰度、只预热 1 条
     static let saverKey = "douyin_data_saver_v1"
 
+    /// 设置里的「Wi-Fi 省流量」（老板 11-24 新增，默认关）：开 = Wi-Fi 下也只下开头；关 = 按预缓存数量整条下
+    static let wifiSaverKey = "douyin_wifi_saver_v1"
+
     static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+    /// 「蜂窝数据省流量」（沿用原「省流量模式」的键，默认开）
     static var saverOn: Bool { UserDefaults.standard.object(forKey: saverKey) as? Bool ?? true }
-    /// 省流量模式只在走蜂窝网络时生效
+    static var wifiSaverOn: Bool { UserDefaults.standard.object(forKey: wifiSaverKey) as? Bool ?? false }
+    /// 降一档清晰度 + 只预热下一条 + 不预连直播：只在「用流量且蜂窝省流量开」时
     static var saving: Bool { saverOn && DYNetPath.shared.cellular }
 
     static func url(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)")! }
@@ -47,6 +52,36 @@ enum DYStream {
             return remote.isFileURL ? AVURLAsset(url: remote) : DYMedia.asset(remote)
         }
         return asset(for: item, remote: remote)
+    }
+}
+
+/// 流量策略（老板 11-24）：两个省流量开关 × 当前网络 → 清晰度 / 提前备几条 / 整条下几条
+/// - Wi-Fi 省流量关（默认）：按「预缓存数量」提前备好，并把这几条整条下好
+/// - Wi-Fi 省流量开：按「预缓存数量」提前备好，每条只下开头几秒，不播不继续下
+/// - 蜂窝省流量开（默认）：低一档清晰度，只备下一条的开头
+/// - 蜂窝省流量关：高清，提前备 2 条并整条下好
+enum DYNetPolicy {
+    struct Plan: Equatable {
+        let lowQuality: Bool
+        /// 提前建好播放器、取开头的条数
+        let preload: Int
+        /// 整条下载的条数（0 = 只取开头）
+        let whole: Int
+    }
+
+    nonisolated static func plan(cellular: Bool, wifiSaver: Bool, cellSaver: Bool, streaming: Bool, limit: Int) -> Plan {
+        let n = min(max(limit, 1), 10)
+        // 关了边下边播：没有「只下开头」这回事，按老办法整条下
+        guard streaming else { return Plan(lowQuality: false, preload: n, whole: n) }
+        if cellular {
+            return cellSaver ? Plan(lowQuality: true, preload: 1, whole: 0) : Plan(lowQuality: false, preload: 2, whole: 2)
+        }
+        return Plan(lowQuality: false, preload: n, whole: wifiSaver ? 0 : n)
+    }
+
+    static var current: Plan {
+        plan(cellular: DYNetPath.shared.cellular, wifiSaver: DYStream.wifiSaverOn, cellSaver: DYStream.saverOn,
+             streaming: DYStream.enabled, limit: DYVideoCache.limit)
     }
 }
 

@@ -65,6 +65,15 @@ extension DYRecommendFeedHost {
     var currentIndex: Int? { currentID.flatMap { id in feed.items.firstIndex { $0.id == id } } }
     var current: DYAweme? { currentIndex.map { feed.items[$0] } }
 
+    /// 半折叠触控板上下滑：只翻推荐页（+1 下一条 / -1 上一条），同自动连播的滑动动画
+    func pageBy(_ step: Int) {
+        guard tab == .recommend, let i = currentIndex else { return }
+        let j = i + step
+        guard feed.items.indices.contains(j) else { return }
+        DYLiveModel.log("DDTOUCHPAD page \(step > 0 ? "next" : "prev")")
+        advance(from: feed.items[i].id, to: feed.items[j].id)
+    }
+
     /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
     func advance(from: String, to: String) {
         if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }

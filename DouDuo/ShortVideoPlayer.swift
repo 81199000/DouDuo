@@ -366,6 +366,8 @@ struct DYHoldBoostArea: ViewModifier {
 
 struct PlayerPage: View {
     @Environment(\.dyRestrictsPlaybackToPane) private var restrictsPlaybackToPane
+    /// 半折叠下半屏是触控板：弹幕改到触控板上飘，画面上不画（DYTouchpad.swift）
+    @Environment(\.dyTouchpadEngaged) private var touchpadEngaged
 
     private var playbackSafeAreaEdges: Edge.Set {
         restrictsPlaybackToPane ? [] : .all
@@ -640,7 +642,7 @@ struct PlayerPage: View {
                     .animation(commentReduceMotion ? nil : .snappy, value: showsVideoAboveComments)
                 }
             }
-            if !cleanScreen && isActive && (!danmaku.isEmpty || dmStress) {
+            if !cleanScreen && isActive && !touchpadEngaged && (!danmaku.isEmpty || dmStress) {
                 DYDanmakuLayer(items: danmaku, clock: dmClock, topInset: topInset)
             }
             // 手势层铺满整页（含视频上下黑边）：横滑快进 / 单击 / 双击 / 长按，竖滑漏给分页
@@ -754,6 +756,7 @@ struct PlayerPage: View {
                                        playsInsideCover: playsInsideCover, coverLevel: coverLevel)
         }
         .onDisappear {
+            releaseTouchpad()
             if playbackIsActive { DYLiveModel.log("DDB13 disappear \(id.suffix(6)) at=\(String(format: "%.2f", DDNowPlaying.time))") }
             DDNowPlaying.release(playbackID, whilePlaying: playbackIsActive)
             playbackIsActive = false
@@ -826,7 +829,9 @@ struct PlayerPage: View {
         // ⚠️ 不能在 current 的 setter 里直接推：setter 常在播放器时间回调里调，那个闭包捕获的是旧的 PlayerPage 副本，
         // 里面的 isActive 是挂回调时的值（预热时 = false）→ 极简模式进度环永远不动（老板 11-21）。
         // onReceive 每次都用当前这一版视图跑，且不会让 PlayerPage 整页重算。
-        .onReceive(clock.$current) { _ in pushRailProgress() }
+        .onReceive(clock.$current) { _ in pushRailProgress(); syncTouchpad() }
+        .onChange(of: touchpadEngaged) { _, _ in syncTouchpad() }
+        .onChange(of: isPlaying) { _, _ in syncTouchpad() }
         .onChange(of: seeking) { _, _ in pushRailProgress() }
         .onChange(of: seekPreview) { _, _ in if seeking { pushRailProgress() } }
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
@@ -855,6 +860,7 @@ struct PlayerPage: View {
         }
         .onChange(of: isActive) { _, active in
             playbackIsActive = active
+            if active { syncTouchpad() } else { releaseTouchpad() }
             if !active { DDNowPlaying.release(playbackID, whilePlaying: false); handoffPosition = nil }
             if active { DYStreamStore.shared.activate(id, at: initialResumePosition ?? 0) }
             if !active {
@@ -986,6 +992,60 @@ struct PlayerPage: View {
         }
     }
 
+    // MARK: 手势（视频区和半折叠触控板共用）
+
+    private func unlockBoost() {
+        lockedBoost = false; rateBoost = false
+        if let v = vlc { v.setRate(Float(liveRate)) }
+        else if isPlaying { seamAudio.setRate(Float(liveRate)) } else { seamAudio.pause() }
+    }
+
+    private func beginSeekGesture() {
+        guard duration > 0 else { return }
+        if let v = vlc { current = v.current }
+        else if let aSec = seamAudio.currentMediaTime { current = aSec }
+        else if let p = player { current = p.currentTime().seconds } else { return }
+        holdAnchor = current
+        seekPreview = current
+        seeking = true
+    }
+
+    private func changeSeekGesture(_ dx: CGFloat, _ w: CGFloat) {
+        guard duration > 0, seeking else { return }
+        seekPreview = max(0, min(duration, holdAnchor + dx / max(w, 1) * duration * 0.9))
+        seekDelta = seekPreview - current
+        requestPreview(seekPreview)
+    }
+
+    private func endSeekGesture() {
+        if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
+    }
+
+    /// 当前条把操作交给半折叠触控板，触控板显示时把弹幕推过去
+    private func syncTouchpad() {
+        guard isActive else { return }
+        let link = DYTouchpadLink.shared
+        if link.player?.owner != playbackID {
+            link.attach(.init(owner: playbackID,
+                              seekBegan: { beginSeekGesture() },
+                              seekChanged: { changeSeekGesture($0, $1) },
+                              seekEnded: { endSeekGesture() },
+                              boost: { handleLongPress($0) },
+                              lockBoost: { lockedBoost = true },
+                              unlockBoost: { unlockBoost() }))
+        }
+        if touchpadEngaged, !cleanScreen {
+            DYTouchpadDanmaku.shared.publish(owner: playbackID, items: danmaku, clock: dmClock)
+        } else {
+            DYTouchpadDanmaku.shared.clear(playbackID)
+        }
+    }
+
+    private func releaseTouchpad() {
+        DYTouchpadLink.shared.detach(playbackID)
+        DYTouchpadDanmaku.shared.clear(playbackID)
+    }
+
     // MARK: 手势（UIKit 宿主：起手定方向，竖向优先让给分页）
 
     private var gestures: some View {
@@ -996,32 +1056,11 @@ struct PlayerPage: View {
             // 下滑：锁住本条视频的 2 倍速（不写设置、不影响下一条）
             onLongPressLock: { lockedBoost = true },
             // 上滑：立刻取消倍速，回到设置里的速度
-            onLongPressUnlock: {
-                lockedBoost = false; rateBoost = false
-                if let v = vlc { v.setRate(Float(liveRate)) }
-                else if isPlaying { seamAudio.setRate(Float(liveRate)) } else { seamAudio.pause() }
-            },
+            onLongPressUnlock: { unlockBoost() },
             onContextMenu: onContextMenu,
-            onSeekBegan: {
-                guard duration > 0 else { return }
-                if let v = vlc { current = v.current }
-                else if let aSec = seamAudio.currentMediaTime { current = aSec }
-                else if let p = player { current = p.currentTime().seconds } else { return }
-                holdAnchor = current
-                seekPreview = current
-                seeking = true
-            },
-            onSeekChanged: { dx, w in
-                guard duration > 0, seeking else { return }
-                seekPreview = max(0, min(duration, holdAnchor + dx / max(w, 1) * duration * 0.9))
-                seekDelta = seekPreview - current
-                requestPreview(seekPreview)
-            },
-            onSeekEnded: {
-                #if DEBUG
-                    #endif
-                if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
-            },
+            onSeekBegan: { beginSeekGesture() },
+            onSeekChanged: { dx, w in changeSeekGesture(dx, w) },
+            onSeekEnded: { endSeekGesture() },
             verticalFirst: true,
             onHorizontalSwipe: navigationSwipes && onHorizontalDrag == nil ? { left in
                 if left { onSwipeLeft?() } else { onSwipeRight?() }

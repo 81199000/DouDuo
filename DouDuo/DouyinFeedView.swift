@@ -1311,12 +1311,9 @@ final class DYPreloader {
     /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
     /// 只有过热/极热才降档省电
     static var ahead: Int {
-        // 省流量模式 + 用流量：只预热下一条（每条只取开头几秒）
-        if DYStream.saving { return 1 }
-        // 按设置里的「预缓存数量」来：设 10 条就提前备好后面 10 条（老板 11-24：「我要拉 10 个就 10 个」）。
-        // 以前边下边播时写死 3 条，设了 10 也只备 3 条 → 快划时后面的条划到前才开始下，起播要等 1–3 秒。
-        // 上限 10：每条一个播放器（解码会话有限），跟分页器提前挂载的页数一致（DYPagerWindow.ahead）
-        return min(max(DYVideoCache.limit, 1), 10)
+        // 按流量策略：Wi-Fi 跟「预缓存数量」（上限 10，跟分页器挂载页数一致）；用流量时省流量开 1 条、关 2 条
+        // （老板 11-24：「我要拉 10 个就 10 个」；以前边下边播时写死 3 条，设了 10 也只备 3 条）
+        DYNetPolicy.current.preload
     }
     /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
     /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次
@@ -1574,9 +1571,10 @@ final class DYFeedModel: ObservableObject {
     /// 竖着看时按约 70% 竖屏均匀穿插（网页推荐接口本身竖屏只占 1～3 成，原序播放几乎全是横屏）；
     /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
-    @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = true
+    /// 老板 11-24：默认关（横竖屏都不锁定筛选，按抖音推荐原样播），想要的在「高级设置」里打开
+    @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = false
     /// 竖着看时固定约 70% 竖屏（老板 2026-11-22 要求做成开关）；关掉 = 按抖音推荐原顺序播放
-    @AppStorage("douyin_portrait_mix_v1") var portraitMix = true
+    @AppStorage("douyin_portrait_mix_v1") var portraitMix = false
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
     /// 当前播放区是不是横的（宽 > 高），由页面布局同步
@@ -2258,6 +2256,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                        showSearch: showSearch, isLive: tab == .live,
                        stacksLandscapeComments: stacksLandscapeComments,
                        hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
+                       onPage: tab == .recommend ? { pageBy($0) } : nil,
+                       onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil,
                        feed: { feedArea },
                        onLayout: { resident, bookFold in
                            residentComments = resident
@@ -3561,6 +3561,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                        hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
                        showsCaption: captionItem != nil,
                        authorPane: (id: authorTarget?.id, workOpen: authorWorkOpen, supportsSidePanel: supportsSidePanel),
+                       onPage: tab == .recommend ? { pageBy($0) } : nil,
+                       onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil,
                        feed: { feedArea },
                        author: {
                            if let author = authorTarget {
@@ -4147,6 +4149,7 @@ struct DYUpstreamVideoPage: View {
         .preference(key: DYFeedInputActivePreference.self, value: isCurrent && dm.showInput)
         .preference(key: DYFeedComposerPreference.self, value: composerEntry)
         .preference(key: DYFeedRailPreference.self, value: railEntry(fg))
+        .preference(key: DYTouchpadActionsKey.self, value: isCurrent && onBack == nil ? DYTouchpadActions(id: item.id, view: AnyView(actions(fg))) : nil)
         .animation(.snappy, value: heart)
         .onChange(of: isCurrent) { _, c in
             if !c { dm.showInput = false }
@@ -4648,6 +4651,8 @@ struct DYClassicVideoPage: View {
         }
         .preference(key: DYActiveVideoActionsKey.self,
                     value: systemBars && isCurrent && !inlineNavigation ? toolbarActions(fg) : nil)
+        .preference(key: DYTouchpadActionsKey.self,
+                    value: isCurrent && !inlineNavigation ? DYTouchpadActions(id: item.id, view: AnyView(actions(fg).padding(.vertical, 8).ddMediaGlassCapsule())) : nil)
         .overlay(alignment: .bottom) {
             if dm.showInput { DYDanmakuBar(model: dm, focused: $danmakuFocused, onSend: sendDanmaku).padding(.bottom, max(insets.bottom, 0) + 4) }
         }
@@ -5531,6 +5536,9 @@ struct DYCommentPanel: View {
         .task { restoreDraft() }
         .onChange(of: draft) { _, text in DYCommentDraftStore.save(currentDraftKey, text: text) }
         .onChange(of: replyTo?.id) { _, _ in switchDraftTarget() }
+        // 选着要回复的人 / 输入框里有字：半折叠下半屏不切成触控板（DYTouchpad）
+        .onChange(of: replyTo != nil, initial: true) { _, busy in DYTouchpadHold.shared.composing = busy }
+        .onDisappear { DYTouchpadHold.shared.composing = false }
         .alert("这条可能已经发出去了", isPresented: Binding(get: { confirmResend != nil }, set: { if !$0 { confirmResend = nil } })) {
             Button("仍要重发") { if let id = confirmResend { Task { await deliver(id) } }; confirmResend = nil }
             Button("先不发", role: .cancel) { confirmResend = nil }
