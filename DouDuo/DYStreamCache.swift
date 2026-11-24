@@ -274,6 +274,17 @@ final class DYStreamStore: @unchecked Sendable {
     }
 
     func isCurrent(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return currentID == id }
+
+    /// 起播慢诊断（DDWAIT）：这条的边下边播状态——本地有哪些段、哪些在下、允许下到哪、是不是在「饿」
+    func debugLine(forVideo id: String) -> String {
+        guard let e = entry(forVideo: id) else { return "stream=none" }
+        let horizon = self.horizon(e).map { "\($0 / 1024)KB" } ?? "-"
+        let starving = isStarving(id)
+        e.lock.lock(); defer { e.lock.unlock() }
+        func kb(_ r: Range<Int64>) -> String { "\(r.lowerBound / 1024)-\(r.upperBound / 1024)" }
+        let total = e.total.map { "\($0 / 1024)KB" } ?? "?"
+        return "key=\(e.key == e.id ? "hd" : "saver") total=\(total) moovEnd=\(e.mediaStart.map { "\($0 / 1024)KB" } ?? "?") have=[\(e.ranges.map(kb).joined(separator: ","))] inflight=[\(e.inflight.map(kb).joined(separator: ","))] horizon=\(horizon) starving=\(starving) pumping=\(e.pumping) windows=\(e.windows.count)"
+    }
     func position(_ id: String) -> Double? { lock.lock(); defer { lock.unlock() }; return playhead[id] }
 
     func noteFetched(_ n: Int64) { lock.lock(); sessionBytes += n; lock.unlock() }
