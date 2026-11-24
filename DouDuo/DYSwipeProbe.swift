@@ -82,7 +82,10 @@ import UIKit
         let nc = NotificationCenter.default
         return [
             nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { stop() }
+                MainActor.assumeIsolated { DYLiveModel.log("DDLIFE background now=\(DDNowPlaying.id.suffix(6))@\(String(format: "%.1f", DDNowPlaying.time))"); stop() }
+            },
+            nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { DYLiveModel.log("DDLIFE foreground now=\(DDNowPlaying.id.suffix(6))@\(String(format: "%.1f", DDNowPlaying.time))") }
             },
             nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { if wanted { start() } }

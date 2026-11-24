@@ -799,9 +799,14 @@ struct PlayerPage: View {
             resumeAfterBackground()
         }
         .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification).receive(on: DispatchQueue.main)) { note in
-            guard offlineContext != nil, playbackIsActive, isPlaying,
+            guard playbackIsActive, isPlaying,
                   let p = player, let failedItem = note.object as? AVPlayerItem,
                   failedItem === p.currentItem else { return }
+            let err = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError).map { "\($0.domain)/\($0.code)" } ?? "-"
+            DYLiveModel.log("DDPLAYFAIL \(id.suffix(6)) at=\(String(format: "%.1f", p.currentTime().seconds)) err=\(err) app=\(UIApplication.shared.applicationState.rawValue)")
+            // 在后台失败的先不动，回前台时 checkAfterForeground 会按原位置重建
+            guard UIApplication.shared.applicationState == .active else { return }
+            if offlineContext == nil { current = p.currentTime().seconds }
             retryPlayback()
         }
         .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification).receive(on: DispatchQueue.main)) { note in
@@ -1581,6 +1586,16 @@ struct PlayerPage: View {
         }
     }
 
+    /// 播放器拆了重建（卡死 / 出错 / 换 VLC）时从哪接着播：离线库按记下的进度；在线视频按刚才播到的位置
+    /// （11-24 老板：长视频退出 App 回来播不了，等一会儿又从头播——以前在线视频重建一律从 0 开始）
+    private var rebuildResumePosition: Double? {
+        if offlineContext?.inLibrary == true { return pendingOfflineSeek ?? (firstFrame ? current : initialResumePosition) }
+        let here = firstFrame ? current : (initialResumePosition ?? 0)
+        guard here.isFinite, here > 1 else { return nil }
+        if duration > 0, here > duration - 1 { return nil }
+        return here
+    }
+
     private func rebuild() {
         cancelUpgrade()
         teardownPlayerOnly()
@@ -1599,8 +1614,12 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         attachObservers(p)
-        let localResume = offlineContext?.inLibrary == true ? pendingOfflineSeek ?? (firstFrame ? current : initialResumePosition) : nil
-        if let localResume { restorePosition(localResume, using: p) }
+        let localResume = rebuildResumePosition
+        if let localResume {
+            restorePosition(localResume, using: p)
+            DYStreamStore.shared.setPlayhead(id, localResume)
+        }
+        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") alt=\(altURL != nil)")
         isPlaying = true
         bindSeamlessAudio(to: p, initialPos: localResume, active: isActive, playing: true)
         p.rate = playRate
@@ -1654,6 +1673,26 @@ struct PlayerPage: View {
         pauseInlineForBackground()
     }
 
+    /// 回前台 3 秒还没往前走（后台时边下边播的连接被系统掐断，回来 AVPlayer 一直卡着）：按原位置重建
+    private func checkAfterForeground(_ p: AVPlayer) {
+        let from = seamAudio.currentMediaTime ?? p.currentTime().seconds
+        if p.currentItem?.status == .failed {
+            DYLiveModel.log("DDFGCHECK \(id.suffix(6)) item failed at=\(String(format: "%.1f", from)) → 重建")
+            current = from; rebuild(); return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            guard canControlPlayback, isPlaying, !userPaused, !seeking, player === p, vlc == nil,
+                  offlineContext?.inLibrary != true else { return }
+            let now = seamAudio.currentMediaTime ?? p.currentTime().seconds
+            let failed = p.currentItem?.status == .failed
+            let stuck = p.timeControlStatus != .playing && now.isFinite && now <= from + 0.3
+            DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) now=\(String(format: "%.1f", now)) tcs=\(p.timeControlStatus.rawValue) failed=\(failed) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s\(failed || stuck ? " → 重建" : "")")
+            guard failed || stuck else { return }
+            if from.isFinite, from > 1 { current = from }
+            rebuild()
+        }
+    }
+
     private func pauseInlineForBackground() {
         #if DEBUG
         ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
@@ -1694,6 +1733,7 @@ struct PlayerPage: View {
         pictureInPicture.returnToInline()
         if DDPlayback.bgPlay && isPlaying {
             seamAudio.syncAfterForeground(rate: playRate, muted: muted)
+            if vlc == nil, let p = player { checkAfterForeground(p) }
             return
         }
         guard DYResumePolicy.shouldResumeAfterBackground(userPaused: userPaused) else { return }
@@ -1712,6 +1752,7 @@ struct PlayerPage: View {
             seamAudio.play(rate: playRate, muted: muted)
             hdPlayer?.play()      // 秒开中：高清继续静音陪跑缓冲
             if offlineContext != nil, p.currentItem?.status == .failed || !firstFrame { watchdog(p) }
+            else { checkAfterForeground(p) }
         }
     }
 
@@ -1725,7 +1766,7 @@ struct PlayerPage: View {
             return
         }
         let v = VLCPlayerController()
-        var restoreWithVLC = offlineContext?.inLibrary == true ? pendingOfflineSeek ?? (firstFrame ? current : initialResumePosition) : nil
+        var restoreWithVLC = rebuildResumePosition
         if let restoreWithVLC { pendingOfflineSeek = restoreWithVLC; current = restoreWithVLC }
         v.onProgress = { [weak v] pos in
             guard let v else { return }
