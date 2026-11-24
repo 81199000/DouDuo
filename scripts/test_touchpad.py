@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""半折叠下半屏 评论 ⇄ 触控板（老板 11-24：B / B / 4 秒）。"""
+import sys, pathlib
+R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
+stage = (R / "DYCommentStage.swift").read_text()
+pad = (R / "DYTouchpad.swift").read_text()
+player = (R / "ShortVideoPlayer.swift").read_text()
+host = (R / "DYRecommendFeedHost.swift").read_text()
+feed = (R / "DouyinFeedView.swift").read_text()
+fails = []
+def check(ok, msg):
+    print(("PASS " if ok else "FAIL ") + msg)
+    if not ok: fails.append(msg)
+
+check("static var padDelay: Double { 4 }" in stage, "4 秒")
+check("let padLayout = layout.resident && layout.showsPane && !layout.sideBySide && !showsAuthorPane && !authorOpen" in stage,
+      "只在竖屏半折叠上视频下评论时（书本式 / 作者页不变）")
+# 老板选 1B：换视频不复位
+i = stage.index(".onChange(of: padLayout, initial: true)")
+check("padShown = false" in stage[i:i+200] and ".onChange(of: aweme" not in stage and ".onChange(of: aweme?.id" not in stage,
+      "换视频不闪回评论，只有进出半折叠才复位")
+check("if keyboardUp || touching || DYTouchpadHold.shared.composing { continue }" in stage, "打字 / 按着评论 / 写回复时不切")
+check(".background(DYTouchSniffer" in stage and "cancelsTouchesInView = false" in pad and "shouldRecognizeSimultaneouslyWith" in pad,
+      "碰评论区重新计时且不拦截评论区手势")
+check("DYTouchpadPane(onTap: {" in stage and "padShown = false" in stage[stage.index("DYTouchpadPane(onTap: {"):stage.index("DYTouchpadPane(onTap: {")+200],
+      "单击触控板回评论")
+check(stage.index("DYTouchpadPane(onTap:") < stage.index(".dyDeskLight(layout.resident"), "倒影在触控板上方投（黑底上看得见）")
+check("Color.black" in pad and "DYCornerBrackets()" in pad, "黑底 + 四角取景框")
+# 1B 手势
+check("if dy < -60 || p < -180 { page(1) } else if dy > 60 || p > 180 { page(-1) }" in pad, "上下滑翻页")
+check("link.player?.seekChanged(" in pad and "link.player?.boost(true)" in pad and "lockBoost()" in pad, "左右拖快进、长按 2 倍速 + 锁定")
+check("func pageBy(_ step: Int)" in host and "guard tab == .recommend" in host, "翻页只在推荐页")
+check(feed.count("onPage: tab == .recommend ? { pageBy($0) } : nil") == 2, "两个推荐界面都接上翻页")
+# 弹幕搬家
+check("!cleanScreen && isActive && !touchpadEngaged && (!danmaku.isEmpty" in player, "触控板显示时画面上不画弹幕")
+check("DYTouchpadDanmaku.shared.publish(owner: playbackID" in player and "DYTouchpadDanmaku.shared.clear(playbackID)" in player, "弹幕推给触控板 / 回去时撤")
+check("releaseTouchpad()" in player[player.index(".onDisappear {"):player.index(".onDisappear {")+80], "播放器消失时摘掉触控板引用")
+check(".environment(\\.dyTouchpadEngaged, padActive)" in stage, "只给视频区下发触控板状态")
+sys.exit(1 if fails else 0)

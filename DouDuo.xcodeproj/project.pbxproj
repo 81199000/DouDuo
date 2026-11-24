@@ -100,6 +100,7 @@
 		8EB9B00BA15FC48C75B49677 /* DYChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641CB2690B07BD7100280B09 /* DYChatComposer.swift */; };
 		9037503D427C3AA5AABBA8DA /* DYRelogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2CF757CC7945A9C99E98A58 /* DYRelogin.swift */; };
 		958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */; };
+		95B60B258143F7C66A0C188B /* DYTouchpad.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5763C978AEF95B5187351667 /* DYTouchpad.swift */; };
 		97E2286F23BFC8D8B9BCD853 /* DYAutoPiP.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC3A384734E6ED3D8281B959 /* DYAutoPiP.swift */; };
 		9F40E63A14141175377E9040 /* DYChatHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4522BBA2C9DA5257C7ADCC /* DYChatHeader.swift */; };
 		9FDD1965337CF3D52231C4D0 /* DYStreamPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 155B32250F5E880D0E5980F8 /* DYStreamPlan.swift */; };
@@ -218,6 +219,7 @@
 		53034ACDCBDC31BB8960F1B5 /* DYForwardConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardConversation.swift; sourceTree = "<group>"; };
 		532CF765F5503BE70F2B7BBE /* DYForwardLayoutProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYForwardLayoutProbe.swift; sourceTree = "<group>"; };
 		54934A09C570DF5D3F0042DC /* DouyinExpandableTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinExpandableTitle.swift; sourceTree = "<group>"; };
+		5763C978AEF95B5187351667 /* DYTouchpad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYTouchpad.swift; sourceTree = "<group>"; };
 		591344CAF2A91E0D7CC452C4 /* DDReleaseNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDReleaseNotes.swift; sourceTree = "<group>"; };
 		595FE5CE5D6D10A299C8E468 /* DYChatOptionsPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYChatOptionsPopover.swift; sourceTree = "<group>"; };
 		5DEE6A38F8578111777EB75A /* DYIMProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYIMProbe.swift; sourceTree = "<group>"; };
@@ -452,6 +454,7 @@
 				42AB4D4EC83FFBC8C7A7DF56 /* DYStreamCache.swift */,
 				155B32250F5E880D0E5980F8 /* DYStreamPlan.swift */,
 				730650A08AE183BAB384340D /* DYSwipeProbe.swift */,
+				5763C978AEF95B5187351667 /* DYTouchpad.swift */,
 				C53D74D77792434EAD3EB1AF /* DYTrustLogin.swift */,
 				FD32AA7E05533FF5BC3286EB /* DYUploadScreen.swift */,
 				631BD772CFA6D0746CEFAF94 /* DYVideoAmbient.swift */,
@@ -752,6 +755,7 @@
 				CFF3FBF835765F21CC93564B /* DYStreamCache.swift in Sources */,
 				9FDD1965337CF3D52231C4D0 /* DYStreamPlan.swift in Sources */,
 				196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */,
+				95B60B258143F7C66A0C188B /* DYTouchpad.swift in Sources */,
 				16EFC0E221EF2286EABD7381 /* DYTrustLogin.swift in Sources */,
 				D4C4FF844F738CB253BAA212 /* DYUploadScreen.swift in Sources */,
 				76E23E9018E12443F48468FA /* DYVideoAmbient.swift in Sources */,

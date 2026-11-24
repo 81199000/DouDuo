@@ -27,6 +27,8 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     var showsCaption = false
     /// 右侧作者页（经典内屏）；其它界面传 nil
     var authorPane: (id: String?, workOpen: Bool, supportsSidePanel: Bool)? = nil
+    /// 半折叠触控板上下滑翻页（+1 下一条 / -1 上一条）；nil = 不支持
+    var onPage: ((Int) -> Void)? = nil
     @ViewBuilder var feed: () -> Feed
     @ViewBuilder var author: () -> Author
     /// 布局结果回报给外层（菜单让位、顶栏宽度等）
@@ -34,6 +36,12 @@ struct DYCommentStage<Feed: View, Author: View>: View {
 
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
+    /// 半折叠下半屏：评论 4 秒没人碰 → 触控板（老板 11-24，见 DYTouchpad.swift）
+    @State private var padShown = false
+    @State private var padTimer: Task<Void, Never>?
+    @State private var keyboardUp = false
+    @State private var touching = false
+    static var padDelay: Double { 4 }
 
     var body: some View {
         let authorOpen = authorPane?.id != nil
@@ -47,9 +55,13 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                                           paneFraction: showsAuthorPane ? 0.5 : nil,
                                           keepsSideBySide: showsAuthorPane && (authorPane?.workOpen ?? false))
         let w = geo.size.width, h = geo.size.height
+        // 只在竖屏半折叠（上视频下评论）且下半屏是评论时；书本式左右分、作者页、直播都不变
+        let padLayout = layout.resident && layout.showsPane && !layout.sideBySide && !showsAuthorPane && !authorOpen
+        let padActive = padLayout && padShown && aweme != nil
 
         return ZStack(alignment: .topLeading) {
             feed()
+                .environment(\.dyTouchpadEngaged, padActive)
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
                 // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）会铺满整屏宽，盖住右侧评论栏
@@ -67,11 +79,28 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                                        trailingInset: horizontalCommentStatus ? geo.safeAreaInsets.trailing : layout.trailingInset,
                                        horizontalStatus: horizontalCommentStatus)
                             .id(cur.id)
+                            .opacity(padActive ? 0 : 1)
+                            .allowsHitTesting(!padActive)
+                            .background(DYTouchSniffer { down in
+                                touching = down
+                                if padLayout && !padShown { armPad() }
+                            })
                     }
                 }
                 .padding(.top, !DYDuoMetrics.isDuoHardware && layout.sideBySide ? DYDuoMetrics.windowSafeTop : 0)
                 .frame(width: layout.paneSize.width, height: layout.paneSize.height)
                 .clipped()
+                // 触控板压在评论上面、倒影下面：桌面倒影照样投在黑底上（不重复挂第二层投光）
+                .overlay {
+                    if padActive {
+                        DYTouchpadPane(onTap: {
+                            withAnimation(.easeInOut(duration: 0.25)) { padShown = false }
+                            armPad()
+                        }, onPage: onPage)
+                        .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.35), value: padActive)
                 .dyDeskLight(layout.resident && !layout.sideBySide && !authorOpen, videoHeight: layout.videoSize.height)
                 .overlay(alignment: .leading) {
                     if layout.sideBySide { Color(uiColor: .separator).frame(width: 0.5) }
@@ -86,6 +115,21 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         }
         .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
             onLayout(layout.resident, bookFold)
+        }
+        // 进入半折叠先给评论，4 秒后变触控板；离开半折叠复位。换视频不复位（老板选 B：连着刷不闪评论）
+        .onChange(of: padLayout, initial: true) { _, on in
+            padTimer?.cancel()
+            padShown = false
+            if on { armPad() }
+        }
+        // 点了视频上的评论按钮：回到评论
+        .onChange(of: showComments) { _, on in
+            if on, padShown { withAnimation(.easeInOut(duration: 0.25)) { padShown = false }; armPad() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardUp = false
+            if padLayout && !padShown { armPad() }
         }
         .background((layout.resident ? Color.black : theme.media.strongScrim.color(for: scheme)).ignoresSafeArea())
         .animation(showSearch ? nil : .snappy, value: layout.resident)
@@ -104,16 +148,34 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     }
 }
 
+extension DYCommentStage {
+    /// 重新计时：4 秒内没再碰评论区、也没在打字 → 淡成触控板
+    fileprivate func armPad() {
+        padTimer?.cancel()
+        padTimer = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.padDelay))
+                if Task.isCancelled { return }
+                if keyboardUp || touching || DYTouchpadHold.shared.composing { continue }
+                withAnimation(.easeInOut(duration: 0.35)) { padShown = true }
+                DYLiveModel.log("DDTOUCHPAD on（评论 \(Int(Self.padDelay)) 秒没动）")
+                return
+            }
+        }
+    }
+}
+
 extension DYCommentStage where Author == EmptyView {
     init(geo: GeometryProxy, bridge: DouyinBridge, aweme: DYAweme?, showComments: Binding<Bool>,
          showSearch: Bool, isLive: Bool, stacksLandscapeComments: Bool,
          hidesCommentStatus: Bool, horizontalCommentStatus: Bool,
+         onPage: ((Int) -> Void)? = nil,
          @ViewBuilder feed: @escaping () -> Feed,
          onLayout: @escaping (_ resident: Bool, _ bookFold: Bool) -> Void = { _, _ in }) {
         self.init(geo: geo, bridge: bridge, aweme: aweme, showComments: showComments, showSearch: showSearch,
                   isLive: isLive, stacksLandscapeComments: stacksLandscapeComments,
                   hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
-                  feed: feed, author: { EmptyView() }, onLayout: onLayout)
+                  onPage: onPage, feed: feed, author: { EmptyView() }, onLayout: onLayout)
     }
 }
 
