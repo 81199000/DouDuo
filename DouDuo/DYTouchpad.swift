@@ -59,6 +59,8 @@ struct DYTouchpadPane: View {
     var onTap: () -> Void
     /// +1 下一条 / -1 上一条；nil = 这一页不支持（关注页等）
     var onPage: ((Int) -> Void)?
+    /// 底部小字提示（直播间：「轻点进入直播间」）
+    var hint: String? = nil
     @ObservedObject private var dm = DYTouchpadDanmaku.shared
     @GestureState private var holding = false
     @State private var boostOn = false
@@ -80,6 +82,13 @@ struct DYTouchpadPane: View {
                 DYCornerBrackets()
                     .padding(.horizontal, 20).padding(.vertical, 18)
                     .allowsHitTesting(false)
+                if let hint {
+                    Text(hint).font(.footnote).foregroundStyle(Color.white.opacity(0.45))
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, 34)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("douyin.touchpad.hint")
+                }
                 pad(g.size)
             }
         }

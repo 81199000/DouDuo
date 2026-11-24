@@ -22,7 +22,7 @@ check("padShown = false" in stage[i:i+200] and ".onChange(of: aweme" not in stag
 check("if keyboardUp || touching || DYTouchpadHold.shared.composing { continue }" in stage, "打字 / 按着评论 / 写回复时不切")
 check(".background(DYTouchSniffer" in stage and "cancelsTouchesInView = false" in pad and "shouldRecognizeSimultaneouslyWith" in pad,
       "碰评论区重新计时且不拦截评论区手势")
-check("DYTouchpadPane(onTap: {" in stage and "padShown = false" in stage[stage.index("DYTouchpadPane(onTap: {"):stage.index("DYTouchpadPane(onTap: {")+200],
+check("DYTouchpadPane(onTap: {" in stage and "padShown = false" in stage[stage.index("DYTouchpadPane(onTap: {"):stage.index("DYTouchpadPane(onTap: {")+320],
       "单击触控板回评论")
 check(stage.index("DYTouchpadPane(onTap:") < stage.index(".dyDeskLight(layout.resident"), "倒影在触控板上方投（黑底上看得见）")
 check("Color.black" in pad and "DYCornerBrackets()" in pad, "黑底 + 四角取景框")
@@ -36,4 +36,9 @@ check("!cleanScreen && isActive && !touchpadEngaged && (!danmaku.isEmpty" in pla
 check("DYTouchpadDanmaku.shared.publish(owner: playbackID" in player and "DYTouchpadDanmaku.shared.clear(playbackID)" in player, "弹幕推给触控板 / 回去时撤")
 check("releaseTouchpad()" in player[player.index(".onDisappear {"):player.index(".onDisappear {")+80], "播放器消失时摘掉触控板引用")
 check(".environment(\\.dyTouchpadEngaged, padActive)" in stage, "只给视频区下发触控板状态")
+# 11-24 老板：刷到直播间不能卡住——直接是触控板，单击进直播间，上下滑照样切
+check("let liveHere = aweme == nil && onLiveTap != nil" in stage and "|| liveHere)" in stage, "直播间直接显示触控板")
+check("if liveHere { DYLiveModel.log(\"DDTOUCHPAD tap → 进直播间\"); onLiveTap?(); return }" in stage, "直播间单击进直播间")
+check("if live, padLayout { padTimer?.cancel(); padShown = true }" in stage, "从直播间划回视频保持触控板")
+check(feed.count("onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil") == 2, "两个推荐界面都接直播间")
 sys.exit(1 if fails else 0)

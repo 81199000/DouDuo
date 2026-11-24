@@ -2257,6 +2257,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                        stacksLandscapeComments: stacksLandscapeComments,
                        hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
                        onPage: tab == .recommend ? { pageBy($0) } : nil,
+                       onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil,
                        feed: { feedArea },
                        onLayout: { resident, bookFold in
                            residentComments = resident
@@ -3561,6 +3562,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                        showsCaption: captionItem != nil,
                        authorPane: (id: authorTarget?.id, workOpen: authorWorkOpen, supportsSidePanel: supportsSidePanel),
                        onPage: tab == .recommend ? { pageBy($0) } : nil,
+                       onLiveTap: tab == .recommend ? current?.live.map { l in { enterFeedLive(l.room) } } : nil,
                        feed: { feedArea },
                        author: {
                            if let author = authorTarget {

@@ -29,6 +29,8 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     var authorPane: (id: String?, workOpen: Bool, supportsSidePanel: Bool)? = nil
     /// 半折叠触控板上下滑翻页（+1 下一条 / -1 上一条）；nil = 不支持
     var onPage: ((Int) -> Void)? = nil
+    /// 当前条是推荐流里的直播间：没有评论可显示，下半屏直接是触控板，单击 = 进直播间（老板 11-24）
+    var onLiveTap: (() -> Void)? = nil
     @ViewBuilder var feed: () -> Feed
     @ViewBuilder var author: () -> Author
     /// 布局结果回报给外层（菜单让位、顶栏宽度等）
@@ -57,7 +59,9 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         let w = geo.size.width, h = geo.size.height
         // 只在竖屏半折叠（上视频下评论）且下半屏是评论时；书本式左右分、作者页、直播都不变
         let padLayout = layout.resident && layout.showsPane && !layout.sideBySide && !showsAuthorPane && !authorOpen
-        let padActive = padLayout && padShown && aweme != nil
+        // 刷到直播间（aweme == nil 且有 onLiveTap）：没有评论，直接是触控板，不能让下半屏黑着卡住
+        let liveHere = aweme == nil && onLiveTap != nil
+        let padActive = padLayout && ((padShown && aweme != nil) || liveHere)
 
         return ZStack(alignment: .topLeading) {
             feed()
@@ -94,9 +98,10 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                 .overlay {
                     if padActive {
                         DYTouchpadPane(onTap: {
+                            if liveHere { DYLiveModel.log("DDTOUCHPAD tap → 进直播间"); onLiveTap?(); return }
                             withAnimation(.easeInOut(duration: 0.25)) { padShown = false }
                             armPad()
-                        }, onPage: onPage)
+                        }, onPage: onPage, hint: liveHere ? "轻点进入直播间" : nil)
                         .transition(.opacity)
                     }
                 }
@@ -121,6 +126,10 @@ struct DYCommentStage<Feed: View, Author: View>: View {
             padTimer?.cancel()
             padShown = false
             if on { armPad() }
+        }
+        // 从直播间划回视频：保持触控板（老板选 B，连着刷不闪评论）
+        .onChange(of: liveHere) { _, live in
+            if live, padLayout { padTimer?.cancel(); padShown = true }
         }
         // 点了视频上的评论按钮：回到评论
         .onChange(of: showComments) { _, on in
@@ -170,12 +179,13 @@ extension DYCommentStage where Author == EmptyView {
          showSearch: Bool, isLive: Bool, stacksLandscapeComments: Bool,
          hidesCommentStatus: Bool, horizontalCommentStatus: Bool,
          onPage: ((Int) -> Void)? = nil,
+         onLiveTap: (() -> Void)? = nil,
          @ViewBuilder feed: @escaping () -> Feed,
          onLayout: @escaping (_ resident: Bool, _ bookFold: Bool) -> Void = { _, _ in }) {
         self.init(geo: geo, bridge: bridge, aweme: aweme, showComments: showComments, showSearch: showSearch,
                   isLive: isLive, stacksLandscapeComments: stacksLandscapeComments,
                   hidesCommentStatus: hidesCommentStatus, horizontalCommentStatus: horizontalCommentStatus,
-                  onPage: onPage, feed: feed, author: { EmptyView() }, onLayout: onLayout)
+                  onPage: onPage, onLiveTap: onLiveTap, feed: feed, author: { EmptyView() }, onLayout: onLayout)
     }
 }
 
