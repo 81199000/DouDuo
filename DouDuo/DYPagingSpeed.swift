@@ -316,6 +316,10 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 不是抬手就起播（那样画面还在往上走就开播了）。
         if let id = targetID, id != currentID() {
             DYSwipeProbe.lift(); DYSwipeProbe.mark("lift(\(id.suffix(4)))")
+            // 抬手那一刻就告诉当前页「要走了」：直播卡据此先静音，不等下一条停住（老板 11-24：停住前 0.3 秒就该没声）
+            if let from = currentID() {
+                NotificationCenter.default.post(name: DYFeedLeaving.name, object: nil, userInfo: ["from": from, "to": id])
+            }
         } else {
             DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
         }

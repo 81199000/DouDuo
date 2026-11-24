@@ -89,6 +89,19 @@ struct DYFeedLivePage: View {
         .ignoresSafeArea()
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, cur in cur ? start() : stop() }
+        // 抬手要划走就先静音（不等新条停住才 isCurrent=false，那时已晚 0.2–0.3 秒，蓝牙再晚一截）
+        .onReceive(NotificationCenter.default.publisher(for: DYFeedLeaving.name)) { note in
+            guard isCurrent, started, (note.userInfo?["from"] as? String) == item.id else { return }
+            let c = warm?.controller ?? player
+            DYFeedLiveWarm.silenceNow(c)
+            DYLiveModel.log("DDLIVEAUDIO lift-mute room=\(live.roomID.suffix(6))")
+            // 万一没翻过去（被弹回 / 手势取消）：还停在这间直播就把声音还回来
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                guard isCurrent, started, !muted else { return }
+                restoreVolume(warm?.controller ?? player)
+                DYLiveModel.log("DDLIVEAUDIO lift-unmute room=\(live.roomID.suffix(6)) 没翻过去")
+            }
+        }
         .onChange(of: muted) { _, m in
             let c = warm?.controller ?? player
             c.outputMuted = m; c.mediaPlayer.audio?.isMuted = m

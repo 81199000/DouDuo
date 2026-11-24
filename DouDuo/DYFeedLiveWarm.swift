@@ -124,7 +124,7 @@ final class DYFeedLiveWarm {
     }
     private static var retired: [Handle] = []
 
-    /// 离开直播：声音立刻拉到 0，真正停播往后挪这么久。
+    /// 离开直播：声音立刻拉到 0，真正停播往后挪这么久。（「立刻」现在是抬手那一刻，见 DYFeedLeaving）
     /// 11-24 真机：停直播和下一条视频开播撞在同一刻时，缓冲够了的视频也要等 0.5–1.4 秒才起播（平时 0.03 秒）
     static let stopDelay: TimeInterval = 0.6
     private static var pendingStops: [ObjectIdentifier: DispatchWorkItem] = [:]
@@ -210,4 +210,10 @@ struct DYFeedLiveVideo: View {
         .onAppear { if controller.videoSize.width > 0 { onFirstFrame() } }
         .onChange(of: controller.videoSize.width > 0) { _, has in if has { onFirstFrame() } }
     }
+}
+
+
+/// 竖滑抬手、确定要翻到别的条时发（比新条「停住」早约 0.2–0.3 秒）。userInfo: from / to（条目 id）
+enum DYFeedLeaving {
+    static let name = Notification.Name("DYFeedLeaving")
 }
