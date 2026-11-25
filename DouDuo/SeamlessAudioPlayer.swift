@@ -77,6 +77,7 @@ final class DDAudioEngineHub {
             let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
             MainActor.assumeIsolated {
                 guard let self else { return }
+                DYLiveModel.log("DDAUDIOINT \(type == .began ? "began" : "ended") resume=\(shouldResume) app=\(UIApplication.shared.applicationState.rawValue) owner=\(self.activeOwner != nil) gate=\(self.interruption.phase)")
                 switch type {
                 case .began:
                     self.interruption.began()
@@ -157,6 +158,17 @@ final class DDAudioEngineHub {
     func noteExplicitPlaybackRequest() {
         interruption.explicitPlay()
     }
+
+    /// 回到前台、音频会话重新激活成功 = 别的 App 的打断已经结束。
+    /// 打断结束的通知不一定送达（别的 App 没带 notifyOthers 就关会话时系统不发 ended），
+    /// 门闩会一直停在 active：引擎永远不出声，原生音轨又关着 → 画面走、没声音（老板 11-26）。
+    func clearInterruptionAfterForeground() {
+        guard interruption.phase != .clear else { return }
+        DYLiveModel.log("DDAUDIOINT gate-cleared-on-foreground was=\(interruption.phase)")
+        interruption = DDAudioInterruptionGate()
+    }
+
+    var gateDescription: String { "\(interruption.phase)" }
 
     func pause(owner: UUID) {
         guard activeOwner == owner else { return }
@@ -899,9 +911,19 @@ final class DDSeamlessController {
             videoPlayer?.isMuted = true
             videoPlayer?.rate = targetRate
         case .fallbackAVPlayer:
+            if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }
             videoPlayer?.isMuted = muted
             videoPlayer?.rate = targetRate
         }
+    }
+
+    /// 前后台排查日志：声音现在走哪条路、引擎在不在跑、原生音轨开没开
+    func audioDiag() -> String {
+        let hub = DDAudioEngineHub.shared
+        let vp = videoPlayer
+        let tracks = vp?.currentItem?.tracks.filter { $0.assetTrack?.mediaType == .audio } ?? []
+        let s = AVAudioSession.sharedInstance()
+        return "mode=\(mode) handoff=\(engagedByHandoff) want=\(wantPlaying) owner=\(hub.activeOwner == ownerID) engine=\(hub.engine.isRunning) node=\(hub.playerNode.isPlaying) pend=\(pendingBuffers) gate=\(hub.gateDescription) vMuted=\(vp?.isMuted.description ?? "-") vRate=\(vp?.rate ?? -1) tcs=\(vp?.timeControlStatus.rawValue ?? -1) aTracks=\(tracks.filter(\.isEnabled).count)/\(tracks.count) cat=\(s.category.rawValue.replacingOccurrences(of: "AVAudioSessionCategory", with: "")) other=\(s.isOtherAudioPlaying) route=\(s.currentRoute.outputs.map(\.portType.rawValue).joined(separator: "+"))"
     }
 
     func pause() {

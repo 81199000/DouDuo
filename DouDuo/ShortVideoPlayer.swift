@@ -1694,6 +1694,7 @@ struct PlayerPage: View {
     }
 
     private func pauseInlineForBackground() {
+        if playbackIsActive, vlc == nil, player != nil { DYLiveModel.log("DDBGAUDIO \(id.suffix(6)) pause \(seamAudio.audioDiag())") }
         #if DEBUG
         ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
         #endif
@@ -1732,7 +1733,9 @@ struct PlayerPage: View {
         }
         pictureInPicture.returnToInline()
         if DDPlayback.bgPlay && isPlaying {
+            if (try? AVAudioSession.sharedInstance().setActive(true)) != nil { DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
             seamAudio.syncAfterForeground(rate: playRate, muted: muted)
+            DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) bgPlay \(seamAudio.audioDiag())")
             if vlc == nil, let p = player { checkAfterForeground(p) }
             return
         }
@@ -1747,9 +1750,18 @@ struct PlayerPage: View {
         }
         if let p = player {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
-            try? AVAudioSession.sharedInstance().setActive(true)
+            let sessionOK = (try? AVAudioSession.sharedInstance().setActive(true)) != nil
+            if sessionOK { DDAudioSessionGate.invalidate(); DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
+            // 变速时交给独立引擎的这一条：切后台时引擎被整个停掉、排着的声音丢了，回来再接引擎会错位甚至不出声
+            // （原生音轨又关着 → 有画面没声音，老板 11-26）。反正是从暂停恢复，直接把声音交回原生音轨，下次变速再交接。
+            seamAudio.returnToNativeAudio(reason: "foreground")
             isPlaying = true
             seamAudio.play(rate: playRate, muted: muted)
+            DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) resume session=\(sessionOK) \(seamAudio.audioDiag())")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                guard player === p, canControlPlayback else { return }
+                DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) +2s t=\(String(format: "%.1f", p.currentTime().seconds)) \(seamAudio.audioDiag())")
+            }
             hdPlayer?.play()      // 秒开中：高清继续静音陪跑缓冲
             if offlineContext != nil, p.currentItem?.status == .failed || !firstFrame { watchdog(p) }
             else { checkAfterForeground(p) }
