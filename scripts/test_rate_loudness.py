@@ -21,7 +21,7 @@ func c(_ r: Float) -> Float { DDLoudness.compensationDB(rate: r) }
 precondition(c(1) == 0 && c(0.5) == 0 && c(0.75) == 0, "1x 和减速不补")
 precondition(abs(c(2) - 1.6) < 0.01, "2x 补 1.6 dB")
 precondition(c(1.25) > 0.3 && c(1.25) < 0.8, "1.25x 约 0.5 dB")
-precondition(c(4) <= 3.5, "封顶 3.5 dB")
+precondition(abs(c(4) - 3.2) < 0.01, "4x（速率上限）补 3.2 dB")
 precondition(c(1.5) < c(2) && c(2) < c(3), "越快补越多")
 print("PASS loudness curve")
 """

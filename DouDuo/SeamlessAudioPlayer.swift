@@ -42,12 +42,12 @@ struct DDAudioInterruptionGate: Equatable {
 // END DDAudioInterruptionGate
 
 // BEGIN DDLoudness
-/// 倍速时补多少 dB。只补加速（≥1x 不变调加速才掉响度）；上限 3.5 dB。
+/// 倍速时补多少 dB。只补加速（不变调加速才掉响度）；速率上限 4x → 最多 3.2 dB。
 /// 系数按 11 条真实抖音音轨离线渲染取中位：1.25x≈0.5 / 1.5x≈0.9 / 2x≈1.6 / 3x≈2.5 dB
 enum DDLoudness {
     static func compensationDB(rate: Float) -> Float {
         guard rate > 1.001 else { return 0 }
-        return min(3.5, 1.6 * log2(rate))
+        return 1.6 * log2(rate)
     }
 }
 // END DDLoudness
