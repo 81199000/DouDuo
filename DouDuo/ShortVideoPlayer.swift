@@ -1682,7 +1682,10 @@ struct PlayerPage: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             guard canControlPlayback, isPlaying, !userPaused, !seeking, player === p, vlc == nil,
-                  offlineContext?.inLibrary != true else { return }
+                  offlineContext?.inLibrary != true else {
+                DYLiveModel.log("DDFGCHECK \(id.suffix(6)) skip ctl=\(canControlPlayback) playing=\(isPlaying) userPaused=\(userPaused) seeking=\(seeking) same=\(player === p) vlc=\(vlc != nil) t=\(String(format: "%.1f", p.currentTime().seconds)) tcs=\(p.timeControlStatus.rawValue)")
+                return
+            }
             let now = seamAudio.currentMediaTime ?? p.currentTime().seconds
             let failed = p.currentItem?.status == .failed
             let stuck = p.timeControlStatus != .playing && now.isFinite && now <= from + 0.3

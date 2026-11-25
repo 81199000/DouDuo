@@ -5,6 +5,9 @@ import Foundation
 /// - 「现在最多允许下载到哪个字节」：当前播放的条 = 播放位置 + 前瞻秒数；预加载的条 = 只要开头几秒
 /// - MP4 顶层盒子解析：找出 mdat（画面数据）从哪开始，用来把「秒」换算成「字节」
 enum DYStreamPlan {
+    /// 在后台待了这么久才作废旧连接（短暂下拉控制中心不动）
+    static let reviveAfterBackground: TimeInterval = 2
+
     /// 当前播放的条：比播放位置多下几秒（流量 / 不卡 的平衡点）
     static let lookaheadWiFi: Double = 30
     static let lookaheadCellular: Double = 18

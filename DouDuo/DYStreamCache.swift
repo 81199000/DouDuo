@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// 边下边播（老板 2026-11-20 定 A 方案）。
 ///
@@ -436,14 +439,56 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     static let shared = DYStreamLoader()
     static let queue = DispatchQueue(label: "douduo.stream.loader")
 
-    private let session: URLSession = {
+    private static func makeSession() -> URLSession {
         let c = URLSessionConfiguration.default
         c.httpMaximumConnectionsPerHost = 6
         c.timeoutIntervalForRequest = 20
         c.urlCache = nil
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: c)
-    }()
+    }
+    private var _session = DYStreamLoader.makeSession()
+    private var session: URLSession { lock.lock(); defer { lock.unlock() }; return _session }
+    /// 正在收数据的连接（回前台时要整批作废）
+    private var live: [ObjectIdentifier: DYChunkStream] = [:]
+    private var backgroundAt: Date?
+    private var lifecycle: [NSObjectProtocol] = []
+
+    override init() {
+        super.init()
+        #if canImport(UIKit)
+        let nc = NotificationCenter.default
+        lifecycle = [
+            nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.lock.lock(); self?.backgroundAt = Date(); self?.lock.unlock()
+            },
+            nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.reviveAfterForeground()
+            },
+        ]
+        #endif
+    }
+
+    private func track(_ c: DYChunkStream) { lock.lock(); live[ObjectIdentifier(c)] = c; lock.unlock() }
+    private func untrack(_ id: ObjectIdentifier) { lock.lock(); live[id] = nil; lock.unlock() }
+
+    /// App 挂起时系统把边下边播的连接冻住，回来后连接已死但任务还挂着：它占着「正在下这段」的标记，
+    /// 播放器要的数据就一直等它，直到 20 秒超时（真机 11-26：回前台卡 13.7 秒 / 4 秒）。
+    /// 回前台：换新会话，旧连接按「连接断了」作废 → 下载循环立刻用新连接重拉同一段。
+    private func reviveAfterForeground() {
+        lock.lock()
+        let away = backgroundAt.map { Date().timeIntervalSince($0) } ?? 0
+        backgroundAt = nil
+        guard away >= DYStreamPlan.reviveAfterBackground else { lock.unlock(); return }
+        let old = _session
+        _session = DYStreamLoader.makeSession()
+        let streams = Array(live.values)
+        live.removeAll()
+        lock.unlock()
+        streams.forEach { $0.abortForRevive() }
+        old.finishTasksAndInvalidate()
+        DYLiveModel.log("DDSTREAM revive away=\(Int(away))s aborted=\(streams.count)")
+    }
 
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
@@ -505,7 +550,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 }
                 do { try await self.download(e, fetch, sink: nil) } catch {
                     e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
-                    try? await Task.sleep(for: .seconds(1))
+                    if !DYChunkStream.isRevive(error) { try? await Task.sleep(for: .seconds(1)) }
                     continue
                 }
                 e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
@@ -598,6 +643,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             let want: Int64 = dr.requestsAllDataToEndOfResource ? total - start : Int64(dr.requestedLength)
             let end = min(total, start + want)
             var cursor = max(start, dr.currentOffset)
+            var revives = 0
             // 跳着读：当前条拖进度条，或任何条读文件尾部的 moov → 给一个临时窗口，不受播放前瞻限制。
             // 预热中的条正常往后读不放开（否则每次重发请求都多下 8 秒，省流量就白做了）
             e.lock.lock(); let shape = e.shape; e.lock.unlock()
@@ -664,13 +710,20 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 }
                 defer { e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock() }
                 var fed = cursor
-                try await download(e, fetch) { data in
-                    // 只喂播放器要的那部分（下载块的尾巴可能超出这次请求）
-                    let room = end - fed
-                    guard room > 0 else { return }
-                    let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
-                    dr.respond(with: piece)
-                    fed += Int64(piece.count)
+                do {
+                    try await download(e, fetch) { data in
+                        // 只喂播放器要的那部分（下载块的尾巴可能超出这次请求）
+                        let room = end - fed
+                        guard room > 0 else { return }
+                        let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
+                        dr.respond(with: piece)
+                        fed += Int64(piece.count)
+                    }
+                } catch where DYChunkStream.isRevive(error) && revives < 3 {
+                    // 回前台作废了冻住的连接：从已经喂到的位置接着来，新连接马上重拉
+                    revives += 1
+                    cursor = fed
+                    continue
                 }
                 // 200 整条回来时没直接喂（fed 没动），下一轮从本地读
                 cursor = fed
@@ -721,8 +774,10 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // 按块收（URLSession 每次给几十 KB），不再逐字节 `for try await b in bytes`：
                 // 逐字节一条 10MB 视频就是一千万次异步迭代，真机分析里是后台 CPU 第一大户（发烫原因之一）
                 let chunks = DYChunkStream(session: session, request: r)
+                let cid = ObjectIdentifier(chunks)
+                track(chunks)
+                defer { chunks.cancel(); untrack(cid) }
                 let resp = try await chunks.response()
-                defer { chunks.cancel() }
                 #if DEBUG
                 DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) range=\(range.lowerBound)-\(range.upperBound)")
                 #endif
@@ -769,6 +824,9 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             } catch {
                 e.lock.lock(); e.saveMeta(); e.lock.unlock()
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                // 回前台作废的旧连接：不换地址、不清跳转结果，直接抛给调用方从「已写到哪」重算再拉
+                // （serve 已经按块喂过播放器，这里原地重下同一段会把重复字节喂进去）
+                if DYChunkStream.isRevive(error) { throw error }
                 if target == e.resolved { e.lock.lock(); e.resolved = nil; e.lock.unlock() }
                 lastError = error
             }
@@ -813,6 +871,17 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
 
     func cancel() { task?.cancel() }
 
+    private var revived = false
+    static func isRevive(_ error: Error) -> Bool {
+        let n = error as NSError
+        return n.domain == NSURLErrorDomain && n.code == URLError.networkConnectionLost.rawValue && n.userInfo["dd.revive"] as? Bool == true
+    }
+    /// 回前台作废：按「连接断了」结束（不是取消——取消会让播放器的数据请求永远挂着没人答）
+    func abortForRevive() {
+        lock.lock(); revived = true; lock.unlock()
+        task?.cancel()
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         lock.lock(); gotResponse = response; let k = respCont; respCont = nil; lock.unlock()
@@ -827,6 +896,8 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock()
         let k = respCont; respCont = nil
+        var error = error
+        if revived { error = URLError(.networkConnectionLost, userInfo: ["dd.revive": true]) }
         if let error { failed = error }
         lock.unlock()
         if let error {
