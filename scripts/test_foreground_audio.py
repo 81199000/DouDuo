@@ -21,7 +21,7 @@ check('"DDBGAUDIO' in p, "切后台记音频状态")
 
 check("func clearInterruptionAfterForeground()" in s and "interruption = DDAudioInterruptionGate()" in s, "引擎门闩可在回前台时复位")
 check('"DDAUDIOINT' in s, "系统音频打断写日志")
-f = s[s.index("        case .fallbackAVPlayer:\n            if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }"):][:200]
+f = s[s.index("        case .fallbackAVPlayer:\n            if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }"):][:400]
 check("videoPlayer?.rate = targetRate" in f, "原生声音起播时确保音轨开着")
 check("func audioDiag() -> String" in s and "aTracks=" in s and "gate=" in s, "音频诊断串含音轨/门闩")
 sys.exit(1 if fails else 0)
