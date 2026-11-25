@@ -19,7 +19,8 @@ check("sessionOK" in body, "会话激活成功才清门闩")
 check('"DDFGAUDIO' in body and "+2s" in body, "回前台记音频状态（当场 + 2 秒后）")
 check('"DDBGAUDIO' in p, "切后台记音频状态")
 
-check("func clearInterruptionAfterForeground()" in s and "interruption = DDAudioInterruptionGate()" in s, "引擎门闩可在回前台时复位")
+c = s[s.index("    func clearInterruptionAfterForeground() {"):][:400]
+check("        interruption = DDAudioInterruptionGate()\n" in c, "引擎门闩可在回前台时复位")
 check('"DDAUDIOINT' in s, "系统音频打断写日志")
 f = s[s.index("        case .fallbackAVPlayer:\n            if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }"):][:400]
 check("videoPlayer?.rate = targetRate" in f, "原生声音起播时确保音轨开着")
