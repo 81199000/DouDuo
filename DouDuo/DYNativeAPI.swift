@@ -11,6 +11,11 @@ enum DYNative {
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
+    /// 原生发私信：默认关。2026-11-27 真机两次实测——imapi 直发一出去服务端立刻作废登录
+    /// （之后所有请求回 "unexepcted session length"）。缺网页 IM 的身份令牌/票据签名，查清前不许开。
+    static let imSendKey = "douduo_native_im_send_v1"
+    static var imSendEnabled: Bool { UserDefaults.standard.bool(forKey: imSendKey) }
+
     /// 发请求与签名必须是同一个 UA（a_bogus 里编码了 UA）
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     static let host = "https://www.douyin.com"

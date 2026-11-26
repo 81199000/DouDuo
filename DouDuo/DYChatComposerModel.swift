@@ -123,7 +123,7 @@ final class DYChatComposerModel: ObservableObject {
         let previous = acknowledgedText
         error = nil
         // 原生直发私信（imapi）：不经过网页输入框。只有「确定没发出去」才回落网页。
-        if action == .send, DYNative.enabled, id.hasPrefix("conversation:") {
+        if action == .send, DYNative.imSendEnabled, id.hasPrefix("conversation:") {
             let convID = String(id.dropFirst("conversation:".count))
             do {
                 _ = try await DYNativeIM.shared.sendText(draft, to: convID)
