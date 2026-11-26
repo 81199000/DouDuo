@@ -521,6 +521,12 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
             throw DYError.bad("本地标签回归已禁用网络请求")
         }
         #endif
+        // 只读脚本先在原生引擎里跑（Swift 签名直连，不等签名页）；跑不了再走网页
+        if DYNative.enabled, let name = DYNativeJS.name(of: body),
+           let s = await DYNativeJS.shared.run(prelude: Self.requestJS, body: body, args: args, name: name),
+           let d = s.data(using: .utf8) {
+            return d
+        }
         await waitReady()
         var lastErr: Error = DYError.notReady
         for attempt in 0..<attempts {
