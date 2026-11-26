@@ -1,0 +1,255 @@
+// 原生私信：直连抖音网页 IM 后端 imapi.douyin.com（protobuf over HTTPS，只用登录 cookie 鉴权，不需要请求签名）。
+// 信封与命令号参照 xianyulolo8/douyin-spark（MIT）的 douyin_im.py / spark.py；字段号经本机只读实测核对。
+// 只做：拉会话列表、读某会话最近消息、发文字消息。发送结果严格核对回执，拿不准时报「未确认」，绝不自动重发。
+import Foundation
+
+// MARK: - 无 schema 的 protobuf 编解码
+
+enum DYPB {
+    typealias Fields = [Int: [Value]]
+    enum Value {
+        case int(UInt64)
+        case bytes(Data)
+        var int: UInt64? { if case .int(let v) = self { return v }; return nil }
+        var data: Data? { if case .bytes(let d) = self { return d }; return nil }
+        var string: String? { data.flatMap { String(data: $0, encoding: .utf8) } }
+    }
+
+    static func varint(_ v: UInt64) -> Data {
+        var v = v, out = Data()
+        repeat {
+            var b = UInt8(v & 0x7f); v >>= 7
+            if v != 0 { b |= 0x80 }
+            out.append(b)
+        } while v != 0
+        return out
+    }
+    static func field(_ n: Int, _ v: UInt64) -> Data { varint(UInt64(n << 3)) + varint(v) }
+    static func field(_ n: Int, _ d: Data) -> Data { varint(UInt64(n << 3 | 2)) + varint(UInt64(d.count)) + d }
+    static func field(_ n: Int, _ s: String) -> Data { field(n, Data(s.utf8)) }
+
+    static func decode(_ d: Data) -> Fields? {
+        let b = [UInt8](d)
+        var out: Fields = [:]
+        var i = 0
+        func readVarint() -> UInt64? {
+            var shift: UInt64 = 0, v: UInt64 = 0
+            while i < b.count, shift <= 63 {
+                let x = b[i]; i += 1
+                v |= UInt64(x & 0x7f) << shift
+                if x & 0x80 == 0 { return v }
+                shift += 7
+            }
+            return nil
+        }
+        while i < b.count {
+            guard let key = readVarint() else { return nil }
+            let n = Int(key >> 3), wire = key & 7
+            guard n > 0 else { return nil }
+            switch wire {
+            case 0: guard let v = readVarint() else { return nil }; out[n, default: []].append(.int(v))
+            case 1: guard i + 8 <= b.count else { return nil }; out[n, default: []].append(.bytes(Data(b[i..<i + 8]))); i += 8
+            case 2:
+                guard let len = readVarint(), i + Int(len) <= b.count else { return nil }
+                out[n, default: []].append(.bytes(Data(b[i..<i + Int(len)]))); i += Int(len)
+            case 5: guard i + 4 <= b.count else { return nil }; out[n, default: []].append(.bytes(Data(b[i..<i + 4]))); i += 4
+            default: return nil
+            }
+        }
+        return out
+    }
+}
+
+extension DYPB.Fields {
+    func int(_ n: Int) -> UInt64? { self[n]?.first?.int }
+    func data(_ n: Int) -> Data? { self[n]?.first?.data }
+    func string(_ n: Int) -> String? { self[n]?.first?.string }
+    func sub(_ n: Int) -> DYPB.Fields? { data(n).flatMap(DYPB.decode) }
+}
+
+// MARK: - 数据
+
+struct DYIMConversation: Equatable {
+    let id: String          // 与网页 React 里的 conversation.id 一致（DYConversationRow.id = "conversation:" + id）
+    let shortID: UInt64
+    let type: Int           // 1 单聊 / 2 群聊
+    let ticket: String      // 发消息要带的会话票据
+    let name: String
+}
+
+struct DYIMMessage: Equatable {
+    let serverID: UInt64
+    let type: Int           // 7 = 普通消息（content 里 aweType 区分文字/视频卡等）
+    let sender: UInt64
+    let createdMS: UInt64
+    let content: String     // JSON 原文
+    var text: String? {
+        guard let d = content.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+        return o["text"] as? String
+    }
+}
+
+enum DYIMError: LocalizedError {
+    case noLogin, badResponse(String), rejected(String), unconfirmed
+    var errorDescription: String? {
+        switch self {
+        case .noLogin: "未登录抖音"
+        case .badResponse(let s): "私信接口返回异常（\(s)）"
+        case .rejected(let s): "抖音没有接受这条消息（\(s)）"
+        case .unconfirmed: "发送结果未确认，请先查看聊天记录"
+        }
+    }
+}
+
+// MARK: - 客户端
+
+@MainActor
+final class DYNativeIM {
+    static let shared = DYNativeIM()
+    static let host = "https://imapi.douyin.com"
+    enum Cmd: Int { case send = 100, messages = 301, info = 610, initSync = 2043 }
+    static let paths: [Cmd: String] = [.send: "/v1/message/send", .messages: "/v1/message/get_by_conversation",
+                                       .info: "/v2/conversation/get_info_list", .initSync: "/v1/message/get_message_by_init"]
+
+    private var seq = UInt64(10000 + Int(Date().timeIntervalSince1970) % 50000)
+    private(set) var selfUID: UInt64 = 0
+    /// 会话缓存（id → 会话），拿票据用
+    private(set) var conversations: [String: DYIMConversation] = [:]
+
+    private func envelope(_ cmd: Cmd, _ payload: Data) -> Data {
+        seq += 1
+        let ua = DYNative.userAgent
+        let meta: [(String, String)] = [
+            ("session_aid", "6383"), ("app_name", "douyin_pc"), ("priority_region", "cn"), ("user_agent", ua),
+            ("cookie_enabled", "true"), ("browser_language", "zh-CN"), ("browser_platform", "Win32"),
+            ("browser_name", "Mozilla"), ("browser_version", String(ua.dropFirst("Mozilla/".count))),
+            ("browser_online", "true"), ("screen_width", "1536"), ("screen_height", "864"),
+            ("referer", "https://www.douyin.com/"), ("timezone_name", "Asia/Shanghai"),
+        ]
+        var d = DYPB.field(1, UInt64(cmd.rawValue)) + DYPB.field(2, seq) + DYPB.field(3, "0.1.6") + DYPB.field(4, "")
+        d += DYPB.field(5, 3) + DYPB.field(6, 0) + DYPB.field(7, "fef1a80:p/lzg/store")
+        d += DYPB.field(8, DYPB.field(cmd.rawValue, payload)) + DYPB.field(9, "0") + DYPB.field(11, "douyin_pc")
+        d += DYPB.field(14, "360000")
+        for (k, v) in meta { d += DYPB.field(15, DYPB.field(1, k) + DYPB.field(2, v)) }
+        d += DYPB.field(18, 1) + DYPB.field(21, "douyin_web") + DYPB.field(22, "web_sdk")
+        return d
+    }
+
+    /// 发一条命令。网络错误原样抛出（调用方据此区分「肯定没发」和「可能发了」）。
+    private func call(_ cmd: Cmd, _ payload: Data) async throws -> DYPB.Fields {
+        let ck = await DYNativeCookies.load()
+        guard !(ck.map["sessionid"] ?? "").isEmpty else { throw DYIMError.noLogin }
+        var r = URLRequest(url: URL(string: Self.host + Self.paths[cmd]!)!)
+        r.httpMethod = "POST"
+        r.httpBody = envelope(cmd, payload)
+        for (k, v) in ["Accept": "application/x-protobuf", "Content-Type": "application/x-protobuf",
+                       "Origin": "https://www.douyin.com", "Referer": "https://www.douyin.com/",
+                       "User-Agent": DYNative.userAgent, "Cookie": ck.header] { r.setValue(v, forHTTPHeaderField: k) }
+        let t0 = Date()
+        let (data, resp) = try await DYNative.session.data(for: r)
+        let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        guard http == 200, let top = DYPB.decode(data) else { throw DYIMError.badResponse("HTTP \(http)") }
+        let status = top.int(3) ?? 0
+        let msg = top.string(4) ?? ""
+        DYLiveModel.log("DDNATIVEIM cmd=\(cmd.rawValue) status=\(status) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        if status != 0 {
+            if status == 1 || msg.lowercased().contains("session") { throw DYIMError.noLogin }
+            throw DYIMError.badResponse("\(status)")
+        }
+        if let uid = top.int(13), uid > 0 { selfUID = uid }
+        guard let inner = top.sub(6)?.sub(cmd.rawValue) else { return [:] }
+        return inner
+    }
+
+    private static func conversation(_ raw: Data) -> DYIMConversation? {
+        guard let f = DYPB.decode(raw), let id = f.string(1), !id.isEmpty else { return nil }
+        return DYIMConversation(id: id, shortID: f.int(2) ?? 0, type: Int(f.int(3) ?? 0),
+                                ticket: f.string(4) ?? "", name: f.sub(50)?.string(5) ?? "")
+    }
+
+    /// 全部会话（分页同步，最多 maxPages 页）
+    func loadConversations(maxPages: Int = 20) async throws -> [DYIMConversation] {
+        var out: [DYIMConversation] = [], seen = Set<String>()
+        var cursor: UInt64 = 0
+        for page in 0..<maxPages {
+            let payload = (cursor > 0 ? DYPB.field(1, cursor) : Data()) + DYPB.field(2, UInt64(page))
+            let body = try await call(.initSync, payload)
+            for item in body[1] ?? [] {
+                guard let head = item.data.flatMap(DYPB.decode)?.data(1), let c = Self.conversation(head),
+                      seen.insert(c.id).inserted else { continue }
+                out.append(c)
+            }
+            let more = body.int(2) ?? 0
+            cursor = body.int(3) ?? 0
+            if more == 0 || cursor == 0 { break }
+        }
+        for c in out { conversations[c.id] = c }
+        return out
+    }
+
+    /// 取一个会话（缓存没有就刷一遍列表）
+    func conversation(_ id: String) async throws -> DYIMConversation? {
+        if let c = conversations[id] { return c }
+        _ = try await loadConversations()
+        return conversations[id]
+    }
+
+    /// 某会话最近 limit 条消息（新→旧）
+    func recentMessages(_ c: DYIMConversation, limit: Int = 30) async throws -> [DYIMMessage] {
+        let payload = DYPB.field(1, c.id) + DYPB.field(2, UInt64(c.type)) + DYPB.field(3, c.shortID)
+            + DYPB.field(4, 0) + DYPB.field(5, 0) + DYPB.field(6, UInt64(limit))
+        let body = try await call(.messages, payload)
+        return (body[1] ?? []).compactMap { v in
+            guard let f = v.data.flatMap(DYPB.decode) else { return nil }
+            return DYIMMessage(serverID: f.int(3) ?? 0, type: Int(f.int(6) ?? 0), sender: f.int(7) ?? 0,
+                               createdMS: f.int(10) ?? 0, content: f.string(8) ?? "")
+        }
+    }
+
+    /// 刷新单个会话（拿最新发送票据）
+    private func refresh(_ c: DYIMConversation) async throws -> DYIMConversation {
+        let body = try await call(.info, DYPB.field(1, DYPB.field(1, c.id) + DYPB.field(2, c.shortID) + DYPB.field(3, UInt64(c.type))))
+        guard let raw = body.data(1), let fresh = Self.conversation(raw), fresh.id == c.id, !fresh.ticket.isEmpty else {
+            throw DYIMError.badResponse("会话信息")
+        }
+        conversations[c.id] = fresh
+        return fresh
+    }
+
+    /// 发文字。返回服务端消息 id。
+    /// - 明确被拒 → .rejected（可重发）
+    /// - 请求已发出但回执不完整 / 网络在发送中断 → .unconfirmed（不许自动重发）
+    func sendText(_ text: String, to conversationID: String) async throws -> UInt64 {
+        guard var c = try await conversation(conversationID) else { throw DYIMError.badResponse("找不到会话") }
+        if c.ticket.isEmpty { c = try await refresh(c) }
+        let clientID = UUID().uuidString.lowercased()
+        let stime = String(format: "%.1f", Date().timeIntervalSince1970 * 1000)
+        let content = try JSONSerialization.data(withJSONObject: ["aweType": 700, "type": 0, "richTextInfos": [] as [Any], "text": text],
+                                                 options: [.sortedKeys, .withoutEscapingSlashes])
+        func ext(_ k: String, _ v: String) -> Data { DYPB.field(5, DYPB.field(1, k) + DYPB.field(2, v)) }
+        var msg = DYPB.field(1, c.id) + DYPB.field(2, UInt64(c.type)) + DYPB.field(3, c.shortID) + DYPB.field(4, content)
+        msg += ext("a:chat_bubble", #"{"bubble_id":"-1","bubble_source":"0"}"#) + ext("s:mentioned_users", "")
+        msg += ext("s:client_message_id", clientID) + ext("s:stime", stime)
+        msg += DYPB.field(6, 7) + DYPB.field(7, c.ticket) + DYPB.field(8, clientID)
+        let body: DYPB.Fields
+        do {
+            body = try await call(.send, msg)
+        } catch let e as DYIMError {
+            DYLiveModel.log("DDNATIVEIM send fail \(e)")
+            if case .badResponse = e { throw DYIMError.unconfirmed }
+            throw e
+        } catch {
+            // 网络在发送过程中断：服务器可能已经收到
+            DYLiveModel.log("DDNATIVEIM send net-error \((error as NSError).code)")
+            throw DYIMError.unconfirmed
+        }
+        let serverID = body.int(1) ?? 0
+        let echoed = body.string(4) ?? ""
+        let status = body.int(3) ?? 0, extra = body.int(5) ?? 0
+        DYLiveModel.log("DDNATIVEIM send server=\(serverID > 0) echo=\(echoed == clientID) status=\(status)/\(extra)")
+        if status != 0 || extra != 0 { throw DYIMError.rejected("\(status)/\(extra)") }
+        guard serverID > 0, echoed == clientID else { throw DYIMError.unconfirmed }
+        return serverID
+    }
+}

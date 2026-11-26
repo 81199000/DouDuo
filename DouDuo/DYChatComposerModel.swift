@@ -122,6 +122,33 @@ final class DYChatComposerModel: ObservableObject {
         let draft = text
         let previous = acknowledgedText
         error = nil
+        // 原生直发私信（imapi）：不经过网页输入框。只有「确定没发出去」才回落网页。
+        if action == .send, DYNative.enabled, id.hasPrefix("conversation:") {
+            let convID = String(id.dropFirst("conversation:".count))
+            do {
+                _ = try await DYNativeIM.shared.sendText(draft, to: convID)
+                guard conversationID == id, accountScope == scope else { return }
+                DYLiveModel.log("DDCHAT send via=native ok")
+                // 清空网页输入框里同步过的草稿，保持两边一致
+                _ = try? await DYChatComposerBridge.edit(web, id: id, previous: acknowledgedText, text: "")
+                acknowledgedText = ""
+                replaceLocalText("")
+                return
+            } catch DYIMError.unconfirmed {
+                guard conversationID == id, accountScope == scope else { return }
+                DYLiveModel.log("DDCHAT send via=native unconfirmed")
+                deliveryUncertain = true
+                self.error = "发送结果未确认，请先查看聊天记录。"
+                return
+            } catch DYIMError.rejected(let why) {
+                guard conversationID == id, accountScope == scope else { return }
+                DYLiveModel.log("DDCHAT send via=native rejected \(why)")
+                self.error = "抖音没有接受这条消息，可能被对方设置或平台限制拦截。"
+                return
+            } catch {
+                DYLiveModel.log("DDCHAT send via=native not-sent fallback-web \(error)")
+            }
+        }
         if action == .send {
             do {
                 _ = try await DYChatComposerBridge.edit(web, id: id, previous: previous, text: draft)

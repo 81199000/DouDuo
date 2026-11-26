@@ -754,6 +754,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     /// insert：要「插到最前」的评论 cid（逗号分隔，一级评论在前、楼中楼在后）。网页从消息点评论跳视频就是这么定位的，
     /// 实测传楼中楼 cid 时会把它的一级评论顶到第一条，并把那条回复放进 reply_comment。
     func fetchComments(_ id: String, cursor: Int, insert: String? = nil) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool, total: Int) {
+        // 原生签名直连：不等签名页就绪；拿不到再走网页
+        if DYNative.enabled, let p = await DYNative.comments(id, cursor: cursor, insert: insert) { return p }
         let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor), "ins": insert ?? ""])
         let p = try JSONDecoder().decode(DYCommentPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }

@@ -346,6 +346,7 @@ extension DouyinBridge {
     }
 
     func fetchReplies(_ id: String, commentID: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool) {
+        if DYNative.enabled, let p = await DYNative.replies(id, commentID: commentID, cursor: cursor) { return p }
         let d = try await call(Self.replyJS, args: ["id": id, "cid": commentID, "cursor": String(cursor)], attempts: 1)
         let p = try JSONDecoder().decode(DYReplyPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
@@ -362,6 +363,34 @@ extension DouyinBridge {
                                    "imgH": String(image?.height ?? 0), "imgFmt": image?.format ?? ""]
         let operationID = UUID().uuidString
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=prepare")
+        // 原生直发（纯文字/回复）：自己签 a_bogus + 登录票据，不等签名页 SDK。
+        // 只有「确定没发出去」才回落网页；明确拒绝、结果不明都不再发第二次。
+        if image == nil, DYNative.enabled {
+            let identity = try? await selfProfile()
+            let t0 = Date().timeIntervalSince1970
+            switch await DYNative.publishComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                                 ticketWeb: web, op: operationID) {
+            case .sent(let c):
+                DYLiveModel.log("DDSEND comment op=\(operationID) phase=acknowledged via=native")
+                return c
+            case .rejected(let code, let msg):
+                DYLiveModel.log("DDSEND comment op=\(operationID) phase=rejected via=native code=\(code)")
+                if code == 8 { throw DYLoginExpired() }
+                throw DYError.bad(msg?.isEmpty == false ? msg! : "评论被拒绝（\(code)），草稿已保留")
+            case .unknown:
+                DYLiveModel.log("DDSEND comment op=\(operationID) phase=reconcile via=native")
+                if let mine = await Self.firstWithin(Self.reconcileTimeout, { [weak self] in
+                    await self?.findMySentComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                                  imageSentAt: t0, identity: identity, hasImage: false)
+                }) {
+                    DYLiveModel.log("DDSEND comment op=\(operationID) phase=verified via=native")
+                    return mine
+                }
+                throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
+            case .notSent:
+                DYLiveModel.log("DDSEND comment op=\(operationID) phase=native-fallback-web")
+            }
+        }
         // 纯文字（含回复/楼中楼）走「真人方式」：抖音网页自己的评论框 + 发送按钮。带图仍走接口。
         if image == nil, DYWebComposer.enabled {
             if let c = try await publishViaWebUI(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID, op: operationID) {
