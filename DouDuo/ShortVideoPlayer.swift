@@ -557,7 +557,12 @@ struct PlayerPage: View {
 
     private func restorePosition(_ seconds: Double, using player: AVPlayer) {
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
-        guard offlineContext?.inLibrary == true else { player.seek(to: time); return }
+        guard offlineContext?.inLibrary == true else {
+            // 重建接手（开关侧栏评论）要精确落点：默认容差会吸到前一个关键帧，关评论时往回跳好几秒（工单 B13）
+            if handoffPosition != nil { player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
+            else { player.seek(to: time) }
+            return
+        }
         pendingOfflineSeek = seconds
         current = seconds
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player] done in
