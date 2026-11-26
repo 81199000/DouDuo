@@ -465,6 +465,8 @@ struct PlayerPage: View {
     @State private var seekDelta: Double = 0
     @State private var previewImage: UIImage?
     @State private var lastPreviewAt: Double = 0
+    /// 每次跳转 +1：旧跳转的踢 / 卡死检查 / 日志看到不是自己就收手
+    @State private var seekGen = 0
     @State private var holdAnchor: Double = 0
     @State private var rateBoost = false
     /// 设置里选的速度（全局、持久化）：所有视频都按它播
@@ -486,6 +488,8 @@ struct PlayerPage: View {
     }
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
+    @State private var stallGuard: NSKeyValueObservation?
+    @State private var unstallCount = 0
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
@@ -553,7 +557,12 @@ struct PlayerPage: View {
 
     private func restorePosition(_ seconds: Double, using player: AVPlayer) {
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
-        guard offlineContext?.inLibrary == true else { player.seek(to: time); return }
+        guard offlineContext?.inLibrary == true else {
+            // 重建接手（开关侧栏评论）要精确落点：默认容差会吸到前一个关键帧，关评论时往回跳好几秒（工单 B13）
+            if handoffPosition != nil { player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
+            else { player.seek(to: time) }
+            return
+        }
         pendingOfflineSeek = seconds
         current = seconds
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player] done in
@@ -1023,7 +1032,34 @@ struct PlayerPage: View {
     }
 
     private func endSeekGesture() {
-        if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
+        if seeking { finishSeek() }
+    }
+
+    /// 松手：取消还没出来的预览小图（不再占加载线程），跳过去，量「松手 → 真正在播」用了多久
+    private func finishSeek() {
+        imgGen?.cancelAllCGImageGeneration()
+        let target = seekPreview
+        let probe = DDSeekProbe.drain()
+        seekTo(target); seeking = false; previewImage = nil
+        guard let p = player, vlc == nil else { return }
+        let t0 = Date(), gen = seekGen
+        func check(_ n: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                guard player === p else { return }
+                if gen != seekGen {
+                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) 未起播就又拖 \(String(format: "%.2f", Date().timeIntervalSince(t0)))s buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-")")
+                    return
+                }
+                let t = p.currentTime().seconds
+                let moving = p.timeControlStatus == .playing && t > target - 1 && t < target + 5
+                if moving || n >= 60 || !isPlaying {
+                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) ready=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(moving ? "" : " 未起播 tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-")") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s \(probe) | \(DYStreamStore.shared.debugLine(forVideo: id))")
+                    return
+                }
+                check(n + 1)
+            }
+        }
+        check(0)
     }
 
     /// 当前条把操作交给半折叠触控板，触控板显示时把弹幕推过去
@@ -1163,7 +1199,7 @@ struct PlayerPage: View {
                         seekDelta = seekPreview - current
                         requestPreview(seekPreview)
                     }
-                    .onEnded { _ in if seeking { seekTo(seekPreview); seeking = false; previewImage = nil } })
+                    .onEnded { _ in if seeking { finishSeek() } })
         }
     }
 
@@ -1306,7 +1342,7 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         if knownDuration > 0 { duration = knownDuration }
-        let gen = AVAssetImageGenerator(asset: asset)
+        let gen = AVAssetImageGenerator(asset: DYStream.peekAsset(for: asset))
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 320, height: 180)
         gen.requestedTimeToleranceBefore = CMTime(seconds: 1.5, preferredTimescale: 600)
@@ -1505,6 +1541,35 @@ struct PlayerPage: View {
     private func detachObservers() {
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+        stallGuard?.invalidate(); stallGuard = nil
+    }
+
+    /// 常驻防「怕卡」：当前播放的条只要进入「为减少卡顿而等待」且缓冲够 2 秒，就立刻接着播。
+    /// 边下边播只比播放位置多下几十秒，系统看到数据「刚好够用」就判定网慢、反复停下来攒（缓冲 40 秒也停），
+    /// 以前只在起播 / 跳转 / 回前台那几个时刻踢一下，踢完又停（真机 11-26：回前台停 4 秒，踢起来 0.6 秒又停 5 秒）。
+    private func watchStalls(_ p: AVPlayer) {
+        stallGuard?.invalidate()
+        stallGuard = p.observe(\.timeControlStatus, options: [.new]) { pl, _ in
+            guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, pl.reasonForWaitingToPlay == .toMinimizeStalls else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { unstall(pl) }
+        }
+    }
+
+    private func unstall(_ p: AVPlayer) {
+        guard player === p, vlc == nil, playbackIsActive, isPlaying, !userPaused, !seeking,
+              p.timeControlStatus == .waitingToPlayAtSpecifiedRate, p.reasonForWaitingToPlay == .toMinimizeStalls,
+              p.currentItem?.status == .readyToPlay else { return }
+        let buf = DYPlaybackTelemetry.bufferedAhead(p)
+        guard buf >= 2 else { return }
+        if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
+            p.isMuted = seamAudio.mode == .noAudio || muted
+        }
+        p.playImmediately(atRate: playRate)
+        if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
+        unstallCount += 1
+        if unstallCount <= 3 || unstallCount % 10 == 0 {
+            DYLiveModel.log("DDUNSTALL \(id.suffix(6)) n=\(unstallCount) t=\(String(format: "%.1f", p.currentTime().seconds)) buf=\(String(format: "%.1f", buf))s 不等直接播")
+        }
     }
 
     /// 提前挂载的相邻页：暂停的 AVPlayer 不会自己解第一帧，画面层一直是黑的，滑进来才开始解 → 「黑屏一下再播」。
@@ -1547,8 +1612,7 @@ struct PlayerPage: View {
         // 别把正常加载中的长视频误判成卡死（上一版 2 秒就切，切到了已 403 的直连 CDN，反而黑屏 14–28 秒）
         let start = p.currentTime().seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-            let active = offlineContext == nil ? isActive : playbackIsActive
-            guard active, isPlaying, player === p, !seeking, vlc == nil else { return }
+            guard playbackIsActive, isPlaying, player === p, !seeking, vlc == nil else { return }
             let failedNow = p.currentItem?.status == .failed
             let position = p.currentTime().seconds
             let waiting = offlineContext != nil && p.timeControlStatus == .waitingToPlayAtSpecifiedRate &&
@@ -1609,21 +1673,41 @@ struct PlayerPage: View {
             if playbackIsActive { offlineContext?.onFailure() }
             return
         }
-        let item = makeItem(asset: DYMedia.asset(source))
+        // 能接着用边下边播就接着用（同一份本地缓存，落点附近已经下好的直接读）；
+        // 以前一律换在线直连 altURL：缓存全丢、重新起连接，回前台先黑一段（真机 11-26）
+        let streamAsset = offlineContext?.localOnly == true ? nil : DYStream.reuseAsset(id: id)
+        let item = makeItem(asset: streamAsset ?? DYMedia.asset(source))
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
+        if let a = item.asset as? AVURLAsset {
+            imgGen?.cancelAllCGImageGeneration()
+            let gen = AVAssetImageGenerator(asset: DYStream.peekAsset(for: a))
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 320, height: 180)
+            gen.requestedTimeToleranceBefore = CMTime(seconds: 1.5, preferredTimescale: 600)
+            gen.requestedTimeToleranceAfter = CMTime(seconds: 1.5, preferredTimescale: 600)
+            imgGen = gen
+        }
         attachObservers(p)
         let localResume = rebuildResumePosition
         if let localResume {
             restorePosition(localResume, using: p)
             DYStreamStore.shared.setPlayhead(id, localResume)
         }
-        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") alt=\(altURL != nil)")
+        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") src=\(streamAsset != nil ? "stream" : (source == altURL ? "alt" : source.isFileURL ? "file" : "url"))")
         isPlaying = true
-        bindSeamlessAudio(to: p, initialPos: localResume, active: isActive, playing: true)
+        // 用 playbackIsActive（@State，实时）不用 isActive：rebuild 常从回前台的注册闭包里跑，
+        // 那里的 isActive 是 onAppear 当时的旧值——预加载页 onAppear 时是 false，
+        // 重建后就按「不是当前页」把声音静掉，接着 p.rate 又把画面拉起来 → 有画面没声音（真机 11-26 vMuted=true want=false）
+        bindSeamlessAudio(to: p, initialPos: localResume, active: playbackIsActive, playing: true)
         p.rate = playRate
         watchdog(p)
+        // 重建后的诊断：3 秒时画面/声音什么状态（真机 11-26：重建后出了画面没声音）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            guard player === p else { return }
+            DYLiveModel.log("DDREBUILD \(id.suffix(6)) +3s t=\(String(format: "%.1f", p.currentTime().seconds)) ready=\(firstFrame) \(seamAudio.audioDiag())")
+        }
     }
 
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
@@ -1633,18 +1717,32 @@ struct PlayerPage: View {
     /// 真机 DDWAIT：已缓冲 9–29 秒、st=readyToPlay、rate=1，可 AVPlayer 还在 waitingToMinimizeStalls——
     /// 它按边下边播「一段一段到」估出来的下载速度判断会卡，于是一直不肯起播，最后 2.8–3.8 秒才放行。
     /// 缓冲已经够 2 秒以上就别等它的估算：直接 playImmediately（真不够时它会正常进缓冲，不会出错）。
-    private func kickIfOverCautious(_ p: AVPlayer) {
-        for delay in [0.25, 0.6, 1.2] {
+    private func kickIfOverCautious(_ p: AVPlayer, delays: [Double] = [0.25, 0.6, 1.2], why: String = "", seekGen gen: Int? = nil) {
+        for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard player === p, isActive, isPlaying, !userPaused, vlc == nil,
+                guard gen == nil || gen == seekGen else { return }
+                guard player === p, playbackIsActive, isPlaying, !userPaused, vlc == nil,
                       p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
                       p.reasonForWaitingToPlay == .toMinimizeStalls,
                       p.currentItem?.status == .readyToPlay else { return }
                 let buf = DYPlaybackTelemetry.bufferedAhead(p)
                 guard buf >= 2 else { return }
                 p.playImmediately(atRate: playRate)
-                DYLiveModel.log("DDKICK \(id.suffix(6)) +\(delay)s buf=\(String(format: "%.1f", buf))s 跳过「怕卡」等待直接起播")
+                DYLiveModel.log("DDKICK \(id.suffix(6))\(why) +\(delay)s buf=\(String(format: "%.1f", buf))s 跳过「怕卡」等待直接起播")
             }
+        }
+    }
+
+    /// 快进卡死兜底：落点之后 8 秒画面一点没走（踢也踢不动 = 数据真没来 / 播放器卡住）→ 在落点重建播放器
+    private func watchSeekStuck(_ p: AVPlayer, target: Double, gen: Int) {
+        let from = p.currentTime().seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            guard gen == seekGen, player === p, canControlPlayback, isPlaying, !userPaused, !seeking, vlc == nil else { return }
+            let now = p.currentTime().seconds
+            guard p.timeControlStatus != .playing, now.isFinite, now <= from + 0.3 else { return }
+            DYLiveModel.log("DDSEEKSTUCK \(id.suffix(6)) to=\(String(format: "%.1f", target)) t=\(String(format: "%.1f", now)) tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s → 落点重建 | \(DYStreamStore.shared.debugLine(forVideo: id))")
+            current = target
+            rebuild()
         }
     }
 
@@ -1674,6 +1772,18 @@ struct PlayerPage: View {
     }
 
     /// 回前台 3 秒还没往前走（后台时边下边播的连接被系统掐断，回来 AVPlayer 一直卡着）：按原位置重建
+    /// 原地起播 3 秒后还不走才重建
+    private func checkAfterKick(_ p: AVPlayer, from: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            guard canControlPlayback, isPlaying, !userPaused, !seeking, player === p, vlc == nil else { return }
+            let now = p.currentTime().seconds
+            guard p.timeControlStatus != .playing, now.isFinite, now <= from + 0.3 else { return }
+            DYLiveModel.log("DDFGCHECK \(id.suffix(6)) 原地起播没动 tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") → 重建")
+            current = from
+            rebuild()
+        }
+    }
+
     private func checkAfterForeground(_ p: AVPlayer) {
         let from = seamAudio.currentMediaTime ?? p.currentTime().seconds
         if p.currentItem?.status == .failed {
@@ -1682,10 +1792,24 @@ struct PlayerPage: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             guard canControlPlayback, isPlaying, !userPaused, !seeking, player === p, vlc == nil,
-                  offlineContext?.inLibrary != true else { return }
+                  offlineContext?.inLibrary != true else {
+                DYLiveModel.log("DDFGCHECK \(id.suffix(6)) skip ctl=\(canControlPlayback) playing=\(isPlaying) userPaused=\(userPaused) seeking=\(seeking) same=\(player === p) vlc=\(vlc != nil) t=\(String(format: "%.1f", p.currentTime().seconds)) tcs=\(p.timeControlStatus.rawValue)")
+                return
+            }
             let now = seamAudio.currentMediaTime ?? p.currentTime().seconds
             let failed = p.currentItem?.status == .failed
             let stuck = p.timeControlStatus != .playing && now.isFinite && now <= from + 0.3
+            // 缓冲够、只是「怕卡」在等：踢一下就走，不用重建（重建要丢掉边下边播缓存、换在线直连从头加载，
+            // 真机 11-26：buf=66s 照样重建 → 先黑一段、出了画面还没声音）
+            if !failed, stuck, p.currentItem?.status == .readyToPlay, DYPlaybackTelemetry.bufferedAhead(p) >= 2 {
+                DDAudioSessionGate.forceActive()
+                p.isMuted = muted
+                p.playImmediately(atRate: playRate)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s → 原地起播")
+                checkAfterKick(p, from: from)
+                return
+            }
             DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) now=\(String(format: "%.1f", now)) tcs=\(p.timeControlStatus.rawValue) failed=\(failed) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s\(failed || stuck ? " → 重建" : "")")
             guard failed || stuck else { return }
             if from.isFinite, from > 1 { current = from }
@@ -1694,6 +1818,7 @@ struct PlayerPage: View {
     }
 
     private func pauseInlineForBackground() {
+        if playbackIsActive, vlc == nil, player != nil { DYLiveModel.log("DDBGAUDIO \(id.suffix(6)) pause \(seamAudio.audioDiag())") }
         #if DEBUG
         ddWrite("DDBG pauseForBackground id=\(id) vlc=\(vlc != nil) av=\(player != nil) rate=\(player?.rate ?? -9) t=\(String(format: "%.1f", player?.currentTime().seconds ?? -1)) active=\(isActive)")
         #endif
@@ -1732,7 +1857,9 @@ struct PlayerPage: View {
         }
         pictureInPicture.returnToInline()
         if DDPlayback.bgPlay && isPlaying {
+            if (try? AVAudioSession.sharedInstance().setActive(true)) != nil { DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
             seamAudio.syncAfterForeground(rate: playRate, muted: muted)
+            DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) bgPlay \(seamAudio.audioDiag())")
             if vlc == nil, let p = player { checkAfterForeground(p) }
             return
         }
@@ -1747,9 +1874,18 @@ struct PlayerPage: View {
         }
         if let p = player {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
-            try? AVAudioSession.sharedInstance().setActive(true)
+            let sessionOK = (try? AVAudioSession.sharedInstance().setActive(true)) != nil
+            if sessionOK { DDAudioSessionGate.invalidate(); DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
+            // 变速时交给独立引擎的这一条：切后台时引擎被整个停掉、排着的声音丢了，回来再接引擎会错位甚至不出声
+            // （原生音轨又关着 → 有画面没声音，老板 11-26）。反正是从暂停恢复，直接把声音交回原生音轨，下次变速再交接。
+            seamAudio.returnToNativeAudio(reason: "foreground")
             isPlaying = true
             seamAudio.play(rate: playRate, muted: muted)
+            DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) resume session=\(sessionOK) \(seamAudio.audioDiag())")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                guard player === p, canControlPlayback else { return }
+                DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) +2s t=\(String(format: "%.1f", p.currentTime().seconds)) \(seamAudio.audioDiag())")
+            }
             hdPlayer?.play()      // 秒开中：高清继续静音陪跑缓冲
             if offlineContext != nil, p.currentItem?.status == .failed || !firstFrame { watchdog(p) }
             else { checkAfterForeground(p) }
@@ -1848,6 +1984,7 @@ struct PlayerPage: View {
     }
 
     private func attachObservers(_ p: AVPlayer) {
+        watchStalls(p)
         timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { t in
             MainActor.assumeIsolated {
                 let pos = seamAudio.currentMediaTime ?? t.seconds
@@ -1925,6 +2062,7 @@ struct PlayerPage: View {
     }
 
     private func teardownPlayerOnly() {
+        stallGuard?.invalidate(); stallGuard = nil
         pictureInPicture.invalidate()
         seamAudio.reset()
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
@@ -2038,6 +2176,11 @@ struct PlayerPage: View {
             savePosition(pos)
         }
         seamAudio.prepareForSeek()
+        // 立刻把下载的「播放位置」挪到落点：不等时间观察者 0.25 秒后才报（期间按旧位置算上限，
+        // 落点附近要的数据会被当成「超前」挂起，最多等 2 秒才重算）
+        if playbackIsActive { DYStreamStore.shared.setPlayhead(id, pos) }
+        seekGen &+= 1
+        let gen = seekGen
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol) { [weak player] done in
             guard done else { return }
@@ -2051,6 +2194,10 @@ struct PlayerPage: View {
                 guard canControlPlayback else { return }
                 seamAudio.didFinishVideoSeek(landedSeconds: landed.isFinite ? landed : pos,
                                              resumePlaying: isPlaying, rate: playRate, muted: muted)
+                // 拖完：缓冲已经够了播放器还在「怕卡」干等（边下边播按播放进度放数据，它以为网慢）→ 直接起播。
+                // 真机 11-26：拖到 93.5s，目标附近已缓存 11 秒，画面冻了 14 秒不动，直到再拖一下才走。
+                if isPlaying, vlc == nil { kickIfOverCautious(player, delays: [0.3, 0.8, 1.5, 2.5, 4], why: " seek", seekGen: gen) }
+                watchSeekStuck(player, target: pos, gen: gen)
             }
         }
         hdPlayer?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
@@ -2072,6 +2219,7 @@ struct PlayerPage: View {
 
     private func teardown() {
         primeObs?.invalidate(); primeObs = nil
+        stallGuard?.invalidate(); stallGuard = nil
         pictureInPicture.invalidate()
         // 秒开陪跑中 / 走 VLC / 头部接续的不归还：手里的不是一份干净的原始播放器
         let returnable = !isActive && hdPlayer == nil && vlc == nil && nextPlayer == nil && headEndSeconds == nil

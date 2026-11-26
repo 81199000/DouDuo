@@ -11,6 +11,22 @@
       "name": "DouDuo",
       "bundleIdentifier": "me.rrmm.douduo",
       "type": "1",
+      "version": "1.7.4",
+      "versionDate": "2026-11-26T08:46:44+00:00",
+      "versionDescription": "DouDuo 1.7.4 · 长视频不卡了，直播也有环境光\n\n包为未签名 IPA，需要自行签名安装。\n\n长视频：退出回来、快进，都不卡了\n- 退出 App 再回来接着播：以前长视频切到后台再回来，常常卡十几秒、有画面没声音，等一会儿又从头开始。现在回来就从原来的位置接着播，声音也一起回来。\n- 快进拖远了不再卡死：拖进度条到很远的地方，画面不会停住不动，松手就开始播；拖动时预览小图也不再抢松手后要播的那段。\n- 不再动不动停下来缓冲：已经缓存够了还在「等一下防卡顿」的情况去掉了，内容够了就接着播。\n- 拖动后退出再回来：不会先卡一段、黑屏、没声音。\n\n倍速戴耳机声音不变小\n- 戴耳机开 2 倍速，以前声音会明显变小，现在会自动补回音量，听起来跟 1 倍速一样大，也不会破音。\n\n刷到直播也有环境光\n- 推荐里刷到直播间，画面两边和视频一样铺上环境光，跟设置里的环境光档位一致；铺满屏幕、手机发热或不在当前这条时不做，省电。\n\n修复\n- 大屏横屏打开再关掉评论，视频不再往回跳几秒（工单 B13）。\n\n关注不走失\n项目在 GitHub 81199000/DouDuo，点个 Star、关注 @81199000，避免走失。官网 oneduo.app 是长期固定入口。\n\n验证与仍需确认的边界\n- 长视频回前台、快进、缓冲、倍速音量：作者 iPhone Duo 真机测试过，这一版是根据真机日志逐条修的。\n- 直播环境光：已上作者真机，未在发热、低电量下长时间观察。\n- 关评论不跳秒：有自动化回归测试；大屏横屏真机未单独复测。",
+      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
+      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
+      "lock": "0",
+      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.7.4/DouDuo-1.7.4-unsigned.ipa",
+      "isLanZouCloud": "0",
+      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
+      "tintColor": "FE2C55",
+      "size": "23598616"
+    },
+    {
+      "name": "DouDuo",
+      "bundleIdentifier": "me.rrmm.douduo",
+      "type": "1",
       "version": "1.7.3",
       "versionDate": "2026-11-24T06:51:42+00:00",
       "versionDescription": "DouDuo 1.7.3 · 丝滑到底：划到即播，比官方更顺\n\n包为未签名 IPA，需要自行签名安装。\n\n纵向丝滑，一划到底\n这一版只做一件事：让每一次上划都丝般顺滑。\n\n- 划到就播，零等待：以前划到长视频，偶尔会停在第一帧两三秒才动——播放器明明已经备好了十几秒的内容，还在「担心会卡」不肯开播。现在内容够了就立刻开播，告别停顿。\n- 连刷十条都不卡：「预缓存数量」设几条，就真的提前备好几条（最多 10 条）。手指刷多快，视频就跟多快。\n- 长视频一样秒开：几十分钟的长视频，划到就开播，不用再等。\n- 流量你说了算：设置里分成「Wi-Fi 省流量」和「蜂窝数据省流量」两个开关。Wi-Fi 下默认把预缓存的几条整条备好，划到即播；打开省流量就只下开头几秒，不播不继续下。用流量时默认只下开头、不浪费流量；关掉省流量就高清并整条备好 2 条。\n\n一句话：刷起来比官方 App 还丝滑。 不信连划二十条试试。\n\n折叠屏半折：下半屏变触控板\n- iPhone Duo 竖着半折叠时，下半屏直接是一块触控板：黑底上投着上方画面的倒影，弹幕挪到触控板上飘，画面干干净净。\n- 单击出评论，评论 4 秒没碰又回到触控板；上下滑切视频，左右拖快进快退，长按 2 倍速。\n- 触控板右侧是液态玻璃按钮栏，点赞、评论、收藏随手可点。\n- 刷到直播间也能直接上下滑切走，单击进直播间。\n\n设置重新整理\n- 每个设置后面加了 ⓘ，点开看开和关分别会怎样。\n- 不常调的收进「高级设置」。\n- 「横屏时只放横屏内容」「竖屏时固定 70% 竖屏视频」默认关闭，横竖都按抖音推荐原顺序播放。\n\n直播切换更干净\n- 划走直播，声音立刻消失：手一松就静音，不再拖着直播声音进下一个视频，戴蓝牙耳机也一样干脆。划到一半弹回来，声音自动恢复。\n- 离开直播时不再和下一个视频抢资源，直播后面那条视频也能秒开。\n…完整说明见发行版页面",
@@ -70,22 +86,6 @@
       "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
       "tintColor": "FE2C55",
       "size": "22912623"
-    },
-    {
-      "name": "DouDuo",
-      "bundleIdentifier": "me.rrmm.douduo",
-      "type": "1",
-      "version": "1.6.9",
-      "versionDate": "2026-11-21T05:48:10+00:00",
-      "versionDescription": "DouDuo 1.6.9\n\n包为未签名 IPA，需要自行签名安装。\n\n说明\n这一版 App 功能与上一版相同，主要是发布流程与内部改进。\n\n关注不走失\n项目在 GitHub WuWeiDuo/DouDuo，点个 Star、关注 @WuWeiDuo，避免走失。官网 oneduo.app 是长期固定入口。",
-      "subtitle": "原生 SwiftUI 第三方抖音客户端，适配折叠屏与 iPad",
-      "localizedDescription": "DouDuo：开源免费的第三方抖音客户端（非官方），原生 SwiftUI，适配 iPhone Duo 折叠屏、iPad 与普通 iPhone。安装包为未签名 IPA，需要用自己的证书签名。仅供个人学习交流。",
-      "lock": "0",
-      "downloadURL": "https://gitee.com/remon8/douduo/releases/download/v1.6.9/DouDuo-1.6.9-unsigned.ipa",
-      "isLanZouCloud": "0",
-      "iconURL": "https://gitee.com/remon8/douduo/raw/main/docs/brand/app-icon.png",
-      "tintColor": "FE2C55",
-      "size": "22844293"
     }
   ]
 }
