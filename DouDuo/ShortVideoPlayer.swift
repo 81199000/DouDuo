@@ -465,6 +465,8 @@ struct PlayerPage: View {
     @State private var seekDelta: Double = 0
     @State private var previewImage: UIImage?
     @State private var lastPreviewAt: Double = 0
+    /// 每次跳转 +1：旧跳转的踢 / 卡死检查 / 日志看到不是自己就收手
+    @State private var seekGen = 0
     @State private var holdAnchor: Double = 0
     @State private var rateBoost = false
     /// 设置里选的速度（全局、持久化）：所有视频都按它播
@@ -1033,14 +1035,18 @@ struct PlayerPage: View {
         let probe = DDSeekProbe.drain()
         seekTo(target); seeking = false; previewImage = nil
         guard let p = player, vlc == nil else { return }
-        let t0 = Date()
+        let t0 = Date(), gen = seekGen
         func check(_ n: Int) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 guard player === p else { return }
+                if gen != seekGen {
+                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) 未起播就又拖 \(String(format: "%.2f", Date().timeIntervalSince(t0)))s buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-")")
+                    return
+                }
                 let t = p.currentTime().seconds
                 let moving = p.timeControlStatus == .playing && t > target - 1 && t < target + 5
                 if moving || n >= 60 || !isPlaying {
-                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) ready=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(moving ? "" : " 未起播") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s \(probe) | \(DYStreamStore.shared.debugLine(forVideo: id))")
+                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) ready=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(moving ? "" : " 未起播 tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-")") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s \(probe) | \(DYStreamStore.shared.debugLine(forVideo: id))")
                     return
                 }
                 check(n + 1)
@@ -1656,9 +1662,10 @@ struct PlayerPage: View {
     /// 真机 DDWAIT：已缓冲 9–29 秒、st=readyToPlay、rate=1，可 AVPlayer 还在 waitingToMinimizeStalls——
     /// 它按边下边播「一段一段到」估出来的下载速度判断会卡，于是一直不肯起播，最后 2.8–3.8 秒才放行。
     /// 缓冲已经够 2 秒以上就别等它的估算：直接 playImmediately（真不够时它会正常进缓冲，不会出错）。
-    private func kickIfOverCautious(_ p: AVPlayer) {
-        for delay in [0.25, 0.6, 1.2] {
+    private func kickIfOverCautious(_ p: AVPlayer, delays: [Double] = [0.25, 0.6, 1.2], why: String = "", seekGen gen: Int? = nil) {
+        for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard gen == nil || gen == seekGen else { return }
                 guard player === p, isActive, isPlaying, !userPaused, vlc == nil,
                       p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
                       p.reasonForWaitingToPlay == .toMinimizeStalls,
@@ -1666,8 +1673,21 @@ struct PlayerPage: View {
                 let buf = DYPlaybackTelemetry.bufferedAhead(p)
                 guard buf >= 2 else { return }
                 p.playImmediately(atRate: playRate)
-                DYLiveModel.log("DDKICK \(id.suffix(6)) +\(delay)s buf=\(String(format: "%.1f", buf))s 跳过「怕卡」等待直接起播")
+                DYLiveModel.log("DDKICK \(id.suffix(6))\(why) +\(delay)s buf=\(String(format: "%.1f", buf))s 跳过「怕卡」等待直接起播")
             }
+        }
+    }
+
+    /// 快进卡死兜底：落点之后 8 秒画面一点没走（踢也踢不动 = 数据真没来 / 播放器卡住）→ 在落点重建播放器
+    private func watchSeekStuck(_ p: AVPlayer, target: Double, gen: Int) {
+        let from = p.currentTime().seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            guard gen == seekGen, player === p, canControlPlayback, isPlaying, !userPaused, !seeking, vlc == nil else { return }
+            let now = p.currentTime().seconds
+            guard p.timeControlStatus != .playing, now.isFinite, now <= from + 0.3 else { return }
+            DYLiveModel.log("DDSEEKSTUCK \(id.suffix(6)) to=\(String(format: "%.1f", target)) t=\(String(format: "%.1f", now)) tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s → 落点重建 | \(DYStreamStore.shared.debugLine(forVideo: id))")
+            current = target
+            rebuild()
         }
     }
 
@@ -2076,6 +2096,11 @@ struct PlayerPage: View {
             savePosition(pos)
         }
         seamAudio.prepareForSeek()
+        // 立刻把下载的「播放位置」挪到落点：不等时间观察者 0.25 秒后才报（期间按旧位置算上限，
+        // 落点附近要的数据会被当成「超前」挂起，最多等 2 秒才重算）
+        if playbackIsActive { DYStreamStore.shared.setPlayhead(id, pos) }
+        seekGen &+= 1
+        let gen = seekGen
         let tol = CMTime(seconds: 0.5, preferredTimescale: 600)
         player?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol) { [weak player] done in
             guard done else { return }
@@ -2089,6 +2114,10 @@ struct PlayerPage: View {
                 guard canControlPlayback else { return }
                 seamAudio.didFinishVideoSeek(landedSeconds: landed.isFinite ? landed : pos,
                                              resumePlaying: isPlaying, rate: playRate, muted: muted)
+                // 拖完：缓冲已经够了播放器还在「怕卡」干等（边下边播按播放进度放数据，它以为网慢）→ 直接起播。
+                // 真机 11-26：拖到 93.5s，目标附近已缓存 11 秒，画面冻了 14 秒不动，直到再拖一下才走。
+                if isPlaying, vlc == nil { kickIfOverCautious(player, delays: [0.3, 0.8, 1.5, 2.5, 4], why: " seek", seekGen: gen) }
+                watchSeekStuck(player, target: pos, gen: gen)
             }
         }
         hdPlayer?.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: tol, toleranceAfter: tol)
