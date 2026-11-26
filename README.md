@@ -138,7 +138,7 @@
 
 没有逆向抖音 App，也不需要任何密钥：App 里挂着一个**看不见的抖音网页**（电脑版 UA），所有接口请求都在这个页面里发出，由抖音网页自己的安全 SDK 自动补签名（`a_bogus` 等），所以签名算法跟着官方更新走。普通视频用 `AVPlayer`，起不来时自动切 VLC；直播流是 HEVC + MPEG‑TS，一律用 VLC。登录态和「网页版」共用 `WKWebsiteDataStore.default()`，只存在本机。
 
-已接入的接口清单见 [docs/api-inventory.md](docs/api-inventory.md)；维护者发版流程见 [docs/RELEASING.md](docs/RELEASING.md)。
+已接入的接口清单见 [docs/api-inventory.md](docs/api-inventory.md)。
 
 ## 免责声明
 
