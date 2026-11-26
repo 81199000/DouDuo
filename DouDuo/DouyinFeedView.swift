@@ -2478,7 +2478,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                             }
                         }
                     }
-                    .frame(width: 54, height: railHeight, alignment: .top)
+                    .frame(width: max(54, (DYTabBarMetrics.width(regular: hSize != .compact) ?? 0) + 4), height: railHeight, alignment: .top)
                     .modifier(DYRailReservedNudge(railEdge: edge, verticalSpace: (-max(0, geometry.size.height - railHeight - 92))...92))
                     .padding(.horizontal, outerPadding)
                     .padding(.bottom, 92)
@@ -3491,6 +3491,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         // Only the tab selector inherits this accent. Every tab restores the
         // existing default tint; explicitly styled buttons keep their colors.
         .tint(theme.accent.color(for: scheme))
+        .background(DYTabBarProbe().allowsHitTesting(false))
         .toolbarColorScheme(mainTab == .home ? .dark : nil, for: .tabBar)
         // The tab container owns the system status bar when the toolbar axis changes.
         .dyCommentStatusVisibility(hidden: mainTab == .home && hidesCommentStatus)
@@ -3980,8 +3981,9 @@ struct DYUpstreamVideoPage: View {
     @Environment(\.dyOfflineVideoPlayback) private var offlinePlayback
     private var usesOfflineFile: Bool { offlinePlayback?.inLibrary == true }
     @Environment(\.horizontalSizeClass) private var hSize
-    private var railWidth: CGFloat { hSize == .compact ? 50 : 54 }
-    private var actionColumnWidth: CGFloat { 54 }
+    /// 右侧胶囊宽度：照系统标签栏胶囊实测宽度（GuoDuo 同款）；没量到前外屏 50 / 内屏 54
+    private var railWidth: CGFloat { DYTabBarMetrics.width(regular: hSize != .compact) ?? (hSize == .compact ? 50 : 54) }
+    private var actionColumnWidth: CGFloat { max(54, railWidth + 4) }
     private var chromeSidePadding: CGFloat { 12 }
     // Full-bleed ancestors may report zero safe-area insets. Read the app's
     // foreground key window as a fallback, never a guessed device/rail width.
@@ -4424,10 +4426,10 @@ struct DYUpstreamVideoPage: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
                 .foregroundStyle(fg)
-                .frame(width: 50, height: 50)
+                .frame(width: railWidth, height: railWidth)
                 .contentShape(Circle())
                 .ddMediaGlassCircle()
-                .frame(width: 54)
+                .frame(width: actionColumnWidth)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)

@@ -959,6 +959,56 @@ struct DYHingeStateRoot: ViewModifier {
 }
 
 
+/// 量系统标签栏胶囊（Duo 上是右侧竖向玻璃胶囊）的实际宽度：右侧操作胶囊照它的宽度画，两个菜单一样宽
+/// （老板 11-27：参考 GuoDuo 同步胶囊宽度；GuoDuo 的 HGTabBarMetrics 同一套做法）。
+/// 外屏 / 内屏分开存（按水平尺寸类），落盘，下次启动直接用；没量到前用原来的 50 / 54。
+@MainActor enum DYTabBarMetrics {
+    private static func key(_ regular: Bool) -> String { "douduo_tabbar_capsule_w_" + (regular ? "regular" : "compact") }
+    private static var cache: [Bool: CGFloat] = [:]
+    static func width(regular: Bool) -> CGFloat? {
+        if let w = cache[regular] { return w }
+        let w = UserDefaults.standard.double(forKey: key(regular))
+        guard w > 0 else { return nil }
+        cache[regular] = CGFloat(w)
+        return CGFloat(w)
+    }
+    static func measure(in window: UIWindow?) {
+        guard let window else { return }
+        var best: CGRect?
+        func walk(_ v: UIView, depth: Int) {
+            guard depth < 40, !v.isHidden, v.alpha > 0.01 else { return }
+            if NSStringFromClass(type(of: v)).contains("TabBarItemPlatterView") {
+                let f = v.convert(v.bounds, to: window)
+                // 竖向胶囊：高 > 宽、贴右边、宽在 30~120
+                if f.height > f.width, f.width >= 30, f.width <= 120, f.maxX > window.bounds.width * 0.7 {
+                    if best == nil || f.width < best!.width { best = f }
+                }
+            }
+            for sub in v.subviews { walk(sub, depth: depth + 1) }
+        }
+        walk(window, depth: 0)
+        guard let best else { return }
+        let regular = window.traitCollection.horizontalSizeClass == .regular
+        let w = (best.width * 2).rounded() / 2
+        guard w >= 44, w <= 64, cache[regular] != w else { return }
+        cache[regular] = w
+        UserDefaults.standard.set(Double(w), forKey: key(regular))
+        DYLiveModel.log("DDTABBAR capsule w=\(w) regular=\(regular) frame=\(best)")
+    }
+}
+
+struct DYTabBarProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView { Probe() }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+    final class Probe: UIView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let w = window
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { DYTabBarMetrics.measure(in: w) }
+        }
+    }
+}
+
 /// 窗口安全区缓存：body 只读缓存；真正去窗口取值放到下一轮主线程，有变化才写回（触发重画）。
 @MainActor @Observable
 final class DYWindowInsets {

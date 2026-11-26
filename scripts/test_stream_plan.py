@@ -100,7 +100,9 @@ class StreamPlan(unittest.TestCase):
         self.assertIn("DYStream.asset(id: id, remote: url)", PLAYER)
         self.assertIn("DYStream.asset(for: a, remote: url)", FEED)
         # 播放位置驱动下载上限
-        self.assertIn("DYStreamStore.shared.setPlayhead(id, t.seconds)", PLAYER)
+        # 用 currentTime() 实时位置（回调参数 t 在跳转没落地时是旧值，会把落点覆盖回去，快进卡死）
+        self.assertIn("if now.isFinite { DYStreamStore.shared.setPlayhead(id, now) }", PLAYER)
+        self.assertNotIn("DYStreamStore.shared.setPlayhead(id, t.seconds)", PLAYER)
         # 划到就算当前条（不等起播），否则长视频互相等永远起不来
         self.assertIn("DYStreamStore.shared.activate(id", PLAYER)
         # 用流量时不再整条预下载
