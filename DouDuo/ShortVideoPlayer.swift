@@ -1391,6 +1391,25 @@ struct PlayerPage: View {
                 }
             }
             probe(0)
+            // 快进复现：DOUDUO_AUTOSEEK=秒1,秒2,…（起播后每隔 DOUDUO_AUTOSEEK_GAP 秒走一次与手指松手相同的 finishSeek）
+            if let list = ProcessInfo.processInfo.environment["DOUDUO_AUTOSEEK"] {
+                let targets = list.split(separator: ",").compactMap { Double($0) }
+                let gap = Double(ProcessInfo.processInfo.environment["DOUDUO_AUTOSEEK_GAP"] ?? "") ?? 12
+                for (i, t) in targets.enumerated() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6 + Double(i) * gap) {
+                        guard player === p, playbackIsActive else { return }
+                        ddWrite("DDAUTOSEEK \(id.suffix(6)) #\(i) to=\(t)")
+                        seeking = true; seekPreview = t; finishSeek()
+                        // 真实进度：DDSEEKNET 的 ready 在刚跳完那一下会误判成「在播」，这里按秒看画面到底走没走
+                        for d in [1.0, 2, 4, 6, 9] {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + d) {
+                                guard player === p else { return }
+                                ddWrite("DDAUTOSEEKT \(id.suffix(6)) #\(i) +\(Int(d))s t=\(String(format: "%.1f", p.currentTime().seconds)) tcs=\(p.timeControlStatus.rawValue) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))")
+                            }
+                        }
+                    }
+                }
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
             ddWrite("DDPLAY \(id) active=\(isActive) engine=\(vlc == nil ? "AV" : "VLC") status=\(p.currentItem?.status.rawValue ?? -1) t=\(p.currentTime().seconds) err=\(String(describing: p.currentItem?.error))")
@@ -2035,7 +2054,14 @@ struct PlayerPage: View {
                     headCompleted = true
                     Task { await DYVideoCache.shared.completeLong(id: id) }
                 }
-                if playbackIsActive { DDNowPlaying.note(id, pos, owner: playbackID); DYStreamStore.shared.setPlayhead(id, t.seconds) }
+                // 报给下载的播放位置用 currentTime()，不用回调参数 t：跳转还没落地时 t 仍是跳之前的旧位置（还在往前走），
+                // 会把 seekTo 刚设好的落点覆盖回去 → 下载以为还在开头、不给落点的数据，播放器等数据，两边互等卡死
+                // （模拟器复现 11-27：拖到 128s，t 一直报 4→9s，落点请求挂起 10 秒直到再拖一下）
+                if playbackIsActive {
+                    DDNowPlaying.note(id, pos, owner: playbackID)
+                    let now = p.currentTime().seconds
+                    if now.isFinite { DYStreamStore.shared.setPlayhead(id, now) }
+                }
                 dmClock.sync(pos, playing: isPlaying && p.rate > 0 && !seeking, rate: Double(playRate))
                 refreshNowPlaying(pos)
                 // 原生声音模式下每 0.25s 拉回锁定倍速（交给 seamAudio：能交接给独立引擎就不走会卡一下的原生变速）；
