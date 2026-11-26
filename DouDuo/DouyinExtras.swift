@@ -220,9 +220,8 @@ extension DouyinBridge {
     func followingUsers(cursor: String = "0") async throws -> (items: [DYFriend], cursor: String, hasMore: Bool) {
         let d = try await call(Self.atListJS, args: ["cursor": cursor], attempts: 2)
         let p = try JSONDecoder().decode(DYFriendPage.self, from: d)
-        #if DEBUG
-        DYLiveModel.log("DDFOLLOWING status=\(p.status) n=\(p.items.count) more=\(p.hasMore) first=\(p.items.prefix(3).map(\.name).joined(separator: ","))")
-        #endif
+        // 发布包也记：换号后朋友头像排一直空，要看接口到底回了什么
+        DYLiveModel.log("DDFOLLOWING status=\(p.status) n=\(p.items.count) more=\(p.hasMore)")
         if p.status != 200 { throw DYError.blocked("HTTP \(p.status)") }
         return (p.items, p.cursor, p.hasMore)
     }

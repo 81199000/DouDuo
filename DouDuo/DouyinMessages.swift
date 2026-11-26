@@ -606,6 +606,10 @@ struct DYMessagesScreen: View {
     @ObservedObject private var cache = DYMessageCache.shared
     private var selectedChat: DYConversationRow? { cache.selectedChat }
     @State private var chatStatus = "正在加载私信…"
+    /// 「加载更多会话」进行中 / 网页列表已翻到底
+    @State private var loadingMoreConversations = false
+    @State private var conversationsExhausted = false
+    @State private var autoLoadedMore = false
     /// 聊天里点朋友分享的视频 → 原生播放器（网页 ddMsg 通道触发）
     @State private var videoPlay: DYMessagePlay?
     /// 私信里点开的图片（原生看大图）
@@ -848,7 +852,14 @@ struct DYMessagesScreen: View {
         }
         .task {
             while !Task.isCancelled {
-                if !navigation.isChat && openingChat == nil && changingConversation == nil { await readConversations() }
+                if !navigation.isChat && openingChat == nil && changingConversation == nil && !loadingMoreConversations {
+                    await readConversations()
+                    // 主列表被陌生人挤空（粉丝私信多时前几十条全归陌生人）：进页自动往下翻一次，把好友会话翻出来
+                    if !autoLoadedMore, !conversations.isEmpty, friendConversations.count < 8, !conversationsExhausted {
+                        autoLoadedMore = true
+                        await loadMoreConversations(minNewFriends: 8)
+                    }
+                }
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
@@ -1213,15 +1224,18 @@ struct DYMessagesScreen: View {
             }
             // Hidden rows still belong to the official list; keep pagination available
             // even when every loaded friend conversation is hidden locally.
-            if conversations.contains(where: { !$0.stranger && !cache.isUnfollowed($0) }) {
-                Button("加载更多会话") {
-                    Task {
-                        _ = try? await chatModel.web?.evaluateJavaScript(Self.scrollConversationsJS)
-                        try? await Task.sleep(for: .milliseconds(500))
-                        await readConversations()
+            if !conversations.isEmpty {
+                Group {
+                    if loadingMoreConversations {
+                        HStack(spacing: 8) { ProgressView(); Text("正在加载更早的会话…") }
+                    } else if conversationsExhausted {
+                        Text("没有更多会话了").foregroundStyle(.secondary)
+                    } else {
+                        Button("加载更多会话") { Task { await loadMoreConversations(minNewFriends: 10) } }
                     }
                 }
                 .font(.footnote).padding(16)
+                .accessibilityIdentifier("douyin.conversation.more")
             }
         }
     }
@@ -1299,6 +1313,40 @@ struct DYMessagesScreen: View {
                     Task { await DYChatWebBridge.closeOptions(web, id: id) }
                 }
             }
+    }
+
+    /// 往下翻网页的私信列表，直到多读到 minNewFriends 条主列表会话（好友/群）或翻到底。
+    /// 网页会话列表是虚拟列表，只渲染可视区：必须边滚边读，一次滚 0.8 屏只能读到下一屏。
+    /// 粉丝私信多的账号，前面一大段全被归进「陌生人消息」，好友会话排在后面——以前按钮只滚一屏，看着像加载不出来。
+    private func loadMoreConversations(minNewFriends: Int, maxSteps: Int = 60) async {
+        guard !loadingMoreConversations, openingChat == nil, changingConversation == nil,
+              !navigation.isChat, let web = chatModel.web else { return }
+        let account = cache.accountScope
+        loadingMoreConversations = true
+        defer { loadingMoreConversations = false }
+        let startTotal = conversations.count
+        let startFriends = friendConversations.count
+        var steps = 0, stalls = 0
+        var bottom = false
+        while steps < maxSteps, !Task.isCancelled, cache.accountScope == account, !navigation.isChat {
+            steps += 1
+            let r = (try? await web.callAsyncJavaScript(Self.scrollConversationsJS, arguments: [:], contentWorld: .page)) as? String ?? "none"
+            try? await Task.sleep(for: .milliseconds(450))
+            let before = conversations.count
+            await readConversations()
+            if r == "none" { break }
+            if r == "bottom" {
+                // 到底先等懒加载：抖音网页滚到底才去拉下一页会话
+                if conversations.count == before { stalls += 1 } else { stalls = 0 }
+                if stalls >= 4 { bottom = true; break }
+                try? await Task.sleep(for: .milliseconds(600))
+            } else { stalls = 0 }
+            if friendConversations.count - startFriends >= minNewFriends { break }
+        }
+        conversationsExhausted = bottom
+        DYLiveModel.log("DDCONVMORE steps=\(steps) total=\(startTotal)->\(conversations.count) friends=\(startFriends)->\(friendConversations.count) bottom=\(bottom)")
+        // 滚回顶部：轮询只读已渲染的行，停在底部就看不到最新消息了
+        _ = try? await web.callAsyncJavaScript(Self.scrollConversationsTopJS, arguments: [:], contentWorld: .page)
     }
 
     private func readConversations() async {
@@ -1640,16 +1688,25 @@ struct DYMessagesScreen: View {
         let visible: Int
     }
 
+    /// 返回 "none"（找不到列表）/ "bottom"（已到底，等懒加载）/ "moved"
     private static let scrollConversationsJS = #"""
-    (() => {
-      const root = document.querySelector('[class*="ConversationListwrapper"]');
-      if (!root) return false;
-      const list = [root, ...root.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 10 && /auto|scroll/.test(getComputedStyle(e).overflowY));
-      if (!list) return false;
-      list.scrollTop += list.clientHeight * 0.8;
+    const root = document.querySelector('[class*="ConversationListwrapper"]');
+    if (!root) return 'none';
+    const list = [root, ...root.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5 && !e.closest('[class*="StrangerConversationList"]'));
+    if (!list) return 'none';
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 2) {
       list.dispatchEvent(new Event('scroll', { bubbles: true }));
-      return true;
-    })()
+      return 'bottom';
+    }
+    list.scrollTop += Math.max(200, list.clientHeight * 0.8);
+    list.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return 'moved';
+    """#
+    private static let scrollConversationsTopJS = #"""
+    const root = document.querySelector('[class*="ConversationListwrapper"]');
+    const list = root && [root, ...root.querySelectorAll('div')].find(e => e.scrollHeight > e.clientHeight + 5 && !e.closest('[class*="StrangerConversationList"]'));
+    if (list) { list.scrollTop = 0; list.dispatchEvent(new Event('scroll', { bubbles: true })); }
+    return !!list;
     """#
 
     private var root: some View {
@@ -1915,6 +1972,15 @@ struct DYMessagesScreen: View {
             }
         } else if friends != DYPeopleCache.shared.friends {
             friends = DYPeopleCache.shared.friends
+        }
+        if friends.isEmpty {
+            // familiar/atlist 有时整份空返回（换号后实测一直 0）：先用分享面板的最近联系人顶上，不落盘成朋友快照
+            let fallback = DYPeopleCache.shared.contacts
+                .filter { $0.kind == 1 && !($0.secUid ?? "").isEmpty }
+                .prefix(20)
+                .map { DYFriend(name: $0.name, avatar: $0.avatar, secUid: $0.secUid ?? "") }
+            if !fallback.isEmpty { friends = Array(fallback) }
+            DYLiveModel.log("DDMSGFRIENDS atlist=empty fallbackContacts=\(friends.count)")
         }
         cache.save()
     }
