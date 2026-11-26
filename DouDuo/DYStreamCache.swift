@@ -32,10 +32,23 @@ enum DYStream {
     static var saving: Bool { saverOn && DYNetPath.shared.cellular }
 
     static func url(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)")! }
+    /// 拖进度条的预览小图用：同一份缓存，但只读本地已有的，绝不联网、不开跳读窗口
+    /// （以前预览走播放器同一个资源：手指扫过的每个位置都开 8 秒跳读窗口去下，
+    /// 下载带宽被预览吃掉，松手后真正要播的那段排在后面 → 快进卡，老板 11-26）
+    static func peekURL(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)?peek=1")! }
     static func id(of url: URL) -> String? {
         guard url.scheme == scheme else { return nil }
         let id = url.lastPathComponent
         return id.isEmpty ? nil : id
+    }
+    static func isPeek(_ url: URL) -> Bool { url.query?.contains("peek=1") == true }
+
+    /// 预览小图的资源：跟播放器共用同一份边下边播缓存；不是 ddstream 的（本地整条 / 在线）原样复用
+    static func peekAsset(for playing: AVURLAsset) -> AVURLAsset {
+        guard let key = id(of: playing.url) else { return playing }
+        let a = AVURLAsset(url: peekURL(for: key))
+        a.resourceLoader.setDelegate(DYStreamLoader.shared, queue: DYStreamLoader.queue)
+        return a
     }
 
     /// 给播放器的资源：本地整条有 → 本地文件；开着边下边播 → ddstream 资源；否则原样在线
@@ -613,6 +626,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
 
     func resourceLoader(_ loader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource req: AVAssetResourceLoadingRequest) -> Bool {
         guard let url = req.request.url, let streamKey = DYStream.id(of: url), let e = DYStreamStore.shared.entry(streamKey) else { return false }
+        if DYStream.isPeek(url) { servePeek(req, entry: e); return true }
         let key = ObjectIdentifier(req)
         let t = Task { [weak self] in
             await self?.serve(req, entry: e)
@@ -628,6 +642,43 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     }
 
     // MARK: 供数据
+
+    /// 预览小图：只给本地已有的连续数据；缺了马上报错（小图不出就不出，不能去抢播放的带宽）
+    private func servePeek(_ req: AVAssetResourceLoadingRequest, entry e: DYStreamEntry) {
+        e.lock.lock(); let total = e.total; e.lock.unlock()
+        guard let total else { DDSeekProbe.peek(miss: true); req.finishLoading(with: URLError(.resourceUnavailable)); return }
+        if let info = req.contentInformationRequest {
+            info.contentType = "public.mpeg-4"
+            info.contentLength = total
+            info.isByteRangeAccessSupported = true
+        }
+        guard let dr = req.dataRequest else { req.finishLoading(); return }
+        let want: Int64 = dr.requestsAllDataToEndOfResource ? total - dr.requestedOffset : Int64(dr.requestedLength)
+        let end = min(total, dr.requestedOffset + want)
+        var cursor = max(dr.requestedOffset, dr.currentOffset)
+        let whole = DYVideoCache.localURL(e.id).flatMap { try? FileHandle(forReadingFrom: $0) }
+        defer { try? whole?.close() }
+        while cursor < end {
+            if req.isCancelled { return }
+            var d: Data?
+            if let whole {
+                try? whole.seek(toOffset: UInt64(cursor))
+                d = try? whole.read(upToCount: Int(min(end - cursor, 2 * 1024 * 1024)))
+            } else {
+                e.lock.lock()
+                let local = DYStreamPlan.contiguous(from: cursor, in: e.ranges)
+                if local > 0 { d = e.read(cursor, Int(min(local, end - cursor, 2 * 1024 * 1024))) }
+                e.lock.unlock()
+            }
+            guard let d, !d.isEmpty else {
+                DDSeekProbe.peek(miss: true)
+                req.finishLoading(with: URLError(.resourceUnavailable)); return
+            }
+            dr.respond(with: d); cursor += Int64(d.count)
+        }
+        DDSeekProbe.peek(miss: false)
+        req.finishLoading()
+    }
 
     private func serve(_ req: AVAssetResourceLoadingRequest, entry e: DYStreamEntry) async {
         do {
@@ -650,6 +701,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             if let h = DYStreamStore.shared.horizon(e), let shape, cursor > h + DYStreamPlan.jumpSlack,
                DYStreamStore.shared.isCurrent(e.id) || cursor > shape.total * 9 / 10 {
                 e.lock.lock(); e.windows = Array((e.windows + [DYStreamPlan.jumpWindow(from: cursor, shape: shape)]).suffix(4)); e.lock.unlock()
+                DDSeekProbe.jump(e.id, at: cursor, shape: shape)
             }
             // 整条已经在正式缓存里（Wi-Fi 下整条预下好了）：直接从那个文件给，不再联网
             if let whole = DYVideoCache.localURL(e.id), let h = try? FileHandle(forReadingFrom: whole) {
@@ -835,6 +887,22 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     }
 }
 
+
+/// 快进排查日志（DDSEEKNET）：拖进度条期间预览命中/落空多少次、网络在哪开了跳读窗口
+enum DDSeekProbe {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var hits = 0, misses = 0, jumps: [String] = []
+    static func peek(miss: Bool) { lock.lock(); if miss { misses += 1 } else { hits += 1 }; lock.unlock() }
+    static func jump(_ id: String, at offset: Int64, shape: DYStreamPlan.Shape) {
+        let sec = Double(offset - shape.mediaStart) / shape.bytesPerSecond
+        lock.lock(); jumps.append(String(format: "%.0fs", sec)); if jumps.count > 8 { jumps.removeFirst() }; lock.unlock()
+    }
+    /// 取走并清零（一次拖动一份）
+    static func drain() -> String {
+        lock.lock(); defer { hits = 0; misses = 0; jumps = []; lock.unlock() }
+        return "peekHit=\(hits) peekMiss=\(misses) jumps=[\(jumps.joined(separator: ","))]"
+    }
+}
 
 /// 用 dataTask + delegate 按块收数据（替代逐字节的 URLSession.AsyncBytes）
 final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {

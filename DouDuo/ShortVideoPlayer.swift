@@ -1023,7 +1023,30 @@ struct PlayerPage: View {
     }
 
     private func endSeekGesture() {
-        if seeking { seekTo(seekPreview); seeking = false; previewImage = nil }
+        if seeking { finishSeek() }
+    }
+
+    /// 松手：取消还没出来的预览小图（不再占加载线程），跳过去，量「松手 → 真正在播」用了多久
+    private func finishSeek() {
+        imgGen?.cancelAllCGImageGeneration()
+        let target = seekPreview
+        let probe = DDSeekProbe.drain()
+        seekTo(target); seeking = false; previewImage = nil
+        guard let p = player, vlc == nil else { return }
+        let t0 = Date()
+        func check(_ n: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                guard player === p else { return }
+                let t = p.currentTime().seconds
+                let moving = p.timeControlStatus == .playing && t > target - 1 && t < target + 5
+                if moving || n >= 60 || !isPlaying {
+                    DYLiveModel.log("DDSEEKNET \(id.suffix(6)) to=\(String(format: "%.1f", target)) ready=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(moving ? "" : " 未起播") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s \(probe) | \(DYStreamStore.shared.debugLine(forVideo: id))")
+                    return
+                }
+                check(n + 1)
+            }
+        }
+        check(0)
     }
 
     /// 当前条把操作交给半折叠触控板，触控板显示时把弹幕推过去
@@ -1163,7 +1186,7 @@ struct PlayerPage: View {
                         seekDelta = seekPreview - current
                         requestPreview(seekPreview)
                     }
-                    .onEnded { _ in if seeking { seekTo(seekPreview); seeking = false; previewImage = nil } })
+                    .onEnded { _ in if seeking { finishSeek() } })
         }
     }
 
@@ -1306,7 +1329,7 @@ struct PlayerPage: View {
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
         if knownDuration > 0 { duration = knownDuration }
-        let gen = AVAssetImageGenerator(asset: asset)
+        let gen = AVAssetImageGenerator(asset: DYStream.peekAsset(for: asset))
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 320, height: 180)
         gen.requestedTimeToleranceBefore = CMTime(seconds: 1.5, preferredTimescale: 600)
