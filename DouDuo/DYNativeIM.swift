@@ -42,21 +42,31 @@ enum DYPB {
             }
             return nil
         }
-        while i < b.count {
-            guard let key = readVarint() else { return nil }
+        parse: while i < b.count {
+            guard let key = readVarint() else { break }
             let n = Int(key >> 3), wire = key & 7
-            guard n > 0 else { return nil }
+            guard n > 0 else { break }
             switch wire {
-            case 0: guard let v = readVarint() else { return nil }; out[n, default: []].append(.int(v))
-            case 1: guard i + 8 <= b.count else { return nil }; out[n, default: []].append(.bytes(Data(b[i..<i + 8]))); i += 8
+            case 0: guard let v = readVarint() else { break parse }; out[n, default: []].append(.int(v))
+            case 1: guard i + 8 <= b.count else { break parse }; out[n, default: []].append(.bytes(Data(b[i..<i + 8]))); i += 8
             case 2:
-                guard let len = readVarint(), i + Int(len) <= b.count else { return nil }
+                guard let len = readVarint(), i + Int(len) <= b.count else { break parse }
                 out[n, default: []].append(.bytes(Data(b[i..<i + Int(len)]))); i += Int(len)
-            case 5: guard i + 4 <= b.count else { return nil }; out[n, default: []].append(.bytes(Data(b[i..<i + 4]))); i += 4
-            default: return nil
+            case 5: guard i + 4 <= b.count else { break parse }; out[n, default: []].append(.bytes(Data(b[i..<i + 4]))); i += 4
+            default: break parse
             }
         }
-        return out
+        return out.isEmpty && !b.isEmpty ? nil : out
+    }
+
+    /// 只描述结构（字段号:线型），不含任何内容，供日志定位
+    static func shape(_ d: Data) -> String {
+        guard let f = decode(d) else { return "undecodable(\(d.count))" }
+        return f.keys.sorted().map { k in
+            let v = f[k]!.first!
+            if case .int(let x) = v { return "\(k)=\(x < 100000 ? String(x) : "big")" }
+            return "\(k):b\(v.data?.count ?? 0)"
+        }.joined(separator: ",")
     }
 }
 
@@ -149,13 +159,19 @@ final class DYNativeIM {
         let t0 = Date()
         let (data, resp) = try await DYNative.session.data(for: r)
         let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
-        guard http == 200, let top = DYPB.decode(data) else { throw DYIMError.badResponse("HTTP \(http)") }
+        guard http == 200, let top = DYPB.decode(data) else {
+            DYLiveModel.log("DDNATIVEIM cmd=\(cmd.rawValue) http=\(http) undecodable bytes=\(data.count) ctype=\((resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "-")")
+            throw DYIMError.badResponse("HTTP \(http)")
+        }
         let status = top.int(3) ?? 0
         let msg = top.string(4) ?? ""
-        DYLiveModel.log("DDNATIVEIM cmd=\(cmd.rawValue) status=\(status) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        let safeMsg = String(msg.prefix(60)).filter { $0.isASCII }
+        if cmd == .send { DYLiveModel.log("DDNATIVEIM send-top shape=\(DYPB.shape(data))") }
+        DYLiveModel.log("DDNATIVEIM cmd=\(cmd.rawValue) status=\(status) msg=\(safeMsg) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
         if status != 0 {
-            if status == 1 || msg.lowercased().contains("session") { throw DYIMError.noLogin }
-            throw DYIMError.badResponse("\(status)")
+            // 服务器明确答复了错误 = 这次没发出去
+            if msg.lowercased().contains("session") { throw DYIMError.noLogin }
+            throw DYIMError.rejected("\(status) \(safeMsg)")
         }
         if let uid = top.int(13), uid > 0 { selfUID = uid }
         guard let inner = top.sub(6)?.sub(cmd.rawValue) else { return [:] }
@@ -222,8 +238,13 @@ final class DYNativeIM {
     /// - 请求已发出但回执不完整 / 网络在发送中断 → .unconfirmed（不许自动重发）
     func sendText(_ text: String, to conversationID: String) async throws -> UInt64 {
         guard var c = try await conversation(conversationID) else { throw DYIMError.badResponse("找不到会话") }
-        if c.ticket.isEmpty { c = try await refresh(c) }
+        // 每次发送前都刷新会话拿最新发送票据（缓存票据会过期，过期时服务端回 status=1）
+        do { c = try await refresh(c) } catch {
+            DYLiveModel.log("DDNATIVEIM refresh fail \(error)")
+            throw DYIMError.rejected("会话信息刷新失败")
+        }
         let clientID = UUID().uuidString.lowercased()
+        let sentAt = UInt64(Date().timeIntervalSince1970 * 1000)
         let stime = String(format: "%.1f", Date().timeIntervalSince1970 * 1000)
         let content = try JSONSerialization.data(withJSONObject: ["aweType": 700, "type": 0, "richTextInfos": [] as [Any], "text": text],
                                                  options: [.sortedKeys, .withoutEscapingSlashes])
@@ -237,19 +258,44 @@ final class DYNativeIM {
             body = try await call(.send, msg)
         } catch let e as DYIMError {
             DYLiveModel.log("DDNATIVEIM send fail \(e)")
-            if case .badResponse = e { throw DYIMError.unconfirmed }
+            if case .badResponse = e {
+                if let found = await readBack(c, text: text, since: sentAt) {
+                    DYLiveModel.log("DDNATIVEIM send confirmed-by-readback after=badResponse")
+                    return found
+                }
+                throw DYIMError.unconfirmed
+            }
             throw e
         } catch {
             // 网络在发送过程中断：服务器可能已经收到
             DYLiveModel.log("DDNATIVEIM send net-error \((error as NSError).code)")
+            if let found = await readBack(c, text: text, since: sentAt) { return found }
             throw DYIMError.unconfirmed
         }
+        DYLiveModel.log("DDNATIVEIM send-ack shape=\(body.keys.sorted().map(String.init).joined(separator: ","))")
         let serverID = body.int(1) ?? 0
         let echoed = body.string(4) ?? ""
         let status = body.int(3) ?? 0, extra = body.int(5) ?? 0
         DYLiveModel.log("DDNATIVEIM send server=\(serverID > 0) echo=\(echoed == clientID) status=\(status)/\(extra)")
         if status != 0 || extra != 0 { throw DYIMError.rejected("\(status)/\(extra)") }
-        guard serverID > 0, echoed == clientID else { throw DYIMError.unconfirmed }
-        return serverID
+        if serverID > 0, echoed == clientID { return serverID }
+        // 回执不完整：回读聊天记录确认（找我自己在发送之后发的、正文一致的那条）
+        if let found = await readBack(c, text: text, since: sentAt) {
+            DYLiveModel.log("DDNATIVEIM send confirmed-by-readback")
+            return found
+        }
+        throw DYIMError.unconfirmed
+    }
+
+    /// 发送后回读：最多 3 次、间隔 0.8 秒
+    private func readBack(_ c: DYIMConversation, text: String, since: UInt64) async -> UInt64? {
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
+            guard let rows = try? await recentMessages(c, limit: 10) else { continue }
+            if let m = rows.first(where: { $0.sender == selfUID && selfUID > 0 && $0.createdMS + 2000 >= since && $0.text == text }) {
+                return m.serverID
+            }
+        }
+        return nil
     }
 }
