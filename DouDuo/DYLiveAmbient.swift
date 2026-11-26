@@ -96,20 +96,27 @@ final class DYLiveAmbientView: UIView {
     }
 
     private func tick() {
-        guard !working, let c = controller, c.videoSize.width > 0, !covered, let mp = c.mediaPlayer else { return }
+        guard !working, let c = controller, c.videoSize.width > 0, !covered, let mp = c.mediaPlayer, mp.hasVideoOut else { return }
         working = true
         let path = file.path, url = file
         Self.queue.async { [weak self] in
             try? FileManager.default.removeItem(at: url)
             let t0 = CACurrentMediaTime()
-            mp.saveVideoSnapshot(at: path, withWidth: Self.width, andHeight: 0)
-            let cg = Self.blurred(UIImage(contentsOfFile: path))
+            // ⚠️ VLCKit 截不到图（视频输出刚拆掉 / 换流 / 停播中）时不是返回失败，而是直接 @throw NSException
+            // （"Can't take a video snapshot: No video output"）。Swift 接不住，后台队列上未捕获 = 整个 App 闪退，
+            // 刷到直播每 0.5 秒截一次，碰上就崩、重开再崩（工单 B48：1.7.4 会自己重启）。交给 ObjC 接住，当一次没出图。
+            var reason: NSString?
+            let ok = DDTryObjC({ mp.saveVideoSnapshot(at: path, withWidth: Self.width, andHeight: 0) }, &reason)
+            let cg = ok ? Self.blurred(UIImage(contentsOfFile: path)) : nil
             let ms = Int((CACurrentMediaTime() - t0) * 1000)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.working = false
                 guard let cg else {
                     self.misses += 1
+                    if !ok, self.misses <= 3 || self.misses % 20 == 0 {
+                        DYLiveModel.log("DDLIVEAMBIENT snapshot 抛异常已接住 n=\(self.misses) \(reason ?? "-")")
+                    }
                     if self.misses == 3 { DYLiveModel.log("DDLIVEAMBIENT snapshot 连续 3 次没出图 ms=\(ms)") }
                     return
                 }

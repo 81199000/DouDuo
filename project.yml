@@ -28,6 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.rrmm.douduo
         PRODUCT_NAME: DouDuo
+        # VLCKit 部分接口出错直接抛 ObjC 异常，Swift 接不住，靠 DDObjCCatch 兜（工单 B48）
+        SWIFT_OBJC_BRIDGING_HEADER: DouDuo/DouDuo-Bridging-Header.h
         INFOPLIST_KEY_CFBundleDisplayName: DouDuo
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
