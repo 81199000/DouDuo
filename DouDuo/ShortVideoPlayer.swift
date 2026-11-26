@@ -488,6 +488,8 @@ struct PlayerPage: View {
     }
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
+    @State private var stallGuard: NSKeyValueObservation?
+    @State private var unstallCount = 0
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
     @State private var vlc: VLCPlayerController?        // AVPlayer 起播失败 → VLC 软解兜底
@@ -1534,6 +1536,35 @@ struct PlayerPage: View {
     private func detachObservers() {
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+        stallGuard?.invalidate(); stallGuard = nil
+    }
+
+    /// 常驻防「怕卡」：当前播放的条只要进入「为减少卡顿而等待」且缓冲够 2 秒，就立刻接着播。
+    /// 边下边播只比播放位置多下几十秒，系统看到数据「刚好够用」就判定网慢、反复停下来攒（缓冲 40 秒也停），
+    /// 以前只在起播 / 跳转 / 回前台那几个时刻踢一下，踢完又停（真机 11-26：回前台停 4 秒，踢起来 0.6 秒又停 5 秒）。
+    private func watchStalls(_ p: AVPlayer) {
+        stallGuard?.invalidate()
+        stallGuard = p.observe(\.timeControlStatus, options: [.new]) { pl, _ in
+            guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, pl.reasonForWaitingToPlay == .toMinimizeStalls else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { unstall(pl) }
+        }
+    }
+
+    private func unstall(_ p: AVPlayer) {
+        guard player === p, vlc == nil, playbackIsActive, isPlaying, !userPaused, !seeking,
+              p.timeControlStatus == .waitingToPlayAtSpecifiedRate, p.reasonForWaitingToPlay == .toMinimizeStalls,
+              p.currentItem?.status == .readyToPlay else { return }
+        let buf = DYPlaybackTelemetry.bufferedAhead(p)
+        guard buf >= 2 else { return }
+        if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
+            p.isMuted = seamAudio.mode == .noAudio || muted
+        }
+        p.playImmediately(atRate: playRate)
+        if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
+        unstallCount += 1
+        if unstallCount <= 3 || unstallCount % 10 == 0 {
+            DYLiveModel.log("DDUNSTALL \(id.suffix(6)) n=\(unstallCount) t=\(String(format: "%.1f", p.currentTime().seconds)) buf=\(String(format: "%.1f", buf))s 不等直接播")
+        }
     }
 
     /// 提前挂载的相邻页：暂停的 AVPlayer 不会自己解第一帧，画面层一直是黑的，滑进来才开始解 → 「黑屏一下再播」。
@@ -1948,6 +1979,7 @@ struct PlayerPage: View {
     }
 
     private func attachObservers(_ p: AVPlayer) {
+        watchStalls(p)
         timeToken = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { t in
             MainActor.assumeIsolated {
                 let pos = seamAudio.currentMediaTime ?? t.seconds
@@ -2025,6 +2057,7 @@ struct PlayerPage: View {
     }
 
     private func teardownPlayerOnly() {
+        stallGuard?.invalidate(); stallGuard = nil
         pictureInPicture.invalidate()
         seamAudio.reset()
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
@@ -2181,6 +2214,7 @@ struct PlayerPage: View {
 
     private func teardown() {
         primeObs?.invalidate(); primeObs = nil
+        stallGuard?.invalidate(); stallGuard = nil
         pictureInPicture.invalidate()
         // 秒开陪跑中 / 走 VLC / 头部接续的不归还：手里的不是一份干净的原始播放器
         let returnable = !isActive && hdPlayer == nil && vlc == nil && nextPlayer == nil && headEndSeconds == nil
