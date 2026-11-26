@@ -9,8 +9,8 @@ packages:
     path: Vendor/VLCKit
 settings:
   base:
-    MARKETING_VERSION: 1.7.3
-    CURRENT_PROJECT_VERSION: "129"
+    MARKETING_VERSION: 1.7.4
+    CURRENT_PROJECT_VERSION: "130"
     SWIFT_VERSION: "5.0"
     # 编译产物里只留相对路径（#file / 断言 / 调试信息），不写入本机用户目录
     OTHER_SWIFT_FLAGS: "$(inherited) -file-prefix-map $(HOME)=~ -debug-prefix-map $(HOME)=~"
