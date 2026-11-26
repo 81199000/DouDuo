@@ -9,7 +9,7 @@ def check(ok, msg):
     print(("PASS " if ok else "FAIL ") + msg)
     if not ok: fails.append(msg)
 
-rb = p[p.index("    private func rebuild() {"):p.index("    private func rebuild() {") + 900]
+rb = p[p.index("    private func rebuild() {"):p.index("\n    }\n", p.index("    private func rebuild() {"))]   # 整个函数
 check("let localResume = rebuildResumePosition" in rb and "restorePosition(localResume, using: p)" in rb, "重建时接着原位置（在线也算）")
 check("var restoreWithVLC = rebuildResumePosition" in p, "换 VLC 兜底也接着原位置")
 check("offlineContext?.inLibrary == true ? pendingOfflineSeek" not in rb, "不再只给离线库带进度")

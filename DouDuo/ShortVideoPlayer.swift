@@ -1576,8 +1576,7 @@ struct PlayerPage: View {
         // 别把正常加载中的长视频误判成卡死（上一版 2 秒就切，切到了已 403 的直连 CDN，反而黑屏 14–28 秒）
         let start = p.currentTime().seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-            let active = offlineContext == nil ? isActive : playbackIsActive
-            guard active, isPlaying, player === p, !seeking, vlc == nil else { return }
+            guard playbackIsActive, isPlaying, player === p, !seeking, vlc == nil else { return }
             let failedNow = p.currentItem?.status == .failed
             let position = p.currentTime().seconds
             let waiting = offlineContext != nil && p.timeControlStatus == .waitingToPlayAtSpecifiedRate &&
@@ -1638,21 +1637,41 @@ struct PlayerPage: View {
             if playbackIsActive { offlineContext?.onFailure() }
             return
         }
-        let item = makeItem(asset: DYMedia.asset(source))
+        // 能接着用边下边播就接着用（同一份本地缓存，落点附近已经下好的直接读）；
+        // 以前一律换在线直连 altURL：缓存全丢、重新起连接，回前台先黑一段（真机 11-26）
+        let streamAsset = offlineContext?.localOnly == true ? nil : DYStream.reuseAsset(id: id)
+        let item = makeItem(asset: streamAsset ?? DYMedia.asset(source))
         let p = AVPlayer(playerItem: item)
         p.automaticallyWaitsToMinimizeStalling = true
         player = p
+        if let a = item.asset as? AVURLAsset {
+            imgGen?.cancelAllCGImageGeneration()
+            let gen = AVAssetImageGenerator(asset: DYStream.peekAsset(for: a))
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 320, height: 180)
+            gen.requestedTimeToleranceBefore = CMTime(seconds: 1.5, preferredTimescale: 600)
+            gen.requestedTimeToleranceAfter = CMTime(seconds: 1.5, preferredTimescale: 600)
+            imgGen = gen
+        }
         attachObservers(p)
         let localResume = rebuildResumePosition
         if let localResume {
             restorePosition(localResume, using: p)
             DYStreamStore.shared.setPlayhead(id, localResume)
         }
-        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") alt=\(altURL != nil)")
+        DYLiveModel.log("DDREBUILD \(id.suffix(6)) resume=\(localResume.map { String(format: "%.1f", $0) } ?? "nil") src=\(streamAsset != nil ? "stream" : (source == altURL ? "alt" : source.isFileURL ? "file" : "url"))")
         isPlaying = true
-        bindSeamlessAudio(to: p, initialPos: localResume, active: isActive, playing: true)
+        // 用 playbackIsActive（@State，实时）不用 isActive：rebuild 常从回前台的注册闭包里跑，
+        // 那里的 isActive 是 onAppear 当时的旧值——预加载页 onAppear 时是 false，
+        // 重建后就按「不是当前页」把声音静掉，接着 p.rate 又把画面拉起来 → 有画面没声音（真机 11-26 vMuted=true want=false）
+        bindSeamlessAudio(to: p, initialPos: localResume, active: playbackIsActive, playing: true)
         p.rate = playRate
         watchdog(p)
+        // 重建后的诊断：3 秒时画面/声音什么状态（真机 11-26：重建后出了画面没声音）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            guard player === p else { return }
+            DYLiveModel.log("DDREBUILD \(id.suffix(6)) +3s t=\(String(format: "%.1f", p.currentTime().seconds)) ready=\(firstFrame) \(seamAudio.audioDiag())")
+        }
     }
 
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
@@ -1666,7 +1685,7 @@ struct PlayerPage: View {
         for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 guard gen == nil || gen == seekGen else { return }
-                guard player === p, isActive, isPlaying, !userPaused, vlc == nil,
+                guard player === p, playbackIsActive, isPlaying, !userPaused, vlc == nil,
                       p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
                       p.reasonForWaitingToPlay == .toMinimizeStalls,
                       p.currentItem?.status == .readyToPlay else { return }
@@ -1717,6 +1736,18 @@ struct PlayerPage: View {
     }
 
     /// 回前台 3 秒还没往前走（后台时边下边播的连接被系统掐断，回来 AVPlayer 一直卡着）：按原位置重建
+    /// 原地起播 3 秒后还不走才重建
+    private func checkAfterKick(_ p: AVPlayer, from: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            guard canControlPlayback, isPlaying, !userPaused, !seeking, player === p, vlc == nil else { return }
+            let now = p.currentTime().seconds
+            guard p.timeControlStatus != .playing, now.isFinite, now <= from + 0.3 else { return }
+            DYLiveModel.log("DDFGCHECK \(id.suffix(6)) 原地起播没动 tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") → 重建")
+            current = from
+            rebuild()
+        }
+    }
+
     private func checkAfterForeground(_ p: AVPlayer) {
         let from = seamAudio.currentMediaTime ?? p.currentTime().seconds
         if p.currentItem?.status == .failed {
@@ -1732,6 +1763,17 @@ struct PlayerPage: View {
             let now = seamAudio.currentMediaTime ?? p.currentTime().seconds
             let failed = p.currentItem?.status == .failed
             let stuck = p.timeControlStatus != .playing && now.isFinite && now <= from + 0.3
+            // 缓冲够、只是「怕卡」在等：踢一下就走，不用重建（重建要丢掉边下边播缓存、换在线直连从头加载，
+            // 真机 11-26：buf=66s 照样重建 → 先黑一段、出了画面还没声音）
+            if !failed, stuck, p.currentItem?.status == .readyToPlay, DYPlaybackTelemetry.bufferedAhead(p) >= 2 {
+                DDAudioSessionGate.forceActive()
+                p.isMuted = muted
+                p.playImmediately(atRate: playRate)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s → 原地起播")
+                checkAfterKick(p, from: from)
+                return
+            }
             DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) now=\(String(format: "%.1f", now)) tcs=\(p.timeControlStatus.rawValue) failed=\(failed) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s\(failed || stuck ? " → 重建" : "")")
             guard failed || stuck else { return }
             if from.isFinite, from > 1 { current = from }

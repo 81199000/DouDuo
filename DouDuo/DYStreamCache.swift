@@ -62,6 +62,13 @@ enum DYStream {
         return asset
     }
 
+    /// 重建播放器时接着用这条已有的边下边播缓存（没登记过 / 关了边下边播返回 nil）
+    static func reuseAsset(id: String) -> AVURLAsset? {
+        guard enabled, let item = DYStreamStore.shared.item(id), let remote = item.play.flatMap(URL.init(string:)) else { return nil }
+        let a = asset(for: item, remote: remote)
+        return a.url.isFileURL || a.url.scheme == scheme ? a : nil
+    }
+
     /// 只有 id 的地方（播放页）：已登记过就走 ddstream，否则原样
     static func asset(id: String, remote: URL) -> AVURLAsset {
         guard enabled, !remote.isFileURL, let item = DYStreamStore.shared.item(id) else {
