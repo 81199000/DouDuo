@@ -41,6 +41,17 @@ struct DDAudioInterruptionGate: Equatable {
 }
 // END DDAudioInterruptionGate
 
+// BEGIN DDLoudness
+/// 倍速时补多少 dB。只补加速（不变调加速才掉响度）；速率上限 4x → 最多 3.2 dB。
+/// 系数按 11 条真实抖音音轨离线渲染取中位：1.25x≈0.5 / 1.5x≈0.9 / 2x≈1.6 / 3x≈2.5 dB
+enum DDLoudness {
+    static func compensationDB(rate: Float) -> Float {
+        guard rate > 1.001 else { return 0 }
+        return 1.6 * log2(rate)
+    }
+}
+// END DDLoudness
+
 @MainActor
 final class DDAudioEngineHub {
     static let shared = DDAudioEngineHub()
@@ -48,6 +59,11 @@ final class DDAudioEngineHub {
     let engine = AVAudioEngine()
     let playerNode = AVAudioPlayerNode()
     let timePitch = AVAudioUnitTimePitch()
+    /// 倍速补响度：TimePitch 加速时叠接窗口会削掉一部分能量，2x 实测比原声小 0.5–2.8 dB（11 条真实抖音音轨，
+    /// 戴耳机很明显，老板 11-26）。这里按倍速补回增益；PeakLimiter 兜住峰值，补完也不会削顶爆音。
+    let loudness = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
+        componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
+        componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
 
     private(set) var activeOwner: UUID?
     private var connectedFormat: AVAudioFormat?
@@ -58,6 +74,7 @@ final class DDAudioEngineHub {
     private init() {
         engine.attach(playerNode)
         engine.attach(timePitch)
+        engine.attach(loudness)
         timePitch.rate = 1.0
         timePitch.pitch = 0.0
         timePitch.overlap = 8.0
@@ -77,6 +94,7 @@ final class DDAudioEngineHub {
             let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
             MainActor.assumeIsolated {
                 guard let self else { return }
+                DYLiveModel.log("DDAUDIOINT \(type == .began ? "began" : "ended") resume=\(shouldResume) app=\(UIApplication.shared.applicationState.rawValue) owner=\(self.activeOwner != nil) gate=\(self.interruption.phase)")
                 switch type {
                 case .began:
                     self.interruption.began()
@@ -109,6 +127,7 @@ final class DDAudioEngineHub {
         activeOwner = owner
         reconnectGraph(format: format, force: false)
         timePitch.rate = max(0.25, min(4.0, rate))
+        applyLoudness(rate: rate)
         setMuted(muted, owner: owner)
         try ensureRunning()
     }
@@ -123,8 +142,10 @@ final class DDAudioEngineHub {
         if wasRunning { playerNode.stop() }
         engine.disconnectNodeOutput(playerNode)
         engine.disconnectNodeOutput(timePitch)
+        engine.disconnectNodeOutput(loudness)
         engine.connect(playerNode, to: timePitch, format: format)
-        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        engine.connect(timePitch, to: loudness, format: format)
+        engine.connect(loudness, to: engine.mainMixerNode, format: format)
         connectedFormat = format
         if wasRunning, !engine.isRunning {
             try? engine.start()
@@ -142,9 +163,22 @@ final class DDAudioEngineHub {
         }
     }
 
+    /// 当前补的增益（dB），日志用
+    private(set) var loudnessGainDB: Float = 0
+
+    /// 按倍速补响度。同步环每 0.18s 会 ±3% 微调速率，变化不到 0.1 dB，按 0.05x 取整避免反复写参数
+    private func applyLoudness(rate: Float) {
+        let r = (max(0.25, min(4.0, rate)) * 20).rounded() / 20
+        let db = DDLoudness.compensationDB(rate: r)
+        guard abs(db - loudnessGainDB) > 0.01 else { return }
+        loudnessGainDB = db
+        AudioUnitSetParameter(loudness.audioUnit, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, db, 0)
+    }
+
     func setRate(_ rate: Float, owner: UUID) {
         guard activeOwner == owner else { return }
         timePitch.rate = max(0.25, min(4.0, rate))
+        applyLoudness(rate: rate)
     }
 
     func setMuted(_ muted: Bool, owner: UUID) {
@@ -157,6 +191,17 @@ final class DDAudioEngineHub {
     func noteExplicitPlaybackRequest() {
         interruption.explicitPlay()
     }
+
+    /// 回到前台、音频会话重新激活成功 = 别的 App 的打断已经结束。
+    /// 打断结束的通知不一定送达（别的 App 没带 notifyOthers 就关会话时系统不发 ended），
+    /// 门闩会一直停在 active：引擎永远不出声，原生音轨又关着 → 画面走、没声音（老板 11-26）。
+    func clearInterruptionAfterForeground() {
+        guard interruption.phase != .clear else { return }
+        DYLiveModel.log("DDAUDIOINT gate-cleared-on-foreground was=\(interruption.phase)")
+        interruption = DDAudioInterruptionGate()
+    }
+
+    var gateDescription: String { "\(interruption.phase)" }
 
     func pause(owner: UUID) {
         guard activeOwner == owner else { return }
@@ -899,9 +944,19 @@ final class DDSeamlessController {
             videoPlayer?.isMuted = true
             videoPlayer?.rate = targetRate
         case .fallbackAVPlayer:
+            if let it = videoPlayer?.currentItem { DDAudioStream.enableAudioTracks(on: it) }
             videoPlayer?.isMuted = muted
             videoPlayer?.rate = targetRate
         }
+    }
+
+    /// 前后台排查日志：声音现在走哪条路、引擎在不在跑、原生音轨开没开
+    func audioDiag() -> String {
+        let hub = DDAudioEngineHub.shared
+        let vp = videoPlayer
+        let tracks = vp?.currentItem?.tracks.filter { $0.assetTrack?.mediaType == .audio } ?? []
+        let s = AVAudioSession.sharedInstance()
+        return "mode=\(mode) handoff=\(engagedByHandoff) want=\(wantPlaying) owner=\(hub.activeOwner == ownerID) engine=\(hub.engine.isRunning) node=\(hub.playerNode.isPlaying) pend=\(pendingBuffers) gate=\(hub.gateDescription) vMuted=\(vp?.isMuted.description ?? "-") vRate=\(vp?.rate ?? -1) tcs=\(vp?.timeControlStatus.rawValue ?? -1) aTracks=\(tracks.filter(\.isEnabled).count)/\(tracks.count) cat=\(s.category.rawValue.replacingOccurrences(of: "AVAudioSessionCategory", with: "")) other=\(s.isOtherAudioPlaying) route=\(s.currentRoute.outputs.map(\.portType.rawValue).joined(separator: "+"))"
     }
 
     func pause() {
@@ -961,7 +1016,7 @@ final class DDSeamlessController {
             return nil
         }
         let hub = DDAudioEngineHub.shared
-        let heard = stream.anchorMediaTime + consumed - hub.timePitch.latency - hub.hardwareOutputLatency * Double(targetRate)
+        let heard = stream.anchorMediaTime + consumed - hub.timePitch.latency - hub.loudness.latency - hub.hardwareOutputLatency * Double(targetRate)
         return max(0, heard)
     }
 

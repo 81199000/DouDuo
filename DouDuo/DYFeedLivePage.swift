@@ -38,6 +38,8 @@ struct DYFeedLivePage: View {
     /// 从预热拿来的那一路（有值时用它，不用自己的 player）
     @State private var warm: DYFeedLiveWarm.Handle?
     @AppStorage("douyin_muted_v1") private var muted = false
+    /// 环境光跟视频共用设置（关 / 亮 / 中 / 暗 / 很暗）
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
 
@@ -48,6 +50,14 @@ struct DYFeedLivePage: View {
         ZStack {
             // 不铺封面：先封面再切到直播画面会「闪一下」（老板 2026-11-21：闪封面很难受），没出画前就是黑底
             Color.black
+            // 环境光：画面没铺满（横屏直播 / 竖屏直播在折叠屏外屏）时四周跟着画面颜色变，同视频页
+            if isCurrent, ambientLevel > 0 {
+                DYLiveAmbientBackdrop(controller: warm?.controller ?? player, active: isCurrent,
+                                      dim: Double(ambientLevel) / 100, fillWidth: live.portrait)
+                    .id(warm?.roomID ?? "cold")
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("douyin.feed.live.ambient")
+            }
             if isCurrent {
                 // 预热过（上一条时已在后台连上）就用那一路，划到就有画面；否则现连
                 DYFeedLiveVideo(controller: warm?.controller ?? player, warmView: warm?.view, portrait: live.portrait) {

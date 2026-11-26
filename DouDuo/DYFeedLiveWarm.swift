@@ -201,9 +201,19 @@ struct DYFeedLiveVideo: View {
     let portrait: Bool
     let onFirstFrame: () -> Void
     var body: some View {
-        Group {
-            if let warmView { DYWarmLiveSurface(view: warmView) }
-            else { VLCPlayerSurface(controller: controller, fillWidth: portrait, letterbox: .clear) }
+        // 画面没铺满时把画面层缩到画面本身大小、居中：VLC 渲染层的留边不一定透明，
+        // 铺满整屏会把下面的环境光盖成黑边（同视频页 contentSize 的做法）
+        GeometryReader { g in
+            let vs = controller.videoSize
+            let fitted = vs.width > 1 && vs.height > 1
+                ? DYVideoFit.contentSize(container: g.size, videoAspect: vs.width / vs.height, fillWidth: portrait)
+                : g.size
+            Group {
+                if let warmView { DYWarmLiveSurface(view: warmView) }
+                else { VLCPlayerSurface(controller: controller, fillWidth: portrait, letterbox: .clear) }
+            }
+            .frame(width: fitted.width, height: fitted.height)
+            .position(x: g.size.width / 2, y: g.size.height / 2)
         }
         .opacity(controller.videoSize.width > 0 ? 1 : 0)
         .allowsHitTesting(false)

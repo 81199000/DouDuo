@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// 边下边播（老板 2026-11-20 定 A 方案）。
 ///
@@ -29,10 +32,23 @@ enum DYStream {
     static var saving: Bool { saverOn && DYNetPath.shared.cellular }
 
     static func url(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)")! }
+    /// 拖进度条的预览小图用：同一份缓存，但只读本地已有的，绝不联网、不开跳读窗口
+    /// （以前预览走播放器同一个资源：手指扫过的每个位置都开 8 秒跳读窗口去下，
+    /// 下载带宽被预览吃掉，松手后真正要播的那段排在后面 → 快进卡，老板 11-26）
+    static func peekURL(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)?peek=1")! }
     static func id(of url: URL) -> String? {
         guard url.scheme == scheme else { return nil }
         let id = url.lastPathComponent
         return id.isEmpty ? nil : id
+    }
+    static func isPeek(_ url: URL) -> Bool { url.query?.contains("peek=1") == true }
+
+    /// 预览小图的资源：跟播放器共用同一份边下边播缓存；不是 ddstream 的（本地整条 / 在线）原样复用
+    static func peekAsset(for playing: AVURLAsset) -> AVURLAsset {
+        guard let key = id(of: playing.url) else { return playing }
+        let a = AVURLAsset(url: peekURL(for: key))
+        a.resourceLoader.setDelegate(DYStreamLoader.shared, queue: DYStreamLoader.queue)
+        return a
     }
 
     /// 给播放器的资源：本地整条有 → 本地文件；开着边下边播 → ddstream 资源；否则原样在线
@@ -44,6 +60,13 @@ enum DYStream {
         let asset = AVURLAsset(url: url(for: key))
         asset.resourceLoader.setDelegate(DYStreamLoader.shared, queue: DYStreamLoader.queue)
         return asset
+    }
+
+    /// 重建播放器时接着用这条已有的边下边播缓存（没登记过 / 关了边下边播返回 nil）
+    static func reuseAsset(id: String) -> AVURLAsset? {
+        guard enabled, let item = DYStreamStore.shared.item(id), let remote = item.play.flatMap(URL.init(string:)) else { return nil }
+        let a = asset(for: item, remote: remote)
+        return a.url.isFileURL || a.url.scheme == scheme ? a : nil
     }
 
     /// 只有 id 的地方（播放页）：已登记过就走 ddstream，否则原样
@@ -436,14 +459,56 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     static let shared = DYStreamLoader()
     static let queue = DispatchQueue(label: "douduo.stream.loader")
 
-    private let session: URLSession = {
+    private static func makeSession() -> URLSession {
         let c = URLSessionConfiguration.default
         c.httpMaximumConnectionsPerHost = 6
         c.timeoutIntervalForRequest = 20
         c.urlCache = nil
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: c)
-    }()
+    }
+    private var _session = DYStreamLoader.makeSession()
+    private var session: URLSession { lock.lock(); defer { lock.unlock() }; return _session }
+    /// 正在收数据的连接（回前台时要整批作废）
+    private var live: [ObjectIdentifier: DYChunkStream] = [:]
+    private var backgroundAt: Date?
+    private var lifecycle: [NSObjectProtocol] = []
+
+    override init() {
+        super.init()
+        #if canImport(UIKit)
+        let nc = NotificationCenter.default
+        lifecycle = [
+            nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.lock.lock(); self?.backgroundAt = Date(); self?.lock.unlock()
+            },
+            nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.reviveAfterForeground()
+            },
+        ]
+        #endif
+    }
+
+    private func track(_ c: DYChunkStream) { lock.lock(); live[ObjectIdentifier(c)] = c; lock.unlock() }
+    private func untrack(_ id: ObjectIdentifier) { lock.lock(); live[id] = nil; lock.unlock() }
+
+    /// App 挂起时系统把边下边播的连接冻住，回来后连接已死但任务还挂着：它占着「正在下这段」的标记，
+    /// 播放器要的数据就一直等它，直到 20 秒超时（真机 11-26：回前台卡 13.7 秒 / 4 秒）。
+    /// 回前台：换新会话，旧连接按「连接断了」作废 → 下载循环立刻用新连接重拉同一段。
+    private func reviveAfterForeground() {
+        lock.lock()
+        let away = backgroundAt.map { Date().timeIntervalSince($0) } ?? 0
+        backgroundAt = nil
+        guard away >= DYStreamPlan.reviveAfterBackground else { lock.unlock(); return }
+        let old = _session
+        _session = DYStreamLoader.makeSession()
+        let streams = Array(live.values)
+        live.removeAll()
+        lock.unlock()
+        streams.forEach { $0.abortForRevive() }
+        old.finishTasksAndInvalidate()
+        DYLiveModel.log("DDSTREAM revive away=\(Int(away))s aborted=\(streams.count)")
+    }
 
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
@@ -505,7 +570,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 }
                 do { try await self.download(e, fetch, sink: nil) } catch {
                     e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
-                    try? await Task.sleep(for: .seconds(1))
+                    if !DYChunkStream.isRevive(error) { try? await Task.sleep(for: .seconds(1)) }
                     continue
                 }
                 e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock()
@@ -568,6 +633,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
 
     func resourceLoader(_ loader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource req: AVAssetResourceLoadingRequest) -> Bool {
         guard let url = req.request.url, let streamKey = DYStream.id(of: url), let e = DYStreamStore.shared.entry(streamKey) else { return false }
+        if DYStream.isPeek(url) { servePeek(req, entry: e); return true }
         let key = ObjectIdentifier(req)
         let t = Task { [weak self] in
             await self?.serve(req, entry: e)
@@ -584,6 +650,43 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
 
     // MARK: 供数据
 
+    /// 预览小图：只给本地已有的连续数据；缺了马上报错（小图不出就不出，不能去抢播放的带宽）
+    private func servePeek(_ req: AVAssetResourceLoadingRequest, entry e: DYStreamEntry) {
+        e.lock.lock(); let total = e.total; e.lock.unlock()
+        guard let total else { DDSeekProbe.peek(miss: true); req.finishLoading(with: URLError(.resourceUnavailable)); return }
+        if let info = req.contentInformationRequest {
+            info.contentType = "public.mpeg-4"
+            info.contentLength = total
+            info.isByteRangeAccessSupported = true
+        }
+        guard let dr = req.dataRequest else { req.finishLoading(); return }
+        let want: Int64 = dr.requestsAllDataToEndOfResource ? total - dr.requestedOffset : Int64(dr.requestedLength)
+        let end = min(total, dr.requestedOffset + want)
+        var cursor = max(dr.requestedOffset, dr.currentOffset)
+        let whole = DYVideoCache.localURL(e.id).flatMap { try? FileHandle(forReadingFrom: $0) }
+        defer { try? whole?.close() }
+        while cursor < end {
+            if req.isCancelled { return }
+            var d: Data?
+            if let whole {
+                try? whole.seek(toOffset: UInt64(cursor))
+                d = try? whole.read(upToCount: Int(min(end - cursor, 2 * 1024 * 1024)))
+            } else {
+                e.lock.lock()
+                let local = DYStreamPlan.contiguous(from: cursor, in: e.ranges)
+                if local > 0 { d = e.read(cursor, Int(min(local, end - cursor, 2 * 1024 * 1024))) }
+                e.lock.unlock()
+            }
+            guard let d, !d.isEmpty else {
+                DDSeekProbe.peek(miss: true)
+                req.finishLoading(with: URLError(.resourceUnavailable)); return
+            }
+            dr.respond(with: d); cursor += Int64(d.count)
+        }
+        DDSeekProbe.peek(miss: false)
+        req.finishLoading()
+    }
+
     private func serve(_ req: AVAssetResourceLoadingRequest, entry e: DYStreamEntry) async {
         do {
             try await ensureInfo(e)
@@ -598,12 +701,14 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             let want: Int64 = dr.requestsAllDataToEndOfResource ? total - start : Int64(dr.requestedLength)
             let end = min(total, start + want)
             var cursor = max(start, dr.currentOffset)
+            var revives = 0
             // 跳着读：当前条拖进度条，或任何条读文件尾部的 moov → 给一个临时窗口，不受播放前瞻限制。
             // 预热中的条正常往后读不放开（否则每次重发请求都多下 8 秒，省流量就白做了）
             e.lock.lock(); let shape = e.shape; e.lock.unlock()
             if let h = DYStreamStore.shared.horizon(e), let shape, cursor > h + DYStreamPlan.jumpSlack,
                DYStreamStore.shared.isCurrent(e.id) || cursor > shape.total * 9 / 10 {
                 e.lock.lock(); e.windows = Array((e.windows + [DYStreamPlan.jumpWindow(from: cursor, shape: shape)]).suffix(4)); e.lock.unlock()
+                DDSeekProbe.jump(e.id, at: cursor, shape: shape)
             }
             // 整条已经在正式缓存里（Wi-Fi 下整条预下好了）：直接从那个文件给，不再联网
             if let whole = DYVideoCache.localURL(e.id), let h = try? FileHandle(forReadingFrom: whole) {
@@ -664,13 +769,20 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 }
                 defer { e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock() }
                 var fed = cursor
-                try await download(e, fetch) { data in
-                    // 只喂播放器要的那部分（下载块的尾巴可能超出这次请求）
-                    let room = end - fed
-                    guard room > 0 else { return }
-                    let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
-                    dr.respond(with: piece)
-                    fed += Int64(piece.count)
+                do {
+                    try await download(e, fetch) { data in
+                        // 只喂播放器要的那部分（下载块的尾巴可能超出这次请求）
+                        let room = end - fed
+                        guard room > 0 else { return }
+                        let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
+                        dr.respond(with: piece)
+                        fed += Int64(piece.count)
+                    }
+                } catch where DYChunkStream.isRevive(error) && revives < 3 {
+                    // 回前台作废了冻住的连接：从已经喂到的位置接着来，新连接马上重拉
+                    revives += 1
+                    cursor = fed
+                    continue
                 }
                 // 200 整条回来时没直接喂（fed 没动），下一轮从本地读
                 cursor = fed
@@ -721,8 +833,10 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // 按块收（URLSession 每次给几十 KB），不再逐字节 `for try await b in bytes`：
                 // 逐字节一条 10MB 视频就是一千万次异步迭代，真机分析里是后台 CPU 第一大户（发烫原因之一）
                 let chunks = DYChunkStream(session: session, request: r)
+                let cid = ObjectIdentifier(chunks)
+                track(chunks)
+                defer { chunks.cancel(); untrack(cid) }
                 let resp = try await chunks.response()
-                defer { chunks.cancel() }
                 #if DEBUG
                 DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) range=\(range.lowerBound)-\(range.upperBound)")
                 #endif
@@ -769,6 +883,9 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             } catch {
                 e.lock.lock(); e.saveMeta(); e.lock.unlock()
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                // 回前台作废的旧连接：不换地址、不清跳转结果，直接抛给调用方从「已写到哪」重算再拉
+                // （serve 已经按块喂过播放器，这里原地重下同一段会把重复字节喂进去）
+                if DYChunkStream.isRevive(error) { throw error }
                 if target == e.resolved { e.lock.lock(); e.resolved = nil; e.lock.unlock() }
                 lastError = error
             }
@@ -777,6 +894,22 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     }
 }
 
+
+/// 快进排查日志（DDSEEKNET）：拖进度条期间预览命中/落空多少次、网络在哪开了跳读窗口
+enum DDSeekProbe {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var hits = 0, misses = 0, jumps: [String] = []
+    static func peek(miss: Bool) { lock.lock(); if miss { misses += 1 } else { hits += 1 }; lock.unlock() }
+    static func jump(_ id: String, at offset: Int64, shape: DYStreamPlan.Shape) {
+        let sec = Double(offset - shape.mediaStart) / shape.bytesPerSecond
+        lock.lock(); jumps.append(String(format: "%.0fs", sec)); if jumps.count > 8 { jumps.removeFirst() }; lock.unlock()
+    }
+    /// 取走并清零（一次拖动一份）
+    static func drain() -> String {
+        lock.lock(); defer { hits = 0; misses = 0; jumps = []; lock.unlock() }
+        return "peekHit=\(hits) peekMiss=\(misses) jumps=[\(jumps.joined(separator: ","))]"
+    }
+}
 
 /// 用 dataTask + delegate 按块收数据（替代逐字节的 URLSession.AsyncBytes）
 final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
@@ -813,6 +946,17 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
 
     func cancel() { task?.cancel() }
 
+    private var revived = false
+    static func isRevive(_ error: Error) -> Bool {
+        let n = error as NSError
+        return n.domain == NSURLErrorDomain && n.code == URLError.networkConnectionLost.rawValue && n.userInfo["dd.revive"] as? Bool == true
+    }
+    /// 回前台作废：按「连接断了」结束（不是取消——取消会让播放器的数据请求永远挂着没人答）
+    func abortForRevive() {
+        lock.lock(); revived = true; lock.unlock()
+        task?.cancel()
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         lock.lock(); gotResponse = response; let k = respCont; respCont = nil; lock.unlock()
@@ -827,6 +971,8 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock()
         let k = respCont; respCont = nil
+        var error = error
+        if revived { error = URLError(.networkConnectionLost, userInfo: ["dd.revive": true]) }
         if let error { failed = error }
         lock.unlock()
         if let error {
