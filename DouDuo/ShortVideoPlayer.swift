@@ -489,6 +489,8 @@ struct PlayerPage: View {
     @State private var dmClock = DYDanmakuClock()
     @State private var timeToken: Any?
     @State private var stallGuard: NSKeyValueObservation?
+    /// 等待原因变化也要听：从「评估缓冲速率」变成「怕卡」时 timeControlStatus 不变（一直是 waiting），只听它会漏掉
+    @State private var stallReasonGuard: NSKeyValueObservation?
     @State private var unstallCount = 0
     @State private var endObserver: NSObjectProtocol?
     @State private var barWidth: CGFloat = 1
@@ -1541,7 +1543,7 @@ struct PlayerPage: View {
     private func detachObservers() {
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
-        stallGuard?.invalidate(); stallGuard = nil
+        stallGuard?.invalidate(); stallGuard = nil; stallReasonGuard?.invalidate(); stallReasonGuard = nil
     }
 
     /// 常驻防「怕卡」：当前播放的条只要进入「为减少卡顿而等待」且缓冲够 2 秒，就立刻接着播。
@@ -1549,18 +1551,35 @@ struct PlayerPage: View {
     /// 以前只在起播 / 跳转 / 回前台那几个时刻踢一下，踢完又停（真机 11-26：回前台停 4 秒，踢起来 0.6 秒又停 5 秒）。
     private func watchStalls(_ p: AVPlayer) {
         stallGuard?.invalidate()
+        stallReasonGuard?.invalidate()
         stallGuard = p.observe(\.timeControlStatus, options: [.new]) { pl, _ in
-            guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, pl.reasonForWaitingToPlay == .toMinimizeStalls else { return }
+            guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(pl) else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { unstall(pl) }
+        }
+        // 真机 11-27（长视频 254450）：起播时原因是「评估缓冲速率」，几秒后变成「怕卡」且已缓冲 4 秒，
+        // 但 timeControlStatus 一直是 waiting 没变 → 上面那个监听不触发，没人踢，干等到看门狗重建
+        stallReasonGuard = p.observe(\.reasonForWaitingToPlay, options: [.new]) { pl, _ in
+            guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(pl) else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { unstall(pl) }
         }
     }
 
-    private func unstall(_ p: AVPlayer) {
+    /// 播放器「过度谨慎」的两种等待：怕卡 / 还在评估缓冲速率（都不是真没数据）
+    nonisolated static func isOverCautious(_ p: AVPlayer) -> Bool {
+        p.reasonForWaitingToPlay == .toMinimizeStalls || p.reasonForWaitingToPlay == .evaluatingBufferingRate
+    }
+
+    private func unstall(_ p: AVPlayer, retry: Int = 0) {
         guard player === p, vlc == nil, playbackIsActive, isPlaying, !userPaused, !seeking,
-              p.timeControlStatus == .waitingToPlayAtSpecifiedRate, p.reasonForWaitingToPlay == .toMinimizeStalls,
+              p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+              p.reasonForWaitingToPlay == .toMinimizeStalls || p.reasonForWaitingToPlay == .evaluatingBufferingRate,
               p.currentItem?.status == .readyToPlay else { return }
         let buf = DYPlaybackTelemetry.bufferedAhead(p)
-        guard buf >= 2 else { return }
+        guard buf >= 2 else {
+            // 缓冲还不到 2 秒：数据在路上，状态不会再变 → KVO 不会再叫，自己每 0.5 秒回来看一次（最多 10 秒）
+            if retry < 20 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { unstall(p, retry: retry + 1) } }
+            return
+        }
         if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
             p.isMuted = seamAudio.mode == .noAudio || muted
         }
@@ -1568,7 +1587,7 @@ struct PlayerPage: View {
         if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
         unstallCount += 1
         if unstallCount <= 3 || unstallCount % 10 == 0 {
-            DYLiveModel.log("DDUNSTALL \(id.suffix(6)) n=\(unstallCount) t=\(String(format: "%.1f", p.currentTime().seconds)) buf=\(String(format: "%.1f", buf))s 不等直接播")
+            DYLiveModel.log("DDUNSTALL \(id.suffix(6)) n=\(unstallCount) t=\(String(format: "%.1f", p.currentTime().seconds)) buf=\(String(format: "%.1f", buf))s why=\(p.reasonForWaitingToPlay == .toMinimizeStalls ? "怕卡" : "评估") waited=\(String(format: "%.1f", Double(retry) * 0.5))s 不等直接播")
         }
     }
 
@@ -1607,7 +1626,7 @@ struct PlayerPage: View {
     }
 
     /// 起播看门狗：当前屏 6 秒还没走（网络抖 / 预加载的 item 失效），重建播放项再来一次
-    private func watchdog(_ p: AVPlayer) {
+    private func watchdog(_ p: AVPlayer, kicks: Int = 0) {
         // 起播看门狗：真失败(status=failed)立刻换路；只是还在加载(status=unknown)给到 5 秒再判，
         // 别把正常加载中的长视频误判成卡死（上一版 2 秒就切，切到了已 403 的直连 CDN，反而黑屏 14–28 秒）
         let start = p.currentTime().seconds
@@ -1629,6 +1648,17 @@ struct PlayerPage: View {
             DYLiveModel.log("DDSTARTDIAG \(id) status=\(st) err=\(err) host=\(url.host ?? "-") alt=\(altURL?.host ?? "-") retried=\(avRetried) src=\(src) tcs=\(p.timeControlStatus.rawValue) rate=\(p.rate) why=\(reason) keepUp=\(it?.isPlaybackLikelyToKeepUp ?? false) full=\(it?.isPlaybackBufferFull ?? false) empty=\(it?.isPlaybackBufferEmpty ?? false) loaded=[\(ranges)] pos=\(String(format: "%.2f", position))")
             // 数据已经够了却停着（rate=0 / 暂停态）：是播放被打断了不是数据问题，
             // 重新激活音频会话再播一下就行，不必重建播放器
+            // 数据其实够了，只是播放器「怕卡 / 评估速率」不肯走：原地踢，不重建。
+            // 真机 11-27（10 小时回放 254450，moov 47MB）：这时已缓冲 4 秒，看门狗却去重建 → 重新解析 47MB 头，
+            // 重建后只剩 1.1 秒缓冲，干等 20 秒划走。重建只留给真坏了 / 一点数据都没来的情况。
+            if it?.status == .readyToPlay, p.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(p),
+               DYPlaybackTelemetry.bufferedAhead(p) >= 1, kicks < 2 {
+                p.playImmediately(atRate: playRate)
+                if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
+                DYLiveModel.log("DDSTARTDIAG \(id) kick-in-place n=\(kicks + 1) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s")
+                watchdog(p, kicks: kicks + 1)   // 踢两次还不走才重建
+                return
+            }
             if it?.status == .readyToPlay, p.rate == 0, p.timeControlStatus == .paused, it?.isPlaybackLikelyToKeepUp == true {
                 DDAudioSessionGate.forceActive()
                 p.playImmediately(atRate: playRate)
@@ -1723,7 +1753,7 @@ struct PlayerPage: View {
                 guard gen == nil || gen == seekGen else { return }
                 guard player === p, playbackIsActive, isPlaying, !userPaused, vlc == nil,
                       p.timeControlStatus == .waitingToPlayAtSpecifiedRate,
-                      p.reasonForWaitingToPlay == .toMinimizeStalls,
+                      Self.isOverCautious(p),
                       p.currentItem?.status == .readyToPlay else { return }
                 let buf = DYPlaybackTelemetry.bufferedAhead(p)
                 guard buf >= 2 else { return }
@@ -2062,7 +2092,7 @@ struct PlayerPage: View {
     }
 
     private func teardownPlayerOnly() {
-        stallGuard?.invalidate(); stallGuard = nil
+        stallGuard?.invalidate(); stallGuard = nil; stallReasonGuard?.invalidate(); stallReasonGuard = nil
         pictureInPicture.invalidate()
         seamAudio.reset()
         if let t = timeToken { player?.removeTimeObserver(t); timeToken = nil }
@@ -2219,7 +2249,7 @@ struct PlayerPage: View {
 
     private func teardown() {
         primeObs?.invalidate(); primeObs = nil
-        stallGuard?.invalidate(); stallGuard = nil
+        stallGuard?.invalidate(); stallGuard = nil; stallReasonGuard?.invalidate(); stallReasonGuard = nil
         pictureInPicture.invalidate()
         // 秒开陪跑中 / 走 VLC / 头部接续的不归还：手里的不是一份干净的原始播放器
         let returnable = !isActive && hdPlayer == nil && vlc == nil && nextPlayer == nil && headEndSeconds == nil

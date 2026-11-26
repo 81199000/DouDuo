@@ -19,7 +19,7 @@ check("seekGen &+= 1" in sk, "每次跳转换代号")
 
 kc = p[p.index("    private func kickIfOverCautious("):][:1200]
 check("guard gen == nil || gen == seekGen else { return }" in kc, "旧跳转的踢不干扰新跳转")
-check("p.reasonForWaitingToPlay == .toMinimizeStalls" in kc and "guard buf >= 2 else { return }" in kc, "只在「怕卡」且缓冲够 2 秒时踢（不在真没数据时硬播）")
+check("Self.isOverCautious(p)" in kc and "guard buf >= 2 else { return }" in kc, "只在「怕卡」且缓冲够 2 秒时踢（不在真没数据时硬播）")
 
 ws = p[p.index("    private func watchSeekStuck("):][:1300]
 check("deadline: .now() + 8" in ws, "8 秒没走才算卡死")
