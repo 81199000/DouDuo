@@ -1534,8 +1534,7 @@ struct DYListPlayer: View {
         }
         .environment(\.dyOpenSettings, { if !offlineLibrary { showSettings = true } })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
-            DYSettingsScreen(onOpenWeb: { showSettings = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } })
+            DYSettingsScreen()
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }

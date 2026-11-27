@@ -164,9 +164,10 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
         self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        order = ['Text("界面")', 'Text("播放与弹幕")', 'Text("推荐与内容")', 'Text("流量与缓存")',
-                 'Text("账号与私信")', 'Label("高级设置"', 'Text("关于")']
-        for section in ['Label("刷新推荐"'] + order:
+        order = ['Text("界面")', 'Text("播放")', 'Text("推荐")', 'Text("存储")',
+                 'title: "高级设置"', 'Text("关于")']
+        self.assertNotIn("刷新推荐", screen)
+        for section in order:
             self.assertIn(section, screen)
         idx = [screen.index(t) for t in order]
         self.assertEqual(idx, sorted(idx), "设置分组顺序")
@@ -178,11 +179,11 @@ class MenuPolicyTests(unittest.TestCase):
         for token in ("DYVideoAmbient.key", '"douyin_wide_landscape_v1"', 'Toggle("横屏时只放横屏内容"',
                       "DYHashtagFilterScreen(currentTags: [], embedded: true)",
                       '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
-                      "DYVideoCache.countKey", "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
+                      "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
                       "DDAppVersion.display", "DDChromeMode.key"):
             self.assertIn(token, screen)
         self.assertEqual(FEED.count(".environment(\\.dyOpenSettings, { showSettings = true })"), 2)
-        self.assertEqual(FEED.count("onRefresh: { Task { await refreshRecommendations() } }"), 2)
+        self.assertEqual(FEED.count("DYSettingsScreen(onCacheCleared: { focusCurrent() },"), 2)
         # 经典长按面板只留当前视频相关：铺满 / 静音 / 听书 / 自动连播 / 不感兴趣 / 倍速 / 发弹幕
         panel = (ROOT / "DouDuo/DYVideoOptionsPanel.swift").read_text()
         for token in ('"douyin.options.fit"', '"douyin.options.muted"', '"douyin.options.bgplay"', '"douyin.options.autonext"',

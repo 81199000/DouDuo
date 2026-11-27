@@ -10,12 +10,11 @@ import UIKit
 /// - 系统 UIBackgroundExtensionView：是把画面边缘镜像拉伸出去，出竖条色带，不是环境光。
 enum DYVideoAmbient {
     static let key = "douyin_ambient_dim_v1"
-    /// 0 = 关（退回模糊封面）；其余数值 = 压暗百分比
-    static let levels = [0, 45, 60, 70, 80]
-    static let defaultLevel = 60
-    static func title(_ v: Int) -> String {
-        switch v { case 0: "关"; case 45: "亮"; case 60: "中"; case 70: "暗"; default: "很暗" }
-    }
+    /// 存的值只区分开关：0 = 关（退回模糊封面），其余 = 开
+    static let onLevel = 70
+    static let defaultLevel = onLevel
+    /// 开着时统一按「暗」压暗
+    static let dim: Double = Double(onLevel) / 100
 }
 
 struct DYAmbientBackdrop: UIViewRepresentable {

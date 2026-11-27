@@ -1813,7 +1813,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
     @State var lastFeedPull = Date.distantPast
-    @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     @State private var showMine = false
     /// 顶栏「我的」按钮用的账号头像
     @State private var myUser: DYUser?
@@ -2125,7 +2124,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }
         }
-        .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
         .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
             Task { await updateOfflineFeed(offline) }
@@ -2165,9 +2163,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             DDPlayback.shared.endSettingsCover(settingsCoverID)
             if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
         }) {
-            DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onRefresh: { Task { await refreshRecommendations() } },
-                             onCacheCleared: { focusCurrent() },
+            DYSettingsScreen(onCacheCleared: { focusCurrent() },
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
                 .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }
@@ -3151,7 +3147,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
     @State private var searchIsSplit = false
     private var showSearch: Bool { searchSession != nil }
     @State var lastFeedPull = Date.distantPast
-    @AppStorage(DYVideoCache.countKey) private var cacheCount = DYVideoCache.defaultCount
     /// 当前大页（首页/消息/我的/直播）持久化：
     /// 以前是 @State + SwiftUI 的 TabView 选中态，重启后系统把界面恢复到「消息」，但代码里还是「首页」，
     /// 于是停在信息页、外面的视频却在播。现在两边共用这一个值。
@@ -3400,7 +3395,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
             if DDPlayback.shared.appIsActive { saveSession() }
         }
-        .onChange(of: cacheCount) { _, _ in focusCurrent() }
         .onChange(of: feed.items.map(\.id)) { _, _ in feedGrew() }
         .onReceive(DYOfflineDownloads.shared.$isOffline.removeDuplicates()) { offline in
             Task { await updateOfflineFeed(offline) }
@@ -3422,9 +3416,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             DDPlayback.shared.endSettingsCover(settingsCoverID)
             if feed.offlinePlayback { Task { await updateOfflineFeed(true, refresh: true) } }
         }) {
-            DYSettingsScreen(onOpenWeb: { web = DYWebTarget(url: DouyinWeb.home) },
-                             onRefresh: { Task { await refreshRecommendations() } },
-                             onCacheCleared: { focusCurrent() },
+            DYSettingsScreen(onCacheCleared: { focusCurrent() },
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
                 .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }

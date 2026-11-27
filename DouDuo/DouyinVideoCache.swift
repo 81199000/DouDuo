@@ -29,8 +29,7 @@ struct DYFeedSession: Codable {
 
 actor DYVideoCache {
     static let shared = DYVideoCache()
-    static let countKey = "douyin_cache_count_v2"
-    static let defaultCount = 5
+    static let defaultCount = 10
     /// 超过这个时长不缓存（整条太大），直接在线播。30 分钟以内整条下，长视频切换也能秒开
     static let maxDuration: Double = 1800
     /// 播放中的长视频避免同时整条下载，给起播和缓冲留出带宽。
@@ -63,9 +62,8 @@ actor DYVideoCache {
         return (files ?? []).filter { $0.pathExtension == "head" }
     }
 
-    /// 设置只有 1 / 5 / 10 三档。旧版存的值就近归档：0（关闭）→ 1，6–9 → 10 以下取 5，20/50/100 → 10
-    nonisolated static var limit: Int { normalized((UserDefaults.standard.object(forKey: countKey) as? Int) ?? defaultCount) }
-    nonisolated static func normalized(_ v: Int) -> Int { v <= 1 ? 1 : (v < 10 ? 5 : 10) }
+    /// 预缓存条数固定 10 条
+    nonisolated static let limit = defaultCount
 
     /// 已经整条下完的本地文件
     nonisolated static func localURL(_ id: String) -> URL? {

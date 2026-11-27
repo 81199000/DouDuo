@@ -18,16 +18,12 @@ import UIKit
 enum DYStream {
     static let scheme = "ddstream"
     static let enabledKey = "douyin_stream_cache_v1"
-    /// 设置里的「省流量模式」：用流量时降一档清晰度、只预热 1 条
-    static let saverKey = "douyin_data_saver_v1"
-
-    /// 设置里的「Wi-Fi 省流量」：开 = Wi-Fi 下也只下开头；关 = 按预缓存数量整条下
-    static let wifiSaverKey = "douyin_wifi_saver_v1"
 
     static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
-    /// 「蜂窝数据省流量」（沿用原「省流量模式」的键，默认开）
-    static var saverOn: Bool { UserDefaults.standard.object(forKey: saverKey) as? Bool ?? true }
-    static var wifiSaverOn: Bool { UserDefaults.standard.object(forKey: wifiSaverKey) as? Bool ?? false }
+    /// 蜂窝省流量：固定开
+    static let saverOn = true
+    /// Wi-Fi 省流量：固定开，Wi-Fi 下预缓存的条数也只下开头
+    static let wifiSaverOn = true
     /// 降一档清晰度 + 只预热下一条 + 不预连直播：只在「用流量且蜂窝省流量开」时
     static var saving: Bool { saverOn && DYNetPath.shared.cellular }
 

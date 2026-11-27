@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// User setting for the foreground banner. Off until the person opts in.
+/// Foreground banner. Always on.
 enum DYDMBannerGate {
     static var enabled: Bool { DYDMProbe.enabled }
 }
@@ -14,18 +14,9 @@ enum DYDMSenderGate {
 
 // BEGIN DYDMBannerPolicy
 enum DYDMNotificationSettings {
-    static let notifyKey = "doudou.dm.notify.v1"
-    static let detailKey = "doudou.dm.detail.v1"
-
-    static func notifications(in store: UserDefaults) -> Bool { store.bool(forKey: notifyKey) }
-
-    /// Names and avatars require the notification switch as well.
-    static func showsDetail(in store: UserDefaults) -> Bool {
-        notifications(in: store) && store.bool(forKey: detailKey)
-    }
-
-    static var notificationsOn: Bool { notifications(in: .standard) }
-    static var showsDetail: Bool { showsDetail(in: .standard) }
+    /// In-app notifications and sender names are always on.
+    static let notificationsOn = true
+    static let showsDetail = true
 }
 
 enum DYDMBannerPolicy {
@@ -351,8 +342,6 @@ struct DYDMBannerModifier: ViewModifier {
     @ObservedObject private var cache = DYMessageCache.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(DYDMNotificationSettings.notifyKey) private var notifications = false
-    @AppStorage(DYDMNotificationSettings.detailKey) private var showDetail = false
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
@@ -395,17 +384,7 @@ struct DYDMBannerModifier: ViewModifier {
             center.cancelDirect()
             center.dismiss()
         }
-        .onChange(of: notifications) { _, on in
-            if !on {
-                center.cancelDirect()
-                center.dismiss()
-            }
-            DYChatWebSession.shared.setMonitoring(on)
-        }
-        .onChange(of: showDetail) { _, on in
-            if !on || !notifications { center.concealIdentity() }
-        }
-        .onAppear { DYChatWebSession.shared.setMonitoring(notifications) }
+        .onAppear { DYChatWebSession.shared.setMonitoring(DYDMNotificationSettings.notificationsOn) }
     }
 }
 

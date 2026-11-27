@@ -17,7 +17,7 @@ body = page[page.index("    var body: some View {"):page.index("    private var 
 i_amb = body.find("DYLiveAmbientBackdrop("); i_vid = body.find("DYFeedLiveVideo(")
 check(i_amb != -1 and i_amb < i_vid, "环境光垫在直播画面下面")
 check("if isCurrent, ambientLevel > 0 {" in body, "设置为「关」或不是当前条不出")
-check("dim: Double(ambientLevel) / 100" in body, "压暗程度跟设置走")
+check("dim: DYVideoAmbient.dim" in body, "压暗程度统一")
 check("controller: warm?.controller ?? player" in body[i_amb:i_amb + 200], "预热那一路也有环境光")
 
 check("saveVideoSnapshot(at: path, withWidth: Self.width, andHeight: 0)" in a, "用 VLC 截小图取色")
