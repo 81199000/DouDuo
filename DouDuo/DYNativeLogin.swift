@@ -7,8 +7,18 @@ final class DYNativeLogin: ObservableObject {
     static let shared = DYNativeLogin()
 
     enum Phase: Equatable {
-        case idle, loading, waiting(token: String), scanned, done, failed(String)
+        case idle, loading, waiting(token: String), scanned, mfa, done, failed(String)
     }
+
+    // 扫码确认后抖音要求短信二次验证（account_flow=verify / error_code 2046）时的状态
+    @Published private(set) var mfaHint = ""
+    @Published private(set) var mfaError = ""
+    @Published private(set) var mfaBusy = false
+    @Published private(set) var mfaCooldown = 0
+    private var mfaData: [String: Any]?
+    private var mfaAttempted = false
+    private var verifyTicket: String?
+    private var currentToken = ""
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var qrImage: Data?
@@ -92,6 +102,7 @@ final class DYNativeLogin: ObservableObject {
         qrImage = nil
         DYCookieJar.shared.clear()
         DYNativeTicket.clear()
+        mfaData = nil; mfaAttempted = false; verifyTicket = nil; mfaError = ""; mfaHint = ""
         await bootstrap()
         startSession()
         DYNativeTicket.prepareLogin()
@@ -185,6 +196,7 @@ final class DYNativeLogin: ObservableObject {
     }
 
     private func startPolling(token: String) {
+        currentToken = token
         polling = true
         pollTask = Task { @MainActor in
             var misses = 0
@@ -206,8 +218,8 @@ final class DYNativeLogin: ObservableObject {
                     return
                 }
                 let step = await poll(token: token)
-                if let step { DDLog("DDNLOGIN poll status=\(step.1) redirect=\(step.0 == nil ? "-" : "yes")") }
-                if case .scanned = phase {} else if let step, step.1 == "4031" {
+                if let step { DDLog("DDNLOGIN poll status=\(step.status) code=\(step.errorCode) redirect=\(step.redirect == nil ? "-" : "yes")") }
+                if case .scanned = phase {} else if let step, step.errorCode == 4031 {
                     // 码已被服务端判死，立刻换新码，不要拿死码继续轮询
                     DDLog("DDNLOGIN token-dead(4031) refreshing")
                     await fetchQr()
@@ -227,7 +239,22 @@ final class DYNativeLogin: ObservableObject {
                     continue
                 }
                 misses = 0
-                if let redirect = step.0, !redirect.isEmpty {
+                // 扫码确认后要求短信二次验证：先于跳转判断（这个响应里可能带别的链接）
+                if step.needsVerify {
+                    phase = .scanned
+                    if Self.smsWay(step.data) == nil {
+                        DDLog("DDNLOGIN verify-no-sms ways=\(Self.wayNames(step.data))")
+                        continue   // 只能在手机上验证，继续等
+                    }
+                    if verifyTicket != nil {
+                        // 上一次的验证票据被拒，允许重新输验证码
+                        verifyTicket = nil
+                        mfaAttempted = false
+                    }
+                    if !mfaAttempted { beginMfa(step.data); return }
+                    continue
+                }
+                if let redirect = step.redirect, !redirect.isEmpty {
                     phase = .scanned
                     polling = false
                     let ok = await completeLogin(redirect: redirect)
@@ -237,29 +264,32 @@ final class DYNativeLogin: ObservableObject {
                     phase = .done
                     return
                 }
-                let status = step.1
-                if status == "2" || status.lowercased() == "scan" || status.lowercased() == "scanned" {
+                let status = step.status.lowercased()
+                if status == "2" || status == "scan" || status == "scanned" {
                     phase = .scanned
-                }
-                if loggedIn {
-                    polling = false
-                    _ = await completeLogin(redirect: "")
-                    await DYCookieJar.shared.pushToWebKit()
-                    phase = .done
-                    return
                 }
             }
         }
     }
 
-    /// 返回 (重定向地址, 状态串)。
+    struct PollResult {
+        var redirect: String?
+        var status = ""
+        var errorCode = 0
+        var data: [String: Any] = [:]
+        var needsVerify: Bool { errorCode == 2046 || (data["account_flow"] as? String) == "verify" }
+    }
+
     /// 关键：**不跟随跳转**。扫码确认后服务端回 302 + Location，如果交给 URLSession 自动跟随，
     /// 它会把 POST 改成 GET 重新发且丢掉我们手写的 Cookie，服务端就回「系统繁忙」——
     /// 所以跟 Amor 的 Java 版一样：自己抓 Location，再手动一步步跟（completeLogin）。
-    private func poll(token: String) async -> (String?, String)? {
+    private func poll(token: String) async -> PollResult? {
         let path = "/passport/web/check_qrconnect/"
-        let body: [(String, String)] = [("need_logo", "false"), ("is_frontier", "false"), ("token", token),
+        var body: [(String, String)] = [("need_logo", "false"), ("is_frontier", "false"), ("token", token),
                                         ("is_new_login", "1"), ("next", DYPassport.host), ("need_short_url", "true")]
+        if let vt = verifyTicket, !vt.isEmpty {
+            body += [("verify_ticket", vt), ("std_verify_way", "mobile_sms_verify")]
+        }
         let qs = DYPassport.signedQuery(DYPassport.base(.status, traceID: traceID,
                                                         verifyFp: DYCookieJar.shared.value("s_v_web_id")), body: body)
         let h = DYPassport.headers(path: path, post: true, traceID: traceID, portrait: portrait,
@@ -267,22 +297,172 @@ final class DYNativeLogin: ObservableObject {
         let form = body.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
         let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
                            followRedirect: false)
-        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location.map { String($0.prefix(60)) } ?? "-") err=\(r.error.isEmpty ? "-" : r.error) body=\(String(r.text.prefix(150)))")
+        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location == nil ? "-" : "yes") err=\(r.error.isEmpty ? "-" : r.error) vt=\(verifyTicket == nil ? 0 : 1) body=\(Self.redact(String(r.text.prefix(150))))")
 
-        if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
-        if let loc = r.location, !loc.isEmpty { return (loc, "3") }
+        if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return PollResult(redirect: DYPassport.host + "/", status: "3") }
+        if let loc = r.location, !loc.isEmpty { return PollResult(redirect: loc, status: "3") }
         guard let d = r.text.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
-        let data = (o["data"] as? [String: Any]) ?? o
-        if (data["error_code"] as? Int) == 4031 { return (nil, "4031") }
-        for k in ["redirect_url", "redirect_uri", "login_url", "scan_url", "url"] {
-            if let v = (data[k] as? String) ?? (o[k] as? String), !v.isEmpty { return (v, "3") }
+        var data = (o["data"] as? [String: Any]) ?? o
+        for k in ["redirect_url", "redirect_uri", "login_url", "status", "error_code", "description"] where data[k] == nil {
+            if let v = o[k] { data[k] = v }
         }
-        let st = (data["status"] as? String) ?? (data["status"].map { "\($0)" } ?? "")
-        if st.isEmpty, let err = (data["description"] as? String) ?? (o["description"] as? String) {
-            DDLog("DDNLOGIN poll-no-status desc=\(err)")
+        var res = PollResult(data: data)
+        res.errorCode = (data["error_code"] as? Int) ?? Int("\(data["error_code"] ?? "0")") ?? 0
+        res.status = (data["status"] as? String) ?? (data["status"].map { "\($0)" } ?? "")
+        if res.needsVerify {
+            DDLog("DDNLOGIN verify-required keys=\(data.keys.sorted().joined(separator: ",")) ways=\(Self.wayNames(data))")
+            return res
         }
-        return (nil, st)
+        // 跟 Java 版一致：只认这三个键、且必须是 https:// 或站内路径
+        for k in ["redirect_url", "redirect_uri", "login_url"] {
+            if let v = data[k] as? String {
+                if v.hasPrefix("//") { res.redirect = "https:" + v; break }
+                if v.hasPrefix("https://") || v.hasPrefix("/") { res.redirect = v; break }
+            }
+        }
+        if res.status.isEmpty, let err = data["description"] as? String, !err.isEmpty {
+            DDLog("DDNLOGIN poll-no-status code=\(res.errorCode) desc=\(err)")
+        }
+        return res
+    }
+
+    // MARK: 短信二次验证（照 Amor5207/douyin-tv 的 sendMfaCode / validateMfaCode）
+
+    private static func smsWay(_ data: [String: Any]) -> [String: Any]? {
+        (data["verify_ways"] as? [[String: Any]])?.first { ($0["verify_way"] as? String) == "mobile_sms_verify" }
+    }
+
+    private static func wayNames(_ data: [String: Any]) -> String {
+        ((data["verify_ways"] as? [[String: Any]]) ?? []).compactMap { $0["verify_way"] as? String }.joined(separator: "|")
+    }
+
+    /// 日志里不留手机号、验证票据原文
+    static func redact(_ s: String) -> String {
+        var out = s
+        for pat in [#"1[3-9]\d{9}"#, #"("(verify_ticket|encrypt_uid|ticket|mobile)":")[^"]+"#] {
+            if let re = try? NSRegularExpression(pattern: pat) {
+                let tmpl = pat.hasPrefix("(") ? "$1<redacted>" : "<phone>"
+                out = re.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: tmpl)
+            }
+        }
+        return out
+    }
+
+    private static func maskMobile(_ m: String) -> String {
+        m.count == 11 ? String(m.prefix(3)) + "****" + String(m.suffix(4)) : m
+    }
+
+    private static func xor5Hex(_ s: String) -> String {
+        Data(s.utf8).map { String(format: "%02x", $0 ^ 0x05) }.joined()
+    }
+
+    private func mfaForm(code: String?) -> [(String, String)] {
+        guard let data = mfaData else { return [] }
+        var f: [(String, String)] = [("encrypt_uid", "\(data["encrypt_uid"] ?? "")"),
+                                     ("verify_ticket", "\(data["verify_ticket"] ?? "")")]
+        if let common = data["common_params"] as? [String: Any] {
+            for (k, v) in common.sorted(by: { $0.key < $1.key }) {
+                let sv: String
+                if let str = v as? String { sv = str }
+                else if JSONSerialization.isValidJSONObject(v), let j = try? JSONSerialization.data(withJSONObject: v) {
+                    sv = String(decoding: j, as: UTF8.self)
+                } else { sv = "\(v)" }
+                if let i = f.firstIndex(where: { $0.0 == k }) { f[i].1 = sv } else { f.append((k, sv)) }
+            }
+        }
+        var act = "22"
+        if let v = Self.smsWay(data)?["act_type"] {
+            let sv = "\(v)"
+            if !sv.isEmpty { act = sv }
+        }
+        f += [("type", Self.xor5Hex(act)), ("aid", "6383"), ("std_verify_way", "mobile_sms_verify"),
+              ("new_authn_sdk_version", "1.0.0.413"), ("mix_mode", "1")]
+        if let code, !code.isEmpty { f.append(("code", Self.xor5Hex(code))) }
+        return f
+    }
+
+    private func mfaRequest(_ path: String, form: [(String, String)]) async -> (ok: Bool, data: [String: Any], desc: String) {
+        let q: [(String, String)] = [("passport_jssdk_version", "5.1.2"), ("passport_jssdk_type", "lite"),
+                                     ("is_from_ttaccountsdk", "1"), ("aid", "6383"), ("language", "zh"),
+                                     ("account_app_language", "zh-CN"), ("new_authn_sdk_version", "1.0.0.413")]
+        let body = form.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
+        let r = await send("POST", URL(string: DYPassport.host + path + "?" + DYPassport.query(q))!,
+                           headers: ["Accept": "application/json, text/javascript", "Origin": DYPassport.host,
+                                     "Referer": DYPassport.host + "/", "Content-Type": "application/x-www-form-urlencoded",
+                                     "User-Agent": DYPassport.userAgent, "Accept-Language": "zh-CN,zh;q=0.9",
+                                     "Accept-Encoding": "identity"],
+                           body: body, followRedirect: true)
+        DDLog("DDNLOGIN mfa \(path) http=\(r.status) body=\(Self.redact(String(r.text.prefix(160))))")
+        guard let d = r.text.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+            return (false, [:], "验证服务无响应")
+        }
+        let data = (o["data"] as? [String: Any]) ?? [:]
+        let err = (data["error_code"] as? Int) ?? (o["error_code"] as? Int) ?? 0
+        if err != 0 {
+            let desc = (data["description"] as? String) ?? (o["description"] as? String) ?? ""
+            return (false, data, desc.isEmpty ? "验证服务返回错误（\(err)）" : desc)
+        }
+        return (true, data, "")
+    }
+
+    private func beginMfa(_ data: [String: Any]) {
+        mfaData = data
+        mfaAttempted = true
+        polling = false
+        pollTask?.cancel()
+        let mobile = Self.maskMobile("\(Self.smsWay(data)?["mobile"] ?? "")")
+        mfaHint = mobile.isEmpty ? "抖音要求短信验证，正在发送验证码…" : "正在向 \(mobile) 发送验证码…"
+        mfaError = ""
+        phase = .mfa
+        Task { await sendMfaCode() }
+    }
+
+    func sendMfaCode() async {
+        guard mfaData != nil, !mfaBusy, mfaCooldown == 0 else { return }
+        mfaBusy = true
+        let r = await mfaRequest("/passport/web/send_code/", form: mfaForm(code: nil))
+        mfaBusy = false
+        let mobile = Self.maskMobile("\(Self.smsWay(mfaData ?? [:])?["mobile"] ?? "")")
+        if r.ok {
+            mfaHint = mobile.isEmpty ? "短信验证码已发送，请查收" : "验证码已发送至 \(mobile)"
+            mfaError = ""
+            startCooldown()
+        } else {
+            mfaHint = "没能发送验证码"
+            mfaError = r.desc
+        }
+    }
+
+    private func startCooldown() {
+        mfaCooldown = 60
+        Task { @MainActor in
+            while mfaCooldown > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                mfaCooldown -= 1
+            }
+        }
+    }
+
+    func submitMfaCode(_ code: String) async {
+        let code = code.filter(\.isNumber)
+        guard mfaData != nil, !mfaBusy else { return }
+        guard code.count >= 4 else { mfaError = "请输入短信验证码"; return }
+        mfaBusy = true
+        mfaError = ""
+        let r = await mfaRequest("/passport/web/validate_code/", form: mfaForm(code: code))
+        mfaBusy = false
+        let ticket = (r.data["ticket"] as? String) ?? ((r.data["data"] as? [String: Any])?["ticket"] as? String) ?? ""
+        guard r.ok, !ticket.isEmpty else {
+            mfaError = r.ok ? "验证成功但没拿到登录票据" : r.desc
+            return
+        }
+        DDLog("DDNLOGIN mfa validated, resume polling")
+        verifyTicket = ticket
+        mfaData = nil
+        phase = .scanned
+        expiresAt = Date().addingTimeInterval(60)
+        startPolling(token: currentToken)
     }
 
     /// 跟着登录重定向把会话坐实，再进一次首页让 msToken / 票据落定

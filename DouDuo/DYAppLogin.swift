@@ -17,6 +17,7 @@ struct DYAppLoginScreen: View {
     @State private var phone = ""
     @State private var code = ""
     @StateObject private var nativeLogin = DYNativeLogin.shared
+    @State private var mfaCode = ""
     @State private var mode: Mode = Self.nativeAvailable ? .native : .code
     @FocusState private var focus: Field?
 
@@ -168,6 +169,36 @@ struct DYAppLoginScreen: View {
                 ProgressView("正在准备…").frame(height: 240)
             case .loading:
                 ProgressView("正在取二维码…").frame(height: 240)
+            case .mfa:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("需要短信安全验证").font(.headline)
+                    Text(nativeLogin.mfaHint).font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("douyin.login.mfa.hint")
+                    HStack(spacing: 10) {
+                        TextField("短信验证码", text: $mfaCode)
+                            .keyboardType(.numberPad).textContentType(.oneTimeCode)
+                            .accessibilityIdentifier("douyin.login.mfa.code")
+                        Button(nativeLogin.mfaCooldown > 0 ? "\(nativeLogin.mfaCooldown)s 后重发" : "重新发送") {
+                            Task { await nativeLogin.sendMfaCode() }
+                        }
+                        .disabled(nativeLogin.mfaCooldown > 0 || nativeLogin.mfaBusy)
+                        .accessibilityIdentifier("douyin.login.mfa.resend")
+                    }
+                    .padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: WuWeiDesign.Spacing.md))
+                    if !nativeLogin.mfaError.isEmpty {
+                        Text(nativeLogin.mfaError).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
+                            .accessibilityIdentifier("douyin.login.mfa.error")
+                    }
+                    Button {
+                        Task { await nativeLogin.submitMfaCode(mfaCode) }
+                    } label: {
+                        Group { if nativeLogin.mfaBusy { ProgressView() } else { Text("确认验证").bold() } }
+                            .frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(mfaCode.filter(\.isNumber).count < 4 || nativeLogin.mfaBusy)
+                    .accessibilityIdentifier("douyin.login.mfa.submit")
+                }
             case .waiting, .scanned:
                 if let d = nativeLogin.qrImage, let img = UIImage(data: d) {
                     Image(uiImage: img).interpolation(.none).resizable().scaledToFit()
