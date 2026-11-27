@@ -152,7 +152,8 @@ struct DYIMMessage: Equatable, Identifiable {
     enum Body: Equatable {
         case text(String)
         case sticker(url: URL?, width: Int, height: Int)
-        case image(url: URL?, width: Int, height: Int)
+        /// 私信图片：服务端存的是 AES-256-GCM 加密文件，skey 为十六进制密钥（同官方 imageDecryptor）
+        case image(url: URL?, width: Int, height: Int, skey: String)
         case video(itemID: String, cover: URL?, title: String, author: String, width: Int, height: Int)
         case recalled
         case system(String)
@@ -179,9 +180,21 @@ struct DYIMMessage: Equatable, Identifiable {
             return .video(itemID: id, cover: url("cover_url") ?? url("content_thumb"),
                           title: o["content_title"] as? String ?? "", author: o["content_name"] as? String ?? "",
                           width: int("cover_width"), height: int("cover_height"))
-        case 2702, 2701, 27:
-            return .image(url: url("resource_url") ?? url("cover_url") ?? url("url"), width: int("cover_width"), height: int("cover_height"))
+        case 11054, 11055:
+            // 团购 / 地点视频卡（LIFE_MSG_VIDEO_POI）：item_id + cover_url + description
+            let cover = o["cover_url"] as? [String: Any]
+            let id = o["item_id"] as? String ?? (o["item_id"] as? NSNumber)?.stringValue ?? ""
+            return .video(itemID: id, cover: ((cover?["url_list"] as? [String])?.first).flatMap(URL.init(string:)),
+                          title: o["description"] as? String ?? "", author: "",
+                          width: (cover?["width"] as? NSNumber)?.intValue ?? 0, height: (cover?["height"] as? NSNumber)?.intValue ?? 0)
+        case 2702, 2701, 2703:
+            let r = o["resource_url"] as? [String: Any] ?? [:]
+            let list = (r["origin_url_list"] as? [String]) ?? (r["large_url_list"] as? [String]) ?? (r["medium_url_list"] as? [String]) ?? (r["url_list"] as? [String]) ?? []
+            let w = int("cover_width") > 0 ? int("cover_width") : (r["width"] as? NSNumber)?.intValue ?? 0
+            let h = int("cover_height") > 0 ? int("cover_height") : (r["height"] as? NSNumber)?.intValue ?? 0
+            return .image(url: list.first.flatMap(URL.init(string:)), width: w, height: h, skey: r["skey"] as? String ?? "")
         default:
+            if type == 15, let hello = o["hello_text"] as? String { return .system("[打招呼] " + hello) }
             if let t = o["text"] as? String, !t.isEmpty { return .text(t) }
             if let tip = (o["tips"] as? String) ?? (o["hint_content"] as? String), !tip.isEmpty { return .system(tip) }
             return .unsupported(awe)

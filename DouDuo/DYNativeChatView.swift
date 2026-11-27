@@ -1,5 +1,6 @@
 // 私信聊天记录原生显示：消息由 imapi 原生读取（get_by_conversation），气泡由 App 自己画。
 // 输入框仍是原生 DYChatComposer，发送经后台私信网页的输入框（抖音只放行网页输入框发出的私信）。
+import CryptoKit
 import SwiftUI
 
 @MainActor
@@ -162,6 +163,8 @@ struct DYNativeChatView: View {
     let bottomInset: CGFloat
     var onVideo: (String) -> Void
     var onPhoto: ([URL], Int) -> Void
+    /// 加密图片解密后的原图（点开看大图用）
+    var onPhotoData: (UIImage) -> Void = { _ in }
     var onProfile: (() -> Void)?
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -278,24 +281,35 @@ struct DYNativeChatView: View {
         case .sticker(let url, let w, let h):
             media(url, w: w, h: h, maxSide: 120, corner: 0)
                 .onTapGesture { if let url { onPhoto([url], 0) } }
-        case .image(let url, let w, let h):
-            media(url, w: w, h: h, maxSide: 200, corner: 12)
-                .onTapGesture { if let url { onPhoto([url], 0) } }
+        case .image(let url, let w, let h, let skey):
+            if skey.isEmpty {
+                media(url, w: w, h: h, maxSide: 200, corner: 12)
+                    .onTapGesture { if let url { onPhoto([url], 0) } }
+            } else {
+                DYEncryptedImage(url: url, skey: skey, size: Self.fit(w: w, h: h, maxSide: 200), onOpen: onPhotoData)
+            }
         case .video(let id, let cover, let title, let author, let w, let h):
+            let size = Self.fit(w: w > 0 ? w : 9, h: h > 0 ? h : 16, maxSide: 220)
             Button { if !id.isEmpty { onVideo(id) } } label: {
-                ZStack(alignment: .bottomLeading) {
-                    media(cover, w: w, h: h, maxSide: 220, corner: 12)
-                    LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .center, endPoint: .bottom)
-                        .clipShape(.rect(cornerRadius: 12))
-                    VStack(alignment: .leading, spacing: 2) {
-                        if !title.isEmpty { Text(title).font(.footnote.weight(.semibold)).lineLimit(2) }
-                        if !author.isEmpty { Text("@" + author).font(.caption2).opacity(0.85) }
+                media(cover, w: w > 0 ? w : 9, h: h > 0 ? h : 16, maxSide: 220, corner: 12)
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                            .frame(height: size.height * 0.45)
                     }
-                    .foregroundStyle(.white).padding(8)
-                    Image(systemName: "play.fill").font(.title2).foregroundStyle(.white.opacity(0.9))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .fixedSize()
+                    .overlay(alignment: .bottomLeading) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            if !title.isEmpty { Text(title).font(.footnote.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading) }
+                            if !author.isEmpty { Text("@" + author).font(.caption2).lineLimit(1).opacity(0.85) }
+                        }
+                        .foregroundStyle(.white)
+                        .padding(8)
+                        .frame(width: size.width, alignment: .leading)
+                    }
+                    .overlay {
+                        Image(systemName: "play.fill").font(.title2).foregroundStyle(.white.opacity(0.9))
+                    }
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(.rect(cornerRadius: 12))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("视频 " + title)
@@ -311,9 +325,14 @@ struct DYNativeChatView: View {
         }
     }
 
-    private func media(_ url: URL?, w: Int, h: Int, maxSide: CGFloat, corner: CGFloat) -> some View {
+    static func fit(w: Int, h: Int, maxSide: CGFloat) -> CGSize {
         let ratio = (w > 0 && h > 0) ? CGFloat(w) / CGFloat(h) : 1
-        let size = ratio >= 1 ? CGSize(width: maxSide, height: maxSide / ratio) : CGSize(width: maxSide * ratio, height: maxSide)
+        let r = min(max(ratio, 0.45), 2.2)
+        return r >= 1 ? CGSize(width: maxSide, height: maxSide / r) : CGSize(width: maxSide * r, height: maxSide)
+    }
+
+    private func media(_ url: URL?, w: Int, h: Int, maxSide: CGFloat, corner: CGFloat) -> some View {
+        let size = Self.fit(w: w, h: h, maxSide: maxSide)
         return CachedAsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: {
             Rectangle().fill(Color(.secondarySystemBackground))
         }
@@ -329,5 +348,82 @@ struct DYNativeChatView: View {
         else if cal.component(.year, from: d) == cal.component(.year, from: Date()) { f.dateFormat = "M月d日 HH:mm" }
         else { f.dateFormat = "yyyy年M月d日 HH:mm" }
         return f.string(from: d)
+    }
+}
+
+
+/// 私信加密图片：下载 → AES-256-GCM 解密（文件前 12 字节是 nonce，其余是密文+16 字节 tag；skey 是十六进制 32 字节密钥），
+/// 与官方私信页 imageDecryptor 一致。解密结果按 URL 缓存在内存与磁盘。
+struct DYEncryptedImage: View {
+    let url: URL?
+    let skey: String
+    let size: CGSize
+    var onOpen: (UIImage) -> Void
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color(.secondarySystemBackground))
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if failed {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(.rect(cornerRadius: 12))
+        .contentShape(.rect)
+        .onTapGesture { if let image { onOpen(image) } }
+        .task(id: url) { await load() }
+        .accessibilityLabel("图片")
+    }
+
+    private func load() async {
+        guard let url else { failed = true; return }
+        if let hit = DYEncryptedImageCache.get(url) { image = hit; return }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { failed = true; return }
+            guard let plain = DYEncryptedImageCache.decrypt(data, hexKey: skey), let img = UIImage(data: plain) else {
+                DYLiveModel.log("DDNATIVECHAT img decrypt fail bytes=\(data.count)")
+                failed = true; return
+            }
+            DYEncryptedImageCache.put(url, plain, img)
+            image = img
+        } catch { failed = true }
+    }
+}
+
+enum DYEncryptedImageCache {
+    private static let mem = NSCache<NSURL, UIImage>()
+    private static func file(_ url: URL) -> URL {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("native-chat-img", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let key = SHA256.hash(data: Data((url.host ?? "") .utf8) + Data(url.path.utf8)).map { String(format: "%02x", $0) }.joined()
+        return dir.appendingPathComponent(key)
+    }
+    static func get(_ url: URL) -> UIImage? {
+        if let m = mem.object(forKey: url as NSURL) { return m }
+        guard let d = try? Data(contentsOf: file(url)), let img = UIImage(data: d) else { return nil }
+        mem.setObject(img, forKey: url as NSURL)
+        return img
+    }
+    static func put(_ url: URL, _ data: Data, _ img: UIImage) {
+        mem.setObject(img, forKey: url as NSURL)
+        try? data.write(to: file(url), options: .atomic)
+    }
+    static func decrypt(_ data: Data, hexKey: String) -> Data? {
+        var key = Data()
+        var idx = hexKey.startIndex
+        while idx < hexKey.endIndex, let next = hexKey.index(idx, offsetBy: 2, limitedBy: hexKey.endIndex) {
+            guard let b = UInt8(hexKey[idx..<next], radix: 16) else { return nil }
+            key.append(b); idx = next
+        }
+        guard [16, 24, 32].contains(key.count), data.count > 28,
+              let box = try? AES.GCM.SealedBox(combined: data) else { return nil }
+        return try? AES.GCM.open(box, using: SymmetricKey(data: key))
     }
 }

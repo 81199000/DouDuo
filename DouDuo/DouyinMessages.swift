@@ -577,6 +577,8 @@ struct DYMessagesScreen: View {
     @StateObject private var nativeChat = DYNativeChatModel()
     /// 原生输入框实际高度（多行时会长高）：原生消息列表底部留白跟着它
     @State private var composerBarHeight: CGFloat = 56
+    /// 原生聊天：后台接输入框的任务（离开会话即取消，不挡界面）
+    @State private var composerAttach: Task<Void, Never>?
     /// 键盘在屏幕上的位置（没弹出时为 nil）与聊天窗格的位置：算键盘盖住聊天窗格多少。
     /// 系统自带的键盘避让在这里只让出一小截（真机 / 模拟器都是输入框和最后几条消息被键盘盖住），
     /// 所以按键盘的真实位置把没让够的部分补上。
@@ -777,7 +779,7 @@ struct DYMessagesScreen: View {
             }
         }
         .onChange(of: navigation.chatID) { _, id in
-            if id == nil { composer.disconnect(); nativeChat.close() }
+            if id == nil { composer.disconnect(); nativeChat.close(); composerAttach?.cancel(); composerAttach = nil }
         }
         .onAppear {
             composer.onSent = { [weak nativeChat] text in
@@ -1423,40 +1425,48 @@ struct DYMessagesScreen: View {
         }
     }
 
-    /// 原生聊天：点下立刻进聊天、先铺本地缓存的消息再拉最新；私信网页在后台切到这条会话，只用来接输入框发送
+    /// 原生聊天：点下立刻进聊天、先铺本地缓存的消息再拉最新。
+    /// 私信网页在后台切到这条会话（只为接上输入框发送），完全不挡界面：返回、切分类随时可点，离开就取消。
     private func openConversationNative(_ row: DYConversationRow) async {
-        let started = Date()
+        composerAttach?.cancel()
         cache.selectedChat = row
         chatDOMReady = true
         chatPlaceholder = nil
         navigation.openChat(row.id, from: nil)
-        async let messages: Void = nativeChat.open(row.id)
-        if let web = chatModel.web, !row.stranger {
-            openingChat = row.id
-            var result = await DYChatOpener.open(row, web: web)
-            if case .notReady = result {
-                try? await Task.sleep(for: .milliseconds(1200))
-                result = await DYChatOpener.open(row, web: web)
-            }
-            openingChat = nil
-            if case .opened = result, navigation.chatID == row.id {
-                composer.setAccountScope(cache.accountScope)
-                await composer.refresh(web: web, id: row.id)
-                #if DEBUG
-                // 回归：DOUDUO_CHATSEND=<文字> → 进会话后填进原生输入框并走正常发送（同手点「发送」）
-                if let t = ProcessInfo.processInfo.environment["DOUDUO_CHATSEND"], !t.isEmpty, !Self.debugSent {
-                    Self.debugSent = true
-                    try? await Task.sleep(for: .seconds(2))
-                    composer.edit(text: t, selection: NSRange(location: (t as NSString).length, length: 0))
-                    try? await Task.sleep(for: .milliseconds(300))
-                    await composer.perform(.send)
-                    DYLiveModel.log("DDNATIVECHAT debug-send done err=\(composer.error ?? "-")")
-                }
-                #endif
-            }
-            DYLiveModel.log("DDNATIVECHAT open composer=\(composer.isConnected(to: row.id)) web=\(result) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+        composerAttach = Task { await attachComposer(row) }
+        await nativeChat.open(row.id)
+    }
+
+    /// 后台把私信网页切到这条会话并接上原生输入框；页面没准备好就重载一次私信页再试
+    private func attachComposer(_ row: DYConversationRow) async {
+        guard let web = chatModel.web, !row.stranger else { return }
+        let started = Date()
+        var result = await DYChatOpener.open(row, web: web)
+        if case .notReady = result, !Task.isCancelled, navigation.chatID == row.id {
+            let diag = (try? await web.evaluateJavaScript("location.pathname + ' items=' + document.querySelectorAll('[data-e2e=\"conversation-item\"]').length + ' login=' + /验证码登录|扫码登录/.test(document.body.innerText)")) as? String ?? "-"
+            DYLiveModel.log("DDNATIVECHAT attach notReady \(diag) → reload chat page")
+            web.load(URLRequest(url: URL(string: "https://www.douyin.com/chat")!))
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, navigation.chatID == row.id else { return }
+            result = await DYChatOpener.open(row, web: web)
         }
-        await messages
+        guard !Task.isCancelled, navigation.chatID == row.id else { return }
+        if case .opened = result {
+            composer.setAccountScope(cache.accountScope)
+            await composer.refresh(web: web, id: row.id)
+            #if DEBUG
+            // 回归：DOUDUO_CHATSEND=<文字> → 进会话后填进原生输入框并走正常发送（同手点「发送」）
+            if let t = ProcessInfo.processInfo.environment["DOUDUO_CHATSEND"], !t.isEmpty, !Self.debugSent {
+                Self.debugSent = true
+                try? await Task.sleep(for: .seconds(2))
+                composer.edit(text: t, selection: NSRange(location: (t as NSString).length, length: 0))
+                try? await Task.sleep(for: .milliseconds(300))
+                await composer.perform(.send)
+                DYLiveModel.log("DDNATIVECHAT debug-send done err=\(composer.error ?? "-")")
+            }
+            #endif
+        }
+        DYLiveModel.log("DDNATIVECHAT attach composer=\(composer.isConnected(to: row.id)) web=\(result) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
     }
 
     private func openConversation(_ row: DYConversationRow) async {
@@ -1683,6 +1693,11 @@ struct DYMessagesScreen: View {
                     bottomInset: max(composerBarHeight, composer.height) + composer.bottomInset + 12 + chatKeyboardOverlap,
                     onVideo: { id in openSharedVideo(id) },
                     onPhoto: { urls, i in photo = DYPhotoViewerTarget(urls: urls, start: i) },
+                    onPhotoData: { img in
+                        if let d = img.jpegData(compressionQuality: 0.95) {
+                            photo = DYPhotoViewerTarget(urls: [URL(string: "about:blank")!], start: 0, fallbacks: [d])
+                        }
+                    },
                     onProfile: row.kind == 1 && !(row.sec ?? "").isEmpty
                         ? { chatAuthor = .init(name: row.name, avatar: row.avatar, secUid: row.sec) } : nil)
             }
@@ -1714,6 +1729,13 @@ struct DYMessagesScreen: View {
             }
         }
         .overlay(alignment: .bottom) {
+            if DYNativeChat.enabled, navigation.isChat, !composer.isConnected(to: navigation.chatID) {
+                HStack(spacing: 8) { ProgressView(); Text("输入框连接中…").font(.footnote).foregroundStyle(.secondary) }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.bottom, composer.bottomInset + chatKeyboardOverlap)
+                    .accessibilityIdentifier("douyin.messages.composer.connecting")
+            }
             if composer.isConnected(to: navigation.chatID) {
                 DYChatComposer(model: composer, active: navigation.isChat && openingChat == nil)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerBarHeight = $0 }
