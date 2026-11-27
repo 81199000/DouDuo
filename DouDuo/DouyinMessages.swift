@@ -556,6 +556,10 @@ struct DYMessagesScreen: View {
     @State private var messageTopInset: CGFloat = 0
     @State private var isHalfFolded = false
     @StateObject private var composer = DYChatComposerModel()
+    /// 原生聊天记录（DYNativeChat.enabled 时代替网页显示）
+    @StateObject private var nativeChat = DYNativeChatModel()
+    /// 原生输入框实际高度（多行时会长高）：原生消息列表底部留白跟着它
+    @State private var composerBarHeight: CGFloat = 56
     /// 键盘在屏幕上的位置（没弹出时为 nil）与聊天窗格的位置：算键盘盖住聊天窗格多少。
     /// 系统自带的键盘避让在这里只让出一小截（真机 / 模拟器都是输入框和最后几条消息被键盘盖住），
     /// 所以按键盘的真实位置把没让够的部分补上。
@@ -745,7 +749,7 @@ struct DYMessagesScreen: View {
                    !Task.isCancelled, snapshot.id == id, navigation.chatID == id {
                     composer.setAccountScope(cache.accountScope)
                     await composer.refresh(web: web, id: id)
-                    await DYChatWebBridge.keepBottomAnchored(web)
+                    if !DYNativeChat.enabled { await DYChatWebBridge.keepBottomAnchored(web) }
                     if var row = cache.selectedChat, row.id == id, row.streak != snapshot.streak {
                         row.streak = snapshot.streak
                         cache.selectedChat = row
@@ -756,7 +760,15 @@ struct DYMessagesScreen: View {
             }
         }
         .onChange(of: navigation.chatID) { _, id in
-            if id == nil { composer.disconnect() }
+            if id == nil { composer.disconnect(); nativeChat.close() }
+        }
+        .onAppear {
+            composer.onSent = { [weak nativeChat] text in
+                guard DYNativeChat.enabled, let nativeChat else { return }
+                nativeChat.appendLocal(text)
+                nativeChat.bumpPolling()
+                Task { try? await Task.sleep(for: .milliseconds(600)); await nativeChat.refreshLatest() }
+            }
         }
         .onChange(of: cache.accountScope) { _, scope in composer.setAccountScope(scope) }
         .onAppear {
@@ -1376,7 +1388,65 @@ struct DYMessagesScreen: View {
         }
     }
 
+    #if DEBUG
+    private static var debugSent = false
+    #endif
+
+    /// 聊天里点分享的视频 → 原生播放器
+    private func openSharedVideo(_ id: String) {
+        Task { @MainActor in
+            do {
+                let item = try await bridge.awemeDetail(id)
+                videoPlay = DYMessagePlay(item: item)
+                DYLiveModel.log("DDMSGVIDEO jump \(id) via=native kind=\(item.images.isEmpty ? "video" : "gallery\(item.images.count)")")
+            } catch {
+                DYLiveModel.log("DDMSGVIDEO detail fail \(id): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 原生聊天：点下立刻进聊天、先铺本地缓存的消息再拉最新；私信网页在后台切到这条会话，只用来接输入框发送
+    private func openConversationNative(_ row: DYConversationRow) async {
+        let started = Date()
+        cache.selectedChat = row
+        chatDOMReady = true
+        chatPlaceholder = nil
+        navigation.openChat(row.id, from: nil)
+        async let messages: Void = nativeChat.open(row.id)
+        if let web = chatModel.web, !row.stranger {
+            openingChat = row.id
+            var result = await DYChatOpener.open(row, web: web)
+            if case .notReady = result {
+                try? await Task.sleep(for: .milliseconds(1200))
+                result = await DYChatOpener.open(row, web: web)
+            }
+            openingChat = nil
+            if case .opened = result, navigation.chatID == row.id {
+                composer.setAccountScope(cache.accountScope)
+                await composer.refresh(web: web, id: row.id)
+                #if DEBUG
+                // 回归：DOUDUO_CHATSEND=<文字> → 进会话后填进原生输入框并走正常发送（同手点「发送」）
+                if let t = ProcessInfo.processInfo.environment["DOUDUO_CHATSEND"], !t.isEmpty, !Self.debugSent {
+                    Self.debugSent = true
+                    try? await Task.sleep(for: .seconds(2))
+                    composer.edit(text: t, selection: NSRange(location: (t as NSString).length, length: 0))
+                    try? await Task.sleep(for: .milliseconds(300))
+                    await composer.perform(.send)
+                    DYLiveModel.log("DDNATIVECHAT debug-send done err=\(composer.error ?? "-")")
+                }
+                #endif
+            }
+            DYLiveModel.log("DDNATIVECHAT open composer=\(composer.isConnected(to: row.id)) web=\(result) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+        }
+        await messages
+    }
+
     private func openConversation(_ row: DYConversationRow) async {
+        if DYNativeChat.enabled, row.id.hasPrefix("conversation:") {
+            guard openingChat == nil, changingConversation == nil, !composer.working else { return }
+            await openConversationNative(row)
+            return
+        }
         guard openingChat == nil, changingConversation == nil else {
             DYLiveModel.log("DDCHAT open skip busy opening=\(openingChat ?? "-") changing=\(changingConversation ?? "-")"); return
         }
@@ -1582,10 +1652,23 @@ struct DYMessagesScreen: View {
                 .padding(.bottom, chatKeyboardOverlap)
                 // 网页是 UIView，跟着键盘动画逐帧改高度会逐帧重排（输入/收起发卡）。这里直接改，不参与动画。
                 .animation(nil, value: chatKeyboardOverlap)
-                .opacity(chatDOMReady ? 1 : 0)
+                // 原生聊天：网页只在后台承载输入框（发送用），不显示、不接触摸
+                .opacity(DYNativeChat.enabled ? 0.001 : (chatDOMReady ? 1 : 0))
+                .allowsHitTesting(!DYNativeChat.enabled)
+                .accessibilityHidden(DYNativeChat.enabled)
                 .accessibilityIdentifier("douyin.messages.chat.detail")
                 .accessibilityValue(lastOpenUsedSnapshot ? "snapshot" : "fresh")
-            if !chatDOMReady, navigation.isChat {
+            if DYNativeChat.enabled, navigation.isChat, let row = selectedChat {
+                Color.ddMessageChatBackground
+                DYNativeChatView(model: nativeChat, row: row,
+                    topInset: messageTopInset + 72,
+                    bottomInset: max(composerBarHeight, composer.height) + composer.bottomInset + 12 + chatKeyboardOverlap,
+                    onVideo: { id in openSharedVideo(id) },
+                    onPhoto: { urls, i in photo = DYPhotoViewerTarget(urls: urls, start: i) },
+                    onProfile: row.kind == 1 && !(row.sec ?? "").isEmpty
+                        ? { chatAuthor = .init(name: row.name, avatar: row.avatar, secUid: row.sec) } : nil)
+            }
+            if !DYNativeChat.enabled, !chatDOMReady, navigation.isChat {
                 // 打开会话期间：有上次的聊天画面就直接铺上（像微信，点进去立刻有内容），
                 // 没有才用聊天室底色 + 转圈；都不露网页的会话列表
                 ZStack(alignment: .topLeading) {
@@ -1615,6 +1698,7 @@ struct DYMessagesScreen: View {
         .overlay(alignment: .bottom) {
             if composer.isConnected(to: navigation.chatID) {
                 DYChatComposer(model: composer, active: navigation.isChat && openingChat == nil)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerBarHeight = $0 }
                     .padding(.horizontal, 16).padding(.bottom, composer.bottomInset + chatKeyboardOverlap)
             }
         }
