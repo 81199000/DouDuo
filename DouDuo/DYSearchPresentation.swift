@@ -335,8 +335,13 @@ extension DouyinBridge {
       secUid: u.sec_uid || '', uid: u.uid ? String(u.uid) : '', uniqueId: u.unique_id || u.short_id || '',
       followers: u.follower_count || 0, followersText: u.follower_count_str || '', signature: u.signature || '',
       verify: u.custom_verify || u.enterprise_verify_reason || '', liveRoomID: u.room_id_str || (u.room_id ? String(u.room_id) : '') }) : null;
-    const sq = (channel, extra) => q(Object.assign({ search_channel: channel, keyword: kw, search_source: 'normal_search', query_correct_type: '1',
-      is_filter_search: '0', from_group_id: '', offset: cursor, count: '20', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }, extra || {}));
+    // 翻页游标「offset|search_id」：第二页起必须带第一页的 search_id（= log_pb.impr_id），网页版翻页就是这么带的；
+    // 不带会被当成爬虫回 verify_check，并连累同账号后续几次搜索（真机实测）
+    const [off, sid] = String(cursor || '0').split('|');
+    const sq = (channel, extra) => q(Object.assign({ search_channel: channel, keyword: kw, search_source: off === '0' ? 'normal_search' : 'normal_search',
+      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: off, count: off === '0' ? '20' : '10',
+      need_filter_settings: off === '0' ? '1' : '0', list_type: 'single' }, sid ? { search_id: sid } : {}, extra || {}));
+    const nextCur = d => String(d.cursor ?? 0) + '|' + (sid || (d.log_pb && d.log_pb.impr_id) || (d.extra && d.extra.logid) || '');
     const okA = a => a && (a.video || a.images) && !a.is_ads;
     const diag = (r, d) => ({ nil: (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || null,
       keys: Object.keys(d).slice(0, 10).join('|'), len: (r.t || '').length, vc: !!(r.h && /bdturing/i.test(String(r.h))) });
@@ -349,14 +354,14 @@ extension DouyinBridge {
     const items = data.filter(x => x && x.type === 1 && okA(x.aweme_info)).map(x => mapA(x.aweme_info));
     const users = data.filter(x => x && x.type === 4).flatMap(x => (x.user_list || []).map(u => uumap(u && u.user_info))).filter(Boolean);
     const guide = (d.guide_search_words || []).map(w => w && w.word).filter(w => typeof w === 'string' && w);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, users, guide, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, users, guide, cursor: nextCur(d), hasMore: !!d.has_more });
     """#
 
     static let searchUserJS = searchUserMap + #"""
     const r = await req('GET', '/aweme/v1/web/discover/search/?' + sq('aweme_user_web'));
     const d = parse(r.t) || {};
     const items = (d.user_list || []).map(u => uumap(u && u.user_info)).filter(Boolean);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: nextCur(d), hasMore: !!d.has_more });
     """#
 
     static let searchLiveJS = searchUserMap + #"""
@@ -372,7 +377,7 @@ extension DouyinBridge {
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || (room.user_count ? String(room.user_count) : ''),
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     }).filter(x => x && x.id && (Object.keys(x.hls).length || Object.keys(x.flv).length));
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: nextCur(d), hasMore: !!d.has_more });
     """#
 
     private static func searchError(status: Int, code: Int?, msg: String?) -> Error? {
@@ -384,34 +389,28 @@ extension DouyinBridge {
     }
 
     func searchGeneral(_ kw: String, offset: String) async throws -> (items: [DYAweme], users: [DYSearchUser], guide: [String], cursor: String, hasMore: Bool) {
-        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
-        guard offset == "0" else { return ([], [], [], offset, false) }
         let t0 = Date()
         let d = try await DYSearchGate.fetch(key: "general|\(kw)|\(offset)") { [self] in try await self.call(Self.searchGeneralJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchGeneralPage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=general off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) \(p.diag?.text ?? "")")
+        DYLiveModel.log("DDSEARCH tab=general off=\(offset.split(separator: "|").first ?? "") http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.users, p.guide, p.cursor, false)
+        return (p.items, p.users, p.guide, p.cursor, p.hasMore)
     }
 
     func searchUsers(_ kw: String, offset: String) async throws -> (items: [DYSearchUser], cursor: String, hasMore: Bool) {
-        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
-        guard offset == "0" else { return ([], offset, false) }
         let d = try await DYSearchGate.fetch(key: "user|\(kw)|\(offset)") { [self] in try await self.call(Self.searchUserJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchUserPage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=user off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
+        DYLiveModel.log("DDSEARCH tab=user off=\(offset.split(separator: "|").first ?? "") http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.cursor, false)
+        return (p.items, p.cursor, p.hasMore)
     }
 
     func searchLive(_ kw: String, offset: String) async throws -> (items: [DYLiveRoom], cursor: String, hasMore: Bool) {
-        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
-        guard offset == "0" else { return ([], offset, false) }
         let d = try await DYSearchGate.fetch(key: "live|\(kw)|\(offset)") { [self] in try await self.call(Self.searchLiveJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchLivePage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=live off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
+        DYLiveModel.log("DDSEARCH tab=live off=\(offset.split(separator: "|").first ?? "") http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.cursor, false)
+        return (p.items, p.cursor, p.hasMore)
     }
 }
 
@@ -509,9 +508,26 @@ struct DYSearchUserRow: View {
     }
 }
 
+/// 滑到底才翻页：最后一项在屏上 + 用户手指拖动过，两者同时成立才拉下一页；每拉一页要重新拖一次
+struct DYLoadOnScrollBottom: ViewModifier {
+    let lastVisible: Bool
+    let load: () -> Void
+    @State private var userScrolled = false
+    func body(content: Content) -> some View {
+        content
+            .onScrollPhaseChange { _, phase in if phase == .interacting { userScrolled = true } }
+            .onChange(of: lastVisible && userScrolled) { _, ready in
+                guard ready else { return }
+                userScrolled = false
+                load()
+            }
+    }
+}
+
 struct DYSearchUserList: View {
     @ObservedObject var pager: DYSearchPager<DYSearchUser>
     let onOpen: (DYSearchUser) -> Void
+    @State private var lastVisible = false
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
@@ -519,11 +535,14 @@ struct DYSearchUserList: View {
                     Button { onOpen(u) } label: { DYSearchUserRow(user: u) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("douyin.search.user.\(u.id)")
-                        .onAppear { if u.id == pager.items.last?.id { Task { await pager.loadMore() } } }
+                        .onAppear { if u.id == pager.items.last?.id { lastVisible = true } }
+                        .onDisappear { if u.id == pager.items.last?.id { lastVisible = false } }
                 }
                 DYSearchFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty)
             }
         }
+        .modifier(DYLoadOnScrollBottom(lastVisible: lastVisible) { Task { await pager.loadMore() } })
+        .onChange(of: pager.items.count) { _, _ in lastVisible = false }
         .task { if pager.items.isEmpty { await pager.loadMore() } }
     }
 }
@@ -531,6 +550,7 @@ struct DYSearchUserList: View {
 struct DYSearchLiveList: View {
     @ObservedObject var pager: DYSearchPager<DYLiveRoom>
     let onOpen: (DYLiveRoom) -> Void
+    @State private var lastVisible = false
     private let cols = [GridItem(.adaptive(minimum: 160), spacing: 6)]
     var body: some View {
         ScrollView {
@@ -539,12 +559,15 @@ struct DYSearchLiveList: View {
                     Button { onOpen(room) } label: { cell(room) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("douyin.search.live.\(room.id)")
-                        .onAppear { if room.id == pager.items.last?.id { Task { await pager.loadMore() } } }
+                        .onAppear { if room.id == pager.items.last?.id { lastVisible = true } }
+                        .onDisappear { if room.id == pager.items.last?.id { lastVisible = false } }
                 }
             }
             .padding(.horizontal, 6)
             DYSearchFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty)
         }
+        .modifier(DYLoadOnScrollBottom(lastVisible: lastVisible) { Task { await pager.loadMore() } })
+        .onChange(of: pager.items.count) { _, _ in lastVisible = false }
         .task { if pager.items.isEmpty { await pager.loadMore() } }
     }
     private func cell(_ room: DYLiveRoom) -> some View {

@@ -235,11 +235,9 @@ extension DouyinBridge {
 
     /// 视频分类搜索：在隐藏网页里跑（DYNativeJS.isPageOnly），按 cursor 翻页
     func search(_ kw: String, offset: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        // 只拉第一页：第二页抖音一律回 verify_check（真机实测，模拟器偶尔能过，别据此放开）
-        guard offset == "0" else { return ([], offset, false) }
         let r = try await list(Self.searchJS, ["kw": kw, "cursor": offset])
-        DYLiveModel.log("DDSEARCH tab=video off=\(offset) n=\(r.items.count)")
-        return (r.items, r.cursor, false)
+        DYLiveModel.log("DDSEARCH tab=video off=\(offset.split(separator: "|").first ?? "") sid=\(offset.contains("|") ? 1 : 0) n=\(r.items.count) more=\(r.hasMore)")
+        return r
     }
 
     /// 抖音热搜
@@ -824,13 +822,16 @@ extension DouyinBridge {
     """#
 
     static let searchJS = listTail + #"""
-    const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ search_channel: 'aweme_video_web', keyword: kw, search_source: 'normal_search',
-      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '24', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
+    // 游标「offset|search_id」：第二页起带第一页的 search_id（同网页版翻页），否则抖音回 verify_check
+    const [off, sid] = String(cursor || '0').split('|');
+    const r = await req('GET', '/aweme/v1/web/search/item/?' + q(Object.assign({ search_channel: 'aweme_video_web', keyword: kw, search_source: 'normal_search',
+      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: off, count: off === '0' ? '20' : '10',
+      need_filter_settings: off === '0' ? '1' : '0', list_type: 'single' }, sid ? { search_id: sid } : {})));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     const nilT = (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || '';
-    if (!arr.length) return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: 'DIAG nil=' + (nilT || '-') + ' len=' + (r.t || '').length + ' keys=' + Object.keys(d).slice(0, 10).join('|'), items: [], cursor: String(d.cursor ?? 0), hasMore: false });
-    return pack(r, d, arr, d.cursor, d.has_more);
+    if (!arr.length) return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: 'DIAG nil=' + (nilT || '-') + ' len=' + (r.t || '').length + ' keys=' + Object.keys(d).slice(0, 10).join('|'), items: [], cursor: String(cursor), hasMore: false });
+    return pack(r, d, arr, String(d.cursor ?? 0) + '|' + (sid || (d.log_pb && d.log_pb.impr_id) || (d.extra && d.extra.logid) || ''), d.has_more);
     """#
 
     static let hotJS = #"""
@@ -1182,8 +1183,11 @@ struct DYGrid: View {
     var onRefresh: (() async -> Void)? = nil
     /// 批量管理：非 nil 时进入多选，点格子切换勾选，不再打开播放
     var selection: Binding<Set<String>>? = nil
+    /// 搜索用：只有用户手指拖动过、且底部进入可视区才翻页（不在列表刚出来时自动拉下一页）
+    var loadOnlyOnUserScroll = false
     private let cols = [GridItem(.adaptive(minimum: 140), spacing: 2)]
     @State private var focusVisible = false
+    @State private var userScrolled = false
 
     @ViewBuilder
     private func gridButton(_ i: Int, _ a: DYAweme) -> some View {
@@ -1249,7 +1253,15 @@ struct DYGrid: View {
             .coordinateSpace(name: "ddgrid")
             .modifier(DYOptionalRefresh(action: onRefresh))
             .onPreferenceChange(DYBottomYKey.self) { y in
-                if y < outer.size.height - 16 { onLoadMore() }
+                guard y < outer.size.height - 16 else { return }
+                if loadOnlyOnUserScroll {
+                    guard userScrolled else { return }
+                    userScrolled = false
+                }
+                onLoadMore()
+            }
+            .onScrollPhaseChange { _, phase in
+                if loadOnlyOnUserScroll, phase == .interacting { userScrolled = true }
             }
             .overlay(alignment: .bottom) {
                 if let focusID, !focusVisible, items.contains(where: { $0.id == focusID }) {
@@ -2076,7 +2088,7 @@ private struct DYSearchResults: View {
     let onOpen: (Int) -> Void
     var body: some View {
         DYGrid(items: model.items, hasMore: model.hasMore, loading: model.loading, error: model.error,
-               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen)
+               onLoadMore: { Task { await model.loadMore() } }, onOpen: onOpen, loadOnlyOnUserScroll: true)
     }
 }
 
