@@ -366,7 +366,7 @@ extension DouyinBridge {
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=prepare")
         // 原生直发（纯文字/回复）：自己签 a_bogus + 登录票据，不等签名页 SDK。
         // 只有「确定没发出去」才回落网页；明确拒绝、结果不明都不再发第二次。
-        if image == nil, DYNative.enabled {
+        if image == nil, DYNative.enabled, DYNative.writeEnabled {
             let identity = try? await selfProfile()
             let t0 = Date().timeIntervalSince1970
             switch await DYNative.publishComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
@@ -603,6 +603,9 @@ extension DouyinBridge {
     """#
 
     // 网页版同款：params 放 app_name/enter_from，body 放 aweme_id/text（安全 SDK 会自动补签名头）
+    #if DEBUG
+    static var capturePublishJS: String { publishJS }
+    #endif
     static let publishJS = cmap + #"""
     // 网页版写接口带这几个身份参数（只在 cookie 里）：msToken / webid / verifyFp(=fp=s_v_web_id)
     const ck = n => { const c = (typeof document !== 'undefined' && document.cookie) || ''; const m = c.match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; };

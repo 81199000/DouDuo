@@ -18,6 +18,11 @@ enum DYNative {
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
+    /// 原生写接口（发评论/点赞/收藏/关注…）：默认关。2026-11-27 真机实测原生发评论回 code 8 后登录被作废；
+    /// 在模拟器里对齐网页真实请求前不许开。
+    static let writeKey = "douduo_native_write_v1"
+    static var writeEnabled: Bool { UserDefaults.standard.bool(forKey: writeKey) }
+
     /// 原生发私信：默认关。2026-11-27 真机两次实测——imapi 直发一出去服务端立刻作废登录
     /// （之后所有请求回 "unexepcted session length"）。缺网页 IM 的身份令牌/票据签名，查清前不许开。
     static let imSendKey = "douduo_native_im_send_v1"

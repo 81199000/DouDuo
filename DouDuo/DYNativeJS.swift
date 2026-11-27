@@ -19,6 +19,10 @@ final class DYNativeJS {
     static func name(of body: String) -> String? {
         let key = body.hashValue
         if let c = nameCache[key] { return c }
+        if !DYNative.writeEnabled, body.contains("'POST'") || body.contains("\"POST\"") {
+            nameCache[key] = .some(nil)
+            return nil
+        }
         let banned = ["document.", "window.", "location.", "localStorage", "navigator.",
                       "MutationObserver", "XMLHttpRequest", "fetch(", "byted_acrawler", "webpackChunk"]
         var result: String?

@@ -145,6 +145,7 @@
 		D4C4FF844F738CB253BAA212 /* DYUploadScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD32AA7E05533FF5BC3286EB /* DYUploadScreen.swift */; };
 		D6A40EE7FB068521E3E7CB20 /* DYRelationsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A8BAE91B96A90EB92AC6A7F /* DYRelationsProbe.swift */; };
 		D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */; };
+		D996BD80B02586202AEDCCDA /* DYWriteCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363F6A7D08E8394C267F0CA1 /* DYWriteCapture.swift */; };
 		DC07FBBAC9BC1DEAF65195AA /* DYSeenHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408C861D0D10A92B4BBB72C2 /* DYSeenHistory.swift */; };
 		DC20068F342E15BD7D314F4A /* DYPublicationRegionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EFCE13552FFA329478649E /* DYPublicationRegionClient.swift */; };
 		DC990FC343EDD6CE18CCCB91 /* DYMessageNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8692ACA58496924A8020F3F1 /* DYMessageNavigation.swift */; };
@@ -214,6 +215,7 @@
 		34AB86D50A6F1526F8345B3C /* DYFeedLiveWarm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFeedLiveWarm.swift; sourceTree = "<group>"; };
 		357FC289432690E166D569FA /* DYStorageScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStorageScreen.swift; sourceTree = "<group>"; };
 		35D6E2B9C1A0A5380FFAFD7B /* DYHashtag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtag.swift; sourceTree = "<group>"; };
+		363F6A7D08E8394C267F0CA1 /* DYWriteCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYWriteCapture.swift; sourceTree = "<group>"; };
 		366286F958759FA9BE49695E /* DouyinRelatedSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinRelatedSearch.swift; sourceTree = "<group>"; };
 		36A92ADB714F1273A5B9648B /* DouyinCommentApiProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinCommentApiProbe.swift; sourceTree = "<group>"; };
 		3D36E286153BCFB6F4429C62 /* DYMessageLayoutProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYMessageLayoutProbe.swift; sourceTree = "<group>"; };
@@ -492,6 +494,7 @@
 				4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */,
 				74AA8D80AE540FB08C9E1344 /* DYWebComposer.swift */,
 				12C790D59BF29FBA8623D2C4 /* DYWorkMetadataText.swift */,
+				363F6A7D08E8394C267F0CA1 /* DYWriteCapture.swift */,
 				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
 				BC6C461FDA2AC796478F78BD /* Info.plist */,
 				67D760242AE376C515972D58 /* PlayerGestureView.swift */,
@@ -801,6 +804,7 @@
 				D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */,
 				EF227D5790724C5A9045541C /* DYWebComposer.swift in Sources */,
 				2537A9A44CC476616009B14D /* DYWorkMetadataText.swift in Sources */,
+				D996BD80B02586202AEDCCDA /* DYWriteCapture.swift in Sources */,
 				844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */,
 				28289ABD1DCF4363BEB6CB68 /* DouyinApiScanner.swift in Sources */,
 				417E6C46DBCC2F012480B85B /* DouyinBridge+CommentImage.swift in Sources */,

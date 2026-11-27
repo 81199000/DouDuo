@@ -305,6 +305,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         DYTrustLogin.install(in: cfg)   // 签名页上弹「是否保存登录信息？」也默认点「保存」
         DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
         DYKeyStateProbe.install(in: cfg, tag: "signer")
+        DYWriteCapture.install(in: cfg)
         cfg.userContentController.addUserScript(WKUserScript(source: Self.beatWatchJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
@@ -438,6 +439,17 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         if beat { try? await Task.sleep(nanoseconds: 500_000_000) }  // 给 SDK 一点时间把新凭证落盘
         guard gen == signGen, !signReady else { return }
         signReady = true
+        #if DEBUG
+        // 干跑抓包：签名页就绪后让网页「发」一条评论，但 DRYRUN 拦住不发出去，只记录安全 SDK 加的头
+        if DYWriteCapture.dryRun, let aw = ProcessInfo.processInfo.environment["DOUDUO_CAPTURE_PUBLISH"], !aw.isEmpty {
+            Task { @MainActor in
+                await DYWriteCapture.logNative(path: "/aweme/v1/web/comment/publish", web: self.web)
+                _ = try? await self.call(Self.capturePublishJS, args: ["id": aw, "text": "dryrun", "reply": "0", "replyTo": "0",
+                                                                     "imgUri": "", "imgW": "0", "imgH": "0", "imgFmt": ""], attempts: 1)
+                DYLiveModel.log("DDCAPTURE publish dry-run done")
+            }
+        }
+        #endif
         // 记下这次从开页到签名完成用了多久，下次的「约 N 秒」更准（新旧各半，限 3–30 秒）
         let took = min(max(Date().timeIntervalSince(signStartedAt), 3), 30)
         let old = UserDefaults.standard.double(forKey: Self.signSecsKey)
@@ -528,7 +540,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                 return d
             }
             if DYNative.nativeOnly { throw DYError.bad("原生接口失败：\(name)") }
-        } else if DYNative.nativeOnly {
+        } else if DYNative.nativeOnly, !(body.contains("'POST'") || body.contains("\"POST\"")) {
             // 这段脚本依赖网页（DOM / 页面 SDK），原生跑不了：只走原生模式下照实报出来
             let tag = body.range(of: #"/(aweme|webcast|web)/v\d/[a-zA-Z0-9_/]+"#, options: .regularExpression).map { String(body[$0]) } ?? "页面脚本"
             DYLiveModel.log("DDNATIVEJS needs-page \(tag)")
@@ -5695,7 +5707,7 @@ struct DYCommentPanel: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hasCommentContent, !sending, !imageLoading else { return }
         // 原生直发纯文字评论不靠签名页；带图仍要等签名页
-        guard bridge.signReady || (DYNative.enabled && imageDraft == nil) else { waitForSigning(); return }
+        guard bridge.signReady || (DYNative.enabled && DYNative.writeEnabled && imageDraft == nil) else { waitForSigning(); return }
         // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
         let top = replyParent ?? replyTo?.id
         let to = replyParent == nil ? nil : replyTo?.id
@@ -5736,7 +5748,7 @@ struct DYCommentPanel: View {
     /// 真正发出去。只对这一条本地评论负责：成功换成服务器那条，失败/不明就地标在那一行上。
     private func deliver(_ localID: String) async {
         guard var job = pending[localID] else { return }
-        guard bridge.signReady || (DYNative.enabled && job.imageDraft == nil) else { waitForSigning(); return }
+        guard bridge.signReady || (DYNative.enabled && DYNative.writeEnabled && job.imageDraft == nil) else { waitForSigning(); return }
         job.state = .sending; pending[localID] = job
         sending = true
         defer { sending = false }
