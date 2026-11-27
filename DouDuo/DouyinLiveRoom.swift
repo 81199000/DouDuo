@@ -184,7 +184,10 @@ final class DYLiveModel: ObservableObject {
             }
         }
     }
-    let vlc = VLCPlayerController()
+    /// 当前这一路。切到预加载好的下一间时会换成那一路（见「预加载下一间」），所以不是常量。
+    @Published private(set) var vlc = VLCPlayerController()
+    /// 当前这一路自己的画面视图：界面只负责把它挂上去，换台时连视图一起换，已经在出画的画面不用重连
+    private(set) var videoView = VLCPlayerUIView()
     private var requestGeneration = UUID()
     private var loadedRoom: String?
     private var roomRef: DYLiveRoom?
@@ -262,8 +265,19 @@ final class DYLiveModel: ObservableObject {
     }
 
     init() {
-        vlc.onProgress = { [weak self] time in
-            guard let self else { return }
+        bind(vlc)
+        // 低电量模式 / 发热状态变了：马上按新方式重新安排下一间（两路同时播 ↔ 只截一帧）
+        for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateWarmNext() }
+            }
+        }
+    }
+
+    /// 回调只认当前这一路：换台后旧的那一路还要 0.6 秒才停，它的就绪 / 出错不能算到新的这一间头上
+    private func bind(_ c: VLCPlayerController) {
+        c.onProgress = { [weak self, weak c] time in
+            guard let self, let c, c === self.vlc else { return }
             if self.suspended {
                 self.reapplyBackgroundMuteIfNeeded()
             } else if self.vlc.mediaPlayer.audio?.isMuted != DYLivePlaybackGate.foregroundOutputMuted(userMuted: self.muted) {
@@ -275,20 +289,26 @@ final class DYLiveModel: ObservableObject {
             self.ready = true
             self.retryTask?.cancel()
             Self.log("DDLIVE_READY room=\(self.loadedRoom ?? "-") elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
+            // 这一间出画了再预加载下一间，不跟它抢起播带宽
+            self.updateWarmNext()
         }
-        vlc.onVideoSize = { [weak self] size in
-            guard let self, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
+        c.onVideoSize = { [weak self, weak c] size in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
             self.playbackVideoSize = size
         }
-        vlc.onError = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+        c.onError = { [weak self, weak c] in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.liveCanProgress else { return }
             self.tryNextSource(reason: "decoder/network error", generation: self.streamGeneration)
         }
-        vlc.onEnd = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+        c.onEnd = { [weak self, weak c] in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.liveCanProgress else { return }
             self.playbackError = "直播已结束或连接中断，可重试或上滑换台"
             self.ready = false
         }
+    }
+
+    private func unbind(_ c: VLCPlayerController) {
+        c.onProgress = nil; c.onVideoSize = nil; c.onError = nil; c.onEnd = nil; c.onMediaAssigned = nil
     }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
@@ -348,6 +368,8 @@ final class DYLiveModel: ObservableObject {
             return
         }
         guard restart else { return }
+        // 下一间已经预加载好：直接接过那一路（画面已经在出），跟刷视频一样一划就有
+        if warm?.roomID == room.id, adoptWarm(room) { return }
         // 只有 H.265 线路：先问进房接口要 H.264 FLV（约 0.3 秒），比直接起 H.265 HLS（4–7 秒）快得多
         switch h264.next(room.id, wanted: needsH264(room), now: Date()) {
         case .play: break
@@ -361,12 +383,243 @@ final class DYLiveModel: ObservableObject {
         }
         holdingH264 = nil
         loadedRoom = room.id
-        sources = room.liveStreams
-        // 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
-        if let q = quality, sources.contains(where: { $0.quality == q }) {
-            sources = sources.filter { $0.quality == q } + sources.filter { $0.quality != q }
-        }
+        sources = orderedSources(room)
         startCurrentSource()
+    }
+
+    /// 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
+    private func orderedSources(_ room: DYLiveRoom) -> [DYLiveStream] {
+        let all = room.liveStreams
+        guard let q = quality, all.contains(where: { $0.quality == q }) else { return all }
+        return all.filter { $0.quality == q } + all.filter { $0.quality != q }
+    }
+
+    // MARK: 预加载下一间（同推荐流里的 DYFeedLiveWarm）
+
+    /// 官方直播划过去几乎零延迟：下一间早就连上、解码好了。这里也一样——当前这间出画后，
+    /// 用第二个播放器把下一间静音（音量 0）播在窗口最底层看不见的地方；划过去时把那一路连同画面视图一起接过来。
+    /// 以前只有一个播放器，每划一次都要停掉重连（H.264 FLV 也要 0.4–1.8 秒）。
+    private struct WarmSlot {
+        let roomID: String
+        let source: DYLiveStream
+        let controller: VLCPlayerController
+        let view: VLCPlayerUIView
+        let startedAt: CFTimeInterval
+        /// preview 模式：只播到第一帧截图就停，不留着给划过去接手
+        let preview: Bool
+    }
+    private var warm: WarmSlot?
+    private var warmKeeper: Task<Void, Never>?
+    private var warmCap: Task<Void, Never>?
+    /// 现在用哪种预加载（见 DYLivePreloadPolicy）：低电量 / 用流量 / 发热时只截一帧，其余两路同时播
+    var preloadMode: DYLivePreloadMode {
+        #if DEBUG
+        if let m = ProcessInfo.processInfo.environment["DOUDUO_LIVE_PRELOAD"].flatMap(DYLivePreloadMode.init(rawValue:)) { return m }
+        #endif
+        return DYLivePreloadPolicy.mode(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                                        cellular: DYNetPath.shared.cellular,
+                                        thermal: ProcessInfo.processInfo.thermalState.rawValue)
+    }
+
+    /// preview 模式截到的各间画面：划过去（以及划的过程中）先显示它，出画后由真画面盖过
+    @Published private(set) var previewFrames: [String: UIImage] = [:]
+    private var previewAt: [String: Date] = [:]
+
+    func previewFrame(for id: String) -> UIImage? {
+        guard let at = previewAt[id], Date().timeIntervalSince(at) < DYLivePreloadPolicy.previewShowSeconds else { return nil }
+        return previewFrames[id]
+    }
+
+    private func previewFresh(_ id: String) -> Bool {
+        previewAt[id].map { Date().timeIntervalSince($0) < DYLivePreloadPolicy.previewFreshSeconds } ?? false
+    }
+
+    /// 省流量用流量时、VLC 停播积压、线程吃紧时都不预加载（同推荐流）
+    private var warmAllowed: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_LIVE_NOWARM"] == "1" { return false }
+        #endif
+        return !DYStream.saving && VLCPlayerCensus.releaseBacklog < 2 && !DYThreadGuard.pressured
+    }
+
+    /// 下一间（往上滑看到的那间）。还在等进房接口换 H.264 的先不预加载，换好后 warmNeighbors 会再叫一次。
+    private func warmTarget() -> (DYLiveRoom, DYLiveStream)? {
+        guard visible, !suspended, !browsing, ready, warmAllowed,
+              UIApplication.shared.applicationState == .active,
+              let id = currentID, loadedRoom == id,
+              let i = rooms.firstIndex(where: { $0.id == id }), rooms.indices.contains(i + 1) else { return nil }
+        var next = rooms[i + 1]
+        if !next.hasFLV, let up = h264.upgraded(next.id, now: Date()) { next = up }
+        if needsH264(next) { return nil }
+        guard let source = orderedSources(next).first else { return nil }
+        return (next, source)
+    }
+
+    func updateWarmNext() {
+        guard let (room, source) = warmTarget() else {
+            // 当前这间还在起播时别丢掉已经预加载好的（可能马上就划过去）；其余情况才放掉
+            if !ready || !visible || suspended || browsing { return }
+            releaseWarm(reason: "no-target")
+            return
+        }
+        let mode = preloadMode
+        if let w = warm, w.roomID == room.id, w.preview == (mode == .preview) { return }
+        if mode == .preview, previewFresh(room.id) {
+            if warm != nil { releaseWarm(reason: "preview-fresh") }
+            return
+        }
+        releaseWarm(reason: "switch")
+        guard let window = Self.keyWindow else { return }
+        let c = VLCPlayerController()
+        c.outputMuted = false
+        let v = VLCPlayerUIView(frame: window.bounds)
+        v.controller = c
+        v.fillWidth = room.portrait
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false
+        v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 窗口最底层：被整个界面盖住看不见，但在视图树里、有尺寸，VLC 照常解码出画
+        window.insertSubview(v, at: 0)
+        c.boundSurface = v
+        c.mediaPlayer.drawable = v
+        c.play(url: source.url, headers: DYMedia.liveHeaders, cachingMs: source.cacheMS)
+        c.mediaPlayer.audio?.volume = 0
+        warm = WarmSlot(roomID: room.id, source: source, controller: c, view: v, startedAt: CACurrentMediaTime(),
+                        preview: mode == .preview)
+        Self.log("DDLIVEWARM2 start room=\(room.id.suffix(6)) q=\(source.quality) flv=\(source.isFLV) mode=\(mode.rawValue)")
+        // 音量 0 而不是静音：静音会停掉音频输出，接过来时要重开、声音晚一截（同 DYFeedLiveWarm）。
+        // 音频输出建好前设音量无效，前 3 秒每 30ms 盯一次
+        warmKeeper?.cancel()
+        warmKeeper = Task { @MainActor [weak c] in
+            let t0 = CACurrentMediaTime()
+            while !Task.isCancelled {
+                guard let audio = c?.mediaPlayer.audio else { break }
+                if audio.volume != 0 { audio.volume = 0 }
+                if audio.isMuted { audio.isMuted = false }
+                try? await Task.sleep(for: .milliseconds(CACurrentMediaTime() - t0 < 3 ? 30 : 200))
+            }
+        }
+        warmCap?.cancel()
+        let roomID = room.id
+        if mode == .preview {
+            warmCap = Task { @MainActor [weak self] in await self?.capturePreview(roomID: roomID, controller: c) }
+        } else {
+            warmCap = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(DYLivePreloadPolicy.fullMaxSeconds))
+                guard !Task.isCancelled else { return }
+                self?.releaseWarm(reason: "cap")
+            }
+        }
+    }
+
+    /// preview：等到第一帧，截一张就停（每间只播约 1 秒，不再持续下载、解码）。
+    /// 停在这间久了画面会变旧，过一阵再叫一次 updateWarmNext，旧了就重截。
+    private func capturePreview(roomID: String, controller c: VLCPlayerController) async {
+        let t0 = CACurrentMediaTime()
+        while !Task.isCancelled, warm?.controller === c, CACurrentMediaTime() - t0 < DYLivePreloadPolicy.previewProbeSeconds {
+            if c.mediaPlayer.hasVideoOut, c.videoSize.width > 0, c.current > 0 { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !Task.isCancelled, warm?.controller === c else { return }
+        guard c.mediaPlayer.hasVideoOut, c.videoSize.width > 0 else {
+            releaseWarm(reason: "preview-timeout")
+            return
+        }
+        let image = await Self.snapshot(c)
+        guard warm?.controller === c else { return }
+        let ms = Int((CACurrentMediaTime() - t0) * 1000)
+        if let image {
+            previewFrames[roomID] = image
+            previewAt[roomID] = Date()
+            // 只留最近几间
+            while previewAt.count > 8, let oldest = previewAt.min(by: { $0.value < $1.value })?.key {
+                previewAt[oldest] = nil
+                previewFrames[oldest] = nil
+            }
+        }
+        Self.log("DDLIVEWARM2 preview room=\(roomID.suffix(6)) ok=\(image != nil ? 1 : 0) after=\(ms)ms")
+        releaseWarm(reason: image == nil ? "preview-miss" : "preview-done")
+        guard image != nil else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(DYLivePreloadPolicy.previewFreshSeconds + 1))
+            self?.updateWarmNext()
+        }
+    }
+
+    private static let snapshotQueue = DispatchQueue(label: "douduo.live.preview", qos: .userInitiated)
+
+    /// 截当前画面。VLCKit 截不到图时会直接 @throw NSException（见 DYLiveAmbient），交给 DDTryObjC 接住当没截到。
+    private static func snapshot(_ c: VLCPlayerController) async -> UIImage? {
+        guard let mp = c.mediaPlayer else { return nil }
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("dd-live-preview-\(UUID().uuidString).png").path
+        return await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+            snapshotQueue.async {
+                var reason: NSString?
+                let ok = DDTryObjC({ mp.saveVideoSnapshot(at: path, withWidth: 720, andHeight: 0) }, &reason)
+                // 先整份读进内存再删文件（UIImage(contentsOfFile:) 是延迟读的）；解码也放在后台
+                let image = ok ? (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap(UIImage.init(data:)).map { $0.preparingForDisplay() ?? $0 } : nil
+                try? FileManager.default.removeItem(atPath: path)
+                cont.resume(returning: image)
+            }
+        }
+    }
+
+    func releaseWarm(reason: String) {
+        warmKeeper?.cancel(); warmKeeper = nil
+        warmCap?.cancel(); warmCap = nil
+        guard let w = warm else { return }
+        warm = nil
+        Self.log("DDLIVEWARM2 drop room=\(w.roomID.suffix(6)) reason=\(reason) after=\(Int((CACurrentMediaTime() - w.startedAt) * 1000))ms")
+        DYFeedLiveWarm.dispose(DYFeedLiveWarm.Handle(roomID: w.roomID, controller: w.controller, view: w.view))
+    }
+
+    /// 划到预加载好的那间：接过那一路当当前播放器。那一路坏了（出错 / 已结束）返回 false，照常现连。
+    private func adoptWarm(_ room: DYLiveRoom) -> Bool {
+        guard let w = warm, w.roomID == room.id else { return false }
+        warm = nil
+        warmKeeper?.cancel(); warmKeeper = nil
+        warmCap?.cancel(); warmCap = nil
+        let state = w.controller.mediaPlayer.state
+        let warmHasFrame = w.controller.mediaPlayer.hasVideoOut && w.controller.current > 0
+        // preview 那一路本来马上就要停，还没出画就不接，照常现连（屏幕上先垫着截到的画面）
+        guard state != .error, state != .ended, state != .stopped, !(w.preview && !warmHasFrame) else {
+            Self.log("DDLIVEWARM2 drop room=\(w.roomID.suffix(6)) reason=broken state=\(state.rawValue)")
+            DYFeedLiveWarm.dispose(DYFeedLiveWarm.Handle(roomID: w.roomID, controller: w.controller, view: w.view))
+            return false
+        }
+        retryTask?.cancel()
+        holdingH264 = nil
+        // 旧的那一路：立刻无声，0.6 秒后再停、停完再留 10 秒才放（防主线程析构卡死，见 DYFeedLiveWarm）
+        let old = vlc
+        unbind(old)
+        old.cancelInterruptionRebuild()
+        DYFeedLiveWarm.stopLater(old)
+        w.view.removeFromSuperview()
+        vlc = w.controller
+        videoView = w.view
+        bind(vlc)
+        loadedRoom = room.id
+        sources = [w.source] + orderedSources(room).filter { $0.url != w.source.url }
+        streamGeneration = UUID()
+        startedAt = ProcessInfo.processInfo.systemUptime
+        playbackError = nil
+        playbackVideoSize = vlc.videoSize
+        if activatePlaybackSession() { sessionReleased = false }
+        let mute = DYLivePlaybackGate.foregroundOutputMuted(userMuted: muted)
+        vlc.outputMuted = mute
+        vlc.mediaPlayer.audio?.isMuted = mute
+        vlc.mediaPlayer.audio?.volume = mute ? 0 : 100
+        let hasFrame = vlc.mediaPlayer.hasVideoOut && vlc.current > 0
+        ready = hasFrame
+        if !hasFrame { armSourceTimeout(generation: streamGeneration, flv: w.source.isFLV) }
+        Self.log("DDLIVEPLAY room=\(room.id) protocol=\(w.source.isFLV ? "FLV" : "HLS") q=\(w.source.quality) warm=1 warmed=\(Int((CACurrentMediaTime() - w.startedAt) * 1000))ms frame=\(hasFrame)")
+        if hasFrame { Self.log("DDLIVE_READY room=\(room.id) elapsed=0.000 videoOut=true warm=1") }
+        return true
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }
     }
 
     // MARK: H.265 → H.264（见 DYLiveH264Upgrade）
@@ -478,6 +731,7 @@ final class DYLiveModel: ObservableObject {
     }
 
     private func suspendForBackground() {
+        releaseWarm(reason: "background")
         let reason = DDPlayback.shared.pauseReason
         if reason == .inactive || !visible { return }
         if reason == .cover {
@@ -797,6 +1051,7 @@ final class DYLiveModel: ObservableObject {
         sessionReleased = false
         retryTask?.cancel(); streamGeneration = UUID()
         holdingH264 = nil
+        releaseWarm(reason: "stop")
         vlc.cancelInterruptionRebuild()
         loadedRoom = nil; vlc.stop(); ready = false
     }
@@ -871,6 +1126,7 @@ final class DYLiveModel: ObservableObject {
             // FLV 是无尽流：拿到首包就够，最多 3 秒后取消，别一直占着 CDN 连接。
             DispatchQueue.global().asyncAfter(deadline: .now() + 3) { task.cancel() }
         }
+        updateWarmNext()
     }
     private static let warmSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -1159,6 +1415,55 @@ private func livePane(_ requested: CGRect, fallback: CGSize) -> CGRect {
 }
 
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
+/// 直播画面的挂载点：挂的是当前这一路自己的画面视图（不是每次新建）。
+/// 换到预加载好的下一间时，那一路的视图已经在出画，直接搬进来，不用重新挂 drawable、不用重连。
+/// 其余行为同 VLCPlayerSurface：drawable 丢了才补挂，页面拆掉时摘掉 drawable。
+struct DYLiveVideoHost: UIViewRepresentable {
+    let controller: VLCPlayerController
+    let view: VLCPlayerUIView
+    var fillWidth: Bool = true
+    var letterbox: UIColor? = nil
+
+    func makeUIView(context: Context) -> UIView {
+        let box = UIView()
+        box.clipsToBounds = true
+        box.backgroundColor = .clear
+        box.isUserInteractionEnabled = false
+        mount(in: box)
+        return box
+    }
+
+    func updateUIView(_ box: UIView, context: Context) { mount(in: box) }
+
+    private func mount(in box: UIView) {
+        if view.superview !== box {
+            for old in box.subviews { old.removeFromSuperview() }
+            view.removeFromSuperview()
+            view.frame = box.bounds
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            box.addSubview(view)
+        }
+        view.controller = controller
+        view.fillWidth = fillWidth
+        view.backgroundColor = letterbox ?? .black
+        view.isUserInteractionEnabled = false
+        controller.boundSurface = view
+        if !controller.blocksSurfaceAttachment, controller.mediaPlayer.drawable == nil {
+            controller.mediaPlayer.drawable = view
+            controller.drawableAttached()   // drawable 就绪后才真正 play，避免「有声无画」
+        }
+        view.applyFill()
+    }
+
+    static func dismantleUIView(_ box: UIView, coordinator: ()) {
+        for case let v as VLCPlayerUIView in box.subviews {
+            if let c = v.controller, c.mediaPlayer.drawable as? UIView === v { c.mediaPlayer.drawable = nil }
+            if v.controller?.boundSurface === v { v.controller?.boundSurface = nil }
+            v.removeFromSuperview()
+        }
+    }
+}
+
 
 /// 简洁 / 极简模块菜单发给直播页的一次性动作。token 变化才会再次触发。
 struct DYLiveModuleRequest: Equatable {
@@ -1268,7 +1573,7 @@ struct DYLiveFeed: View {
                 : shown.video
             ZStack {
                 (shown.layout == .existing ? Color.ddBackground : Color.black)
-                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
+                DYLiveVideoHost(controller: model.vlc, view: model.videoView, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
                     .frame(width: videoFrame.width, height: videoFrame.height)
                     .position(x: videoFrame.midX, y: videoFrame.midY)
                     .allowsHitTesting(false)
@@ -2095,7 +2400,11 @@ private struct DYLiveRoomPage: View {
                     ZStack {
                         // 视频画面区出画前保持纯黑，不随亮色外观变白（老板定；test_live_playback_gate 守着）
                         Color.black
-                        if let cover = room.cover, let url = URL(string: cover) {
+                        // 省电预加载截到的真实画面优先（划的过程中、现连出画前都垫着它），没有才用封面
+                        if let frame = model.previewFrame(for: room.id) {
+                            Image(uiImage: frame).resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit)
+                                .frame(width: geo.size.width, height: geo.size.height).clipped()
+                        } else if let cover = room.cover, let url = URL(string: cover) {
                             CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
                                 placeholder: { Color.black }
                                 .frame(width: geo.size.width, height: geo.size.height).clipped()
@@ -2114,7 +2423,8 @@ private struct DYLiveRoomPage: View {
                             Button("重试", action: model.retry).buttonStyle(.bordered)
                         } else {
                             ProgressView().tint(foreground)
-                            Text("连接直播…").font(.caption)
+                            // 已经垫着这一间的真实画面时不再写「连接直播…」，看起来就是马上要动的画面
+                            if model.previewFrame(for: room.id) == nil { Text("连接直播…").font(.caption) }
                         }
                     }.foregroundStyle(foreground).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }

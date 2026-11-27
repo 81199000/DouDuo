@@ -526,6 +526,29 @@ struct DYLiveH264Upgrade<Room> {
     }
 }
 
+/// 切台预加载用哪种方式（老板 11-28：能不能别一直两路同时播，省电）。
+/// - full：下一间用第二个播放器一直静音播着，划过去零等待（耗电：多一路下载 + 一路解码）
+/// - preview：下一间只播到第一帧、截一张图就停；划过去先显示这张真实画面，同时现连，出画后替换
+/// 低电量模式、用流量、手机发热（serious 及以上）时自动用 preview，其余用 full。
+enum DYLivePreloadMode: String, Equatable {
+    case full, preview
+}
+
+enum DYLivePreloadPolicy {
+    /// thermal 是 ProcessInfo.ThermalState.rawValue：0 正常 1 偏热 2 严重 3 危险
+    static func mode(lowPower: Bool, cellular: Bool, thermal: Int) -> DYLivePreloadMode {
+        lowPower || cellular || thermal >= 2 ? .preview : .full
+    }
+    /// full：停在一间这么久还没划，就不再让第二路白跑（一般几秒内就决定划不划）
+    static var fullMaxSeconds: TimeInterval { 20 }
+    /// preview：截到的画面多久内算新的；过了就再截一次（每次只播约 1 秒）
+    static var previewFreshSeconds: TimeInterval { 20 }
+    /// preview：划过去时这么旧的画面还拿来垫底（比封面强），更旧就用回封面
+    static var previewShowSeconds: TimeInterval { 90 }
+    /// preview：等第一帧最多这么久，等不到就停掉
+    static var previewProbeSeconds: TimeInterval { 5 }
+}
+
 /// 进房接口回包里只取播放线路。FLV 只留网页 SDK 明确标成 H.264、非纯音频、未加密、URL 完全一致的
 /// （与网页脚本 compatibleLiveFLV 同一口径）；房间不在播或回包不对返回 nil。
 struct DYLiveEnterStreams: Equatable {
@@ -821,6 +844,15 @@ enum DYFollowLiveLogicTests {
         check(up.next("b", wanted: true, now: t0.addingTimeInterval(5)) == .play, "失败后一段时间内直接播原线路")
         check(up.next("b", wanted: true, now: t0.addingTimeInterval(Up.failureTTL + 1)) == .request, "失败冷却后再试")
         check(Up.waitLimit <= 2, "播放前最多等 2 秒")
+
+        // 切台预加载方式：只有电量充足、Wi-Fi、不发热时才两路同时播
+        check(DYLivePreloadPolicy.mode(lowPower: false, cellular: false, thermal: 0) == .full, "平时零等待")
+        check(DYLivePreloadPolicy.mode(lowPower: false, cellular: false, thermal: 1) == .full, "偏热还不切")
+        check(DYLivePreloadPolicy.mode(lowPower: true, cellular: false, thermal: 0) == .preview, "低电量模式省电")
+        check(DYLivePreloadPolicy.mode(lowPower: false, cellular: true, thermal: 0) == .preview, "用流量省电")
+        check(DYLivePreloadPolicy.mode(lowPower: false, cellular: false, thermal: 2) == .preview, "发热省电")
+        check(DYLivePreloadPolicy.fullMaxSeconds <= 30, "两路同时播不长挂")
+        check(DYLivePreloadPolicy.previewFreshSeconds < DYLivePreloadPolicy.previewShowSeconds, "画面先变旧再过期")
 
         // 进房回包解析（夹具是手写的，不含真实签名地址）
         func enter(status: Int = 2, code: Int = 0, codec: String = "h264", bitrate: Any = 4000000,
