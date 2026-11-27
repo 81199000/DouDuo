@@ -77,6 +77,7 @@
 		640D8F930CE33AACE1C2FE24 /* DDReleaseNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 591344CAF2A91E0D7CC452C4 /* DDReleaseNotes.swift */; };
 		64760847CD94FEE469039F33 /* DouyinFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */; };
 		64E988A9D801D0D01BB6ECAD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7F33EB1CF5B949489AA77586 /* Assets.xcassets */; };
+		656E9CF5BD03A00AD1C56844 /* DYDtrait.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6EEDCA76F1AD0B07E4B2BB4 /* DYDtrait.swift */; };
 		65B7CD540F494F463C4D1A9E /* DDAudioSessionGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */; };
 		6A8C37030B53130CE582E686 /* DYChatOptionsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595FE5CE5D6D10A299C8E468 /* DYChatOptionsPopover.swift */; };
 		6C096CD738BD6FA36EFCB93E /* DYChatChromeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A48E6D30B51CE56B7F7E7B8 /* DYChatChromeSnapshot.swift */; };
@@ -320,6 +321,7 @@
 		E50B100019A096A959BC847E /* DouyinLiveAdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveAdaptiveLayout.swift; sourceTree = "<group>"; };
 		E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStreakBadge.swift; sourceTree = "<group>"; };
 		E6E28F20A818A4E6AABC568A /* DYKeyStateProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYKeyStateProbe.swift; sourceTree = "<group>"; };
+		E6EEDCA76F1AD0B07E4B2BB4 /* DYDtrait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDtrait.swift; sourceTree = "<group>"; };
 		E8B2F8179B60788D6D462F8E /* DYDMBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDMBanner.swift; sourceTree = "<group>"; };
 		E8C00A82D0DF6727AA1E57D1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		E948B13DA5E6505F703CAA4C /* DYHashtagFilterButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYHashtagFilterButton.swift; sourceTree = "<group>"; };
@@ -414,6 +416,7 @@
 				08398432E4FEF76AED7714BB /* DYDeskLight.swift */,
 				E8B2F8179B60788D6D462F8E /* DYDMBanner.swift */,
 				70B25F5F38F6A322FCA53439 /* DYDMProbe.swift */,
+				E6EEDCA76F1AD0B07E4B2BB4 /* DYDtrait.swift */,
 				90ADAC650921F8A5BCDB381F /* DYEdgeBack.swift */,
 				AF5917F7837D3EDF95FE38DE /* DYFeedLivePage.swift */,
 				34AB86D50A6F1526F8345B3C /* DYFeedLiveWarm.swift */,
@@ -722,6 +725,7 @@
 				E8947411A4BBD5F7E9876ECB /* DYDanmakuEngine.swift in Sources */,
 				7F85C831812F93A73C7B9CB7 /* DYDanmakuInput.swift in Sources */,
 				388B807146DBDAC1A23CE692 /* DYDeskLight.swift in Sources */,
+				656E9CF5BD03A00AD1C56844 /* DYDtrait.swift in Sources */,
 				39BE12046979C591BDEC27A3 /* DYEdgeBack.swift in Sources */,
 				C2F6F568CF7E8EEBF512B41C /* DYFeedLivePage.swift in Sources */,
 				11FF6E2A8136E1C5839CD1A1 /* DYFeedLiveWarm.swift in Sources */,

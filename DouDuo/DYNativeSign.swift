@@ -78,6 +78,8 @@ enum DYABogus {
     static let pageID = 41079
     static let sdkVersion = "1.0.1.20"
     /// 屏幕/窗口指纹串（与签名时声明的环境一致）
+    /// 屏幕/窗口指纹串。⚠️ 签名器是定长 96 字节缓冲（50 + env + 尾部时间戳 + 校验），env 只能用原版这个长度，
+    /// 换成更长的串会越界崩溃。实测配 Mac Safari UA 服务端照样认。
     static let env = "1536|747|1536|864|1536|834|1536|864|Win32"
 
     private static let tlist: [Int] = [

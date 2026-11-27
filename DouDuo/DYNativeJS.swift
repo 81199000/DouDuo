@@ -19,8 +19,8 @@ final class DYNativeJS {
     static func name(of body: String) -> String? {
         let key = body.hashValue
         if let c = nameCache[key] { return c }
-        let banned = ["'POST'", "\"POST\"", "document.", "window.", "location.", "localStorage", "navigator.",
-                      "MutationObserver", "XMLHttpRequest", "fetch(", "byted_acrawler", "sdkReady", "webpackChunk"]
+        let banned = ["document.", "window.", "location.", "localStorage", "navigator.",
+                      "MutationObserver", "XMLHttpRequest", "fetch(", "byted_acrawler", "webpackChunk"]
         var result: String?
         if !banned.contains(where: { body.contains($0) }), body.contains("req(") {
             let path = body.range(of: #"/(aweme|webcast|web)/v\d/[a-zA-Z0-9_/]+"#, options: .regularExpression).map { String(body[$0]) }
@@ -66,7 +66,10 @@ final class DYNativeJS {
             return nil
         }
         let argNames = args.keys.sorted()
-        let fn = "(async function(\(argNames.joined(separator: ","))) {\nconst req = (m, p, b, h) => __ddNativeReq(m, p, b === undefined ? null : b, h || {});\n\(patched)\n\(body)\n})"
+        // 原生引擎里没有安全 SDK：写接口签名由 Swift 补，脚本里的 sdkReady() 直接视为就绪
+        let nativePrelude = patched.replacingOccurrences(of: "const sdkReady = async (ms) => {",
+                                                         with: "const sdkReady = async () => true; const __ddWebSdkReady = async (ms) => {")
+        let fn = "(async function(\(argNames.joined(separator: ","))) {\nconst req = (m, p, b, h) => __ddNativeReq(m, p, b === undefined ? null : b, h || {});\n\(nativePrelude)\n\(body)\n})"
         guard let f = ctx.evaluateScript(fn), !f.isUndefined, jsError == nil else {
             DYLiveModel.log("DDNATIVEJS \(name) compile-error \(String((jsError ?? "?").prefix(120)))")
             return nil
@@ -97,6 +100,7 @@ final class DYNativeJS {
         }
         DYLiveModel.log("DDNATIVEJS \(name) \(out != nil ? "ok" : "fail \(String((jsError ?? "nil").prefix(100)))") ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
         guard let out else { return nil }
+        if DYNative.nativeOnly { return out }   // 只走原生：被拦/空结果照实交给界面，方便定位
         // 原生拿到的是「被拦 / 空列表」时不当成功：交给网页再取一次（网页有完整的安全 SDK 环境）
         if let d = out.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             if let s = o["status"] as? Int, s != 200 {
@@ -114,7 +118,8 @@ final class DYNativeJS {
 
     /// 真正发请求：GET 签 a_bogus；POST 不允许（只读引擎）
     static func perform(method: String, path: String, body: String?, headers: [String: Any]) async -> [String: Any] {
-        guard method.uppercased() == "GET" else { return ["s": -9, "t": ""] }
+        let isPost = method.uppercased() == "POST"
+        guard isPost || method.uppercased() == "GET" else { return ["s": -9, "t": ""] }
         let ck = await DYNativeCookies.load()
         let full = path.hasPrefix("http") ? path : DYNative.host + path
         guard var comps = URLComponents(string: full), let host = comps.host,
@@ -132,14 +137,31 @@ final class DYNativeJS {
         add("fp", ck.map["s_v_web_id"])
         add("uifid", ck.map["UIFID"] ?? ck.map["UIFID_TEMP"])
         add("webid", ck.map["webid"])
-        comps.percentEncodedQuery = qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: userAgent))
+        comps.percentEncodedQuery = qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, form: isPost ? (body ?? "") : "", userAgent: userAgent))
         guard let url = comps.url else { return ["s": -7, "t": ""] }
         var r = URLRequest(url: url)
+        if isPost {
+            // 写接口：必须带登录票据签名；读不到票据就不发（缺票据会被服务端当异常设备、作废登录）
+            guard let ticket = await DYTicketStore.load(from: DouyinBridge.primary?.web),
+                  let tg = DYTicketGuard.headers(ticket, path: comps.path) else {
+                DYLiveModel.log("DDNATIVEJS post-blocked no-ticket path=\(comps.path)")
+                return ["s": -10, "t": ""]
+            }
+            for (k, v) in tg { r.setValue(v, forHTTPHeaderField: k) }
+            r.httpMethod = "POST"
+            r.httpBody = Data((body ?? "").utf8)
+            r.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            r.setValue("DOWNGRADE", forHTTPHeaderField: "x-secsdk-csrf-token")
+        }
         r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         r.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         r.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
         r.setValue("https://\(host)", forHTTPHeaderField: "Origin")
         if let u = ck.map["UIFID"] ?? ck.map["UIFID_TEMP"], !u.isEmpty { r.setValue(u, forHTTPHeaderField: "uifid") }
+        // 网页安全 SDK 接管后每个请求都会带这两个头；作品列表/详情等受保护接口缺了会 403（Signature Not Found）
+        r.setValue("1", forHTTPHeaderField: "x-tt-argus")
+        let dt = DYDtrait.session
+        if !dt.isEmpty { r.setValue(dt, forHTTPHeaderField: "x-tt-session-dtrait") }
         for (k, v) in headers where k.lowercased() != "cookie" { r.setValue(String(describing: v), forHTTPHeaderField: k) }
         if !ck.header.isEmpty { r.setValue(ck.header, forHTTPHeaderField: "Cookie") }
         do {

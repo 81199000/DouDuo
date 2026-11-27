@@ -132,9 +132,9 @@ final class DYNativeIM {
         let ua = DYNative.userAgent
         let meta: [(String, String)] = [
             ("session_aid", "6383"), ("app_name", "douyin_pc"), ("priority_region", "cn"), ("user_agent", ua),
-            ("cookie_enabled", "true"), ("browser_language", "zh-CN"), ("browser_platform", "Win32"),
+            ("cookie_enabled", "true"), ("browser_language", "zh-CN"), ("browser_platform", "MacIntel"),
             ("browser_name", "Mozilla"), ("browser_version", String(ua.dropFirst("Mozilla/".count))),
-            ("browser_online", "true"), ("screen_width", "1536"), ("screen_height", "864"),
+            ("browser_online", "true"), ("screen_width", "1440"), ("screen_height", "900"),
             ("referer", "https://www.douyin.com/"), ("timezone_name", "Asia/Shanghai"),
         ]
         var d = DYPB.field(1, UInt64(cmd.rawValue)) + DYPB.field(2, seq) + DYPB.field(3, "0.1.6") + DYPB.field(4, "")

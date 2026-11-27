@@ -347,6 +347,7 @@ extension DouyinBridge {
 
     func fetchReplies(_ id: String, commentID: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool) {
         if DYNative.enabled, let p = await DYNative.replies(id, commentID: commentID, cursor: cursor) { return p }
+        if DYNative.nativeOnly { throw DYError.bad("原生接口失败：回复") }
         let d = try await call(Self.replyJS, args: ["id": id, "cid": commentID, "cursor": String(cursor)], attempts: 1)
         let p = try JSONDecoder().decode(DYReplyPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
@@ -387,7 +388,11 @@ extension DouyinBridge {
                     return mine
                 }
                 throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
-            case .notSent:
+            case .notSent(let why):
+                if DYNative.nativeOnly {
+                    DYLiveModel.log("DDSEND comment op=\(operationID) phase=native-not-sent native-only")
+                    throw DYError.bad("原生发评论没发出（\(why)），草稿已保留")
+                }
                 DYLiveModel.log("DDSEND comment op=\(operationID) phase=native-fallback-web")
             }
         }

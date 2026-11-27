@@ -522,10 +522,17 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         }
         #endif
         // 只读脚本先在原生引擎里跑（Swift 签名直连，不等签名页）；跑不了再走网页
-        if DYNative.enabled, let name = DYNativeJS.name(of: body),
-           let s = await DYNativeJS.shared.run(prelude: Self.requestJS, body: body, args: args, name: name),
-           let d = s.data(using: .utf8) {
-            return d
+        if DYNative.enabled, let name = DYNativeJS.name(of: body) {
+            if let s = await DYNativeJS.shared.run(prelude: Self.requestJS, body: body, args: args, name: name),
+               let d = s.data(using: .utf8) {
+                return d
+            }
+            if DYNative.nativeOnly { throw DYError.bad("原生接口失败：\(name)") }
+        } else if DYNative.nativeOnly {
+            // 这段脚本依赖网页（DOM / 页面 SDK），原生跑不了：只走原生模式下照实报出来
+            let tag = body.range(of: #"/(aweme|webcast|web)/v\d/[a-zA-Z0-9_/]+"#, options: .regularExpression).map { String(body[$0]) } ?? "页面脚本"
+            DYLiveModel.log("DDNATIVEJS needs-page \(tag)")
+            throw DYError.bad("这项还没接原生：\(tag)")
         }
         await waitReady()
         var lastErr: Error = DYError.notReady
@@ -762,6 +769,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     func fetchComments(_ id: String, cursor: Int, insert: String? = nil) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool, total: Int) {
         // 原生签名直连：不等签名页就绪；拿不到再走网页
         if DYNative.enabled, let p = await DYNative.comments(id, cursor: cursor, insert: insert) { return p }
+        if DYNative.nativeOnly { throw DYError.bad("原生接口失败：评论") }
         let d = try await call(Self.commentJS, args: ["id": id, "cursor": String(cursor), "ins": insert ?? ""])
         let p = try JSONDecoder().decode(DYCommentPage.self, from: d)
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }

@@ -28,14 +28,24 @@ enum DYTicketGuard {
               let ts = wp["ts_sign"] as? String, !ts.isEmpty else { return nil }
         let cs = inner(cryptSDK)
         guard let pem = (wp["private_key"] as? String) ?? (cs?["ec_privateKey"] as? String), !pem.isEmpty,
-              let key = try? P256.Signing.PrivateKey(pemRepresentation: pem) else { return nil }
+              let key = privateKey(pem) else { return nil }
         return DYTicketBundle(ticket: ticket, tsSign: ts, privatePEM: pem,
                               publicPoint: key.publicKey.x963Representation.base64EncodedString())
     }
 
+    /// 网页存的 PEM 把整段 base64 写在一行（184 字符），CryptoKit 的 PEM 解析只认 64 字符换行，
+    /// 所以自己剥头尾、解 base64 得到 PKCS#8 DER 再导入。
+    static func privateKey(_ pem: String) -> P256.Signing.PrivateKey? {
+        if let k = try? P256.Signing.PrivateKey(pemRepresentation: pem) { return k }
+        let b64 = pem.replacingOccurrences(of: #"-----[^-]+-----"#, with: "", options: .regularExpression)
+            .components(separatedBy: .whitespacesAndNewlines).joined()
+        guard let der = Data(base64Encoded: b64) else { return nil }
+        return try? P256.Signing.PrivateKey(derRepresentation: der)
+    }
+
     /// 某个接口 path 的票据签名头。
     static func headers(_ b: DYTicketBundle, path: String, now: Int = Int(Date().timeIntervalSince1970)) -> [String: String]? {
-        guard let key = try? P256.Signing.PrivateKey(pemRepresentation: b.privatePEM) else { return nil }
+        guard let key = privateKey(b.privatePEM) else { return nil }
         let payload = "ticket=\(b.ticket)&path=\(path)&timestamp=\(now)"
         guard let sig = try? key.signature(for: Data(payload.utf8)).derRepresentation.base64EncodedString() else { return nil }
         let client: [String: Any] = ["ts_sign": b.tsSign, "req_content": "ticket,path,timestamp", "req_sign": sig, "timestamp": now]

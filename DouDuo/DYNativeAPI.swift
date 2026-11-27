@@ -11,24 +11,33 @@ enum DYNative {
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
+    /// 只走原生（不回落网页）：DouDuo N 默认开，方便看清哪个接口原生不通。正式包默认关。
+    static let nativeOnlyKey = "douduo_native_only_v1"
+    static var nativeOnly: Bool {
+        if let v = UserDefaults.standard.object(forKey: nativeOnlyKey) as? Bool { return v }
+        return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
+    }
+
     /// 原生发私信：默认关。2026-11-27 真机两次实测——imapi 直发一出去服务端立刻作废登录
     /// （之后所有请求回 "unexepcted session length"）。缺网页 IM 的身份令牌/票据签名，查清前不许开。
     static let imSendKey = "douduo_native_im_send_v1"
     static var imSendEnabled: Bool { UserDefaults.standard.bool(forKey: imSendKey) }
 
-    /// 发请求与签名必须是同一个 UA（a_bogus 里编码了 UA）
-    static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    /// 发请求与签名必须是同一个 UA，而且要和「登录时」的网页一致（Mac Safari）：
+    /// 登录票据绑定在那个设备环境上，换成别的 UA 发写请求，服务端会当成异常设备作废登录。
+    static let userAgent = DouyinWeb.userAgent
     static let host = "https://www.douyin.com"
 
-    /// webapp 公共参数（与 UA 声明的环境一致：Windows / Chrome 131）
+    /// webapp 公共参数：与网页签名页脚本里的 base 完全一致（Mac / Safari 26 / WebKit）
     static let baseParams: [(String, String)] = [
         ("device_platform", "webapp"), ("aid", "6383"), ("channel", "channel_pc_web"), ("pc_client_type", "1"),
-        ("update_version_code", "170400"), ("version_code", "190500"), ("version_name", "19.5.0"),
-        ("cookie_enabled", "true"), ("screen_width", "1536"), ("screen_height", "864"),
-        ("browser_language", "zh-CN"), ("browser_platform", "Win32"), ("browser_name", "Chrome"),
-        ("browser_version", "131.0.0.0"), ("browser_online", "true"), ("engine_name", "Blink"),
-        ("engine_version", "131.0.0.0"), ("os_name", "Windows"), ("os_version", "10"), ("cpu_core_num", "16"),
-        ("device_memory", "8"), ("platform", "PC"), ("downlink", "10"), ("effective_type", "4g"), ("round_trip_time", "50"),
+        ("pc_libra_divert", "Mac"), ("update_version_code", "170400"), ("support_h265", "1"), ("support_dash", "0"),
+        ("version_code", "170400"), ("version_name", "17.4.0"), ("cookie_enabled", "true"),
+        ("screen_width", "1440"), ("screen_height", "900"), ("browser_language", "zh-CN"),
+        ("browser_platform", "MacIntel"), ("browser_name", "Safari"), ("browser_version", "26.0"),
+        ("browser_online", "true"), ("engine_name", "WebKit"), ("engine_version", "605.1.15"),
+        ("os_name", "Mac OS"), ("os_version", "10.15.7"), ("cpu_core_num", "8"), ("device_memory", "8"),
+        ("platform", "PC"), ("downlink", "10"), ("effective_type", "4g"), ("round_trip_time", "50"),
     ]
 
     static let session: URLSession = {
@@ -103,6 +112,8 @@ extension DYNative {
         r.setValue(referer, forHTTPHeaderField: "Referer")
         r.setValue(host, forHTTPHeaderField: "Origin")
         if !uifid.isEmpty { r.setValue(uifid, forHTTPHeaderField: "uifid") }
+        r.setValue("1", forHTTPHeaderField: "x-tt-argus")
+        if !DYDtrait.session.isEmpty { r.setValue(DYDtrait.session, forHTTPHeaderField: "x-tt-session-dtrait") }
         if !ck.header.isEmpty { r.setValue(ck.header, forHTTPHeaderField: "Cookie") }
         let t0 = Date()
         let (d, resp) = try await session.data(for: r)
@@ -140,6 +151,7 @@ extension DYNative {
         r.setValue("1", forHTTPHeaderField: "x-tt-argus")
         if !uifid.isEmpty { r.setValue(uifid, forHTTPHeaderField: "uifid") }
         for (k, v) in tg { r.setValue(v, forHTTPHeaderField: k) }
+        if !DYDtrait.session.isEmpty { r.setValue(DYDtrait.session, forHTTPHeaderField: "x-tt-session-dtrait") }
         r.setValue(ck.header, forHTTPHeaderField: "Cookie")
         let t0 = Date()
         let (d, resp) = try await session.data(for: r)
