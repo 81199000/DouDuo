@@ -456,6 +456,117 @@ struct DYLivePreviewInsets: Equatable {
     var trailing: CGFloat
 }
 
+/// 推荐 / 专区列表下发的直播流几乎都是 H.265：FLV 链接是 `_hd5.flv` 一类、HLS 也标 `VCodec=h265`。
+/// VLC 3 的 FLV 不认 H.265，只能退到 H.265 的 HLS，起播 4–7 秒（模拟器日志），有的直到离开都没出画。
+/// 同一间的进房接口（webcast/room/web/enter）给的是 H.264 FLV，起播约 0.5 秒。
+/// 2026-11-28 抽样：推荐页 20 间里只有 2 间能直接用 FLV；进房接口抽 8 间全部是 H.264，单次请求 0.3–0.6 秒。
+///
+/// 这里只记「哪间换过、换成了什么、还要不要等」，不碰网络和播放器，便于脚本单测。
+struct DYLiveH264Upgrade<Room> {
+    enum Next: Equatable {
+        /// 直接播：不需要换，或已经试过（成功的版本由 `upgraded` 取）
+        case play
+        /// 还没问过进房接口：发请求，并先等一下
+        case request
+        /// 请求已在路上：继续等，不重复发
+        case wait
+    }
+
+    /// 换好的 H.264 线路留多久。流地址本身约一周才过期，这里只防主播下播后还拿旧地址。
+    static var successTTL: TimeInterval { 300 }
+    /// 进房接口失败后多久再试（期间这间直接走原来的线路）
+    static var failureTTL: TimeInterval { 60 }
+    /// 播放前最多等进房接口多久；超时先播原来的线路，结果回来且还没出画再换成 FLV
+    static var waitLimit: TimeInterval { 1.5 }
+
+    private struct Entry { var room: Room?; var at: Date }
+    private var done: [String: Entry] = [:]
+    private var pending: Set<String> = []
+    private var gaveUp: Set<String> = []
+
+    /// 列表里这一间有没有必要换：已经有能播的 FLV 就不换；没有 web_rid 没法请求；连 HLS 都没有的交给关注解析流程。
+    static func wanted(hasFLV: Bool, hasHLS: Bool, webRid: String) -> Bool {
+        !hasFLV && hasHLS && !webRid.isEmpty
+    }
+
+    /// 有效期内换好的版本
+    func upgraded(_ id: String, now: Date) -> Room? {
+        guard let e = done[id], let room = e.room, now.timeIntervalSince(e.at) < Self.successTTL else { return nil }
+        return room
+    }
+
+    func next(_ id: String, wanted: Bool, now: Date) -> Next {
+        guard wanted else { return .play }
+        if let e = done[id] {
+            let ttl = e.room == nil ? Self.failureTTL : Self.successTTL
+            if now.timeIntervalSince(e.at) < ttl { return .play }
+        }
+        if pending.contains(id) { return gaveUp.contains(id) ? .play : .wait }
+        return .request
+    }
+
+    mutating func begin(_ id: String) {
+        pending.insert(id)
+        gaveUp.remove(id)
+    }
+
+    /// 等太久：这一轮先播原线路。返回 false = 这一间已经不在等了（结果已回或早放弃），调用方什么都不用做。
+    mutating func giveUp(_ id: String) -> Bool {
+        guard pending.contains(id) else { return false }
+        return gaveUp.insert(id).inserted
+    }
+
+    mutating func finish(_ id: String, room: Room?, now: Date) {
+        pending.remove(id)
+        gaveUp.remove(id)
+        done[id] = Entry(room: room, at: now)
+        if done.count > 200 {
+            done = done.filter { now.timeIntervalSince($0.value.at) < Self.successTTL }
+        }
+    }
+}
+
+/// 进房接口回包里只取播放线路。FLV 只留网页 SDK 明确标成 H.264、非纯音频、未加密、URL 完全一致的
+/// （与网页脚本 compatibleLiveFLV 同一口径）；房间不在播或回包不对返回 nil。
+struct DYLiveEnterStreams: Equatable {
+    var id: String
+    var flv: [String: String]
+    var hls: [String: String]
+    var def: String?
+
+    static func parse(_ data: Data) -> DYLiveEnterStreams? {
+        guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (o["status_code"] as? Int) == 0,
+              let outer = o["data"] as? [String: Any],
+              let room = (outer["data"] as? [[String: Any]])?.first,
+              (room["status"] as? Int) == 2,
+              let su = room["stream_url"] as? [String: Any] else { return nil }
+        let id = (room["id_str"] as? String) ?? (room["id"] as? NSNumber)?.stringValue ?? ""
+        guard !id.isEmpty else { return nil }
+        let flvAll = su["flv_pull_url"] as? [String: String] ?? [:]
+        let hls = su["hls_pull_url_map"] as? [String: String] ?? [:]
+        func object(_ v: Any?) -> [String: Any]? {
+            if let d = v as? [String: Any] { return d }
+            guard let s = v as? String else { return nil }
+            return try? JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: Any]
+        }
+        var avc = Set<String>()
+        let pull = (su["live_core_sdk_data"] as? [String: Any])?["pull_data"] as? [String: Any]
+        for (name, group) in object(object(pull?["stream_data"])?["data"]) ?? [:] where name != "ao" {
+            for case let stream as [String: Any] in (group as? [String: Any])?.values.map({ $0 }) ?? [] {
+                guard let url = stream["flv"] as? String, !url.isEmpty,
+                      (stream["enableEncryption"] as? Bool) != true,
+                      let params = object(stream["sdk_params"]) else { continue }
+                let codec = String(describing: params["VCodec"] ?? "").lowercased()
+                let bitrate = (params["vbitrate"] as? NSNumber)?.doubleValue ?? Double(params["vbitrate"] as? String ?? "") ?? 0
+                if (codec == "h264" || codec == "avc") && bitrate > 0 { avc.insert(url) }
+            }
+        }
+        return DYLiveEnterStreams(id: id, flv: flvAll.filter { avc.contains($0.value) }, hls: hls,
+                                  def: su["default_resolution"] as? String)
+    }
+}
+
 #if DEBUG || FOLLOW_LIVE_LOGIC_MAIN
 enum DYFollowLiveLogicTests {
     static func run() -> [String] {
@@ -683,6 +794,58 @@ enum DYFollowLiveLogicTests {
         check(stripFold.trailing >= 48 && stripFold.trailing <= 90, "头像条仍让开窗格里的折痕")
         check(stripFold.scrollTail == 90 - stripFold.trailing, "折痕之外的遮挡留在滚动尾距")
         check(stripFold.trailing < 90, "折痕避让不会再占满整个右侧系统区")
+
+        // 列表给的是 H.265（没有能播的 FLV）时，先用进房接口换 H.264 FLV
+        typealias Up = DYLiveH264Upgrade<String>
+        check(Up.wanted(hasFLV: false, hasHLS: true, webRid: "r1"), "只有 HLS 的房间要换 H.264")
+        check(!Up.wanted(hasFLV: true, hasHLS: true, webRid: "r1"), "已有 H.264 FLV 不再请求")
+        check(!Up.wanted(hasFLV: false, hasHLS: true, webRid: ""), "没有 web_rid 没法请求")
+        check(!Up.wanted(hasFLV: false, hasHLS: false, webRid: "r1"), "没有线路的关注房间走原来的解析")
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        var up = Up()
+        check(up.next("a", wanted: false, now: t0) == .play, "不需要换就直接播")
+        check(up.next("a", wanted: true, now: t0) == .request, "第一次要发请求")
+        up.begin("a")
+        check(up.next("a", wanted: true, now: t0) == .wait, "请求在路上不重复发")
+        check(up.giveUp("a"), "等超时放弃一次")
+        check(!up.giveUp("a"), "同一轮不重复放弃")
+        check(up.next("a", wanted: true, now: t0) == .play, "放弃后先播原线路")
+        up.finish("a", room: "a-h264", now: t0)
+        check(!up.giveUp("a"), "结果回来后超时任务不再动作")
+        check(up.upgraded("a", now: t0.addingTimeInterval(10)) == "a-h264", "有效期内用换好的线路")
+        check(up.next("a", wanted: true, now: t0.addingTimeInterval(10)) == .play, "换过的房间重新进列表也不再请求")
+        check(up.upgraded("a", now: t0.addingTimeInterval(Up.successTTL + 1)) == nil, "过期后不再用旧线路")
+        check(up.next("a", wanted: true, now: t0.addingTimeInterval(Up.successTTL + 1)) == .request, "过期后重新请求")
+        up.begin("b"); up.finish("b", room: nil, now: t0)
+        check(up.upgraded("b", now: t0) == nil, "失败没有可用版本")
+        check(up.next("b", wanted: true, now: t0.addingTimeInterval(5)) == .play, "失败后一段时间内直接播原线路")
+        check(up.next("b", wanted: true, now: t0.addingTimeInterval(Up.failureTTL + 1)) == .request, "失败冷却后再试")
+        check(Up.waitLimit <= 2, "播放前最多等 2 秒")
+
+        // 进房回包解析（夹具是手写的，不含真实签名地址）
+        func enter(status: Int = 2, code: Int = 0, codec: String = "h264", bitrate: Any = 4000000,
+                   encrypted: Bool = false, group: String = "hd", sameURL: Bool = true) -> Data {
+            let url = "https://example.invalid/s_hd.flv?sign=fixture"
+            let stream: [String: Any] = ["flv": sameURL ? url : url + "&x=1", "enableEncryption": encrypted,
+                                         "sdk_params": "{\"VCodec\":\"\(codec)\",\"vbitrate\":\(bitrate)}"]
+            let sdk = try! JSONSerialization.data(withJSONObject: ["data": [group: ["main": stream]]])
+            let su: [String: Any] = ["flv_pull_url": ["HD1": url], "hls_pull_url_map": ["HD1": "https://example.invalid/s.m3u8"],
+                                     "default_resolution": "HD1",
+                                     "live_core_sdk_data": ["pull_data": ["stream_data": String(decoding: sdk, as: UTF8.self)]]]
+            let o: [String: Any] = ["status_code": code, "data": ["data": [["id_str": "r1", "status": status, "stream_url": su]]]]
+            return try! JSONSerialization.data(withJSONObject: o)
+        }
+        let okEnter = DYLiveEnterStreams.parse(enter())
+        check(okEnter?.id == "r1" && okEnter?.flv["HD1"] != nil && okEnter?.hls["HD1"] != nil && okEnter?.def == "HD1", "H.264 FLV 与 HLS 都取到")
+        check(DYLiveEnterStreams.parse(enter(bitrate: "\"4000000\""))?.flv.isEmpty == false, "码率是字符串也认")
+        check(DYLiveEnterStreams.parse(enter(codec: "h265"))?.flv.isEmpty == true, "H.265 的 FLV 不要")
+        check(DYLiveEnterStreams.parse(enter(group: "ao"))?.flv.isEmpty == true, "纯音频的 H.264 标记不能当视频证据")
+        check(DYLiveEnterStreams.parse(enter(encrypted: true))?.flv.isEmpty == true, "加密流不要")
+        check(DYLiveEnterStreams.parse(enter(sameURL: false))?.flv.isEmpty == true, "URL 必须完全一致")
+        check(DYLiveEnterStreams.parse(enter(bitrate: 0))?.flv.isEmpty == true, "码率为 0 不算视频")
+        check(DYLiveEnterStreams.parse(enter(status: 4)) == nil, "已下播返回 nil")
+        check(DYLiveEnterStreams.parse(enter(code: 10037)) == nil, "业务码非 0 返回 nil")
+        check(DYLiveEnterStreams.parse(Data()) == nil, "空包（风控）返回 nil")
         return failures
     }
 }

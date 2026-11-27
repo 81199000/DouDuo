@@ -33,6 +33,73 @@ extension DYLiveRoom {
     }
 }
 
+/// 进房接口（webcast/room/web/enter）只用来换 H.264 播放线路：匿名直连，不经过隐藏网页、不带登录 cookie。
+/// 2026-11-28 实测：经隐藏网页（带登录 + 页面签名）发出去回 200 空包；只带一个匿名 ttwid 直连则稳定返回，约 0.4 秒。
+/// 只拿流地址，不碰账号，所以就算被风控也牵连不到登录。
+@MainActor
+enum DYLiveEnterClient {
+    private static var ttwid: String?
+    private static var ttwidTask: Task<String?, Never>?
+
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.httpCookieStorage = nil
+        c.httpShouldSetCookies = false
+        c.timeoutIntervalForRequest = 6
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: c)
+    }()
+
+    static func streams(webRid: String) async -> DYLiveEnterStreams? {
+        guard !webRid.isEmpty else { return nil }
+        for attempt in 0..<2 {
+            guard let tt = await anonymousTTWID(fresh: attempt > 0) else { return nil }
+            var q = URLComponents(string: "https://live.douyin.com/webcast/room/web/enter/")!
+            q.queryItems = [("aid", "6383"), ("app_name", "douyin_web"), ("live_id", "1"), ("device_platform", "web"),
+                            ("language", "zh-CN"), ("enter_from", "web_live"), ("cookie_enabled", "true"),
+                            ("screen_width", "1440"), ("screen_height", "900"), ("browser_language", "zh-CN"),
+                            ("browser_platform", "MacIntel"), ("browser_name", "Safari"), ("browser_version", "26.0"),
+                            ("channel", "channel_pc_web"), ("enter_source", ""), ("web_rid", webRid)]
+                .map { URLQueryItem(name: $0.0, value: $0.1) }
+            guard let url = q.url else { return nil }
+            var r = URLRequest(url: url)
+            r.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")
+            r.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            r.setValue("https://live.douyin.com/\(webRid)", forHTTPHeaderField: "Referer")
+            r.setValue("ttwid=\(tt)", forHTTPHeaderField: "Cookie")
+            guard let (data, resp) = try? await session.data(for: r) else { return nil }
+            let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if let s = DYLiveEnterStreams.parse(data) { return s }
+            DYLiveModel.log("DDLIVE_H264 why=enter-miss http=\(http) bytes=\(data.count) attempt=\(attempt)")
+            // 空包多半是这个 ttwid 被限了：换一个再试一次；有内容但不是在播的房间就不用再试
+            if !data.isEmpty { return nil }
+        }
+        return nil
+    }
+
+    /// 匿名 ttwid：对直播首页发一次 HEAD 就会下发，进程内复用
+    private static func anonymousTTWID(fresh: Bool) async -> String? {
+        if fresh { ttwid = nil; ttwidTask = nil }
+        if let ttwid { return ttwid }
+        if let ttwidTask { return await ttwidTask.value }
+        let task = Task<String?, Never> {
+            var r = URLRequest(url: URL(string: "https://live.douyin.com/")!)
+            r.httpMethod = "HEAD"
+            r.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")
+            guard let (_, resp) = try? await session.data(for: r), let h = resp as? HTTPURLResponse, let url = h.url else { return nil }
+            var fields: [String: String] = [:]
+            for (k, v) in h.allHeaderFields { fields["\(k)"] = "\(v)" }
+            return HTTPCookie.cookies(withResponseHeaderFields: fields, for: url).first { $0.name == "ttwid" }?.value
+        }
+        ttwidTask = task
+        let value = await task.value
+        ttwidTask = nil
+        ttwid = value
+        if value == nil { DYLiveModel.log("DDLIVE_H264 why=no-ttwid") }
+        return value
+    }
+}
+
 enum DDLogWriter {
     static let queue = DispatchQueue(label: "douduo.log", qos: .utility)
     nonisolated(unsafe) static let formatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
@@ -261,7 +328,9 @@ final class DYLiveModel: ObservableObject {
     }
 
     func play(_ room: DYLiveRoom?) {
-        guard let room else { return }
+        guard var room else { return }
+        // 列表里同一间可能还是 H.265 的旧数据（重新拉列表、从推荐卡片进来）：用换好的 H.264 版本
+        if !room.hasFLV, let upgraded = h264.upgraded(room.id, now: Date()) { room = upgraded }
         roomRef = room
         let restart = loadedRoom != room.id || DYLivePlaybackGate.shouldRestartSameRoom(
             state: playbackState(), ready: ready, hasMedia: vlc.mediaPlayer.media != nil)
@@ -279,6 +348,18 @@ final class DYLiveModel: ObservableObject {
             return
         }
         guard restart else { return }
+        // 只有 H.265 线路：先问进房接口要 H.264 FLV（约 0.3 秒），比直接起 H.265 HLS（4–7 秒）快得多
+        switch h264.next(room.id, wanted: needsH264(room), now: Date()) {
+        case .play: break
+        case .request:
+            requestH264(room)
+            holdForH264(room)
+            return
+        case .wait:
+            holdForH264(room)
+            return
+        }
+        holdingH264 = nil
         loadedRoom = room.id
         sources = room.liveStreams
         // 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
@@ -286,6 +367,78 @@ final class DYLiveModel: ObservableObject {
             sources = sources.filter { $0.quality == q } + sources.filter { $0.quality != q }
         }
         startCurrentSource()
+    }
+
+    // MARK: H.265 → H.264（见 DYLiveH264Upgrade）
+
+    private var h264 = DYLiveH264Upgrade<DYLiveRoom>()
+    /// 正在等进房接口的那一间：期间不起任何线路
+    private var holdingH264: String?
+
+    private func needsH264(_ room: DYLiveRoom) -> Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        if env["DOUDUO_LIVEMOCK"] == "1" || env["DOUDUO_LIVE_HLS"] == "1" { return false }
+        #endif
+        return DYLiveH264Upgrade<DYLiveRoom>.wanted(hasFLV: room.hasFLV, hasHLS: !room.hls.isEmpty, webRid: room.webRid)
+    }
+
+    private func requestH264(_ room: DYLiveRoom) {
+        let id = room.id, rid = room.webRid
+        h264.begin(id)
+        let start = ProcessInfo.processInfo.systemUptime
+        Task { [weak self] in
+            let streams = await DYLiveEnterClient.streams(webRid: rid)
+            guard let self else { return }
+            // 只认同一间、确实给了 H.264 FLV 的结果；其余照原线路播
+            let merged = streams.flatMap { s -> DYLiveRoom? in
+                guard s.id == id, !s.flv.isEmpty else { return nil }
+                var r = room
+                r.flv = s.flv
+                r.hls = s.hls.isEmpty ? room.hls : s.hls
+                r.def = s.def ?? room.def
+                return r
+            }
+            self.h264.finish(id, room: merged, now: Date())
+            Self.log("DDLIVE_H264 room=\(id) ok=\(merged != nil ? 1 : 0) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - start))")
+            let wasHolding = self.holdingH264 == id
+            if wasHolding { self.holdingH264 = nil }
+            guard let merged else {
+                // 换不到：照原来的 H.265 线路播
+                if wasHolding, self.roomRef?.id == id { self.play(self.roomRef) }
+                return
+            }
+            if let i = self.rooms.firstIndex(where: { $0.id == id }), !self.rooms[i].hasFLV { self.rooms[i] = merged }
+            if self.roomRef?.id == id {
+                // 还在等，或等超时先起了 HLS 但还没出画：换成 FLV。已经出画就不打断。
+                if wasHolding || !self.ready {
+                    self.loadedRoom = nil
+                    self.play(merged)
+                }
+            } else {
+                self.warmNeighbors()
+            }
+        }
+    }
+
+    /// 停掉上一间、先不起这一间，等进房接口；最多等 `waitLimit`，超时照原线路播。
+    private func holdForH264(_ room: DYLiveRoom) {
+        guard holdingH264 != room.id else { return }
+        retryTask?.cancel()
+        streamGeneration = UUID()
+        loadedRoom = nil
+        vlc.stop()
+        ready = false
+        playbackError = nil
+        holdingH264 = room.id
+        let id = room.id
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(DYLiveH264Upgrade<DYLiveRoom>.waitLimit))
+            guard let self, self.holdingH264 == id, self.h264.giveUp(id) else { return }
+            self.holdingH264 = nil
+            Self.log("DDLIVE_H264 room=\(id) wait-timeout")
+            if self.roomRef?.id == id { self.play(self.roomRef) }
+        }
     }
 
     /// 滑到另一间时先撤掉上一间的就绪状态，避免旧画面被当成这一间已经播出。
@@ -643,6 +796,7 @@ final class DYLiveModel: ObservableObject {
         audioInterrupted = false
         sessionReleased = false
         retryTask?.cancel(); streamGeneration = UUID()
+        holdingH264 = nil
         vlc.cancelInterruptionRebuild()
         loadedRoom = nil; vlc.stop(); ready = false
     }
@@ -697,6 +851,11 @@ final class DYLiveModel: ObservableObject {
     func warmNeighbors() {
         guard let id = currentID, let i = rooms.firstIndex(where: { $0.id == id }) else { return }
         let ids = [i + 1, i + 2, i - 1].filter { rooms.indices.contains($0) }
+        // 相邻几间提前换好 H.264 FLV：滑过去时不用再等进房接口
+        let now = Date()
+        for idx in [i] + ids where h264.next(rooms[idx].id, wanted: needsH264(rooms[idx]), now: now) == .request {
+            requestH264(rooms[idx])
+        }
         for idx in ids {
             guard let source = rooms[idx].liveStreams.first, warmed.insert(source.url).inserted else { continue }
             if warmed.count > 40 { warmed.removeAll() }
