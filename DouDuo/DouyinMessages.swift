@@ -1224,7 +1224,7 @@ struct DYMessagesScreen: View {
             }
             // Hidden rows still belong to the official list; keep pagination available
             // even when every loaded friend conversation is hidden locally.
-            if !conversations.isEmpty {
+            if !conversations.isEmpty, !DYNativeChat.enabled {
                 Group {
                     if loadingMoreConversations {
                         HStack(spacing: 8) { ProgressView(); Text("正在加载更早的会话…") }
@@ -1319,6 +1319,7 @@ struct DYMessagesScreen: View {
     /// 网页会话列表是虚拟列表，只渲染可视区：必须边滚边读，一次滚 0.8 屏只能读到下一屏。
     /// 粉丝私信多的账号，前面一大段全被归进「陌生人消息」，好友会话排在后面——以前按钮只滚一屏，看着像加载不出来。
     private func loadMoreConversations(minNewFriends: Int, maxSteps: Int = 60) async {
+        if DYNativeChat.enabled { conversationsExhausted = true; return }
         guard !loadingMoreConversations, openingChat == nil, changingConversation == nil,
               !navigation.isChat, let web = chatModel.web else { return }
         let account = cache.accountScope
@@ -1350,11 +1351,17 @@ struct DYMessagesScreen: View {
     }
 
     private func readConversations() async {
-        guard let web = chatModel.web else { return }
         let account = DYMessageCache.shared.accountScope
         guard !account.isEmpty else { return }
-        // 读取与合并都交给 DYConversationSync：后台预热和消息页用的是同一套逻辑
-        let outcome = await DYConversationSync.read(web: web, account: account)
+        let outcome: DYConversationSync.Outcome
+        if DYNativeChat.enabled {
+            // 原生：imapi 直接拉全部会话 + 头像昵称，不等私信网页、不用往下翻
+            outcome = await DYNativeConversationSync.read(account: account, bridge: bridge)
+        } else {
+            guard let web = chatModel.web else { return }
+            // 读取与合并都交给 DYConversationSync：后台预热和消息页用的是同一套逻辑
+            outcome = await DYConversationSync.read(web: web, account: account)
+        }
         guard DYMessageCache.shared.accountScope == account else { return }
         if let status = outcome.status { chatStatus = status }
         if !outcome.rows.isEmpty {

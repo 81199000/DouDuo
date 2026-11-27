@@ -525,7 +525,9 @@ final class DYNativeIM {
         var out: [DYIMConversation] = [], seen = Set<String>()
         var cursor: UInt64 = 0
         for page in 0..<maxPages {
+            // MessageByInitRequestBody：1 version / 2 page / 3 conv_limit / 4 msg_limit（同官方私信页）
             let payload = (cursor > 0 ? DYPB.field(1, cursor) : Data()) + DYPB.field(2, UInt64(page))
+                + DYPB.field(3, 50) + DYPB.field(4, 1)
             let body = try await call(.initSync, payload)
             for item in body[1] ?? [] {
                 #if DEBUG
@@ -534,7 +536,12 @@ final class DYNativeIM {
                 let entry = item.data.flatMap(DYPB.decode)
                 guard let head = entry?.data(1), var c = Self.conversation(head),
                       seen.insert(c.id).inserted else { continue }
-                if let lastRaw = entry?.data(2), let last = Self.message(lastRaw) { c.last = last }
+                // 2 = 该会话随 init 下发的消息（可能多条、顺序不定）：取时间最新的一条
+                let msgs = (entry?[2] ?? []).compactMap { $0.data.flatMap(Self.message) }
+                if let last = msgs.max(by: { $0.createdMS < $1.createdMS }) { c.last = last }
+                #if DEBUG
+                DYLiveModel.log("DDNATIVEIM init conv=\(c.id.suffix(6)) msgs=\(msgs.count) times=\(msgs.map { String($0.createdMS / 1000) }.joined(separator: ","))")
+                #endif
                 if c.type == 1 {
                     c.peerUID = peer(of: c.id)
                     if let p = c.participants.first(where: { $0.uid == c.peerUID }), !p.sec.isEmpty { c.peerSec = p.sec }
