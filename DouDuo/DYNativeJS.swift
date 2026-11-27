@@ -192,6 +192,19 @@ final class DYNativeJS {
                 let why = String(String(decoding: d.prefix(60), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
                 DYLiveModel.log("DDNATIVEJS post path=\(comps.path) http=\(h?.statusCode ?? -1) bytes=\(d.count) tg=\(h?.value(forHTTPHeaderField: "Bd-Ticket-Guard-Result") ?? "-") bdt=\(h?.value(forHTTPHeaderField: "X-Vc-Bdturing-Parameters") != nil ? 1 : 0) head=\(why)")
             }
+            #if DEBUG
+            // 空结果诊断：只记长度、顶层键和业务码，不记内容
+            if !isPost, d.count < 40 {
+                let hk = (h?.allHeaderFields.keys.map { "\($0)".lowercased() } ?? []).filter { $0.hasPrefix("x-") || $0.contains("verify") || $0.contains("bdturing") }.sorted().prefix(12).joined(separator: ",")
+                DYLiveModel.log("DDNATIVEJS tiny path=\(comps.path) http=\(h?.statusCode ?? -1) bytes=\(d.count) hk=\(hk)")
+            }
+            if !isPost, d.count < 4000, let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                let keys = o.keys.sorted().prefix(14).joined(separator: ",")
+                let code = o["status_code"].map { "\($0)" } ?? "-"
+                let nil_ = (o["search_nil_info"] as? [String: Any]).map { "\($0["search_nil_type"] ?? "")/\($0["search_nil_item"] ?? "")" } ?? "-"
+                DYLiveModel.log("DDNATIVEJS small path=\(comps.path) bytes=\(d.count) code=\(code) nil=\(nil_) keys=\(keys)")
+            }
+            #endif
             if let code = h?.statusCode, code != 200 {
                 let why = String(String(decoding: d.prefix(80), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
                 DYLiveModel.log("DDNATIVEJS http=\(code) path=\(comps.path) why=\(why)")
