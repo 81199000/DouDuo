@@ -384,6 +384,37 @@ final class DYNativeIM {
 
 
 #if DEBUG
+/// 私信发送探针：DOUDUO_IMSEND=<文字> → 发给唯一的单聊会话（老板确认：小号唯一好友 = 老板大号），
+/// 发完立即检查登录、回读确认。只发一条，不重试。
+@MainActor enum DDIMSendProbe {
+    static func run(_ text: String) async {
+        try? await Task.sleep(nanoseconds: 8_000_000_000)
+        do {
+            let list = try await DYNativeIM.shared.loadConversations(maxPages: 3)
+            let singles = list.filter { $0.type == 1 }
+            guard singles.count == 1, let c = singles.first else {
+                DYLiveModel.log("DDIMSEND abort singles=\(singles.count)"); return
+            }
+            DYLiveModel.log("DDIMSEND start conv=\(c.id.suffix(6)) len=\(text.count)")
+            let t0 = Date()
+            do {
+                let sid = try await DYNativeIM.shared.sendText(text, to: c.id)
+                DYLiveModel.log("DDIMSEND ok server=\(sid > 0) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            } catch {
+                DYLiveModel.log("DDIMSEND fail \(error)")
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let again = try? await DYNativeIM.shared.loadConversations(maxPages: 1)
+            let msgs = try? await DYNativeIM.shared.recentMessages(c, limit: 5)
+            let mine = msgs?.filter { $0.sender == DYNativeIM.shared.selfUID && $0.text == text }.count ?? -1
+            let selfOK = (try? await DouyinBridge.primary?.selfSecUid()) != nil
+            DYLiveModel.log("DDIMSEND after reread=\(again?.count ?? -1) found=\(mine) profileSelf=\(selfOK)")
+        } catch {
+            DYLiveModel.log("DDIMSEND list fail \(error)")
+        }
+    }
+}
+
 /// 私信只读探针：DOUDUO_IMREAD=1 → 拉会话列表 + 第一个会话最近消息，只记条数/字段形状，不记内容，不发任何消息
 @MainActor enum DDIMReadProbe {
     static func run() async {
