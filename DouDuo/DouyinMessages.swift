@@ -160,6 +160,33 @@ final class DYMessageCache: ObservableObject {
             .appendingPathComponent("message-cache-v3", isDirectory: true).appendingPathComponent(scope + ".json")
     }
     private var scopeCheckedAt = Date.distantPast
+
+    /// 账号缓存目录名：由登录 cookie（sessionid / sessionid_ss / uid_tt）算出，没登录时为 guest 的哈希
+    static func scope(of cookies: [HTTPCookie]) -> String {
+        let identity = cookies.filter { $0.domain.hasSuffix("douyin.com") && ["sessionid", "sessionid_ss", "uid_tt"].contains($0.name) }
+            .sorted { $0.name < $1.name }.map { $0.name + "=" + $0.value }.joined(separator: "|")
+        return SHA256.hash(data: Data((identity.isEmpty ? "guest" : identity).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 删掉某个账号在本机的消息相关缓存：通知/会话快照、联系人、原生聊天记录；
+    /// 不分账号存的头像昵称、私信图片缓存也一并清掉
+    static func purge(scope: String) {
+        guard !scope.isEmpty else { return }
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        try? fm.removeItem(at: support.appendingPathComponent("message-cache-v3/\(scope).json"))
+        try? fm.removeItem(at: support.appendingPathComponent("people-cache-v1/\(scope).json"))
+        let chats = caches.appendingPathComponent("native-chat", isDirectory: true)
+        let prefix = scope.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression) + "_"
+        for f in (try? fm.contentsOfDirectory(atPath: chats.path)) ?? [] where f.hasPrefix(prefix) {
+            try? fm.removeItem(at: chats.appendingPathComponent(f))
+        }
+        try? fm.removeItem(at: caches.appendingPathComponent("im-users.json"))
+        try? fm.removeItem(at: caches.appendingPathComponent("native-chat-img", isDirectory: true))
+        try? fm.removeItem(at: caches.appendingPathComponent("dd-chat-images", isDirectory: true))
+        DYLiveModel.log("DDACCOUNT purge caches scope=\(scope.prefix(6))")
+    }
     /// 切账号（登录/退出）时调用，下次进信息页重新核对
     func invalidateScope() { scopeCheckedAt = .distantPast }
 
@@ -185,10 +212,8 @@ final class DYMessageCache: ObservableObject {
         let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
         }
-        let identity = cookies.filter { $0.domain.hasSuffix("douyin.com") && ["sessionid", "sessionid_ss", "uid_tt"].contains($0.name) }
-            .sorted { $0.name < $1.name }.map { $0.name + "=" + $0.value }.joined(separator: "|")
-        let next = SHA256.hash(data: Data((identity.isEmpty ? "guest" : identity).utf8)).map { String(format: "%02x", $0) }.joined()
-        hasSession = !identity.isEmpty
+        let next = Self.scope(of: cookies)
+        hasSession = next != Self.scope(of: [])
         guard next != scope else { DYPeopleCache.shared.activate(scope: scope); return }
         let changingAccount = !scope.isEmpty
         scope = next

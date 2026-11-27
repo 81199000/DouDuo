@@ -101,28 +101,44 @@ final class DYAccountStore: ObservableObject {
         return true
     }
 
-    /// 退出登录：清掉本机登录态（账号仍保存在列表里，可以再切回来）
-    func signOut() async {
-        await refreshCurrentSnapshot()
+    /// 退出登录。
+    /// - forget = true（「退出当前账号」）：连同本机存的登录信息、消息缓存一起删掉，账号从列表移除
+    /// - forget = false（添加账号 / 重新登录前）：只清本机登录态，账号留在列表里可以切回来
+    func signOut(forget: Bool = false) async {
+        let leaving = currentID
+        let scope = DYMessageCache.scope(of: await Self.douyinCookies())
+        if !forget { await refreshCurrentSnapshot() }
         await Self.clearDouyinSession()
-        // 原生扫码登录那一份也要清：不清的话原生请求仍按上一个账号发（已存进快照，切回来能恢复）
+        // 原生扫码登录那一份也要清：不清的话原生请求仍按上一个账号发
         Self.clearNativeLogin()
         currentID = nil
+        if forget {
+            if let id = leaving { Self.forget(id) }
+            accounts.removeAll { $0.id == leaving }
+            DYMessageCache.purge(scope: scope)
+        }
         persist()
         Self.clearAccountCaches()
-        DYLiveModel.log("DDACCOUNT sign-out n=\(accounts.count)")
+        DYLiveModel.log("DDACCOUNT sign-out forget=\(forget) n=\(accounts.count)")
         #if DEBUG
         DYLiveModel.log("DDACCOUNT now sessionid=\(await Self.debugSessionValue() ?? "none")")
         #endif
     }
 
-    /// 从列表里移除（连同存着的登录凭据）
+    /// 从列表里移除（连同存着的登录凭据和这个账号的消息缓存）
     func remove(_ account: DYSavedAccount) {
-        Self.keychainDelete(account: account.id)
-        Self.keychainDelete(account: Self.extrasAccount(account.id))
+        if let blob = Self.keychainGet(account: account.id, quiet: true), let cookies = Self.decode(blob) {
+            DYMessageCache.purge(scope: DYMessageCache.scope(of: cookies))
+        }
+        Self.forget(account.id)
         accounts.removeAll { $0.id == account.id }
         persist()
         DYLiveModel.log("DDACCOUNT remove uid=…\(account.id.suffix(4)) n=\(accounts.count)")
+    }
+
+    private static func forget(_ id: String) {
+        keychainDelete(account: id)
+        keychainDelete(account: extrasAccount(id))
     }
 
     /// 当前账号的 cookie 刷新一份进 Keychain（只有当前 sessionid 属于记录的那个账号才存）
@@ -351,13 +367,13 @@ struct DYAccountsScreen: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭", systemImage: "xmark") { dismiss() } } }
             .confirmationDialog("退出当前账号？", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("退出", role: .destructive) {
-                    Task { await store.signOut(); onChanged(); dismiss() }
+                    Task { await store.signOut(forget: true); onChanged(); dismiss() }
                 }
-            } message: { Text("账号仍保存在列表里，之后可以直接切回来。") }
+            } message: { Text("会删除这个账号在本机的登录信息和消息缓存，下次要重新登录。") }
             .confirmationDialog("移除「\(removing?.name ?? "")」？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
                                 titleVisibility: .visible) {
                 Button("移除", role: .destructive) { if let r = removing { store.remove(r) }; removing = nil }
-            } message: { Text("会删掉这台手机上存的登录信息，下次要重新登录。") }
+            } message: { Text("会删除这个账号在本机的登录信息和消息缓存，下次要重新登录。") }
         }
     }
 

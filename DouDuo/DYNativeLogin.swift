@@ -608,6 +608,18 @@ final class DYNativeLogin: ObservableObject {
         phase = .done
     }
 
+    /// 登录页重新打开：上次停在「登录成功 / 失败」的状态清掉，从头开始
+    func reset() {
+        polling = false
+        pollTask?.cancel()
+        pollTask = nil
+        switch phase {
+        case .done, .failed: phase = .idle; qrImage = nil
+        default: break
+        }
+        smsError = ""; smsHint = ""
+    }
+
     func cancel() {
         polling = false
         pollTask?.cancel()

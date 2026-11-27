@@ -18,7 +18,7 @@ struct DYAppLoginScreen: View {
     @State private var code = ""
     @StateObject private var nativeLogin = DYNativeLogin.shared
     @State private var mfaCode = ""
-    /// 原生包默认手机号；以前默认原生扫码，一打开就清会话开始轮询二维码
+    /// 默认手机号：默认扫码的话一打开就清会话开始轮询二维码
     @State private var mode: Mode = .code
     #if DEBUG
     static var autoCapture: Bool { ProcessInfo.processInfo.environment["DOUDUO_LOGIN_AUTOCAP"] == "1" }
@@ -27,7 +27,7 @@ struct DYAppLoginScreen: View {
     #endif
     @FocusState private var focus: Field?
 
-    enum Mode { case code, qr, native }
+    enum Mode { case code, native }
     static let nativeAvailable = true
     enum Field { case phone, code }
 
@@ -59,10 +59,12 @@ struct DYAppLoginScreen: View {
         }
         .onChange(of: page.loggedIn) { _, ok in if ok { dismiss() } }
         .onChange(of: nativeLogin.phase) { _, ph in if ph == .done { dismiss() } }
-        .onChange(of: page.askScan) { _, ask in if ask { mode = .qr } }
+        .onChange(of: page.askScan) { _, ask in if ask { mode = .native } }
         // 登录页里换 cookie 是预期内的，登录守护别弹
         .onAppear {
             DYSessionWatch.shared.loginScreenOpen = true
+            // 上一次登录成功后状态停在「登录成功」：添加账号再打开时要从头取码
+            nativeLogin.reset()
             #if DEBUG
             // 抓包：只在 DRYRUN 下自动点，避免真发短信
             if Self.autoCapture, ProcessInfo.processInfo.environment["DOUDUO_LOGIN_DRYRUN"] == "1" {
@@ -80,13 +82,12 @@ struct DYAppLoginScreen: View {
             VStack(alignment: .leading, spacing: 18) {
                 Picker("登录方式", selection: $mode) {
                     Text("验证码登录").tag(Mode.code)
-                    Text("扫码登录").tag(Mode.qr)
-                    if Self.nativeAvailable { Text("原生扫码").tag(Mode.native) }
+                    Text("扫码登录").tag(Mode.native)
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("douyin.login.mode")
 
-                if mode == .native { nativeForm } else if mode == .code { codeForm } else { qrForm }
+                if mode == .native { nativeForm } else { codeForm }
 
                 if page.savingTrust {
                     HStack(spacing: 8) {
@@ -99,9 +100,7 @@ struct DYAppLoginScreen: View {
                     Text(msg).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
                         .accessibilityIdentifier("douyin.login.message")
                 }
-                Text(Self.nativeAvailable && mode != .qr
-                     ? "App 直接向抖音登录（与原生扫码同一套），验证码只发给抖音。登录即代表同意抖音《用户协议》和《隐私政策》。"
-                     : "登录走的是抖音网页版自己的登录，账号密码不经过本 App。登录即代表同意抖音《用户协议》和《隐私政策》。")
+                Text("App 直接向抖音登录，验证码和扫码结果只发给抖音。登录即代表同意抖音《用户协议》和《隐私政策》。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(20)
@@ -109,10 +108,9 @@ struct DYAppLoginScreen: View {
             .frame(maxWidth: .infinity)
         }
         .onChange(of: mode) { _, m in
-            if m == .qr { page.showQR() } else { page.showCodeTab() }
-            // 原生包切到手机号：扫码轮询停掉（两套登录会话不能同时进行）；切回原生扫码重新取码
+            // 切到手机号：扫码轮询停掉（两套登录会话不能同时进行）；切回扫码重新取码
             // （手机号的会话准备放到点「获取验证码」时再做：只是切过来看一眼不该清掉现有登录）
-            if Self.nativeAvailable, m == .code { nativeLogin.cancel() }
+            if m == .code { nativeLogin.cancel() }
         }
     }
 
@@ -170,29 +168,6 @@ struct DYAppLoginScreen: View {
     private var smsCountdown: Int { Self.nativeAvailable ? nativeLogin.smsCooldown : page.countdown }
     private var smsBusy: Bool { Self.nativeAvailable ? nativeLogin.smsBusy : page.busy }
 
-    private var qrForm: some View {
-        VStack(spacing: 14) {
-            if let img = page.qr {
-                Image(uiImage: img).interpolation(.none).resizable().scaledToFit()
-                    .frame(width: 240, height: 240)
-                    .padding(10).background(Color.white, in: RoundedRectangle(cornerRadius: WuWeiDesign.Spacing.lg))
-                    .accessibilityIdentifier("douyin.login.qr")
-                Text(page.askScan ? "抖音要求扫码确认" : (page.qrStatus ?? "用另一台手机扫码登录"))
-                    .font(.headline).multilineTextAlignment(.center)
-                    .accessibilityIdentifier("douyin.login.qr.status")
-                // 抖音不认相册里的二维码图：必须另一台设备对着屏幕扫
-                Text("拿另一台已登录抖音的手机 → 打开抖音 App → 左上角「扫一扫」→ 对准这块屏幕上的二维码 → 在那台手机上确认登录")
-                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    .accessibilityIdentifier("douyin.login.qr.hint")
-                Button("刷新二维码", systemImage: "arrow.clockwise") { page.showQR(refresh: true) }
-                    .buttonStyle(.bordered)
-            } else {
-                ProgressView("正在取二维码…").frame(height: 240)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     /// 原生扫码：App 自己向抖音要二维码、自己轮询，不经过网页（登录后写接口用 App 自生成的密钥签名）
     private var nativeForm: some View {
         VStack(spacing: 14) {
@@ -248,7 +223,7 @@ struct DYAppLoginScreen: View {
                     .font(.headline)
                     .accessibilityIdentifier("douyin.login.native.status")
             }
-            Text("App 自己向抖音要码，不经过网页。扫完自动登录，过期的码会自动换新。")
+            Text("拿另一台已登录抖音的手机，打开抖音 App 左上角「扫一扫」，对准这块屏幕上的二维码，在那台手机上确认。二维码过期会自动换新。")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
