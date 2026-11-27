@@ -6062,4 +6062,3 @@ final class DYForwardSearchKeyboardTests: XCTestCase {
         }
     }
 }
-
