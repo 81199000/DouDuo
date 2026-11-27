@@ -306,6 +306,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         DYLogoutBlock.install(in: cfg)  // 后台签名页无人操作，不许它自己调抖音登出
         DYKeyStateProbe.install(in: cfg, tag: "signer")
         DYWriteCapture.install(in: cfg)
+        DYIMSendCapture.install(in: cfg)
         cfg.userContentController.addUserScript(WKUserScript(source: Self.beatWatchJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent

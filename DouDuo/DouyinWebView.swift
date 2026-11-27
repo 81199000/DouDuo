@@ -8,6 +8,8 @@ import SwiftUI
 import WebKit
 
 enum DouyinWeb {
+    /// 当前的私信网页（官方 /chat 页：带安全 SDK 与 IM 长连接）。原生发私信时在它里面发请求。
+    @MainActor static weak var chatWeb: WKWebView?
     static let home = URL(string: "https://www.douyin.com/?recommend=1")!
     static let zoomKey = "douyin_web_zoom_v1"
     static let zoomSteps: [Double] = [0.8, 0.9, 1.0, 1.1, 1.25]
@@ -578,6 +580,7 @@ struct DouyinWebContainer: UIViewRepresentable {
                 WKUserScript(source: DYChatImagePreviewClose.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
             // 仅 DEBUG：只读记录私信网页的数据来源与消息状态字段（DDIMPROBE），不改网页行为
             DYIMProbe.install(in: cfg)
+            DYIMSendCapture.install(in: cfg)
             // 点头像/昵称交给 App 开原生作者主页（只装在私信网页；网页版照常跳网页主页）
             cfg.userContentController.addUserScript(
                 WKUserScript(source: ddUserLinkHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -631,6 +634,7 @@ struct DouyinWebContainer: UIViewRepresentable {
             return wv
         }
         #endif
+        if isChat { DouyinWeb.chatWeb = wv }
         wv.load(URLRequest(url: start))
         return wv
     }

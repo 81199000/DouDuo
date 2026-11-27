@@ -2,6 +2,8 @@
 // 信封与命令号参照 xianyulolo8/douyin-spark（MIT）的 douyin_im.py / spark.py；字段号经本机只读实测核对。
 // 只做：拉会话列表、读某会话最近消息、发文字消息。发送结果严格核对回执，拿不准时报「未确认」，绝不自动重发。
 import Foundation
+import UIKit
+import WebKit
 
 // MARK: - 无 schema 的 protobuf 编解码
 
@@ -130,40 +132,73 @@ final class DYNativeIM {
     var debugLastInitItem: Data?
     #endif
 
-    /// 信封（cb_req.proto Request）。字段与参考实现 catbus normalRequest 对齐：
-    /// 1 cmd / 2 seq / 3 sdk / 5 refer=3 / 7 build / 8 body / 9 device_id / 11 platform / 14 version_code /
-    /// 15 headers(map) / 18 auth_type=4 / 21 biz / 22 access。发送时 headers 里加 identity_security_*。
+    /// 信封（cb_req.proto Request）。逐字段照官方私信网页抓包（2026-11-27 模拟器 DOUDUO_IMCAP 干跑）：
+    /// 1 cmd / 2 seq / 3 "0.1.8" / 4 "" / 5 refer=3 / 6 0 / 7 build / 8 body / 9 "0" / 11 douyin_pc / 14 "360000" /
+    /// 15 headers（发送时 identity_security_* 在最前）/ 18 auth_type=1 / 21 douyin_web / 22 web_sdk。
+    /// 环境字段与私信网页本身一致（UA = 网页 UA、browser_platform = navigator.platform、屏幕 = 真实尺寸、referer 空）。
     private func envelope(_ cmd: Cmd, _ payload: Data, identity: (token: String, deviceID: String)? = nil) -> Data {
         seq += 1
-        let ua = DYNative.userAgent
-        let chrome = DYNativeTicket.hasTicket
-        var meta: [(String, String)] = [
-            ("session_aid", "6383"), ("session_did", "0"), ("app_name", "douyin_pc"), ("priority_region", "cn"),
-            ("user_agent", ua), ("cookie_enabled", "true"), ("browser_language", "zh-CN"),
-            ("browser_platform", chrome ? "Win32" : "MacIntel"), ("browser_name", "Mozilla"),
-            ("browser_version", String(ua.dropFirst("Mozilla/".count))), ("browser_online", "true"),
-            ("screen_width", chrome ? "1920" : "1440"), ("screen_height", chrome ? "1080" : "900"),
-            ("referer", "https://www.douyin.com/"), ("timezone_name", "Asia/Shanghai"), ("deviceId", "0"), ("is-retry", "0"),
-        ]
+        let ua = DouyinWeb.userAgent
+        let screen = UIScreen.main.bounds.size
+        var meta: [(String, String)] = []
         if let identity {
-            if !identity.token.isEmpty { meta.append(("identity_security_token", #"{"token":"\#(identity.token)"}"#)) }
-            if !identity.deviceID.isEmpty { meta.append(("identity_security_device_id", identity.deviceID)) }
+            meta.append(("identity_security_token", #"{"token":"\#(identity.token)"}"#))
+            meta.append(("identity_security_device_id", identity.deviceID))
             meta.append(("identity_security_aid", ""))
         }
-        var d = DYPB.field(1, UInt64(cmd.rawValue)) + DYPB.field(2, seq) + DYPB.field(3, "0.1.8")
-        d += DYPB.field(5, 3) + DYPB.field(7, "0d50935:feat/pc-im-groupB")
+        meta += [
+            ("session_aid", "6383"), ("session_did", "0"), ("app_name", "douyin_pc"), ("priority_region", "cn"),
+            ("user_agent", ua), ("cookie_enabled", "true"), ("browser_language", "zh-CN"),
+            ("browser_platform", UIDevice.current.userInterfaceIdiom == .pad ? "MacIntel" : "iPhone"), ("browser_name", "Mozilla"),
+            ("browser_version", String(ua.dropFirst("Mozilla/".count))), ("browser_online", "true"),
+            ("screen_width", String(Int(screen.width))), ("screen_height", String(Int(screen.height))),
+            ("referer", ""), ("timezone_name", "Asia/Shanghai"), ("deviceId", "0"), ("is-retry", "0"),
+        ]
+        var d = DYPB.field(1, UInt64(cmd.rawValue)) + DYPB.field(2, seq) + DYPB.field(3, "0.1.8") + DYPB.field(4, "")
+        d += DYPB.field(5, 3) + DYPB.field(6, 0) + DYPB.field(7, "0d50935:feat/pc-im-group")
         d += DYPB.field(8, DYPB.field(cmd.rawValue, payload)) + DYPB.field(9, "0") + DYPB.field(11, "douyin_pc")
         d += DYPB.field(14, "360000")
         for (k, v) in meta { d += DYPB.field(15, DYPB.field(1, k) + DYPB.field(2, v)) }
-        d += DYPB.field(18, 4) + DYPB.field(21, "douyin_web") + DYPB.field(22, "web_sdk")
+        d += DYPB.field(18, 1) + DYPB.field(21, "douyin_web") + DYPB.field(22, "web_sdk")
         return d
     }
 
-    /// 私信发送前要取的短时身份安全令牌（scene=web_im），缓存 240 秒。参照 Amor5207/douyin-tv imIdentity 与 catbus identityToken。
+    /// 私信网页（同一 WebKit 存储）里的票据：网页 SDK 与服务端协商的那套（HMAC sign-type 1）。
+    /// 私信服务认的是这套设备身份；用原生扫码那把 ECDSA 密钥签会变成「同一会话两台设备」，几条后作废登录。
+    private func webTicket() async -> DYTicketBundle? {
+        #if DEBUG
+        if let web = DouyinBridge.primary?.web {
+            let js = """
+            (() => { const out = [];
+              for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (!/security|ticket|crypt|bd_|protect|ecdh/i.test(k) || /tea_sdk/.test(k)) continue;
+                const v = localStorage.getItem(k) || ''; let inner = '';
+                const page = location.pathname;
+                try { const o = JSON.parse(v); const d = typeof o.data === 'string' ? JSON.parse(o.data) : (o.data || o);
+                      inner = Object.keys(d || {}).map(x => x + ':' + String(d[x] ?? '').length).join(','); } catch (e) {}
+                out.push(k + '=' + v.length + ' {' + inner + '}'); }
+              return location.pathname + ' :: ' + out.join(' | '); })()
+            """
+            if let r = try? await web.evaluateJavaScript(js) as? String { DYLiveModel.log("DDNATIVEIM ls \(r.prefix(1200))") }
+        }
+        #endif
+        return await DYTicketStore.load(from: DouyinBridge.primary?.web)
+    }
+
+    /// 私信网页发请求带的 cookie（WebKit 共享存储），与网页一致
+    private func webCookies() async -> String {
+        let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        var map: [String: String] = [:]
+        for c in all where c.domain == "www.douyin.com" { map[c.name] = c.value }
+        for c in all where c.domain == ".douyin.com" || c.domain == "douyin.com" { map[c.name] = c.value }
+        return map.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
+    }
+
+    /// 私信发送前要取的短时身份安全令牌（scene=web_im），缓存 240 秒。请求头逐项照私信网页抓包。
     private var identityCache: (token: String, deviceID: String, at: Date)?
     func identityToken(force: Bool = false) async throws -> (token: String, deviceID: String) {
         if !force, let c = identityCache, Date().timeIntervalSince(c.at) < 240 { return (c.token, c.deviceID) }
         let path = "/passport/safe/get_identity_security_token/"
+        guard let tb = await webTicket(), let tg = DYTicketGuard.headers(tb, path: path) else { throw DYIMError.rejected("网页票据未就绪") }
         let ck = await DYNativeCookies.load()
         guard !(ck.map["sessionid"] ?? "").isEmpty else { throw DYIMError.noLogin }
         let trace = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8))
@@ -173,19 +208,20 @@ final class DYNativeIM {
             ("identity_token_force_get_tag", "0"), ("biz_trace_id", trace), ("id_token_version", "1.2.10"),
         ]
         if let ms = ck.map["msToken"], !ms.isEmpty { pairs.append(("msToken", ms)) }
+        let ua = DouyinWeb.userAgent
         let qs = DYNative.query(pairs)
-        let url = URL(string: DYNative.host + path + "?" + qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: DYNative.userAgent)))!
+        let url = URL(string: DYNative.host + path + "?" + qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: ua)))!
         var r = URLRequest(url: url)
-        var h = DYPassport.headers(path: path, post: false, traceID: trace, portrait: "", dtrait: DYDtrait.session.isEmpty ? nil : DYDtrait.session)
-        h["Referer"] = DYNative.host + "/chat?isPopup=1"
-        h["x-tt-argus"] = "1"
-        h["User-Agent"] = DYNative.userAgent
-        h.removeValue(forKey: "x-tt-passport-verify-portrait")
-        let uifid = ck.map["UIFID"] ?? ck.map["UIFID_TEMP"] ?? ""
-        if !uifid.isEmpty { h["uifid"] = uifid }
-        if let tg = DYNativeTicket.headers(path: path) { for (k, v) in tg { h[k] = v } }
-        for (k, v) in h { r.setValue(v, forHTTPHeaderField: k) }
-        r.setValue(ck.header, forHTTPHeaderField: "Cookie")
+        r.setValue(ua, forHTTPHeaderField: "User-Agent")
+        r.setValue("application/json, text/javascript", forHTTPHeaderField: "Accept")
+        r.setValue(DYNative.host + "/chat?isPopup=1", forHTTPHeaderField: "Referer")
+        r.setValue(trace, forHTTPHeaderField: "x-tt-passport-trace-id")
+        if let csrf = ck.map["passport_csrf_token"] ?? ck.map["passport_csrf_token_default"], !csrf.isEmpty {
+            r.setValue(csrf, forHTTPHeaderField: "x-tt-passport-csrf-token")
+        }
+        if !DYDtrait.session.isEmpty { r.setValue(DYDtrait.session, forHTTPHeaderField: "x-tt-session-dtrait") }
+        for (k, v) in tg { r.setValue(v, forHTTPHeaderField: k) }
+        r.setValue(await webCookies(), forHTTPHeaderField: "Cookie")
         let (data, resp) = try await DYNative.session.data(for: r)
         let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
         let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -198,37 +234,131 @@ final class DYNativeIM {
         return (token, did)
     }
 
+
+    /// 在隐藏网页（www.douyin.com）里发一个 XHR：网页安全 SDK 会像官方页面一样自动补票据签名、a_bogus、msToken。
+    /// 私信服务认的是网页 SDK 那套设备身份（其私钥在网页里不可导出），所以发送必须经由它签名。
+    /// 返回 (HTTP 状态, 响应字节, SDK 加的请求头名)。
+    private func pageXHR(_ url: String, method: String, body: Data?, accept: String, extra: [String: String] = [:]) async throws -> (Int, Data, [String]) {
+        // 优先私信网页（/chat，官方发私信的那一页：IM SDK 已初始化、长连接在线），没有再退到签名页
+        let candidates = [DouyinWeb.chatWeb, DouyinBridge.primary?.web].compactMap { $0 }
+        guard let web = candidates.first(where: { $0.url?.host == "www.douyin.com" }) else { throw DYIMError.rejected("网页未就绪") }
+        DYLiveModel.log("DDNATIVEIM page=\(web.url?.path ?? "-")")
+        let js = """
+        const bin = b => { if (!b) return null; const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; };
+        const enc = buf => { if (!buf) return ''; const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
+        const x = new XMLHttpRequest(); const names = [];
+        const set = x.setRequestHeader; x.setRequestHeader = function (k, v) { names.push(String(k).toLowerCase()); return set.apply(this, arguments); };
+        return await new Promise(ok => {
+          x.open(method, url, true); x.withCredentials = true; x.responseType = 'arraybuffer';
+          x.setRequestHeader('accept', accept);
+          for (const [k, v] of Object.entries(extra || {})) x.setRequestHeader(k, v);
+          if (body) x.setRequestHeader('content-type', 'application/x-protobuf');
+          x.onloadend = () => ok(JSON.stringify({ s: x.status, b: enc(x.response), h: names }));
+          x.timeout = 15000; x.ontimeout = () => ok(JSON.stringify({ s: -2, b: '', h: names }));
+          x.send(bin(body));
+        });
+        """
+        let r = try await web.callAsyncJavaScript(js, arguments: ["url": url, "method": method, "body": body?.base64EncodedString() as Any, "accept": accept, "extra": extra], contentWorld: .page)
+        guard let str = r as? String, let d = str.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { throw DYIMError.badResponse("页面请求无返回") }
+        let status = o["s"] as? Int ?? -1
+        let bytes = Data(base64Encoded: o["b"] as? String ?? "") ?? Data()
+        let names = o["h"] as? [String] ?? []
+        return (status, bytes, names)
+    }
+
+    /// 身份令牌（经网页 SDK 签名）
+    func identityTokenViaPage(force: Bool = false) async throws -> (token: String, deviceID: String) {
+        if !force, let c = identityCache, Date().timeIntervalSince(c.at) < 240 { return (c.token, c.deviceID) }
+        let trace = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8))
+        let pairs: [(String, String)] = [
+            ("passport_jssdk_version", "4.2.3"), ("passport_jssdk_type", "lite"), ("is_from_ttaccountsdk", "1"), ("aid", "6383"),
+            ("language", "zh"), ("scene", "web_im"), ("auto_retry_req", "0"), ("skip_verify", "false"),
+            ("identity_token_force_get_tag", "0"), ("biz_trace_id", trace), ("id_token_version", "1.2.10"),
+        ]
+        // passport 接口的 msToken / a_bogus / csrf / trace 头是 passport SDK 自己加的（不经 XHR 钩子），这里照官方补齐
+        let ck = await DYNativeCookies.load()
+        var q = pairs
+        if let ms = ck.map["msToken"], !ms.isEmpty { q.append(("msToken", ms)) }
+        let qs = DYNative.query(q)
+        let full = qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: DouyinWeb.userAgent))
+        var extra = ["x-tt-passport-trace-id": trace]
+        if let csrf = ck.map["passport_csrf_token"] ?? ck.map["passport_csrf_token_default"], !csrf.isEmpty { extra["x-tt-passport-csrf-token"] = csrf }
+        let (http, data, names) = try await pageXHR(DYNative.host + "/passport/safe/get_identity_security_token/?" + full,
+                                                   method: "GET", body: nil, accept: "application/json, text/javascript", extra: extra)
+        let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let dd = o?["data"] as? [String: Any]
+        let token = dd?["identity_security_token"] as? String ?? ""
+        let did = dd.flatMap { $0["device_id"].map { "\($0)" } } ?? ""
+        DYLiveModel.log("DDNATIVEIM identity via=page http=\(http) msg=\(o?["message"] as? String ?? "-") token=\(token.count) did=\(did.count) sdkHeaders=\(names.filter { $0.hasPrefix("bd-") || $0.hasPrefix("x-") }.joined(separator: ","))")
+        guard !token.isEmpty else { throw DYIMError.rejected("身份令牌未下发") }
+        identityCache = (token, did, Date())
+        return (token, did)
+    }
+
+    /// 发送（经网页 SDK 签名）。返回解出的顶层字段；网络/页面失败原样抛出。
+    private func sendViaPage(_ payload: Data, identity: (token: String, deviceID: String)) async throws -> DYPB.Fields {
+        // verifyFp / fp / msToken / a_bogus 由网页安全 SDK 自己补（抓包确认），这里不加，免得重复
+        let url = Self.host + Self.paths[.send]!
+        let body = envelope(.send, payload, identity: identity)
+        let t0 = Date()
+        let (http, data, names) = try await pageXHR(url, method: "POST", body: body, accept: "application/x-protobuf")
+        DYLiveModel.log("DDNATIVEIM send via=page http=\(http) bytes=\(data.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) sdkHeaders=\(names.filter { $0.hasPrefix("bd-") || $0.hasPrefix("x-") }.joined(separator: ","))")
+        guard http == 200, let top = DYPB.decode(data) else { throw DYIMError.badResponse("HTTP \(http)") }
+        let status = top.int(3) ?? 0
+        let msg = String((top.string(4) ?? "").prefix(60)).filter { $0.isASCII }
+        DYLiveModel.log("DDNATIVEIM cmd=100 via=page status=\(status) msg=\(msg)")
+        if status != 0 {
+            if msg.lowercased().contains("session") { throw DYIMError.noLogin }
+            throw DYIMError.rejected("\(status) \(msg)")
+        }
+        if let uid = top.int(13), uid > 0 { selfUID = uid }
+        return top.sub(6)?.sub(Cmd.send.rawValue) ?? [:]
+    }
+
     /// 发一条命令。网络错误原样抛出（调用方据此区分「肯定没发」和「可能发了」）。
     private func call(_ cmd: Cmd, _ payload: Data, identity: (token: String, deviceID: String)? = nil) async throws -> DYPB.Fields {
         let ck = await DYNativeCookies.load()
         guard !(ck.map["sessionid"] ?? "").isEmpty else { throw DYIMError.noLogin }
         let path = Self.paths[cmd]!
         var urlString = Self.host + path
+        var r: URLRequest
         if cmd == .send {
-            // 发送：query 带 msToken + a_bogus + verifyFp/fp（同参考实现）
+            // 发送：逐项照私信网页抓包。签名用网页那套票据（HMAC sign-type 1），拿不到就不发
+            guard let tb = await webTicket(), let tg = DYTicketGuard.headers(tb, path: path) else { throw DYIMError.rejected("网页票据未就绪") }
+            let ua = DouyinWeb.userAgent
             var pairs: [(String, String)] = []
+            if let fp = ck.map["s_v_web_id"], !fp.isEmpty { pairs += [("verifyFp", fp), ("fp", fp)] }
             if let ms = ck.map["msToken"], !ms.isEmpty { pairs.append(("msToken", ms)) }
             let qs = DYNative.query(pairs)
-            var full = qs + (qs.isEmpty ? "" : "&") + "a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: DYNative.userAgent))
-            if let fp = ck.map["s_v_web_id"], !fp.isEmpty { full += "&verifyFp=" + DYNative.enc(fp) + "&fp=" + DYNative.enc(fp) }
-            urlString += "?" + full
+            urlString += "?" + qs + (qs.isEmpty ? "" : "&") + "a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: ua))
+            r = URLRequest(url: URL(string: urlString)!)
+            r.setValue(ua, forHTTPHeaderField: "User-Agent")
+            r.setValue("https://www.douyin.com", forHTTPHeaderField: "Origin")
+            r.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
+            r.setValue("application/x-protobuf", forHTTPHeaderField: "Accept")
+            r.setValue("application/x-protobuf", forHTTPHeaderField: "Content-Type")
+            if !DYDtrait.session.isEmpty { r.setValue(DYDtrait.session, forHTTPHeaderField: "x-tt-session-dtrait") }
+            for (k, v) in tg { r.setValue(v, forHTTPHeaderField: k) }
+            r.setValue(await webCookies(), forHTTPHeaderField: "Cookie")
+            #if DEBUG
+            DDIMNativeCapture.record(r, body: envelope(cmd, payload, identity: identity), seqUsed: false)
+            seq -= 1
+            #endif
+        } else {
+            r = URLRequest(url: URL(string: urlString)!)
+            for (k, v) in ["Accept": "application/x-protobuf", "Content-Type": "application/x-protobuf",
+                           "Origin": "https://www.douyin.com", "Referer": "https://www.douyin.com/",
+                           "User-Agent": DYNative.userAgent, "Cookie": ck.header] { r.setValue(v, forHTTPHeaderField: k) }
         }
-        var r = URLRequest(url: URL(string: urlString)!)
         r.httpMethod = "POST"
         r.httpBody = envelope(cmd, payload, identity: identity)
-        for (k, v) in ["Accept": "application/x-protobuf", "Content-Type": "application/x-protobuf",
-                       "Origin": "https://www.douyin.com", "Referer": "https://www.douyin.com/",
-                       "User-Agent": DYNative.userAgent, "Cookie": ck.header] { r.setValue(v, forHTTPHeaderField: k) }
-        if cmd == .send {
-            // 发送必须带登录票据签名 + 会话指纹 + uifid（Amor imSignedHeaders）；拿不到票据就不发
-            guard let tg = DYNativeTicket.headers(path: path) else { throw DYIMError.rejected("缺少登录票据") }
-            for (k, v) in tg { r.setValue(v, forHTTPHeaderField: k) }
-            if !DYDtrait.session.isEmpty { r.setValue(DYDtrait.session, forHTTPHeaderField: "x-tt-session-dtrait") }
-            r.setValue("1", forHTTPHeaderField: "x-tt-argus")
-            let uifid = ck.map["UIFID"] ?? ck.map["UIFID_TEMP"] ?? ""
-            if !uifid.isEmpty { r.setValue(uifid, forHTTPHeaderField: "uifid") }
-            r.setValue("DOWNGRADE", forHTTPHeaderField: "x-secsdk-csrf-token")
+        #if DEBUG
+        if cmd == .send, DDIMNativeCapture.dry {
+            DYLiveModel.log("DDNATIVEIM send dry-run recorded, not sent")
+            throw DYIMError.rejected("dry-run")
         }
+        #endif
         let t0 = Date()
         let (data, resp) = try await DYNative.session.data(for: r)
         let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -321,7 +451,7 @@ final class DYNativeIM {
         }
         // 身份安全令牌：拿不到就不发（缺它直发会被当异常会话、作废登录）
         let identity: (token: String, deviceID: String)
-        do { identity = try await identityToken() } catch {
+        do { identity = try await identityTokenViaPage() } catch {
             DYLiveModel.log("DDNATIVEIM identity fail \(error)")
             throw DYIMError.rejected("身份令牌获取失败")
         }
@@ -337,7 +467,7 @@ final class DYNativeIM {
         msg += DYPB.field(6, 7) + DYPB.field(7, c.ticket) + DYPB.field(8, clientID)
         let body: DYPB.Fields
         do {
-            body = try await call(.send, msg, identity: identity)
+            body = try await sendViaPage(msg, identity: identity)
         } catch let e as DYIMError {
             DYLiveModel.log("DDNATIVEIM send fail \(e)")
             if case .badResponse = e {
@@ -451,6 +581,24 @@ final class DYNativeIM {
         } catch {
             DYLiveModel.log("DDIMREAD fail \(error)")
         }
+    }
+}
+#endif
+
+
+#if DEBUG
+enum DDIMNativeCapture {
+    static var dry: Bool { ProcessInfo.processInfo.environment["DOUDUO_IMSEND_DRY"] == "1" }
+    static func record(_ r: URLRequest, body: Data, seqUsed: Bool) {
+        var h: [String: String] = [:]
+        for (k, v) in r.allHTTPHeaderFields ?? [:] where k.lowercased() != "cookie" { h[k.lowercased()] = v }
+        let ck = (r.value(forHTTPHeaderField: "Cookie") ?? "").split(separator: ";").map { $0.split(separator: "=").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "" }.sorted()
+        let o: [String: Any] = ["kind": "native", "u": r.url?.absoluteString ?? "", "h": h, "body": body.base64EncodedString(), "cookies": ck]
+        guard let d = try? JSONSerialization.data(withJSONObject: o), let s = String(data: d, encoding: .utf8) else { return }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddimcap.jsonl")
+        let line = s + "\n"
+        if let fh = try? FileHandle(forWritingTo: url) { fh.seekToEndOfFile(); fh.write(Data(line.utf8)); try? fh.close() }
+        else { try? Data(line.utf8).write(to: url) }
     }
 }
 #endif
