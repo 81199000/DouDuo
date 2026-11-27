@@ -26,6 +26,8 @@ struct DYFeedPager<Page: View>: View {
             // 会停在第一条（当前条的页面根本没挂上）。出现后显式滚过去一次；当前条就是第一条时什么也不做。
             .onAppear {
                 scrollID = currentID
+                // 起始条也要登记成出声权持有者：否则第一次提交找不到旧页，旧页没有 1 秒保护
+                if let id = currentID { DDAudioFloor.commit(id, via: "appear") }
                 guard let id = currentID, items.first?.id != id else { return }
                 DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
             }
@@ -71,5 +73,7 @@ struct DYFeedPager<Page: View>: View {
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea()
+        // 当前条不经分页桥改掉（停稳兜底 / 减少动态效果 / 自动连播直切）：同样算提交，出声权交给新条
+        .onChange(of: currentID) { _, id in if let id { DDAudioFloor.commit(id, via: "current") } }
     }
 }

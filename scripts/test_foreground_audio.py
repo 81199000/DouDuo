@@ -12,7 +12,7 @@ def check(ok, msg):
 a = p.index("    private func resumeAfterBackground() {")
 body = p[a:p.index("    /// VLC 软解接管", a)]
 i_native = body.find('seamAudio.returnToNativeAudio(reason: "foreground")')
-i_play = body.find("seamAudio.play(rate: playRate, muted: muted)", body.find("if let p = player {"))
+i_play = body.find("seamAudio.play(rate: playRate, muted: outMuted)", body.find("if let p = player {"))
 check(i_native != -1 and i_native < i_play, "回前台先把声音交回原生音轨，再起播")
 check("clearInterruptionAfterForeground()" in body and body.count("clearInterruptionAfterForeground()") >= 2, "两条回前台路径都清中断门闩")
 check("sessionOK" in body, "会话激活成功才清门闩")

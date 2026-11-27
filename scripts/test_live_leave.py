@@ -31,7 +31,13 @@ check("enum DDAudioKeepAlive" in probe and "AVAudioSourceNode" in probe, "有静
 check("DDAudioKeepAlive.start()" in probe[probe.index("static func ensureActive"):], "起播激活会话时拉起保活")
 check("DDAudioKeepAlive.release()" in (R / "ShortVideoPlayer.swift").read_text(), "交还音频会话时停保活")
 pager = (R / "DYPagingSpeed.swift").read_text()
-check("DYFeedLeaving.name" in pager, "抬手确定翻页时发「要走了」")
-check("DYFeedLeaving.name" in page and "lift-mute" in page, "直播卡收到「要走了」立刻静音")
-check("lift-unmute" in page, "没翻过去会把声音还回来")
+check("DDAudioFloor.revoke(from:" in pager, "抬手确定翻页时统一撤出声权")
+check("DDAudioFloor.changed" in page and "lift-mute" in page, "直播卡收到撤权立刻静音")
+check("bounce-unmute" in page and "Phase.cancel" in page, "只有明确的回弹/取消才把声音还回来")
+check("asyncAfter(deadline: .now() + 0.9)" not in page, "不再靠 900ms 定时器猜手势取消")
+rv = page[page.index("private func restoreVolume"):]
+rv = rv[:rv.index("\n    }\n") + 6]
+check("DDAudioFloor.valid(token)" in rv and "c === (warm?.controller ?? player)" in rv and "restoreTask?.cancel()" in rv,
+      "恢复音量循环校验切页编号 + 播放器实例，并可被取消")
+check(page.count("restoreTask?.cancel(); restoreTask = nil") >= 2, "撤权 / 离开时取消恢复任务")
 sys.exit(1 if fails else 0)

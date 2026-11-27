@@ -167,13 +167,22 @@ enum DDAudioSessionGate {
     static var routeName: String {
         AVAudioSession.sharedInstance().currentRoute.outputs.map { "\($0.portType.rawValue)" }.joined(separator: "+")
     }
+    /// 直播卡停播：只观察，会话真被关了才补救。
+    /// 以前不管关没关，3.5 秒里连发 12 次「会话可能丢了」并把激活标记作废 → 新页每次起播都重做一遍
+    /// setCategory/setActive，还被 resumeIfStolen 反复去踢（新页刚拿到出声权，旧页的停播在干扰它）。
+    /// 现在 DDAudioSessionGuard 前台一律拦第三方关闭；只有第三方关闭真的放行了（passedForeign 涨了）才发通知。
     static func noteVLCStopping() {
-        DYLiveModel.log("DDROUTE 直播卡停播 输出=\(routeName)")
-        lostAt = Date()
-        invalidate()
-        for delay in [0.15, 0.3, 0.45, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.0, 3.5] {
+        let base = DDAudioSessionGuard.passedForeign, blocked0 = DDAudioSessionGuard.blocked
+        DYLiveModel.log("DDROUTE 直播卡停播 输出=\(routeName) floor=\(DDAudioFloor.owner?.suffix(6) ?? "-") ep=\(DDAudioFloor.epoch)")
+        for delay in [0.15, 0.3, 0.6, 1.0, 1.6, 2.5, 3.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if DDAudioSessionGuard.blocked != blocked0 {
+                    DYLiveModel.log("DDROUTE 停播关会话已拦下 +\(Int(delay * 1000))ms floor=\(DDAudioFloor.owner?.suffix(6) ?? "-")")
+                }
+                guard DDAudioSessionGuard.passedForeign != base else { return }
+                lostAt = Date()
                 invalidate()
+                DYLiveModel.log("DDROUTE 停播真的关掉了会话 +\(Int(delay * 1000))ms → 补救当前出声页 floor=\(DDAudioFloor.owner?.suffix(6) ?? "-")")
                 NotificationCenter.default.post(name: lostNotification, object: nil)
             }
         }

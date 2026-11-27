@@ -289,12 +289,25 @@ final class DYStreamStore: @unchecked Sendable {
         lock.lock()
         let previous = currentID
         let changed = previous != id
-        if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds } }
+        // 上一条到切走都没再跟 ddstream 要字节 = 预热已缓冲够（或走本地整条），记一笔 src=buffered
+        let unmet = changed ? ttfbArmed : nil
+        if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds }; ttfbArmed = (id, Date()) }
         let leaving = changed ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
+        if let unmet { DYLiveModel.log("DDTTFB \(unmet.id.suffix(6)) ms=-1 src=buffered") }
         if changed { DYStreamLoader.shared.bump(); scheduleTrim() }
         logLeave(leaving)
         if let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
+    }
+
+    /// DDTTFB 测量：页面接管（activate）时刻 → 播放器第一次从 ddstream 拿到字节
+    private var ttfbArmed: (id: String, at: Date)?
+    func noteFirstByte(_ id: String, src: String) {
+        lock.lock()
+        guard let a = ttfbArmed, a.id == id else { lock.unlock(); return }
+        ttfbArmed = nil
+        lock.unlock()
+        DYLiveModel.log("DDTTFB \(id.suffix(6)) ms=\(Int(Date().timeIntervalSince(a.at) * 1000)) src=\(src)")
     }
 
     private var trimScheduled = false
@@ -702,6 +715,19 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
             let end = min(total, start + want)
             var cursor = max(start, dr.currentOffset)
             var revives = 0
+            var waitInflightSince: Date?
+            var parks = 0
+            #if DEBUG
+            let reqT0 = Date(), reqStart = cursor
+            if DYStreamStore.shared.isCurrent(e.id) {
+                DYLiveModel.log("DDSTREAMREQ \(e.id.suffix(6)) open at=\(cursor / 1024)KB want=\(want / 1024)KB toEnd=\(dr.requestsAllDataToEndOfResource) pos=\(String(format: "%.1f", DYStreamStore.shared.position(e.id) ?? -1))")
+            }
+            defer {
+                if DYStreamStore.shared.isCurrent(e.id) {
+                    DYLiveModel.log("DDSTREAMREQ \(e.id.suffix(6)) close at=\(reqStart / 1024)KB served=\((cursor - reqStart) / 1024)KB in=\(Int(Date().timeIntervalSince(reqT0) * 1000))ms cancelled=\(Task.isCancelled)")
+                }
+            }
+            #endif
             // 跳着读：当前条拖进度条，或任何条读文件尾部的 moov → 给一个临时窗口，不受播放前瞻限制。
             // 预热中的条正常往后读不放开（否则每次重发请求都多下 8 秒，省流量就白做了）
             e.lock.lock(); let shape = e.shape; e.lock.unlock()
@@ -721,7 +747,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                         guard let d = try h.read(upToCount: Int(min(end - cursor, 2 * 1024 * 1024))), !d.isEmpty else { break }
                         dr.respond(with: d); cursor += Int64(d.count)
                     }
-                    if cursor >= end { req.finishLoading(); return }
+                    if cursor >= end { DYStreamStore.shared.noteFirstByte(e.id, src: "file"); req.finishLoading(); return }
                 }
             }
             while cursor < end {
@@ -735,6 +761,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     e.lock.lock(); let d = e.read(cursor, n); e.lock.unlock()
                     guard let d, !d.isEmpty else { throw URLError(.cannotOpenFile) }
                     dr.respond(with: d)
+                    DYStreamStore.shared.noteFirstByte(e.id, src: "local")
                     cursor += Int64(d.count)
                     continue
                 }
@@ -746,8 +773,16 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 e.lock.lock()
                 if e.inflight.contains(where: { $0.contains(cursor) }) {
                     e.lock.unlock()
+                    if waitInflightSince == nil { waitInflightSince = Date() }
                     try await Task.sleep(for: .milliseconds(60))
                     continue
+                }
+                if let since = waitInflightSince {
+                    waitInflightSince = nil
+                    let w = Date().timeIntervalSince(since)
+                    if w > 1, DYStreamStore.shared.isCurrent(e.id) {
+                        DYLiveModel.log("DDSTREAMWAIT \(e.id.suffix(6)) at=\(cursor / 1024)KB 等别的请求下这段 \(Int(w * 1000))ms")
+                    }
                 }
                 // 3) 允许范围内就拉，否则挂起等播放位置推进
                 var allowed = DYStreamPlan.allowedEnd(for: cursor, horizon: horizon, windows: e.windows)
@@ -764,7 +799,30 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 if let f = fetch { e.inflight.append(f) }
                 e.lock.unlock()
                 guard let fetch else {
+                    // 播放器真来要的数据却挂起超过 1 秒、且离允许范围很远：这是跳转落点（播放位置没跟上），开跳读窗口直接给。
+                    // 兜住「播放位置被旧值覆盖 / 回调没报」这类情况，不让播放器和下载互等。
+                    e.lock.lock()
+                    let shapeNow = e.shape, inWindow = e.windows.contains(where: { $0.contains(cursor) })
+                    e.lock.unlock()
+                    // 只在「播放器停着等数据」（starving：位置 1.5 秒没动）时开，正常播放时照样按前瞻限速，不白下流量
+                    if parks >= 2, starving, cursor > horizon + DYStreamPlan.jumpSlack,
+                       let shape = shapeNow, !inWindow {
+                        e.lock.lock(); e.windows = Array((e.windows + [DYStreamPlan.jumpWindow(from: cursor, shape: shape)]).suffix(4)); e.lock.unlock()
+                        DYLiveModel.log("DDSTREAMJUMP \(e.id.suffix(6)) 挂起太久开跳读窗口 at=\(cursor / 1024)KB horizon=\(horizon / 1024)KB pos=\(String(format: "%.1f", DYStreamStore.shared.position(e.id) ?? -1))")
+                        parks = 0
+                        continue
+                    }
+                    let parkT0 = Date()
+                    parks += 1
+                    #if DEBUG
+                    if parks == 1 || parks % 8 == 0, DYStreamStore.shared.isCurrent(e.id) {
+                        DYLiveModel.log("DDSTREAMPARKN \(e.id.suffix(6)) n=\(parks) at=\(cursor / 1024)KB allowed=\(allowed / 1024)KB horizon=\(horizon / 1024)KB starving=\(starving) pos=\(String(format: "%.1f", DYStreamStore.shared.position(e.id) ?? -1)) windows=\(e.windows.map { "\($0.lowerBound / 1024)-\($0.upperBound / 1024)" })")
+                    }
+                    #endif
                     try await park(seconds: 2)
+                    if Date().timeIntervalSince(parkT0) > 1 {
+                        DYLiveModel.log("DDSTREAMPARK \(e.id.suffix(6)) cur=\(DYStreamStore.shared.isCurrent(e.id)) pos=\(String(format: "%.1f", DYStreamStore.shared.position(e.id) ?? -1)) at=\(cursor / 1024)KB allowed=\(allowed / 1024)KB horizon=\(horizon / 1024)KB waited=\(Int(Date().timeIntervalSince(parkT0) * 1000))ms")
+                    }
                     continue
                 }
                 defer { e.lock.lock(); e.inflight.removeAll { $0 == fetch }; e.lock.unlock() }
@@ -776,6 +834,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                         guard room > 0 else { return }
                         let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
                         dr.respond(with: piece)
+                        if fed == cursor { DYStreamStore.shared.noteFirstByte(e.id, src: "net") }
                         fed += Int64(piece.count)
                     }
                 } catch where DYChunkStream.isRevive(error) && revives < 3 {
@@ -833,13 +892,26 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // 按块收（URLSession 每次给几十 KB），不再逐字节 `for try await b in bytes`：
                 // 逐字节一条 10MB 视频就是一千万次异步迭代，真机分析里是后台 CPU 第一大户（发烫原因之一）
                 let chunks = DYChunkStream(session: session, request: r)
+                // 握手占比：每段网络请求是否复用连接、DNS/建连/TLS 各花多少（只记当前条）
+                chunks.onMetrics = { m in
+                    guard DYStreamStore.shared.isCurrent(e.id), let t = m.transactionMetrics.last else { return }
+                    func ms(_ a: Date?, _ b: Date?) -> Int { guard let a, let b else { return -1 }; return Int(b.timeIntervalSince(a) * 1000) }
+                    DYLiveModel.log("DDSTREAMCONN \(e.id.suffix(6)) at=\(range.lowerBound / 1024)KB reused=\(t.isReusedConnection) dns=\(ms(t.domainLookupStartDate, t.domainLookupEndDate)) connect=\(ms(t.connectStartDate, t.connectEndDate)) tls=\(ms(t.secureConnectionStartDate, t.secureConnectionEndDate)) ttfb=\(ms(t.requestStartDate, t.responseStartDate)) proto=\(t.networkProtocolName ?? "-") host=\(t.request.url?.host ?? "-")")
+                }
                 let cid = ObjectIdentifier(chunks)
                 track(chunks)
                 defer { chunks.cancel(); untrack(cid) }
+                let netT0 = Date()
                 let resp = try await chunks.response()
-                #if DEBUG
-                DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) range=\(range.lowerBound)-\(range.upperBound)")
-                #endif
+                let ttfb = Int(Date().timeIntervalSince(netT0) * 1000)
+                defer {
+                    // 快进排查：每段网络请求的首字节耗时 / 总耗时 / 速度（只记当前条，划走的预热条不记）
+                    if DYStreamStore.shared.isCurrent(e.id) {
+                        let ms = max(1, Int(Date().timeIntervalSince(netT0) * 1000))
+                        let kb = (range.upperBound - range.lowerBound) / 1024
+                        DYLiveModel.log("DDSTREAMNET \(e.id.suffix(6)) \((resp as? HTTPURLResponse)?.statusCode ?? -1) at=\(range.lowerBound / 1024)KB len=\(kb)KB ttfb=\(ttfb)ms total=\(ms)ms \(kb * 1000 / Int64(ms))KB/s sink=\(sink != nil)")
+                    }
+                }
                 guard let http = resp as? HTTPURLResponse, http.statusCode == 206 || http.statusCode == 200 else {
                     let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
                     if target == e.resolved { e.lock.lock(); e.resolved = nil; e.lock.unlock() }
@@ -872,8 +944,15 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     offset += Int64(buf.count)
                     buf.removeAll(keepingCapacity: true)
                 }
+                #if DEBUG
+                // 复现真机慢网：DOUDUO_NETKBPS=总带宽(KB/s)，所有连接共用（模拟器网太快，真机卡的场景复现不出来）
+                let throttle = Double(ProcessInfo.processInfo.environment["DOUDUO_NETKBPS"] ?? "") ?? 0
+                #endif
                 for try await chunk in chunks.data {
                     buf.append(chunk)
+                    #if DEBUG
+                    if throttle > 0 { try await DYNetThrottle.take(chunk.count, kbps: throttle) }
+                    #endif
                     if buf.count >= 64 * 1024 { try flush() }
                 }
                 if !buf.isEmpty { try flush() }
@@ -896,6 +975,23 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
 
 
 /// 快进排查日志（DDSEEKNET）：拖进度条期间预览命中/落空多少次、网络在哪开了跳读窗口
+#if DEBUG
+/// 模拟器限速：令牌桶，所有下载连接共用一个带宽
+enum DYNetThrottle {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var next = Date.distantPast
+    static func take(_ bytes: Int, kbps: Double) async throws {
+        lock.lock()
+        let now = Date()
+        let start = max(now, next)
+        next = start.addingTimeInterval(Double(bytes) / (kbps * 1024))
+        let wait = next.timeIntervalSince(now)
+        lock.unlock()
+        if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
+    }
+}
+#endif
+
 enum DDSeekProbe {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var hits = 0, misses = 0, jumps: [String] = []
@@ -947,6 +1043,10 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func cancel() { task?.cancel() }
 
     private var revived = false
+    var onMetrics: ((URLSessionTaskMetrics) -> Void)?
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        onMetrics?(metrics)
+    }
     static func isRevive(_ error: Error) -> Bool {
         let n = error as NSError
         return n.domain == NSURLErrorDomain && n.code == URLError.networkConnectionLost.rawValue && n.userInfo["dd.revive"] as? Bool == true

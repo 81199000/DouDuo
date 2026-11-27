@@ -2038,6 +2038,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             // 用真实作品详情复验元数据显示，不造预览数据、不做账号互动。
             if !handedOff, let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
                let item = try? await bridge.awemeDetail(id) {
+                // 跟推荐流一样走边下边播（不登记的话播放页退成在线直连，复现不了快进卡）
+                if let u = item.play.flatMap(URL.init(string:)) { DYStreamStore.shared.register(item, remote: u) }
                 feed.items = [item]; currentID = item.id; scrollID = item.id
                 focusCurrent()
             }
@@ -3327,6 +3329,8 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             // 用真实作品详情复验元数据显示，不造预览数据、不做账号互动。
             if !handedOff, let id = ProcessInfo.processInfo.environment["DOUDUO_VIDEO_ID"],
                let item = try? await bridge.awemeDetail(id) {
+                // 跟推荐流一样走边下边播（不登记的话播放页退成在线直连，复现不了快进卡）
+                if let u = item.play.flatMap(URL.init(string:)) { DYStreamStore.shared.register(item, remote: u) }
                 feed.items = [item]; currentID = item.id; scrollID = item.id
                 focusCurrent()
             }

@@ -11,7 +11,7 @@ def check(ok, msg):
 
 rb = p[p.index("    private func rebuild() {"):p.index("\n    }\n", p.index("    private func rebuild() {"))]   # 整个函数
 check("let localResume = rebuildResumePosition" in rb and "restorePosition(localResume, using: p)" in rb, "重建时接着原位置（在线也算）")
-check("var restoreWithVLC = rebuildResumePosition" in p, "换 VLC 兜底也接着原位置")
+check("var restoreWithVLC = resumeAt.flatMap { $0 > 0.3 ? $0 : nil } ?? rebuildResumePosition" in p, "换 VLC 兜底也接着原位置（首帧降级按降级时位置）")
 check("offlineContext?.inLibrary == true ? pendingOfflineSeek" not in rb, "不再只给离线库带进度")
 check("func checkAfterForeground(_ p: AVPlayer)" in p and p.count("checkAfterForeground(p)") >= 2, "回前台检查能不能播")
 f = p[p.index("        .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)"):][:900]

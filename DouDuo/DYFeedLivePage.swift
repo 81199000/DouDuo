@@ -38,6 +38,8 @@ struct DYFeedLivePage: View {
     /// 从预热拿来的那一路（有值时用它，不用自己的 player）
     @State private var warm: DYFeedLiveWarm.Handle?
     @AppStorage("douyin_muted_v1") private var muted = false
+    /// 正在跑的「把音量拉回来」循环：撤权 / 离开时必须取消（以前划走后它还会把直播声音拉回来 = 回响）
+    @State private var restoreTask: Task<Void, Never>?
     /// 环境光跟视频共用设置（关 / 亮 / 中 / 暗 / 很暗）
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @Environment(\.appTheme) private var theme
@@ -99,23 +101,33 @@ struct DYFeedLivePage: View {
         .ignoresSafeArea()
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, cur in cur ? start() : stop() }
-        // 抬手要划走就先静音（不等新条停住才 isCurrent=false，那时已晚 0.2–0.3 秒，蓝牙再晚一截）
-        .onReceive(NotificationCenter.default.publisher(for: DYFeedLeaving.name)) { note in
-            guard isCurrent, started, (note.userInfo?["from"] as? String) == item.id else { return }
-            let c = warm?.controller ?? player
-            DYFeedLiveWarm.silenceNow(c)
-            DYLiveModel.log("DDLIVEAUDIO lift-mute room=\(live.roomID.suffix(6))")
-            // 万一没翻过去（被弹回 / 手势取消）：还停在这间直播就把声音还回来
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                guard isCurrent, started, !muted else { return }
-                restoreVolume(warm?.controller ?? player)
-                DYLiveModel.log("DDLIVEAUDIO lift-unmute room=\(live.roomID.suffix(6)) 没翻过去")
+        // 出声权由分页器统一交接（DDAudioFloor）：抬手撤权立刻静音；只有明确的回弹 / 取消才把声音还回来
+        .onReceive(NotificationCenter.default.publisher(for: DDAudioFloor.changed)) { note in
+            guard started else { return }
+            let phase = note.userInfo?["phase"] as? String
+            let to = note.userInfo?["to"] as? String
+            // 撤权点名到这一间，或权被提交 / 还给了别的页：立刻静音（不等 isCurrent 变 false）
+            if (phase == DDAudioFloor.Phase.revoke.rawValue && !DDAudioFloor.may(item.id))
+                || (phase != DDAudioFloor.Phase.revoke.rawValue && to != item.id && isCurrent) {
+                restoreTask?.cancel(); restoreTask = nil
+                DYFeedLiveWarm.silenceNow(warm?.controller ?? player)
+                DYLiveModel.log("DDLIVEAUDIO lift-mute room=\(live.roomID.suffix(6))")
+                DDAudioFloor.noteRevoked(item.id, engine: "vlc-live")
+            } else if phase == DDAudioFloor.Phase.cancel.rawValue, to == item.id,
+                      isCurrent, !muted, let t = DDAudioFloor.token(item.id) {
+                DYLiveModel.log("DDLIVEAUDIO bounce-unmute room=\(live.roomID.suffix(6)) ep=\(t.epoch)")
+                restoreVolume(warm?.controller ?? player, token: t)
             }
         }
         .onChange(of: muted) { _, m in
             let c = warm?.controller ?? player
-            c.outputMuted = m; c.mediaPlayer.audio?.isMuted = m
-            if !m, c.mediaPlayer.audio?.volume == 0 { c.mediaPlayer.audio?.volume = 100 }
+            if m {
+                restoreTask?.cancel(); restoreTask = nil
+                c.outputMuted = true; c.mediaPlayer.audio?.isMuted = true
+            } else if started, isCurrent, let t = DDAudioFloor.token(item.id) {
+                c.outputMuted = false
+                restoreVolume(c, token: t)
+            }
         }
 
         .onDisappear { stop() }
@@ -151,9 +163,12 @@ struct DYFeedLivePage: View {
             failed = false
             shownAt = CACurrentMediaTime()
             // 预热时是音量 0、没静音：直接把音量拉回来，声音立刻有（不走取消静音，那会重启音频输出）
-            h.controller.outputMuted = muted
-            if muted { h.controller.mediaPlayer.audio?.isMuted = true }
-            h.controller.mediaPlayer.audio?.volume = muted ? 0 : 100
+            // 只有拿到出声权（分页器已提交到这一页）才拉音量；预热可以提前，出声不行
+            let token = muted ? nil : DDAudioFloor.token(item.id)
+            h.controller.outputMuted = token == nil
+            if token == nil { h.controller.mediaPlayer.audio?.isMuted = true }
+            h.controller.mediaPlayer.audio?.volume = token == nil ? 0 : 100
+            if let token { noteGranted(h.controller, token: token) }
             h.controller.onError = {
                 Task { @MainActor in
                     // 预热那一路断了：丢掉它，走现连
@@ -173,8 +188,9 @@ struct DYFeedLivePage: View {
         started = true
         // 刚离开 0.6 秒内又划回来：取消还没执行的停播；离开时音量拉到了 0，这里拉回来
         DYFeedLiveWarm.cancelPendingStop(player)
-        player.outputMuted = muted
-        if !muted { restoreVolume(player) }
+        let token = muted ? nil : DDAudioFloor.token(item.id)
+        player.outputMuted = token == nil
+        if let token { restoreVolume(player, token: token) }
         player.onError = { [sourceIndex] in
             Task { @MainActor in
                 // 当前线路起不来就换下一条（FLV → HLS / 换清晰度），全挂了显示「加载失败」
@@ -215,22 +231,37 @@ struct DYFeedLivePage: View {
         let t0 = CACurrentMediaTime()
         defer { let ms = Int((CACurrentMediaTime() - t0) * 1000); if ms > 8 { DYLiveModel.log("DDFEEDLIVE stop-main=\(ms)ms") } }
         started = false
+        restoreTask?.cancel(); restoreTask = nil
         // 先静音、0.6 秒后再停播：别跟下一条视频开播撞在同一刻（见 DYFeedLiveWarm.stopDelay）
         if let w = warm { warm = nil; DYFeedLiveWarm.disposeLater(w); return }
         DYFeedLiveWarm.stopLater(player)
     }
 
-    /// 离开时把音量拉到了 0：重新开播后音频输出建好前设音量无效，前 3 秒盯着拉回 100（用户静音时不动）
-    private func restoreVolume(_ c: VLCPlayerController) {
-        Task { @MainActor [weak c] in
+    /// 离开时把音量拉到了 0：重新开播后音频输出建好前设音量无效，前 3 秒盯着拉回 100。
+    /// 每一轮都校验：出声权令牌（本次切页编号 + 条目）还有效、控制器还是这一页正在用的那只、用户没静音、
+    /// 这一页还在播。任何一条不成立立刻停手——不能只看条目 id（同一间直播划走再划回来 id 不变）。
+    private func restoreVolume(_ c: VLCPlayerController, token: DDAudioFloor.Token) {
+        restoreTask?.cancel()
+        noteGranted(c, token: token)
+        restoreTask = Task { @MainActor [weak c] in
             for _ in 0..<30 {
-                guard let c, !muted else { return }
+                guard !Task.isCancelled, let c, !muted, started, DDAudioFloor.valid(token),
+                      c === (warm?.controller ?? player) else { return }
                 if let a = c.mediaPlayer.audio {
                     if a.isMuted { a.isMuted = false }   // 离开时静音过（DYFeedLiveWarm.silenceNow）
                     if a.volume == 0 { a.volume = 100 }
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
+        }
+    }
+
+    /// 获权后看「真的在往外送声音」：VLC 已播出的音频块在涨、没静音、音量不为 0（指令下了 ≠ 耳朵听见）
+    private func noteGranted(_ c: VLCPlayerController, token: DDAudioFloor.Token) {
+        let base = Int(c.mediaPlayer.media?.statistics.playedAudioBuffers ?? 0)
+        DDAudioFloor.noteGranted(item.id, engine: "vlc-live") { [weak c] in
+            guard let c, let a = c.mediaPlayer.audio, !a.isMuted, a.volume > 0 else { return false }
+            return Int(c.mediaPlayer.media?.statistics.playedAudioBuffers ?? 0) > base
         }
     }
 }
