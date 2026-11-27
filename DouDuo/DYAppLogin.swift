@@ -28,7 +28,7 @@ struct DYAppLoginScreen: View {
     @FocusState private var focus: Field?
 
     enum Mode { case code, qr, native }
-    static var nativeAvailable: Bool { (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native") }
+    static let nativeAvailable = true
     enum Field { case phone, code }
 
     var body: some View {

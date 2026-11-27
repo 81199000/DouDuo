@@ -4,30 +4,26 @@ import Foundation
 import WebKit
 
 enum DYNative {
-    /// 设置里可切。
+    /// 设置里可切；默认开。
     static let enabledKey = "douduo_native_api_v1"
     static var enabled: Bool {
         if let v = UserDefaults.standard.object(forKey: enabledKey) as? Bool { return v }
-        return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
+        return true
     }
 
-    /// 正式包默认关。
+    /// 只走原生、失败不回落网页（排查用）；默认关。
     static let nativeOnlyKey = "douduo_native_only_v1"
-    static var nativeOnly: Bool {
-        if let v = UserDefaults.standard.object(forKey: nativeOnlyKey) as? Bool { return v }
-        return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
-    }
+    static var nativeOnly: Bool { UserDefaults.standard.bool(forKey: nativeOnlyKey) }
 
     /// 原生写接口（发评论/点赞/收藏/关注…）：默认关。
     /// 在模拟器里对齐网页真实请求前不许开。
     static let writeKey = "douduo_native_write_v1"
-    /// 正式包默认关
     /// ⚠️ 只有原生登录（App 自己生成并绑定密钥）的会话才许原生写：
     /// （之后 profile/self 一律 code 8「用户未登录」）。网页登录的会话写操作一律回到网页里由安全 SDK 自己签。
     @MainActor static var writeEnabled: Bool {
         guard DYNativeTicket.hasTicket else { return false }
         if let v = UserDefaults.standard.object(forKey: writeKey) as? Bool { return v }
-        return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
+        return true
     }
 
     /// 原生发私信：默认关。
