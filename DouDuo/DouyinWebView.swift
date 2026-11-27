@@ -561,6 +561,14 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         cfg.userContentController.addUserScript(
             WKUserScript(source: DouyinWeb.bootstrapJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        if includeProbe {
+            // 私信页排查：记页面报错（只留前 160 字，供 DDNATIVECHAT webdiag）
+            cfg.userContentController.addUserScript(WKUserScript(source: """
+            (() => { const L = window.__ddErrs = window.__ddErrs || []; const add = m => { if (L.length < 40) L.push(String(m).slice(0, 160)); };
+              addEventListener('error', e => add((e.message || (e.target && (e.target.src || e.target.href)) || 'err') + ''), true);
+              addEventListener('unhandledrejection', e => add('rej ' + (e.reason && (e.reason.message || e.reason)))); })();
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         DYTrustLogin.install(in: cfg)   // 网页版里登录后弹「是否保存登录信息？」也默认点「保存」
         // 聊天页点分享视频 → 抽 aweme_id 发给 App（只在 /chat 页生效）
         cfg.userContentController.addUserScript(

@@ -579,6 +579,8 @@ struct DYMessagesScreen: View {
     @State private var composerBarHeight: CGFloat = 56
     /// 原生聊天：后台接输入框的任务（离开会话即取消，不挡界面）
     @State private var composerAttach: Task<Void, Never>?
+    /// 后台私信网页没接上输入框（会话 id）：显示「重试」而不是一直转圈
+    @State private var composerAttachFailed: String?
     /// 键盘在屏幕上的位置（没弹出时为 nil）与聊天窗格的位置：算键盘盖住聊天窗格多少。
     /// 系统自带的键盘避让在这里只让出一小截（真机 / 模拟器都是输入框和最后几条消息被键盘盖住），
     /// 所以按键盘的真实位置把没让够的部分补上。
@@ -779,7 +781,7 @@ struct DYMessagesScreen: View {
             }
         }
         .onChange(of: navigation.chatID) { _, id in
-            if id == nil { composer.disconnect(); nativeChat.close(); composerAttach?.cancel(); composerAttach = nil }
+            if id == nil { composer.disconnect(); nativeChat.close(); composerAttach?.cancel(); composerAttach = nil; composerAttachFailed = nil }
         }
         .onAppear {
             composer.onSent = { [weak nativeChat] text in
@@ -1433,6 +1435,7 @@ struct DYMessagesScreen: View {
         chatDOMReady = true
         chatPlaceholder = nil
         navigation.openChat(row.id, from: nil)
+        composerAttachFailed = nil
         composerAttach = Task { await attachComposer(row) }
         await nativeChat.open(row.id)
     }
@@ -1443,7 +1446,23 @@ struct DYMessagesScreen: View {
         let started = Date()
         var result = await DYChatOpener.open(row, web: web)
         if case .notReady = result, !Task.isCancelled, navigation.chatID == row.id {
-            let diag = (try? await web.evaluateJavaScript("location.pathname + ' items=' + document.querySelectorAll('[data-e2e=\"conversation-item\"]').length + ' login=' + /验证码登录|扫码登录/.test(document.body.innerText)")) as? String ?? "-"
+            let diag = (try? await web.evaluateJavaScript(#"location.pathname + ' items=' + document.querySelectorAll('[data-e2e="conversation-item"]').length + ' store=' + (window.conversationStore ? (window.conversationStore.conversationMap?.size ?? -1) : 'none') + ' ready=' + document.readyState + ' title=' + document.title.slice(0,20) + ' txt=' + JSON.stringify((document.body?.innerText || '').slice(0,60)) + ' scripts=' + document.scripts.length + ' vmok=' + !!window.__VMOK__ + ' pcim=' + Object.keys(window).some(k => k.startsWith('@pc-im')) + ' frozen=' + !!window.__ddFrozen + ' w=' + innerWidth + 'x' + innerHeight"#)) as? String ?? "-"
+            // 私信程序为什么没起来：只记资源加载结果（地址路径、状态、大小）、cookie 名字（不含值）、页面报错
+            let res = (try? await web.evaluateJavaScript(#"""
+            JSON.stringify({
+              res: performance.getEntriesByType('resource').filter(e => /pcim|vmok|imapi|im\/|social/.test(e.name)).slice(-25).map(e => {
+                const u = new URL(e.name); return u.host.split('.')[0] + u.pathname.slice(-48) + ' s=' + (e.responseStatus ?? '?') + ' b=' + e.transferSize + ' ms=' + Math.round(e.duration);
+              }),
+              ck: document.cookie.split(';').map(c => c.split('=')[0].trim()).filter(Boolean).sort().join(','),
+              err: (window.__ddErrs || []).slice(-8),
+              ls: Object.keys(localStorage).filter(k => /im|chat|login|user/i.test(k)).slice(0, 20).join(',')
+            })
+            """#)) as? String ?? "-"
+            DYLiveModel.log("DDNATIVECHAT webdiag \(res)")
+            // 后台私信网页长什么样：截一张存到本机 Documents（只在本机，供排查）
+            if let img = try? await web.takeSnapshot(configuration: nil), let png = img.pngData() {
+                try? png.write(to: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddchatweb.png"))
+            }
             DYLiveModel.log("DDNATIVECHAT attach notReady \(diag) → reload chat page")
             web.load(URLRequest(url: URL(string: "https://www.douyin.com/chat")!))
             try? await Task.sleep(for: .seconds(3))
@@ -1466,6 +1485,7 @@ struct DYMessagesScreen: View {
             }
             #endif
         }
+        if !composer.isConnected(to: row.id) { composerAttachFailed = row.id }
         DYLiveModel.log("DDNATIVECHAT attach composer=\(composer.isConnected(to: row.id)) web=\(result) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
     }
 
@@ -1730,7 +1750,20 @@ struct DYMessagesScreen: View {
         }
         .overlay(alignment: .bottom) {
             if DYNativeChat.enabled, navigation.isChat, !composer.isConnected(to: navigation.chatID) {
-                HStack(spacing: 8) { ProgressView(); Text("输入框连接中…").font(.footnote).foregroundStyle(.secondary) }
+                Group {
+                    if let id = navigation.chatID, composerAttachFailed == id, let row = cache.selectedChat, row.id == id {
+                        Button {
+                            composerAttachFailed = nil
+                            composerAttach?.cancel()
+                            composerAttach = Task { await attachComposer(row) }
+                        } label: {
+                            Label("输入框没连上，点此重试", systemImage: "arrow.clockwise").font(.footnote)
+                        }
+                        .accessibilityIdentifier("douyin.messages.composer.retry")
+                    } else {
+                        HStack(spacing: 8) { ProgressView(); Text("输入框连接中…").font(.footnote).foregroundStyle(.secondary) }
+                    }
+                }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                     .glassEffect(.regular, in: .capsule)
                     .padding(.bottom, composer.bottomInset + chatKeyboardOverlap)
@@ -2849,6 +2882,18 @@ enum DYChatOpener {
         return false
     }
 
+    /// 网页私信 IM 就绪：会话行已渲染，或者网页 IM 的会话仓库已有会话
+    static func waitForIM(_ web: WKWebView, timeoutMS: Int = 12000) async -> Bool {
+        let probe = "(document.querySelectorAll('[data-e2e=\"conversation-item\"]').length || (window.conversationStore?.conversationMap?.size || 0))"
+        var waited = 0
+        while waited < timeoutMS, !Task.isCancelled {
+            if !web.isLoading, let n = (try? await web.evaluateJavaScript(probe)) as? NSNumber, n.intValue > 0 { return true }
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
+            waited += 100
+        }
+        return false
+    }
+
     private static weak var scanWeb: WKWebView?
     private static var scanTask: Task<[DYConversationRow]?, Never>?
     private static var scanID: UUID?
@@ -3045,7 +3090,10 @@ enum DYChatOpener {
             await collapseStranger(web)
         }
         let s1 = Date()
-        guard await waitFor(web, scope + "[data-e2e=\"conversation-item\"]") else { return .notReady }
+        let ready = DYNativeChat.enabled && !row.stranger
+            ? await waitForIM(web)
+            : await waitFor(web, scope + "[data-e2e=\"conversation-item\"]")
+        guard ready else { return .notReady }
         let s2 = Date()
         defer {
             lastSteps = "collapse=\(Int(s1.timeIntervalSince(s0)*1000)) wait=\(Int(s2.timeIntervalSince(s1)*1000)) js=\(Int(Date().timeIntervalSince(s2)*1000)) loading=\(web.isLoading)"
@@ -3086,9 +3134,19 @@ enum DYChatOpener {
               }
             }
           }
-          if (!row) return 'miss';
           window.__ddOpenT = performance.now();
-          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+          if (!row) {
+            // 虚拟列表 / 列表没渲染：走网页 IM 的会话仓库切换（与点击会话行同一个入口）
+            const store = window.conversationStore;
+            const cid = id.startsWith('conversation:') ? id.slice('conversation:'.length) : '';
+            const conv = cid && store && (store.conversationMap?.get?.(cid) || store.strangerConversationMap?.get?.(cid));
+            if (!conv || typeof store.setCurConversation !== 'function') return 'miss';
+            store.setCurConversation(conv, 'click_conversation');
+            for (let i = 0; i < 40 && !document.querySelector('[class*="messageMsgInputinputRow"] [contenteditable]'); i++) await new Promise(r => setTimeout(r, 100));
+            if (!document.querySelector('[class*="messageMsgInputinputRow"] [contenteditable]')) return 'miss';
+          } else {
+            row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+          }
           let style = document.getElementById('dd-chat-only');
           if (!style) { style = document.createElement('style'); style.id = 'dd-chat-only'; document.head.append(style); }
           style.textContent = appearanceCSS;
