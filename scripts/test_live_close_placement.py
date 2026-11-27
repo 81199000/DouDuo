@@ -50,7 +50,7 @@ if failures.isEmpty {
 
 class LiveClosePlacementTests(unittest.TestCase):
     def test_only_expanded_inner_screen_moves_the_close_button(self):
-        swift = "import Foundation\n" + placement_source() + "\n" + HARNESS
+        swift = "import Foundation\nimport CoreGraphics\n" + placement_source() + "\n" + HARNESS
         with tempfile.TemporaryDirectory(prefix="doudou-live-close-") as tmp:
             path = Path(tmp) / "main.swift"
             path.write_text(swift)
@@ -74,6 +74,10 @@ class LiveClosePlacementTests(unittest.TestCase):
         self.assertIn('accessibilityIdentifier("live.room.gift")', page)
         self.assertIn('accessibilityIdentifier("live.room.share")', page)
         self.assertIn("HStack(alignment: .bottom, spacing: 10)", page)
+        # 铺满按钮预览和进房都一直显示（头部一处、预览一处，共用 fillButton）
+        self.assertEqual(page.count("fillButton"), 3)
+        self.assertIn('accessibilityIdentifier("live.room.fill")', page)
+        self.assertIn("let fillWidth = model.fillScreen", SOURCE)
         gift = page.split('accessibilityIdentifier("live.room.gift")', 1)[0].rsplit("Button {", 1)[1]
         self.assertIn("onWeb(room.webURL)", gift)
         self.assertIn("input", page)

@@ -150,6 +150,8 @@ struct DouDuoApp: App {
     @UIApplicationDelegateAdaptor(DouDuoAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
+    /// 进直播间隐藏时间 / 信号：只能挂在根上才生效（直播页嵌在分页容器里，它自己的 statusBarHidden 传不到窗口）
+    @ObservedObject private var statusBar = DDStatusBarPolicy.shared
 
     init() {
         DispatchQueue.main.async { DYDebugSeed.applyIfPresent() }
@@ -206,6 +208,7 @@ struct DouDuoApp: App {
             }
             .onAppear { DDAppearance.applyToWindows(appearance) }
             .onChange(of: appearance) { _, value in DDAppearance.applyToWindows(value) }
+            .statusBarHidden(statusBar.liveRoom)
             #if DEBUG
             .overlay(alignment: .topLeading) { DDAppearanceStateProbe() }
             #endif
@@ -411,6 +414,13 @@ struct LocalVideoPlaybackView: View {
     }
 }
 #endif
+
+/// 状态栏要不要藏：只有进了直播间才藏（官方同款，横屏时时间 / 信号会盖住右上角的在线人数）
+@MainActor
+final class DDStatusBarPolicy: ObservableObject {
+    static let shared = DDStatusBarPolicy()
+    @Published var liveRoom = false
+}
 
 /// 让窗口里从根到最上层的每个控制器重新上报状态栏外观（修信息页切后台回来时间/信号消失）。
 enum DDStatusBarRefresh {

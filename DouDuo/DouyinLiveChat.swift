@@ -434,13 +434,17 @@ struct DYLiveChatHost: UIViewRepresentable {
 struct DYLiveChatOverlay: View {
     let messages: [DYLiveIMEvent]
     var ticker: DYLiveIMEvent? = nil
+    /// 露出几行（官方横屏 5 行、竖屏多几行）；超出的往上被裁掉，上沿虚化淡出
+    var rows: Int = 6
+    /// 一行大约多高（15pt 字 + 上下内边距 + 行距），按官方截图量的
+    static let rowHeight: CGFloat = 30
     @ObservedObject private var emoji = DYEmojiStore.shared
     private static let nameColor = Color(red: 0.6, green: 0.85, blue: 1.0)
     private static let giftColor = Color(red: 1.0, green: 0.82, blue: 0.45)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(messages.suffix(8)) { m in
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(messages.suffix(rows + 4)) { m in
                 row(m)
                     .padding(.horizontal, 9).padding(.vertical, 4)
                     .background(Capsule().fill(.black.opacity(m.kind == .member || m.kind == .like ? 0.22 : 0.32)))
@@ -456,7 +460,12 @@ struct DYLiveChatOverlay: View {
                     .accessibilityIdentifier("live.chat.ticker")
             }
         }
-        .frame(maxWidth: 300, alignment: .leading)
+        .frame(maxWidth: 320, alignment: .leading)
+        // 固定高度、底对齐：多出来的往上被裁掉，上沿 30% 渐隐（官方同款「虚化隐藏」）
+        .frame(height: CGFloat(rows) * Self.rowHeight, alignment: .bottom)
+        .clipped()
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3),
+                                     .init(color: .black, location: 1)], startPoint: .top, endPoint: .bottom))
         .animation(.easeOut(duration: 0.25), value: messages.last?.id)
         .animation(.easeOut(duration: 0.2), value: messages.last?.count)
         .animation(.easeOut(duration: 0.2), value: ticker?.id)
@@ -487,7 +496,7 @@ struct DYLiveChatOverlay: View {
             HStack(spacing: 4) {
                 badges(m)
                 (name(m) + Text(m.text).foregroundStyle(Self.giftColor))
-                    .font(.system(size: 14, weight: .medium)).lineLimit(1)
+                    .font(.system(size: 15)).lineLimit(1)
                 if let s = m.image, let url = URL(string: s) {
                     CachedAsyncImage(url: url) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
                         .frame(width: 24, height: 24)
@@ -499,22 +508,22 @@ struct DYLiveChatOverlay: View {
             }
         case .emoji:
             HStack(spacing: 4) {
-                name(m).font(.system(size: 14, weight: .medium))
+                name(m).font(.system(size: 15))
                 if let s = m.image, let url = URL(string: s) {
                     CachedAsyncImage(url: url) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
                         .frame(width: 40, height: 40)
                 } else {
-                    emoji.rich(m.text).foregroundStyle(.white).font(.system(size: 14, weight: .medium))
+                    emoji.rich(m.text).foregroundStyle(.white).font(.system(size: 15))
                 }
             }
         case .member, .like, .social, .ended:
             (name(m) + Text(m.text).foregroundStyle(.white.opacity(0.75)))
-                .font(.system(size: 13)).lineLimit(1)
+                .font(.system(size: 14)).lineLimit(1)
         case .chat:
             HStack(alignment: .top, spacing: 4) {
                 badges(m).padding(.top, 1)
                 (name(m) + emoji.rich(m.text).foregroundStyle(.white))
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 15))
                     .lineLimit(2)
             }
         }
