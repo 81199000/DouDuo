@@ -103,7 +103,8 @@ final class DYNativeJS {
                 DYLiveModel.log("DDNATIVEJS \(name) fallback status=\(s)")
                 return nil
             }
-            if let items = o["items"] as? [Any], items.isEmpty {
+            if let items = o["items"] as? [Any], items.isEmpty,
+               name.contains("/tab/feed/") || name.contains("/search/") {
                 DYLiveModel.log("DDNATIVEJS \(name) fallback empty")
                 return nil
             }
@@ -145,6 +146,10 @@ final class DYNativeJS {
             let (d, resp) = try await DYNative.session.data(for: r)
             let h = resp as? HTTPURLResponse
             let hs = (h?.allHeaderFields ?? [:]).map { "\($0.key): \($0.value)" }.joined(separator: "\r\n")
+            if let code = h?.statusCode, code != 200 {
+                let why = String(String(decoding: d.prefix(80), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
+                DYLiveModel.log("DDNATIVEJS http=\(code) path=\(comps.path) why=\(why)")
+            }
             return ["s": h?.statusCode ?? -1, "t": String(decoding: d, as: UTF8.self), "u": url.absoluteString, "h": "\n" + hs]
         } catch {
             return ["s": (error as? URLError)?.code == .timedOut ? -2 : -1, "t": ""]

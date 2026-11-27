@@ -60,14 +60,18 @@ enum DYTicketStore {
     /// 通过任一已加载 www.douyin.com 的网页读取（签名页 / 聊天页都可以）
     static func load(from web: WKWebView?) async -> DYTicketBundle? {
         if let c = cached, Date().timeIntervalSince(c.at) < 60, c.bundle != nil { return c.bundle }
-        guard let web, web.url?.host == "www.douyin.com" else { return cached?.bundle }
+        guard let web, web.url?.host == "www.douyin.com" else {
+            DYLiveModel.log("DDNATIVE ticket no-page host=\(web?.url?.host ?? "nil")")
+            return cached?.bundle
+        }
         let js = "[localStorage.getItem('security-sdk/s_sdk_sign_data_key/web_protect'), localStorage.getItem('security-sdk/s_sdk_crypt_sdk')]"
         let r = try? await web.evaluateJavaScript(js) as? [Any]
         let wp = r?.first as? String
         let cs = (r?.count ?? 0) > 1 ? r?[1] as? String : nil
         let b = DYTicketGuard.bundle(webProtect: wp, cryptSDK: cs)
         cached = (Date(), b)
-        DYLiveModel.log("DDNATIVE ticket loaded=\(b != nil)")
+        // 只记有无与长度，不记内容
+        DYLiveModel.log("DDNATIVE ticket loaded=\(b != nil) wp=\(wp?.count ?? -1) cs=\(cs?.count ?? -1) host=\(web.url?.host ?? "-")")
         return b
     }
 }

@@ -5686,7 +5686,8 @@ struct DYCommentPanel: View {
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard hasCommentContent, !sending, !imageLoading else { return }
-        guard bridge.signReady else { waitForSigning(); return }
+        // 原生直发纯文字评论不靠签名页；带图仍要等签名页
+        guard bridge.signReady || (DYNative.enabled && imageDraft == nil) else { waitForSigning(); return }
         // 回楼中楼：reply_id 必须是一级评论，被回的那条放 reply_to_reply_id（网页同款）
         let top = replyParent ?? replyTo?.id
         let to = replyParent == nil ? nil : replyTo?.id
@@ -5726,8 +5727,8 @@ struct DYCommentPanel: View {
 
     /// 真正发出去。只对这一条本地评论负责：成功换成服务器那条，失败/不明就地标在那一行上。
     private func deliver(_ localID: String) async {
-        guard bridge.signReady else { waitForSigning(); return }
         guard var job = pending[localID] else { return }
+        guard bridge.signReady || (DYNative.enabled && job.imageDraft == nil) else { waitForSigning(); return }
         job.state = .sending; pending[localID] = job
         sending = true
         defer { sending = false }
