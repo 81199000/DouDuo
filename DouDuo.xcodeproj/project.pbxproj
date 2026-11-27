@@ -108,6 +108,7 @@
 		9037503D427C3AA5AABBA8DA /* DYRelogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2CF757CC7945A9C99E98A58 /* DYRelogin.swift */; };
 		958BBE4E5EFA44F53ED91E6F /* DYPublicationRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5A9B3F091115AF52A55A77 /* DYPublicationRegion.swift */; };
 		95B60B258143F7C66A0C188B /* DYTouchpad.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5763C978AEF95B5187351667 /* DYTouchpad.swift */; };
+		9792C7947BAE916A23E0DB79 /* DYLiveIM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95EA20ACC2D43CC9CAED8475 /* DYLiveIM.swift */; };
 		97E2286F23BFC8D8B9BCD853 /* DYAutoPiP.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC3A384734E6ED3D8281B959 /* DYAutoPiP.swift */; };
 		9D11087BDAB97A9DCE3801F8 /* DDCommentStress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08BD0E803B903F0B46636718 /* DDCommentStress.swift */; };
 		9F40E63A14141175377E9040 /* DYChatHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C4522BBA2C9DA5257C7ADCC /* DYChatHeader.swift */; };
@@ -284,6 +285,7 @@
 		9015DABC86424C9FA5DDBA1E /* VLCPlayerBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VLCPlayerBridge.swift; sourceTree = "<group>"; };
 		90ADAC650921F8A5BCDB381F /* DYEdgeBack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYEdgeBack.swift; sourceTree = "<group>"; };
 		93E1C4B6340A84BAFB38739F /* DYFeedPager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYFeedPager.swift; sourceTree = "<group>"; };
+		95EA20ACC2D43CC9CAED8475 /* DYLiveIM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYLiveIM.swift; sourceTree = "<group>"; };
 		960FE5102A00176B7013B057 /* ShortVideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortVideoPlayer.swift; sourceTree = "<group>"; };
 		968925023F7C6A72604D1298 /* DYCommentPending.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYCommentPending.swift; sourceTree = "<group>"; };
 		9722C1877CAE1FD2156D2B9D /* DYAccountSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYAccountSnapshot.swift; sourceTree = "<group>"; };
@@ -463,6 +465,7 @@
 				E6E28F20A818A4E6AABC568A /* DYKeyStateProbe.swift */,
 				F0185B9017379CF22080BF73 /* DYLibraryScreens.swift */,
 				08CC6CF50CD6FBA493434991 /* DYLiveAmbient.swift */,
+				95EA20ACC2D43CC9CAED8475 /* DYLiveIM.swift */,
 				F9929F2A3F9E6C999A67F565 /* DYMessageDivider.swift */,
 				0D5F9BC07F7BAA601E6AB9B3 /* DYMessageFixture.swift */,
 				3D36E286153BCFB6F4429C62 /* DYMessageLayoutProbe.swift */,
@@ -782,6 +785,7 @@
 				34C783BDDF186448EB4F517A /* DYKeyStateProbe.swift in Sources */,
 				00669F41D44BEE3156182096 /* DYLibraryScreens.swift in Sources */,
 				1D2745F338DA81638C4BC74A /* DYLiveAmbient.swift in Sources */,
+				9792C7947BAE916A23E0DB79 /* DYLiveIM.swift in Sources */,
 				6273092DE9964219DDA74C50 /* DYMessageDivider.swift in Sources */,
 				E399D0EB8C267E01E7A606BF /* DYMessageFixture.swift in Sources */,
 				4350D7292995BACB4A4EA979 /* DYMessageLayoutProbe.swift in Sources */,

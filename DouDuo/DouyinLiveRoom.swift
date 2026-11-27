@@ -1511,6 +1511,8 @@ struct DYLiveFeed: View {
     @StateObject private var chat = DYLiveChat()
     @State private var draft = ""
     @State private var sending = false
+    /// 表情面板（跟官网直播间输入框的「小表情」一样：点一下把 [名称] 插进输入框）
+    @State private var emojiOpen = false
     @State private var sendError: String?
     @State private var showCategories = false
     @State private var showFollowLive = false
@@ -1681,6 +1683,8 @@ struct DYLiveFeed: View {
             model.warmNeighbors()
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
+            // 弹幕里的 [表情] 要换成官方表情图（跟评论区同一套，已加载过不会重复拉）
+            Task { await DYEmojiStore.shared.load(bridge: bridge) }
         }
         .onChange(of: model.currentID) { _, id in
             if let id, scrollID != id { scrollID = id }
@@ -2219,6 +2223,8 @@ struct DYLiveFeed: View {
                 ForEach(model.rooms) { room in
                     DYLiveRoomPage(room: room, model: model, isCurrent: model.currentID == room.id,
                                    messages: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.messages : [],
+                                   ticker: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.ticker : nil,
+                                   stats: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.stats : DYLiveRoomStats(),
                                    keyboardOverlap: model.currentID == room.id ? keyboardOverlap : 0,
                                    input: AnyView(commentInput), onWeb: onWeb,
                                    videoPane: video, interactionPane: interaction,
@@ -2262,17 +2268,17 @@ struct DYLiveFeed: View {
                     onChannelDragEnd?(value.translation.width, value.predictedEndTranslation.width, paneWidth, false)
                     return
                 }
-                // 左缘右滑返回：与「我的 / 信息」页 DYEdgeSwipeBack 同一套判定（左缘 30pt 起、右滑 >70pt）。
+                // 进房后横滑（官方同款）：右滑一次把界面上的信息全划走（清屏），清屏后再右滑一次退出直播间；左滑恢复。
                 // 刻意复用分页这一个手势，不再叠第二层 simultaneousGesture，避免影响上滑换台。
-                if (model.entered || model.clean),
-                   value.startLocation.x < 30, value.translation.width > 70,
-                   abs(value.translation.height) < abs(value.translation.width) {
-                    if model.clean { model.clean = false } else { model.leaveRoom() }
+                if model.entered, DYLiveRoomSwipe.isHorizontal(width: value.translation.width, height: value.translation.height) {
+                    switch DYLiveRoomSwipe.action(width: value.translation.width, clean: model.clean) {
+                    case .clean: withAnimation(.easeInOut(duration: 0.2)) { model.clean = true }
+                    case .leave: model.leaveRoom()
+                    case .restore: withAnimation(.easeInOut(duration: 0.2)) { model.clean = false }
+                    case .none: break
+                    }
                     scrollEndTask?.cancel(); userScrolling = false; gestureStartID = nil
                     return
-                }
-                if abs(value.translation.width) > 80 && abs(value.translation.width) > abs(value.translation.height) && model.entered {
-                    withAnimation(.easeInOut(duration: 0.2)) { model.clean = value.translation.width > 0 }
                 }
                 scrollEndTask = Task {
                     try? await Task.sleep(for: .milliseconds(600))
@@ -2325,12 +2331,27 @@ struct DYLiveFeed: View {
     private var commentInput: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let sendError { Text(sendError).font(.caption).foregroundStyle(theme.status.warning.color(for: scheme)) }
+            if emojiOpen { DYLiveEmojiPanel { draft += $0 } }
             HStack(spacing: 8) {
-                TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
-                    .font(.subheadline).foregroundStyle(.primary).focused($inputFocused)
-                    .submitLabel(.send).onSubmit(sendComment)
-                    .padding(.horizontal, 14).frame(height: 40).ddMediaGlassCapsule()
-                    .accessibilityIdentifier("live.chat.input")
+                // 官方同款：表情按钮在输入框里面右侧
+                HStack(spacing: 4) {
+                    TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
+                        .font(.subheadline).foregroundStyle(.primary).focused($inputFocused)
+                        .submitLabel(.send).onSubmit(sendComment)
+                        .accessibilityIdentifier("live.chat.input")
+                        .onChange(of: inputFocused) { _, focused in if focused { emojiOpen = false } }
+                    Button {
+                        inputFocused = false
+                        withAnimation(.easeOut(duration: 0.2)) { emojiOpen.toggle() }
+                    } label: {
+                        Image(systemName: emojiOpen ? "keyboard" : "face.smiling").font(.system(size: 20, weight: .regular))
+                            .frame(width: 36, height: 40).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(emojiOpen ? "收起表情" : "表情")
+                    .accessibilityIdentifier("live.chat.emoji")
+                }
+                .padding(.leading, 14).padding(.trailing, 4).frame(height: 44).ddMediaGlassCapsule()
                 if !draft.isEmpty {
                     Button(action: sendComment) {
                         if sending { ProgressView() } else { Text(chat.composerReady ? "发送" : "连接中").font(.subheadline.weight(.semibold)) }
@@ -2350,9 +2371,37 @@ struct DYLiveFeed: View {
             let error = await chat.send(text)
             guard chatRoom == target else { sending = false; return }
             if let error { sendError = error }
-            else if draft == submittedDraft { draft = ""; sendError = nil; inputFocused = false }
+            else if draft == submittedDraft { draft = ""; sendError = nil; inputFocused = false; emojiOpen = false }
             sending = false
         }
+    }
+}
+
+/// 直播间「小表情」面板：官方表情（跟评论区同一套），点一下把 [名称] 插进输入框，发出去跟官网一样是表情代码
+private struct DYLiveEmojiPanel: View {
+    @ObservedObject private var store = DYEmojiStore.shared
+    let insert: (String) -> Void
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 8)
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(store.names, id: \.self) { name in
+                    Button { insert(name) } label: {
+                        if let img = store.images[name] {
+                            Image(uiImage: img).resizable().scaledToFit().frame(width: 28, height: 28)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(name)
+                }
+            }
+            .padding(10)
+        }
+        .frame(height: 168)
+        .overlay { if store.names.isEmpty { ProgressView() } }
+        .background(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.55)))
+        .accessibilityIdentifier("live.chat.emojiPanel")
     }
 }
 
@@ -2364,7 +2413,10 @@ private struct DYLiveRoomPage: View {
     let room: DYLiveRoom
     @ObservedObject var model: DYLiveModel
     let isCurrent: Bool
-    let messages: [DYLiveMsg]
+    let messages: [DYLiveIMEvent]
+    var ticker: DYLiveIMEvent? = nil
+    /// 头部：本场点赞、在线人数、前三名观众（来自弹幕数据）
+    var stats = DYLiveRoomStats()
     let keyboardOverlap: CGFloat
     let input: AnyView
     let onWeb: (URL) -> Void
@@ -2443,11 +2495,13 @@ private struct DYLiveRoomPage: View {
                 if !isCurrent {
                     Color.clear.allowsHitTesting(false)
                 } else if model.clean {
-                    // 与进房态同一套「返回」胶囊，放左上避开右上系统状态栏 / 前摄挖孔
-                    VStack { HStack { backCapsule(action: { model.clean = false }, id: "live.room.restore"); Spacer() }; Spacer() }
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.clean = false }
-                        .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, topInset)
+                    // 清屏：界面上什么都不留（官方同款），点任意处或左滑恢复，再右滑退出
+                    Button { withAnimation(.easeInOut(duration: 0.2)) { model.clean = false } } label: {
+                        Color.clear.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("恢复直播间界面")
+                    .accessibilityIdentifier("live.room.restore")
                 } else if model.entered {
                     let closeOnBottom = DYLiveChromePlacement.closeOnBottomTrailing(
                         regularWidth: hSize == .regular,
@@ -2457,9 +2511,27 @@ private struct DYLiveRoomPage: View {
                         Spacer(minLength: 12)
                         HStack(alignment: .bottom, spacing: 12) {
                             VStack(alignment: .leading, spacing: 12) {
-                                if !messages.isEmpty { DYLiveChatOverlay(messages: messages) }
-                                HStack(spacing: 12) {
+                                if !messages.isEmpty || ticker != nil { DYLiveChatOverlay(messages: messages, ticker: ticker) }
+                                // 底部一排（官方同款）：输入框（表情在框里）· 礼物 · 转发 · 更多。底对齐：表情面板展开时别的按钮不跟着飘上去
+                                HStack(alignment: .bottom, spacing: 10) {
                                     input
+                                    // 送礼物要花抖币：打开这一间的官网页面，用抖音自己的送礼和支付确认流程，App 不代发
+                                    Button { onWeb(room.webURL) } label: {
+                                        Image(systemName: "gift.fill").font(.system(size: 19, weight: .semibold))
+                                            .foregroundStyle(Color(red: 1.0, green: 0.36, blue: 0.55))
+                                            .frame(width: 44, height: 44).ddMediaGlassCircle()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("送礼物（打开官网直播间）")
+                                    .accessibilityIdentifier("live.room.gift")
+                                    ShareLink(item: room.webURL, subject: Text(room.owner),
+                                              message: Text(room.title.isEmpty ? "\(room.owner) 正在直播" : "\(room.owner) 正在直播：\(room.title)")) {
+                                        Image(systemName: "arrowshape.turn.up.right.fill").font(.system(size: 18, weight: .semibold))
+                                            .frame(width: 44, height: 44).ddMediaGlassCircle()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("转发直播间")
+                                    .accessibilityIdentifier("live.room.share")
                                     Menu {
                                     Button("清屏", systemImage: "rectangle") { model.clean = true }
                                     Toggle("静音", systemImage: "speaker.slash", isOn: $model.muted)
@@ -2487,7 +2559,7 @@ private struct DYLiveRoomPage: View {
                             .frame(maxWidth: 420, alignment: .leading)
                             if closeOnBottom {
                                 Spacer(minLength: 12)
-                                backCapsule(action: model.leaveRoom, id: "live.room.close", minHeight: 44)
+                                closeX(action: model.leaveRoom, id: "live.room.close")
                                     .modifier(DYRailReservedNudge())
                             }
                         }
@@ -2559,9 +2631,6 @@ private struct DYLiveRoomPage: View {
         // 完全展开的内屏改放右下，避免被内屏系统层盖住，并离开左下聊天和更多按钮。
         // 主视图不再挂 NavigationStack / toolbar，Duo 系统侧栏不会再多渲染一颗返回。
         HStack(spacing: 10) {
-            if showsClose {
-                backCapsule(action: model.leaveRoom, id: "live.room.close")
-            }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Button {
@@ -2571,7 +2640,11 @@ private struct DYLiveRoomPage: View {
                             avatar
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text("\(room.viewers) 在看").font(.caption2)
+                                // 官方：进房后名字下面写「本场点赞」；还没收到时先用列表里的在看人数
+                                Text(stats.likeTotal.map { "\(DYLiveRoomStats.short($0))本场点赞" } ?? "\(room.viewers) 在看")
+                                    .font(.caption2).monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .accessibilityIdentifier("live.room.likes")
                             }
                         }
                         .contentShape(Rectangle())
@@ -2604,6 +2677,17 @@ private struct DYLiveRoomPage: View {
                 }
             }
             Spacer(minLength: 8)
+            // 前三名观众头像 + 在线人数（官方同款）。窄屏放不下时先去掉头像，只留人数
+            if stats.online != nil || stats.topViewers?.isEmpty == false {
+                ViewThatFits(in: .horizontal) {
+                    viewerStrip(avatars: true)
+                    viewerStrip(avatars: false)
+                }
+            }
+            // 退出直播间：官方同款右上角小 ×（右边距已让开 Duo 外屏右侧的系统状态栏）
+            if showsClose {
+                closeX(action: model.leaveRoom, id: "live.room.close")
+            }
         }
     }
 
@@ -2619,18 +2703,45 @@ private struct DYLiveRoomPage: View {
         try? await Task.sleep(for: .seconds(3))
         if followMsg == failure { followMsg = nil }
     }
-    /// 和 douyin.web.back / douyin.mine.back / douyin.messages.back 同一套返回键语义：
-    /// 「返回」标题 + chevron.backward 符号 + 胶囊底。直播间只保留这一颗，不再叠加系统侧栏返回。
-    private func backCapsule(action: @escaping () -> Void, id: String, minHeight: CGFloat = 40) -> some View {
+    private func viewerStrip(avatars: Bool) -> some View {
+        HStack(spacing: 6) {
+            if avatars, let tops = stats.topViewers, !tops.isEmpty {
+                HStack(spacing: -8) {
+                    ForEach(Array(tops.prefix(3).enumerated()), id: \.offset) { _, url in
+                        CachedAsyncImage(url: URL(string: url)) { $0.resizable().scaledToFill() }
+                            placeholder: { Color.white.opacity(0.18) }
+                            .frame(width: 30, height: 30).clipShape(Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.55), lineWidth: 1))
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+            if let n = stats.online {
+                Text(DYLiveRoomStats.short(n))
+                    .font(.footnote.weight(.semibold)).monospacedDigit()
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .background(Capsule().fill(.black.opacity(0.28)))
+                    .accessibilityLabel("\(n) 人在线")
+                    .accessibilityIdentifier("live.room.online")
+            }
+        }
+        .fixedSize()
+    }
+
+    /// 退出直播间：官方直播间同款的小 × 圆钮（不再是「返回」胶囊）
+    private func closeX(action: @escaping () -> Void, id: String) -> some View {
         Button(action: action) {
-            Label("返回", systemImage: "chevron.backward")
-                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .padding(.horizontal, 14).frame(minWidth: 44).frame(height: minHeight)
-                .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(.black.opacity(0.28)))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .themeShadow(.floatingPanel)
+        .accessibilityLabel("退出直播间")
         .accessibilityIdentifier(id)
     }
 }
@@ -2641,6 +2752,19 @@ enum DYLiveChromePlacement {
     /// 外屏是 compact；半折叠时折痕激活，两者都保持左上。
     static func closeOnBottomTrailing(regularWidth: Bool, foldActive: Bool) -> Bool {
         regularWidth && !foldActive
+    }
+}
+/// 进房后的横滑（官方直播间同款）：右滑一次清屏，清屏后再右滑退出直播间，左滑恢复界面。
+enum DYLiveRoomSwipe {
+    enum Action: Equatable { case none, clean, leave, restore }
+    /// 横向且够长才算（不跟上滑换台抢）
+    static let minDistance: CGFloat = 70
+    static func isHorizontal(width: CGFloat, height: CGFloat) -> Bool {
+        abs(width) > minDistance && abs(width) > abs(height) * 1.2
+    }
+    static func action(width: CGFloat, clean: Bool) -> Action {
+        if width > 0 { return clean ? .leave : .clean }
+        return clean ? .restore : .none
     }
 }
 // MARK: - live-close-placement-end

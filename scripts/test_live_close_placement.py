@@ -31,6 +31,14 @@ check(!DYLiveChromePlacement.closeOnBottomTrailing(regularWidth: false, foldActi
 check(!DYLiveChromePlacement.closeOnBottomTrailing(regularWidth: true, foldActive: true), "partially folded layout keeps the top-leading close button")
 check(!DYLiveChromePlacement.closeOnBottomTrailing(regularWidth: false, foldActive: true), "folded compact width keeps the top-leading close button")
 
+check(DYLiveRoomSwipe.action(width: 120, clean: false) == .clean, "right swipe once clears the screen")
+check(DYLiveRoomSwipe.action(width: 120, clean: true) == .leave, "right swipe again leaves the room")
+check(DYLiveRoomSwipe.action(width: -120, clean: true) == .restore, "left swipe restores the chrome")
+check(DYLiveRoomSwipe.action(width: -120, clean: false) == .none, "left swipe with chrome shown does nothing")
+check(DYLiveRoomSwipe.isHorizontal(width: 100, height: 20), "clear horizontal swipe counts")
+check(!DYLiveRoomSwipe.isHorizontal(width: 40, height: 5), "short swipe ignored")
+check(!DYLiveRoomSwipe.isHorizontal(width: 90, height: 100), "vertical paging is not stolen")
+
 if failures.isEmpty {
     print("DYLiveChromePlacement passed")
 } else {
@@ -57,11 +65,20 @@ class LiveClosePlacementTests(unittest.TestCase):
         self.assertIn("DYDuoMetrics.foldIsActive(geo)", page)
         self.assertIn("geo.safeAreaInsets.bottom", page)
         self.assertIn("DYRailReservedNudge()", page)
-        self.assertIn('id: "live.room.close", minHeight: 44', page)
-        self.assertIn('id: "live.room.restore"', page)
+        # 退出直播间是右上角小 ×（官方同款），清屏时整屏点一下恢复
+        self.assertIn('closeX(action: model.leaveRoom, id: "live.room.close")', page)
+        self.assertIn('accessibilityIdentifier("live.room.restore")', page)
+        self.assertNotIn("backCapsule", page)
         self.assertIn('accessibilityIdentifier("live.room.more")', page)
+        # 底部一排对齐官方：礼物（打开官网直播间，App 不代发）· 转发 · 更多，底对齐不让按钮随表情面板飘
+        self.assertIn('accessibilityIdentifier("live.room.gift")', page)
+        self.assertIn('accessibilityIdentifier("live.room.share")', page)
+        self.assertIn("HStack(alignment: .bottom, spacing: 10)", page)
+        gift = page.split('accessibilityIdentifier("live.room.gift")', 1)[0].rsplit("Button {", 1)[1]
+        self.assertIn("onWeb(room.webURL)", gift)
         self.assertIn("input", page)
         self.assertEqual(page.count('id: "live.room.close"'), 2)
+        self.assertIn("DYLiveRoomSwipe.action(width: value.translation.width, clean: model.clean)", SOURCE)
         self.assertNotIn("vlc.", page)
 
 
