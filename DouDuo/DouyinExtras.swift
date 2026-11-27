@@ -235,9 +235,11 @@ extension DouyinBridge {
 
     /// 视频分类搜索：在隐藏网页里跑（DYNativeJS.isPageOnly），按 cursor 翻页
     func search(_ kw: String, offset: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
+        // 只拉第一页：第二页抖音一律回 verify_check（真机实测，模拟器偶尔能过，别据此放开）
+        guard offset == "0" else { return ([], offset, false) }
         let r = try await list(Self.searchJS, ["kw": kw, "cursor": offset])
-        DYLiveModel.log("DDSEARCH tab=video off=\(offset) n=\(r.items.count) more=\(r.hasMore)")
-        return r
+        DYLiveModel.log("DDSEARCH tab=video off=\(offset) n=\(r.items.count)")
+        return (r.items, r.cursor, false)
     }
 
     /// 抖音热搜
@@ -823,7 +825,7 @@ extension DouyinBridge {
 
     static let searchJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ search_channel: 'aweme_video_web', keyword: kw, search_source: 'normal_search',
-      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '16', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
+      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '24', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     const nilT = (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || '';

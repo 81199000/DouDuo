@@ -308,7 +308,7 @@ enum DYSearchGate {
         if let t = inflight[key] { return try await t.value }
         let t = Task { @MainActor () throws -> Data in
             var last = Data()
-            for (attempt, backoff) in [0.0, 3.0, 6.0].enumerated() {
+            for (attempt, backoff) in [0.0].enumerated() {
                 let slot = max(Date(), nextSlot).addingTimeInterval(backoff)
                 nextSlot = slot.addingTimeInterval(spacing)
                 let wait = slot.timeIntervalSinceNow
@@ -320,7 +320,7 @@ enum DYSearchGate {
                 }
                 DYLiveModel.log("DDSEARCH throttled attempt=\(attempt) key=\(key.prefix(24))")
             }
-            throw DYError.bad("抖音暂时限制了搜索（短时间内搜得太多），过半分钟再试")
+            throw DYError.bad("抖音要求验证后才给这页结果，稍后再试")
         }
         inflight[key] = t
         defer { inflight[key] = nil }
@@ -336,7 +336,7 @@ extension DouyinBridge {
       followers: u.follower_count || 0, followersText: u.follower_count_str || '', signature: u.signature || '',
       verify: u.custom_verify || u.enterprise_verify_reason || '', liveRoomID: u.room_id_str || (u.room_id ? String(u.room_id) : '') }) : null;
     const sq = (channel, extra) => q(Object.assign({ search_channel: channel, keyword: kw, search_source: 'normal_search', query_correct_type: '1',
-      is_filter_search: '0', from_group_id: '', offset: cursor, count: '10', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }, extra || {}));
+      is_filter_search: '0', from_group_id: '', offset: cursor, count: '20', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }, extra || {}));
     const okA = a => a && (a.video || a.images) && !a.is_ads;
     const diag = (r, d) => ({ nil: (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || null,
       keys: Object.keys(d).slice(0, 10).join('|'), len: (r.t || '').length, vc: !!(r.h && /bdturing/i.test(String(r.h))) });
@@ -384,28 +384,34 @@ extension DouyinBridge {
     }
 
     func searchGeneral(_ kw: String, offset: String) async throws -> (items: [DYAweme], users: [DYSearchUser], guide: [String], cursor: String, hasMore: Bool) {
+        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
+        guard offset == "0" else { return ([], [], [], offset, false) }
         let t0 = Date()
         let d = try await DYSearchGate.fetch(key: "general|\(kw)|\(offset)") { [self] in try await self.call(Self.searchGeneralJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchGeneralPage.self, from: d)
         DYLiveModel.log("DDSEARCH tab=general off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.users, p.guide, p.cursor, p.hasMore)
+        return (p.items, p.users, p.guide, p.cursor, false)
     }
 
     func searchUsers(_ kw: String, offset: String) async throws -> (items: [DYSearchUser], cursor: String, hasMore: Bool) {
+        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
+        guard offset == "0" else { return ([], offset, false) }
         let d = try await DYSearchGate.fetch(key: "user|\(kw)|\(offset)") { [self] in try await self.call(Self.searchUserJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchUserPage.self, from: d)
         DYLiveModel.log("DDSEARCH tab=user off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.cursor, p.hasMore)
+        return (p.items, p.cursor, false)
     }
 
     func searchLive(_ kw: String, offset: String) async throws -> (items: [DYLiveRoom], cursor: String, hasMore: Bool) {
+        // 网页搜索只有第一页可用：第二页（offset>0）抖音一律回 verify_check，退避重试也不放行（真机实测）
+        guard offset == "0" else { return ([], offset, false) }
         let d = try await DYSearchGate.fetch(key: "live|\(kw)|\(offset)") { [self] in try await self.call(Self.searchLiveJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchLivePage.self, from: d)
         DYLiveModel.log("DDSEARCH tab=live off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
-        return (p.items, p.cursor, p.hasMore)
+        return (p.items, p.cursor, false)
     }
 }
 
