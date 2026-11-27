@@ -129,7 +129,8 @@ final class DYNativeLogin: ObservableObject {
         }
         DDLog("DDNLOGIN qr ok token=\(token.prefix(6))… img=\(img.count)B")
         qrImage = img
-        expiresAt = Date().addingTimeInterval(120)
+        // 实测这个 token 只有约 66 秒寿命（之后轮询直接回 4031），所以 55 秒就换，别让老板扫到已死的码
+        expiresAt = Date().addingTimeInterval(55)
         phase = .waiting(token: token)
         startPolling(token: token)
     }
@@ -150,6 +151,12 @@ final class DYNativeLogin: ObservableObject {
                 }
                 let step = await poll(token: token)
                 if let step { DDLog("DDNLOGIN poll status=\(step.1) redirect=\(step.0 == nil ? "-" : "yes")") }
+                if case .scanned = phase {} else if let step, step.1 == "4031" {
+                    // 码已被服务端判死，立刻换新码，不要拿死码继续轮询
+                    DDLog("DDNLOGIN token-dead(4031) refreshing")
+                    await fetchQr()
+                    return
+                }
                 guard let step else {
                     misses += 1
                     if misses > 90 { polling = false; phase = .failed("二维码已过期") }
@@ -197,6 +204,7 @@ final class DYNativeLogin: ObservableObject {
         guard let d = r.text.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
         let data = (o["data"] as? [String: Any]) ?? o
+        if (data["error_code"] as? Int) == 4031 { return (nil, "4031") }
         for k in ["redirect_url", "redirect_uri", "login_url", "scan_url", "url"] {
             if let v = (data[k] as? String) ?? (o[k] as? String), !v.isEmpty { return (v, "3") }
         }
