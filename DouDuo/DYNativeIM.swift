@@ -195,6 +195,13 @@ final class DYNativeIM {
 
     /// 私信发送前要取的短时身份安全令牌（scene=web_im），缓存 240 秒。请求头逐项照私信网页抓包。
     private var identityCache: (token: String, deviceID: String, at: Date)?
+
+    /// 换账号：会话票据、自己的 uid、身份令牌都属于上一个账号，全部作废
+    func resetForAccountChange() {
+        selfUID = 0
+        conversations = [:]
+        identityCache = nil
+    }
     func identityToken(force: Bool = false) async throws -> (token: String, deviceID: String) {
         if !force, let c = identityCache, Date().timeIntervalSince(c.at) < 240 { return (c.token, c.deviceID) }
         let path = "/passport/safe/get_identity_security_token/"
