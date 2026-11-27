@@ -17,9 +17,9 @@ import UIKit
 /// - 划走就停，没看的部分一个字节都不下；看完的自然拼成完整文件，下次离线也能播。
 enum DYStream {
     static let scheme = "ddstream"
-    static let enabledKey = "douyin_stream_cache_v1"
 
-    static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+    /// 边看边缓存：固定开
+    static let enabled = true
     /// 蜂窝省流量：固定开
     static let saverOn = true
     /// Wi-Fi 省流量：固定开，Wi-Fi 下预缓存的条数也只下开头

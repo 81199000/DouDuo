@@ -68,7 +68,6 @@
 		569D81BEE56DC1F6C9118BD4 /* DYKeyStateProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E28F20A818A4E6AABC568A /* DYKeyStateProbe.swift */; };
 		5751001D3873E34BD6392BEF /* DYPlaybackTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33B38103B4B90511052207F4 /* DYPlaybackTelemetry.swift */; };
 		57B020392150AF274A8B5DA2 /* DouyinPublicationRegions.json in Resources */ = {isa = PBXBuildFile; fileRef = 6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */; };
-		5ABDAE7326BA888564E5F90D /* DYWebComposerWebKitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD2E5140E15D008AA5142B57 /* DYWebComposerWebKitTests.swift */; };
 		5ACDE32AAD169465CFB1941F /* DYIMProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DEE6A38F8578111777EB75A /* DYIMProbe.swift */; };
 		5CE4582A2CFCF1A6926C368B /* DYStorageFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 269E2F79C09E0E2552CAA797 /* DYStorageFiles.swift */; };
 		5DAD77691CBC6BAADFE715FF /* DYPagingSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2908E635AA66591D81365A5 /* DYPagingSpeed.swift */; };
@@ -166,7 +165,6 @@
 		EBAD0704B8441D3D1B94EDF2 /* DYAutoPiP.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC3A384734E6ED3D8281B959 /* DYAutoPiP.swift */; };
 		ECBBEEBFD407D53112CF9166 /* DouyinLiveAmbientBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AE40E01B71513061E9C456E /* DouyinLiveAmbientBackground.swift */; };
 		ED973DD86BA6E69D19EE7DD1 /* DYConversationCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F438BF3690CFD4BD6A0051 /* DYConversationCell.swift */; };
-		EF227D5790724C5A9045541C /* DYWebComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74AA8D80AE540FB08C9E1344 /* DYWebComposer.swift */; };
 		F15B6677718D7B73EBBD7C15 /* DYSearchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFA82DC2A7F234948CEC0BB9 /* DYSearchPresentation.swift */; };
 		F2A516AE009611ED4909FF1A /* DYHashtagFilterPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE7F74B5B2FF22F2F5AEFC10 /* DYHashtagFilterPresentation.swift */; };
 		F38BBB6700D585AA9F93B57E /* DYAutoPiPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 826A85382E0E897BD45EC59D /* DYAutoPiPTests.swift */; };
@@ -264,7 +262,6 @@
 		6E9FCBC8E756083330BD0B5A /* DouyinPublicationRegions.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = DouyinPublicationRegions.json; sourceTree = "<group>"; };
 		70B25F5F38F6A322FCA53439 /* DYDMProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYDMProbe.swift; sourceTree = "<group>"; };
 		730650A08AE183BAB384340D /* DYSwipeProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYSwipeProbe.swift; sourceTree = "<group>"; };
-		74AA8D80AE540FB08C9E1344 /* DYWebComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYWebComposer.swift; sourceTree = "<group>"; };
 		74F646B31DAD1BDD97D97FBA /* DYConversationStreak.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYConversationStreak.swift; sourceTree = "<group>"; };
 		79B6E29A6530FCADAE181F08 /* DYPictureInPicture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPictureInPicture.swift; sourceTree = "<group>"; };
 		79D68085CA0B47F08B3A1535 /* DouyinFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinFeedView.swift; sourceTree = "<group>"; };
@@ -314,7 +311,6 @@
 		C8DA1C5C2EF44F08DC0C8381 /* DYNativeAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYNativeAPI.swift; sourceTree = "<group>"; };
 		CC705323AC6B6AD6EB67ED7F /* DYNativeSign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYNativeSign.swift; sourceTree = "<group>"; };
 		CCE7B8B057E03F9F0103866B /* DYNoticeProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYNoticeProbe.swift; sourceTree = "<group>"; };
-		CD2E5140E15D008AA5142B57 /* DYWebComposerWebKitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYWebComposerWebKitTests.swift; sourceTree = "<group>"; };
 		CE510B8A54EF604B236B9FF8 /* DouyinLiveRoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinLiveRoom.swift; sourceTree = "<group>"; };
 		CF5B9DB335473EC23678AFE2 /* DouDuo-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "DouDuo-Bridging-Header.h"; sourceTree = "<group>"; };
 		CF797925E3FB7C48C8F83594 /* DouyinApiScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinApiScanner.swift; sourceTree = "<group>"; };
@@ -516,7 +512,6 @@
 				5053C76DAFCB7CD6A7418C7E /* DYVideoMoreMenu.swift */,
 				2A26A5E0649453C171341984 /* DYVideoOptionsPanel.swift */,
 				4C1FF9A03C63C28085E518B4 /* DYWebApiProbe.swift */,
-				74AA8D80AE540FB08C9E1344 /* DYWebComposer.swift */,
 				12C790D59BF29FBA8623D2C4 /* DYWorkMetadataText.swift */,
 				363F6A7D08E8394C267F0CA1 /* DYWriteCapture.swift */,
 				FB43F1FB3E9969E7DCF9C01A /* FollowLiveLogic.swift */,
@@ -568,7 +563,6 @@
 				826A85382E0E897BD45EC59D /* DYAutoPiPTests.swift */,
 				8EBC24E22E6E1F086E8D31C5 /* DYShareLinkTests.swift */,
 				6DFB5A2263DBFF0B8E1A5D44 /* DYVideoFitTests.swift */,
-				CD2E5140E15D008AA5142B57 /* DYWebComposerWebKitTests.swift */,
 			);
 			path = DouDuoTests;
 			sourceTree = "<group>";
@@ -834,7 +828,6 @@
 				727FF399B8CF3C46700F5D15 /* DYVideoMoreMenu.swift in Sources */,
 				40D20049423A4FFE6A28EA9E /* DYVideoOptionsPanel.swift in Sources */,
 				D7DBD8ABD0AA5084E42C51A0 /* DYWebApiProbe.swift in Sources */,
-				EF227D5790724C5A9045541C /* DYWebComposer.swift in Sources */,
 				2537A9A44CC476616009B14D /* DYWorkMetadataText.swift in Sources */,
 				D996BD80B02586202AEDCCDA /* DYWriteCapture.swift in Sources */,
 				844D4A4311515599F9DF42DE /* DouDuoApp.swift in Sources */,
@@ -883,7 +876,6 @@
 				048E8F57A5AF2A24EAF5087C /* DYShareLinkTests.swift in Sources */,
 				F8501118351B1716CB9A7564 /* DYVideoFit.swift in Sources */,
 				72274C424DA9E9816C13B520 /* DYVideoFitTests.swift in Sources */,
-				5ABDAE7326BA888564E5F90D /* DYWebComposerWebKitTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -3,7 +3,6 @@ import SwiftUI
 /// 完整设置页：「更多 → 设置」点进来。行样式与 GuoDuo 一致：左侧彩色圆角图标块 + 标题 / 小字说明 + 右侧控件。
 /// 当前视频相关的操作（转发 / 不感兴趣 / 下载 / 倍速 / 静音 / 听书 / 自动连播 / 发弹幕）和铺满宽度都在播放页菜单，这里不重复。
 struct DYSettingsScreen: View {
-    @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
     /// 清缓存后让宿主把当前视频重新挂回播放器
     var onCacheCleared: () -> Void = {}
     var offlineCandidateSource: ((Int) async throws -> [DYAweme])?
@@ -16,20 +15,13 @@ struct DYSettingsScreen: View {
     @AppStorage(DDChromeMode.key) private var chromeMode = DDChromeMode.classic.rawValue
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
-    @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = false
-    @AppStorage("douyin_portrait_mix_v1") private var portraitMix = false
     @AppStorage(DYLaunchMute.key) private var launchMuted = false
-    @State private var seenCount = 0
-    @State private var confirmClearSeen = false
     @AppStorage(DYHashtagFilter.storageKey) private var blockedHashtags = ""
     @AppStorage(DYFeedExtras.liveKey) private var feedLive = true
     @AppStorage(DYFeedExtras.adKey) private var feedAds = true
     @AppStorage(DYFeedExtras.productKey) private var feedProduct = true
     @AppStorage("douyin_danmaku_v1") private var danmakuEnabled = true
     @AppStorage(DYDanmakuPolicy.densityKey) private var density = DYDanmakuPolicy.Density.standard.rawValue
-    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
-    @AppStorage(DYStream.enabledKey) private var streamCache = true
-    @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
     @State private var cacheBytes: Int64?
 
     private var accent: Color { theme.accent.color(for: scheme) }
@@ -83,11 +75,24 @@ struct DYSettingsScreen: View {
                         .disabled(!danmakuEnabled)
                         .accessibilityIdentifier("douyin.danmaku.density")
                     }
+                    DDSettingRow(icon: "pip.enter", tint: .indigo, title: "离开应用时自动画中画") {
+                        Toggle("离开应用时自动画中画", isOn: $autoPiP).labelsHidden().tint(accent)
+                            .accessibilityIdentifier("settings.autoPip")
+                    }
                 } header: { Text("播放") } footer: {
                     Text("倍速、静音、听书、自动连播、铺满宽度、发弹幕在播放页菜单里。")
                 }
 
                 Section {
+                    NavigationLink {
+                        DYHashtagFilterScreen(currentTags: [], embedded: true)
+                    } label: {
+                        DDSettingRow(icon: "eye.slash.fill", tint: .red, title: "按关键词屏蔽视频") {
+                            let n = DYHashtagFilter(rawValue: blockedHashtags).tags.count
+                            Text(n == 0 ? "未设置" : "已屏蔽 \(n) 个").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("douyin.hashtags.manage")
                     DDSettingRow(icon: "dot.radiowaves.left.and.right", tint: .pink, title: "推荐里插入直播间") {
                         Toggle("推荐里插入直播间", isOn: $feedLive).labelsHidden().tint(accent)
                             .accessibilityIdentifier("settings.feed.live")
@@ -126,16 +131,6 @@ struct DYSettingsScreen: View {
 
                 Section {
                     NavigationLink {
-                        advanced
-                    } label: {
-                        DDSettingRow(icon: "slider.horizontal.3", tint: Color(white: 0.45), title: "高级设置",
-                                     subtitle: "关键词屏蔽、横竖屏筛选、评论方式、画中画") { EmptyView() }
-                    }
-                    .accessibilityIdentifier("settings.advanced")
-                }
-
-                Section {
-                    NavigationLink {
                         DDAboutScreen()
                     } label: {
                         DDSettingRow(icon: "info.circle.fill", tint: .gray, title: "关于 DouDuo") {
@@ -156,77 +151,6 @@ struct DYSettingsScreen: View {
             }
             .task { await loadCacheSize() }
         }
-    }
-
-    /// 高级设置：极少调的开关
-    private var advanced: some View {
-        List {
-            Section {
-                NavigationLink {
-                    DYHashtagFilterScreen(currentTags: [], embedded: true)
-                } label: {
-                    DDSettingRow(icon: "eye.slash.fill", tint: .red, title: "按关键词屏蔽视频") {
-                        let n = DYHashtagFilter(rawValue: blockedHashtags).tags.count
-                        Text(n == 0 ? "未设置" : "已屏蔽 \(n) 个").font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
-                .accessibilityIdentifier("douyin.hashtags.manage")
-                DDSettingRow(icon: "rectangle.landscape.rotate", tint: .blue, title: "横屏时只放横屏内容") {
-                    Toggle("横屏时只放横屏内容", isOn: $landscapeOnly).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("douyin.landscape.only")
-                }
-                DDSettingRow(icon: "rectangle.portrait", tint: .purple, title: "竖屏时固定 70% 竖屏视频") {
-                    Toggle("竖屏时固定 70% 竖屏视频", isOn: $portraitMix).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("settings.portrait.mix")
-                }
-            } header: { Text("推荐筛选") } footer: {
-                Text("关键词只作用于推荐页。横竖屏筛选默认都关：按抖音推荐的原顺序播放。")
-            }
-            Section {
-                DDSettingRow(icon: "text.badge.minus", tint: .cyan, title: "10 秒内重复弹幕去重") {
-                    Toggle("10 秒内重复弹幕去重", isOn: $deduplicate).labelsHidden().tint(accent)
-                        .disabled(!danmakuEnabled)
-                        .accessibilityIdentifier("douyin.danmaku.deduplicate")
-                }
-                DDSettingRow(icon: "pip.enter", tint: .indigo, title: "离开应用时自动画中画") {
-                    Toggle("离开应用时自动画中画", isOn: $autoPiP).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("settings.autoPip")
-                }
-            } header: { Text("播放") }
-            Section {
-                DDSettingRow(icon: "keyboard.fill", tint: .gray, title: "点回复时自动弹出键盘") {
-                    Toggle("点回复时自动弹出键盘", isOn: $replyAutoKeyboard).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("douyin.comment.autoKeyboard")
-                }
-                DDSettingRow(icon: "safari.fill", tint: .blue, title: "用网页评论框发送", subtitle: "更稳，每条多等几秒") {
-                    Toggle("用网页评论框发送", isOn: $commentViaWebUI).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("douyin.comment.webUI")
-                }
-            } header: { Text("评论") }
-            Section {
-                DDSettingRow(icon: "arrow.down.circle.fill", tint: .green, title: "边看边缓存", subtitle: "看到哪下到哪，划走就停") {
-                    Toggle("边看边缓存", isOn: $streamCache).labelsHidden().tint(accent)
-                        .accessibilityIdentifier("settings.stream.enabled")
-                }
-                Button(role: .destructive) { confirmClearSeen = true } label: {
-                    DDSettingRow(icon: "clock.arrow.circlepath", tint: .red, title: "清空看过记录") {
-                        Text("\(seenCount) 条").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                }
-                .disabled(seenCount == 0)
-                .accessibilityIdentifier("settings.seen.clear")
-                .onAppear { seenCount = DYSeenHistory.shared.count }
-                .confirmationDialog("清空看过记录？清空后看过的视频可能会再被推荐。", isPresented: $confirmClearSeen, titleVisibility: .visible) {
-                    Button("清空 \(seenCount) 条", role: .destructive) {
-                        DYSeenHistory.shared.clear(); seenCount = 0
-                    }
-                }
-            } header: { Text("缓存与记录") }
-        }
-        .scrollContentBackground(.hidden)
-        .background(Color.ddBackground)
-        .navigationTitle("高级设置")
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     /// 只算缓存（视频 + 离线 + 图片 + 网页数据），不含 App 本体
@@ -326,8 +250,3 @@ extension EnvironmentValues {
     @Entry var dyOpenSettings: (() -> Void)? = nil
 }
 
-
-/// 评论键盘相关的设置键
-enum DYCommentKeyboard {
-    static let autoFocusKey = "douyin_comment_reply_autokeyboard_v1"
-}

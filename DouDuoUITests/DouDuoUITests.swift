@@ -1414,11 +1414,8 @@ final class DouDuoUITests: XCTestCase {
             let settings = app.buttons["设置"].firstMatch
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             settings.tap()
-            let advanced = app.buttons["settings.advanced"].firstMatch
-            for _ in 0..<4 where !advanced.isHittable { app.swipeUp() }
-            XCTAssertTrue(advanced.waitForExistence(timeout: 5), app.debugDescription)
-            advanced.tap()
             let manage = app.buttons["douyin.hashtags.manage"].firstMatch
+            for _ in 0..<4 where !manage.isHittable { app.swipeUp() }
             XCTAssertTrue(manage.waitForExistence(timeout: 5), app.debugDescription)
             manage.tap()
             XCTAssertTrue(app.textFields["douyin.hashtags.input"].waitForExistence(timeout: 5))

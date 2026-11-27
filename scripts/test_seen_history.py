@@ -23,7 +23,7 @@ assert "unseen(allowedRecommendations(r.items))" in FEED, "推荐新拉的要过
 assert "DYFeedModel.isSeen = { id in DYSeenHistory.enabled && DYSeenHistory.shared.contains(id) }" in APP, "启动注入 + 跟开关"
 assert "不再推荐看过的视频" not in SETTINGS and "hideSeen" not in SETTINGS, "开关去掉"
 assert "static let enabled = true" in SEEN, "固定开"
-assert "DYSeenHistory.shared.clear()" in SETTINGS, "能清空"
+assert "清空看过记录" not in SETTINGS, "清空入口去掉"
 key = SEEN.split('UserDefaults.standard.string(forKey: "')[1].split('"')[0]
 assert f'currentKey = "{key}"' in ACCOUNTS, f"账号 key 要与 DYAccountStore 一致: {key}"
 # 关注页不过滤（关注流按时间，过滤会空）

@@ -14,11 +14,10 @@ check('Toggle("环境光", isOn: ambientOn)' in s and "DYVideoAmbient.onLevel" i
 for gone in ("刷新推荐", "不再推荐看过的视频", "Wi-Fi 省流量", "蜂窝数据省流量", "预缓存数量", "网页版 / 登录",
              "应用内私信通知", "通知里显示会话名称", "onOpenWeb", "onRefresh", "DYSettingInfo"):
     check(gone not in s, f"已去掉：{gone}")
-check("private var landscapeOnly = false" in s and "private var portraitMix = false" in s, "设置页横竖屏筛选默认关")
-check('"douyin_wide_landscape_v1") var landscapeWhenWide = false' in feed and '"douyin_portrait_mix_v1") var portraitMix = false' in feed, "推荐模型横竖屏筛选默认关")
-adv = s[s.index("private var advanced: some View"):s.index("private func loadCacheSize")]
-main = s[:s.index("private var advanced: some View")]
-for t in ('"按关键词屏蔽视频"', '"横屏时只放横屏内容"', '"竖屏时固定 70% 竖屏视频"', '"10 秒内重复弹幕去重"', '"离开应用时自动画中画"',
-          '"点回复时自动弹出键盘"', '"用网页评论框发送"', 'Toggle("边看边缓存"', '"清空看过记录"'):
-    check(t in adv and t not in main, f"{t} 在高级设置里")
+for gone in ("横屏时只放横屏内容", "竖屏时固定 70%", "10 秒内重复弹幕去重", "用网页评论框发送", "点回复时自动弹出键盘",
+             "边看边缓存", "清空看过记录", "高级设置", "private var advanced"):
+    check(gone not in s, f"已去掉：{gone}")
+check('"按关键词屏蔽视频"' in s and 'Toggle("离开应用时自动画中画"' in s, "关键词屏蔽、自动画中画留在设置主页")
+check("let landscapeWhenWide = false" in feed or "var landscapeWhenWide = false" in feed, "横屏只放横屏固定关")
+check("var portraitMix = false" in feed and "@AppStorage(\"douyin_portrait_mix_v1\")" not in feed, "70% 竖屏固定关")
 sys.exit(1 if fails else 0)

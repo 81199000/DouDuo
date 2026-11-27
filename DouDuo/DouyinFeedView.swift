@@ -373,16 +373,6 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                     }
                 }
                 #endif
-                #if DEBUG
-                if let aw = ProcessInfo.processInfo.environment["DOUDUO_COMPOSER_PROBE"], !aw.isEmpty, self.startURL.host == "www.douyin.com", !Self.composerProbeStarted {
-                    Self.composerProbeStarted = true
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 4_000_000_000)
-                        let r = await DYWebComposer.shared.probe(awemeID: aw, host: self.web.superview)
-                        DYLiveModel.log("DDCOMPOSERPROBE \(r)")
-                    }
-                }
-                #endif
                 let gen = self.signGen
                 let hooked = await self.waitWriteHooks(seconds: 10)
                 let state = await self.writeHookState()
@@ -396,7 +386,6 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     #if DEBUG
     private static var hookProbeStarted = false
-    private static var composerProbeStarted = false
     #endif
 
     /// 记下本页登录凭证刷新（/passport/token/beat/web）完成的时间。只读 Resource Timing，不碰 XHR/fetch
@@ -1598,10 +1587,9 @@ final class DYFeedModel: ObservableObject {
 
     /// 竖着看时按约 70% 竖屏均匀穿插（网页推荐接口本身竖屏只占 1～3 成，原序播放几乎全是横屏）；
     /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
-    /// 横着看（屏幕/播放区比高宽）时只放横屏视频
-    @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = false
-    /// 竖着看时固定约 70% 竖屏；关掉 = 按抖音推荐原顺序播放
-    @AppStorage("douyin_portrait_mix_v1") var portraitMix = false
+    /// 横屏只放横屏 / 竖屏固定 70% 竖屏：已关闭，按抖音推荐原顺序播放
+    var landscapeWhenWide = false
+    var portraitMix = false
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
     /// 当前播放区是不是横的（宽 > 高），由页面布局同步
@@ -2133,8 +2121,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
-        .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onChange(of: feed.portraitMix) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()
@@ -3404,8 +3390,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         }
         .modifier(DYOfflineAutomaticDownload(ready: initialized && !feed.items.isEmpty && !feed.offlinePlayback) { try await offlineCandidates($0) })
         .task(id: blockedHashtags + (feedLiveOn ? "|live" : "|nolive") + (feedAdsOn ? "|ad" : "|noad")) { await applyHashtagFilter() }
-        .onChange(of: feed.landscapeWhenWide) { _, _ in remixUpcoming() }
-        .onChange(of: feed.portraitMix) { _, _ in remixUpcoming() }
         .onDisappear {
             live.stop()
             preloader.clear()
@@ -5059,8 +5043,8 @@ struct DYCommentPanel: View {
     /// 滚回去之前别让可见性回调把「最上面那条」改成第一条
     @State private var restoringScroll = false
     @FocusState private var inputFocused: Bool
-    /// 设置里的开关：点评论/名字回复时是否自动弹出键盘（关掉后只进入「回复 @某人」状态，点输入框才弹）
-    @AppStorage(DYCommentKeyboard.autoFocusKey) private var replyAutoKeyboard = true
+    /// 点评论 / 名字回复时自动弹出键盘
+    private let replyAutoKeyboard = true
 
     init(bridge: DouyinBridge, aweme: DYAweme, onClose: (() -> Void)?, focus: DYCommentFocus? = nil,
          fillsPane: Bool = false, trailingInset: CGFloat = 0, horizontalStatus: Bool = false) {

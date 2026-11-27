@@ -144,7 +144,7 @@ class MenuPolicyTests(unittest.TestCase):
     def test_danmaku_settings_only_in_settings_screen(self):
         self.assertNotIn("struct DYDanmakuOptions", EXTRAS)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"', 'Toggle("10 秒内重复弹幕去重"'):
+        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"'):
             self.assertIn(token, screen)
 
     def test_settings_paths_and_duration_preferences(self):
@@ -164,8 +164,7 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
         self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        order = ['Text("界面")', 'Text("播放")', 'Text("推荐")', 'Text("存储")',
-                 'title: "高级设置"', 'Text("关于")']
+        order = ['Text("界面")', 'Text("播放")', 'Text("推荐")', 'Text("存储")', 'Text("关于")']
         self.assertNotIn("刷新推荐", screen)
         for section in order:
             self.assertIn(section, screen)
@@ -176,9 +175,9 @@ class MenuPolicyTests(unittest.TestCase):
                      "short_ratio", "短视频占比", "ratioChoices", 'Toggle("静音"', 'Toggle("自动连播"', 'Toggle("铺满宽度',
                      'Toggle("听书模式', "$autoNext", "$muted", "$autoFit", "$backgroundPlay"):
             self.assertNotIn(gone, screen)
-        for token in ("DYVideoAmbient.key", '"douyin_wide_landscape_v1"', 'Toggle("横屏时只放横屏内容"',
+        for token in ("DYVideoAmbient.key",
                       "DYHashtagFilterScreen(currentTags: [], embedded: true)",
-                      '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
+                      '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey",
                       "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
                       "DDAppVersion.display", "DDChromeMode.key"):
             self.assertIn(token, screen)
