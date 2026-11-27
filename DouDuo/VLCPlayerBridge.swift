@@ -60,14 +60,17 @@ final class VLCPlayerUIView: UIView {
     func applyFill() {
         guard let mp = controller?.mediaPlayer, bounds.width > 1, bounds.height > 1 else { return }
         let vs = mp.videoSize
-        guard vs.width > 1, vs.height > 1 else { layer.transform = CATransform3DIdentity; return }
+        // 放大只作用在子层上（sublayerTransform），本视图的 frame / bounds 不变：
+        // 改 layer.transform 时视图带着缩放被重设 frame（搬进直播间、自动布局），bounds 会被除以倍数，画面越缩越小
+        if !CATransform3DIsIdentity(layer.transform) { layer.transform = CATransform3DIdentity }
+        guard vs.width > 1, vs.height > 1 else { layer.sublayerTransform = CATransform3DIdentity; return }
         // VLC 按等比 fit 渲染（必有黑边）。把渲染层放大到「刚好铺满」即可：竖屏视频按宽度、横屏按高度，
         // 超出屏幕部分看不见（居中缩放，裁切对称）。
         let video = vs.width / vs.height, screen = bounds.width / bounds.height
         // 只在视频和屏幕同向时放大：竖屏看竖屏铺满宽度、横屏看横屏铺满高度；竖屏看横屏保持原样
         let s = DYVideoFit.vlcScale(fillWidth: fillWidth, videoAspect: video, screenAspect: screen)
         let t = CATransform3DMakeScale(s, s, 1)
-        if !CATransform3DEqualToTransform(layer.transform, t) { layer.transform = t }
+        if !CATransform3DEqualToTransform(layer.sublayerTransform, t) { layer.sublayerTransform = t }
     }
 }
 
