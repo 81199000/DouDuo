@@ -2304,7 +2304,14 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if tab == .live {
                 DYLiveFeed(bridge: bridge, model: live, onWeb: { u in web = DYWebTarget(url: u) }, active: web == nil && !overlayOpen,
                            topChrome: chromeMode.usesRail ? .zero : topChrome, screenInsets: insets,
-                           moduleRequest: liveModuleRequest, classicPreviewChrome: !chromeMode.usesRail)
+                           moduleRequest: liveModuleRequest, classicPreviewChrome: !chromeMode.usesRail,
+                           // 简洁 / 极简：直播分类还没进房时右滑回推荐。
+                           // 默认模式走频道分页自己的横滑，这里不重复接管。
+                           onChannelDragEnd: { dx, _, _, _ in
+                               guard !live.entered, dx > 70 else { return }
+                               DYLiveModel.log("DDLIVE swipe-back dx=\(Int(dx))")
+                               selectTab(.recommend)
+                           })
             } else if tab == .follow {
                 DYFollowFeed(bridge: bridge, insets: insets, active: tab == .follow && web == nil && !overlayOpen,
                              onAuthor: { a in authorTarget = a.author },
