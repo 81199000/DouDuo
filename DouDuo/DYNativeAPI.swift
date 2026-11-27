@@ -22,7 +22,11 @@ enum DYNative {
     /// 在模拟器里对齐网页真实请求前不许开。
     static let writeKey = "douduo_native_write_v1"
     /// DouDuo N 默认开（签名已改为网页同款 HMAC，模拟器小号实测发评论/赞/收藏不掉登录）；正式包默认关
-    static var writeEnabled: Bool {
+    /// ⚠️ 只有原生登录（App 自己生成并绑定密钥）的会话才许原生写：
+    /// 网页登录的会话借网页票据做 HMAC 签名，2026-11-28 真机手机号登录后原生发评论 403，随即整个登录被作废
+    /// （之后 profile/self 一律 code 8「用户未登录」）。网页登录的会话写操作一律回到网页里由安全 SDK 自己签。
+    @MainActor static var writeEnabled: Bool {
+        guard DYNativeTicket.hasTicket else { return false }
         if let v = UserDefaults.standard.object(forKey: writeKey) as? Bool { return v }
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
