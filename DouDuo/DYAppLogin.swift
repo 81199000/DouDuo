@@ -18,7 +18,13 @@ struct DYAppLoginScreen: View {
     @State private var code = ""
     @StateObject private var nativeLogin = DYNativeLogin.shared
     @State private var mfaCode = ""
-    @State private var mode: Mode = Self.nativeAvailable ? .native : .code
+    /// 原生包默认手机号（11-28 起手机号也走原生、跟扫码同一套签名）；以前默认原生扫码，一打开就清会话开始轮询二维码
+    @State private var mode: Mode = .code
+    #if DEBUG
+    static var autoCapture: Bool { ProcessInfo.processInfo.environment["DOUDUO_LOGIN_AUTOCAP"] == "1" }
+    #else
+    static let autoCapture = false
+    #endif
     @FocusState private var focus: Field?
 
     enum Mode { case code, qr, native }
@@ -56,7 +62,17 @@ struct DYAppLoginScreen: View {
         .onChange(of: nativeLogin.phase) { _, ph in if ph == .done { dismiss() } }
         .onChange(of: page.askScan) { _, ask in if ask { mode = .qr } }
         // 登录页里换 cookie 是预期内的，登录守护别弹
-        .onAppear { DYSessionWatch.shared.loginScreenOpen = true }
+        .onAppear {
+            DYSessionWatch.shared.loginScreenOpen = true
+            #if DEBUG
+            // 抓包：只在 DRYRUN 下自动点，避免真发短信
+            if Self.autoCapture, ProcessInfo.processInfo.environment["DOUDUO_LOGIN_DRYRUN"] == "1" {
+                let fake = "13800138000"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) { page.sendCode(phone: fake) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 12) { page.login(phone: fake, code: "123456") }
+            }
+            #endif
+        }
         .onDisappear { DYSessionWatch.shared.loginScreenOpen = false }
     }
 
@@ -84,14 +100,21 @@ struct DYAppLoginScreen: View {
                     Text(msg).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
                         .accessibilityIdentifier("douyin.login.message")
                 }
-                Text("登录走的是抖音网页版自己的登录，账号密码不经过本 App。登录即代表同意抖音《用户协议》和《隐私政策》。")
+                Text(Self.nativeAvailable && mode != .qr
+                     ? "App 直接向抖音登录（与原生扫码同一套），验证码只发给抖音。登录即代表同意抖音《用户协议》和《隐私政策》。"
+                     : "登录走的是抖音网页版自己的登录，账号密码不经过本 App。登录即代表同意抖音《用户协议》和《隐私政策》。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(20)
             .frame(maxWidth: 460)
             .frame(maxWidth: .infinity)
         }
-        .onChange(of: mode) { _, m in if m == .qr { page.showQR() } else { page.showCodeTab() } }
+        .onChange(of: mode) { _, m in
+            if m == .qr { page.showQR() } else { page.showCodeTab() }
+            // 原生包切到手机号：扫码轮询停掉（两套登录会话不能同时进行）；切回原生扫码重新取码
+            // （手机号的会话准备放到点「获取验证码」时再做：只是切过来看一眼不该清掉现有登录）
+            if Self.nativeAvailable, m == .code { nativeLogin.cancel() }
+        }
     }
 
     private var codeForm: some View {
@@ -110,27 +133,43 @@ struct DYAppLoginScreen: View {
                     .keyboardType(.numberPad).textContentType(.oneTimeCode)
                     .focused($focus, equals: .code)
                     .accessibilityIdentifier("douyin.login.code")
-                Button(page.countdown > 0 ? "\(page.countdown)s 后重发" : "获取验证码") {
+                Button(smsCountdown > 0 ? "\(smsCountdown)s 后重发" : "获取验证码") {
                     focus = .code
-                    page.sendCode(phone: digits(phone))
+                    if Self.nativeAvailable { Task { await nativeLogin.sendSmsCode(phone: digits(phone)) } }
+                    else { page.sendCode(phone: digits(phone)) }
                 }
-                .disabled(digits(phone).count != 11 || page.countdown > 0 || page.busy)
+                .disabled(digits(phone).count != 11 || smsCountdown > 0 || smsBusy)
                 .accessibilityIdentifier("douyin.login.sendcode")
             }
             .padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: WuWeiDesign.Spacing.md))
 
+            if Self.nativeAvailable {
+                if !nativeLogin.smsHint.isEmpty, nativeLogin.smsError.isEmpty {
+                    Text(nativeLogin.smsHint).font(.footnote).foregroundStyle(.secondary)
+                }
+                if !nativeLogin.smsError.isEmpty {
+                    Text(nativeLogin.smsError).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
+                        .accessibilityIdentifier("douyin.login.native.sms.error")
+                }
+            }
+
             Button {
                 focus = nil
-                page.login(phone: digits(phone), code: digits(code))
+                if Self.nativeAvailable { Task { await nativeLogin.smsLogin(phone: digits(phone), code: digits(code)) } }
+                else { page.login(phone: digits(phone), code: digits(code)) }
             } label: {
-                Group { if page.busy { ProgressView() } else { Text("登录").bold() } }
+                Group { if smsBusy { ProgressView() } else { Text("登录").bold() } }
                     .frame(maxWidth: .infinity).padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(digits(phone).count != 11 || digits(code).count < 4 || page.busy)
+            .disabled(digits(phone).count != 11 || digits(code).count < 4 || smsBusy)
             .accessibilityIdentifier("douyin.login.submit")
         }
     }
+
+    /// 原生包（DouDuo N / 豹子）手机号登录走 App 自己的 passport 请求（跟原生扫码同一套密钥绑定）；正式包仍驱动网页
+    private var smsCountdown: Int { Self.nativeAvailable ? nativeLogin.smsCooldown : page.countdown }
+    private var smsBusy: Bool { Self.nativeAvailable ? nativeLogin.smsBusy : page.busy }
 
     private var qrForm: some View {
         VStack(spacing: 14) {
@@ -267,18 +306,49 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         super.init()
         web.navigationDelegate = self
         #if DEBUG
+        // 诊断（不拦截）：登录页发出的 passport 请求和抖音的回包写进日志（手机号掩码、验证码/票据不记）。
+        // 老板 11-28：点「获取验证码」没反应——要看清是网页没发、被风控拦，还是抖音回了错误
+        web.configuration.userContentController.addUserScript(WKUserScript(source: #"""
+        (() => {
+          const hit = u => /passport\/web\/(send_code|sms_login|user\/login|validate_code)/.test(String(u));
+          const red = s => String(s || '').replace(/1[3-9]\d{9}/g, '<phone>').replace(/("(ticket|verify_ticket|mobile|code)":")[^"]+/g, '$1<r>').slice(0, 260);
+          const push = m => { window.__ddNet = (window.__ddNet || []).concat([m]).slice(-20); };
+          const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function (m, u) { this.__du = String(u); return oo.apply(this, arguments); };
+          XMLHttpRequest.prototype.send = function () {
+            if (hit(this.__du)) {
+              const path = this.__du.split('?')[0].replace(/^https?:\/\/[^/]+/, '');
+              push('req ' + path);
+              this.addEventListener('loadend', () => push('resp ' + path + ' http=' + this.status + ' ' + red(this.responseText)));
+            }
+            return os.apply(this, arguments);
+          };
+          const of = window.fetch;
+          window.fetch = function (u) {
+            const url = String(u && u.url || u);
+            if (!hit(url)) return of.apply(this, arguments);
+            const path = url.split('?')[0].replace(/^https?:\/\/[^/]+/, '');
+            push('req(fetch) ' + path);
+            return of.apply(this, arguments).then(r => { r.clone().text().then(t => push('resp ' + path + ' http=' + r.status + ' ' + red(t))); return r; },
+                                                   e => { push('err ' + path + ' ' + e); throw e; });
+          };
+        })();
+        """#, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         // 测试用：拦下发码 / 登录请求不真发（DOUDUO_LOGIN_DRYRUN=1），只记录网页确实发起了它
         if ProcessInfo.processInfo.environment["DOUDUO_LOGIN_DRYRUN"] == "1" {
             web.configuration.userContentController.addUserScript(WKUserScript(source: #"""
             (() => {
               const block = u => /passport\/web\/(send_code|sms_login|user\/login)/.test(String(u));
-              const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
-              XMLHttpRequest.prototype.open = function (m, u) { this.__u = String(u); return oo.apply(this, arguments); };
-              XMLHttpRequest.prototype.send = function () {
+              const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send, oh = XMLHttpRequest.prototype.setRequestHeader;
+              XMLHttpRequest.prototype.open = function (m, u) { this.__u = String(u); this.__h = {}; return oo.apply(this, arguments); };
+              XMLHttpRequest.prototype.setRequestHeader = function (k, v) { (this.__h = this.__h || {})[k] = v; return oh.apply(this, arguments); };
+              XMLHttpRequest.prototype.send = function (reqBody) {
                 if (block(this.__u)) {
                   window.__ddDry = (window.__ddDry || []).concat(this.__u.split('?')[0]);
+                  // 抓包：整条请求（URL 全参数 + 头 + 表单）交给原生写日志，用来对齐原生手机号登录的字段
+                  window.__ddCap = (window.__ddCap || []).concat([JSON.stringify({url: this.__u, headers: this.__h || {}, body: String(reqBody || ''), cookie: document.cookie})]);
                   // 登录请求：照真机那样网页跳走（/jingxuan），但没有 sessionid —— 验证 App 跳走后还能给反馈
-                  if (!/send_code/.test(this.__u)) { setTimeout(() => { location.href = 'https://www.douyin.com/jingxuan'; }, 600); return; }
+                  if (!/send_code/.test(this.__u)) { setTimeout(() => { location.href = 'https://www.douyin.com/jingxuan'; }, 2600); return; }
                   // 假装抖音回了「已发送」：让网页照真实流程往下走（倒计时 / 登录后续），但请求没出本机
                   const x = this, body = JSON.stringify({message: 'success', data: {}, error_code: 0});
                   Object.defineProperty(x, 'readyState', {value: 4}); Object.defineProperty(x, 'status', {value: 200});
@@ -289,12 +359,17 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
                 return os.apply(this, arguments);
               };
               const of = window.fetch;
-              window.fetch = function (u) {
-                if (block(u && u.url || u)) { window.__ddDry = (window.__ddDry || []).concat(String(u && u.url || u).replace(/\?.*/, '')); return new Promise(() => {}); }
+              window.fetch = function (u, init) {
+                if (block(u && u.url || u)) {
+                  window.__ddDry = (window.__ddDry || []).concat(String(u && u.url || u).replace(/\?.*/, ''));
+                  window.__ddCap = (window.__ddCap || []).concat([JSON.stringify({url: String(u && u.url || u), headers: (init && init.headers) || {}, body: String((init && init.body) || ''), cookie: document.cookie, via: 'fetch'})]);
+                  return new Promise(() => {});
+                }
                 return of.apply(this, arguments);
               };
             })();
             """#, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            web.configuration.userContentController.add(DYLoginCapture(), name: "ddLoginCap")
         }
         #endif
         Task { @MainActor in
@@ -385,7 +460,8 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         return JSON.stringify({
           path: location.pathname,
           qr: qrImg ? qrImg.src : null, cd: cd ? Number(cd) : 0, tip: tip || null, qrTip: qrTip || null, verify,
-          dry: window.__ddDry || [], scanAsk,
+          dry: window.__ddDry || [], scanAsk, cap: (window.__ddCap || []).splice(0), net: (window.__ddNet || []).splice(0),
+          toast: leaf.filter(t => /验证码|频繁|失败|错误|稍后|风险|异常|上限|安全/.test(t)).slice(0, 4).join('|'),
           // 点登录后网页上能看到的字 + 有没有大号方图/弹窗：抖音新设备二次验证页没见过，靠这个从日志还原
           seen: leaf.slice(0, 60).join('|'),
           boxes: [...document.querySelectorAll('img,canvas,iframe')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 100; })
@@ -408,6 +484,11 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         }
         #if DEBUG
         if let dry = j["dry"] as? [String], dry.count != lastDry { lastDry = dry.count; DYLiveModel.log("DDAPPLOGIN dry " + dry.joined(separator: ",")) }
+        for n in (j["net"] as? [Any]) ?? [] { DYLiveModel.log("DDAPPLOGIN net \(n)") }
+        if let t = j["toast"] as? String, !t.isEmpty, t != lastToast { lastToast = t; DYLiveModel.log("DDAPPLOGIN text \(t)") }
+        if let caps = j["cap"] as? [Any], !caps.isEmpty {
+            for c in caps { DYLoginCapture.write((c as? String) ?? String(describing: c)) }
+        }
         #endif
         if loginClickedAt != nil, let seen = j["seen"] as? String {
             let snap = seen + " ## " + (j["boxes"] as? String ?? "")
@@ -436,6 +517,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     }
     private var lastQR: String?
     private var lastDry = 0
+    private var lastToast = ""
     private var lastSeen = ""
 
     /// cookie 里真有 sessionid 才算登录成功（网页跳转不一定代表登录了）
@@ -459,6 +541,13 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
             let clicked = await DYTrustLogin.waitClicked(in: web, seconds: 7)
             DYLiveModel.log("DDTRUST login-page clicked=\(clicked) path=\(web.url?.path ?? "-")")
             savingTrust = false; busy = false; loggedIn = true
+            // 网页登录成功：之前原生扫码留下的会话必须作废，后续请求才会按这次网页登录的 cookie / 签名走。
+            // ⚠️ 原生扫码成功也会把 cookie 灌进网页（pushToWebKit），这里的隐藏登录页随即看到「新 sessionid」——
+            // 那是原生会话本身，不能删：sessionid 跟罐里的一致就跳过
+            let web = await DYLoginState.sessionValue()
+            if web == nil || web != DYCookieJar.shared.value("sessionid") {
+                DYCookieJar.dropNativeSession(reason: "web-login")
+            }
             DYAccountStore.sessionDidChange()
         }
         else if web.url?.path.hasPrefix("/login_page") != true {
@@ -502,6 +591,23 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         """
     }
 }
+
+#if DEBUG
+/// DOUDUO_LOGIN_DRYRUN 抓包：网页登录组件发出的 send_code / sms_login 请求原样写 Documents/ddlogincap.txt
+/// （只在本机、只在 DEBUG；手机号按掩码写，验证码字段本来就是网页 XOR 过的，再按长度截短）
+final class DYLoginCapture: NSObject, WKScriptMessageHandler {
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        if let s = m.body as? String { Self.write(s) }
+    }
+    static func write(_ s: String) {
+        let u = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddlogincap.txt")
+        let line = "\(Date()) \(s)\n"
+        if let h = try? FileHandle(forWritingTo: u) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? Data(line.utf8).write(to: u) }
+        DYLiveModel.log("DDAPPLOGIN cap len=\(s.count)")
+    }
+}
+#endif
 
 /// 把登录页的 WKWebView 放进界面（隐身时也得在窗口里，网页计时器和渲染才正常跑）
 private struct DYLoginWebHost: UIViewRepresentable {

@@ -142,6 +142,8 @@ final class DYAccountStore: ObservableObject {
         // App 自己清的（退出 / 切换）：登录守护不弹「登录已失效」；cookie 变化通知是异步到的，多留 2 秒
         DYSessionWatch.shared.suppressed += 1
         defer { Task { @MainActor in try? await Task.sleep(for: .seconds(2)); DYSessionWatch.shared.suppressed -= 1 } }
+        // 原生登录的会话不在网页存储里，单删网页 cookie 清不掉它：切换 / 退出后还会拿旧票据签名
+        DYCookieJar.dropNativeSession(reason: "clear-session")
         let store = WKWebsiteDataStore.default()
         for c in await store.httpCookieStore.allCookies() where isDouyin(c.domain) {
             await store.httpCookieStore.deleteCookie(c)

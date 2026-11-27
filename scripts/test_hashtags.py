@@ -134,6 +134,9 @@ private extension Double {
         harness = r'''
 import Foundation
 struct DYAweme: Decodable { let id: String }
+// 生产代码 list() 会经过搜索节流闸门、写 DDSEARCH 日志（jibao 11-27 加）：这里给最小桩，行为与节流前一致（直接调用）
+enum DYLiveModel { static func log(_ s: String) {} }
+enum DYSearchGate { static func fetch(key: String, _ op: () async throws -> Data) async throws -> Data { try await op() } }
 __PAGE__
 __ERROR__
 final class DouyinBridge {
