@@ -498,6 +498,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     /// 这里只在发送前检查，没装全就重开签名页再等，最多 3 轮；不会重发已经发出的请求，所以不会重复评论。
     @discardableResult
     func ensureWriteReady() async -> Bool {
+        // 原生登录的会话：写接口完全由 App 自己签名，不需要等网页签名页（以前这里会白等约 30 秒）
+        if await MainActor.run(body: { DYNativeTicket.hasTicket }) { return true }
         await waitReady()
         if await waitWriteHooks(seconds: 2) { return true }
         for round in 1...3 {

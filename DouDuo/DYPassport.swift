@@ -24,15 +24,25 @@ final class DYCookieJar {
     func clear() { cookies = [:]; UserDefaults.standard.removeObject(forKey: Self.key) }
     private func save() { UserDefaults.standard.set(cookies, forKey: Self.key) }
 
-    var header: String { cookies.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ") }
+    var header: String {
+        cookies.filter { !$0.key.hasPrefix("__dd_") }.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
+    }
 
-    /// 收 Set-Cookie（同一响应可能多条）
+    /// 收 Set-Cookie。注意 URLSession 会把多条 Set-Cookie 用逗号合并成一个头，
+    /// 不能手动按行拆（会只认第一条），必须交给 HTTPCookie 解析。
     func absorb(_ response: HTTPURLResponse) {
-        let fields = response.allHeaderFields
-        var raw: [String] = []
-        for (k, v) in fields where "\(k)".lowercased() == "set-cookie" { raw.append("\(v)") }
-        if let list = fields["Set-Cookie"] as? [String] { raw += list }
-        for line in raw { absorbCookie(line) }
+        guard let url = response.url else { return }
+        var fields: [String: String] = [:]
+        for (k, v) in response.allHeaderFields { fields["\(k)"] = "\(v)" }
+        let list = HTTPCookie.cookies(withResponseHeaderFields: fields, for: url)
+        for c in list {
+            if c.value.isEmpty || c.value == "deleted" || (c.expiresDate.map { $0 < Date() } ?? false) {
+                cookies.removeValue(forKey: c.name)
+            } else {
+                cookies[c.name] = c.value
+            }
+        }
+        if !list.isEmpty { save() }
     }
 
     func absorbCookie(_ line: String) {
@@ -50,7 +60,7 @@ final class DYCookieJar {
     /// 把原生登录拿到的整份 cookie 写进网页的共享存储，让网页和私信等仍能共用同一个登录
     func pushToWebKit() async {
         let store = WKWebsiteDataStore.default().httpCookieStore
-        for (name, value) in cookies {
+        for (name, value) in cookies where !name.hasPrefix("__dd_") {
             let c = HTTPCookie(properties: [
                 .name: name, .value: value, .domain: ".douyin.com", .path: "/",
                 .expires: Date(timeIntervalSinceNow: 60 * 60 * 24 * 300),
@@ -182,7 +192,8 @@ enum DYPassport {
         raw += "&" + body.map { "\($0.0)=\($0.1)" }.joined(separator: "&") + "&app_key=" + appKey
         params.append(("sign", sha256Hex(raw)))
         params.append(("qs", x5(first.joined(separator: ","))))
-        if let ms = DYCookieJar.shared.value("msToken"), !ms.isEmpty { params.append(("msToken", ms)) }
+        if DYCookieJar.shared.value("__dd_ms_captured") == "1",
+           let ms = DYCookieJar.shared.value("msToken"), !ms.isEmpty { params.append(("msToken", ms)) }
         // passport 接口同样要 a_bogus（缺了它扫码轮询会一直返回 error_code 4031「存在安全风险」）
         let rawQuery = query(params)
         let form = body.map { "\($0.0)=\(encComponent($0.1))" }.joined(separator: "&")

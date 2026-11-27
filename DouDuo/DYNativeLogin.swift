@@ -43,19 +43,22 @@ final class DYNativeLogin: ObservableObject {
     private struct Resp { let status: Int; let text: String; let location: String?; var url: String = ""; var error: String = "" }
 
     private func send(_ method: String, _ url: URL, headers: [String: String], body: String? = nil,
-                      followRedirect: Bool) async -> Resp {
+                      followRedirect: Bool, useCookies: Bool = true) async -> Resp {
         var r = URLRequest(url: url)
         r.httpMethod = method
         if let body { r.httpBody = Data(body.utf8) }
         for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
-        if !DYCookieJar.shared.cookies.isEmpty { r.setValue(DYCookieJar.shared.header, forHTTPHeaderField: "Cookie") }
+        if useCookies, !DYCookieJar.shared.cookies.isEmpty { r.setValue(DYCookieJar.shared.header, forHTTPHeaderField: "Cookie") }
         var delegateSession = session
         if !followRedirect { delegateSession = noRedirectSession }
         do {
             let (d, resp) = try await delegateSession.data(for: r)
             guard let h = resp as? HTTPURLResponse else { return Resp(status: -2, text: "", location: nil, error: "no-http") }
             DYCookieJar.shared.absorb(h)
-            if let ms = h.value(forHTTPHeaderField: "X-Ms-Token"), !ms.isEmpty { DYCookieJar.shared.set("msToken", ms) }
+            if let ms = h.value(forHTTPHeaderField: "X-Ms-Token"), !ms.isEmpty {
+                DYCookieJar.shared.set("msToken", ms)
+                DYCookieJar.shared.set("__dd_ms_captured", "1")
+            }
             DYNativeTicket.capture(h)
             return Resp(status: h.statusCode, text: String(decoding: d, as: UTF8.self),
                         location: h.value(forHTTPHeaderField: "Location"), url: h.url?.absoluteString ?? "")
@@ -89,10 +92,52 @@ final class DYNativeLogin: ObservableObject {
         qrImage = nil
         DYCookieJar.shared.clear()
         DYNativeTicket.clear()
+        await bootstrap()
         startSession()
         DYNativeTicket.prepareLogin()
         await strategy()
         await fetchQr()
+    }
+
+    /// 登录前先像浏览器一样「进一次首页」：拿 __ac_nonce/ttwid/webid 等基础 cookie。
+    /// 少了这些，扫码确认那一步服务端会回「系统繁忙」。
+    private func bootstrap() async {
+        let jar = DYCookieJar.shared
+        let home = await send("GET", URL(string: DYPassport.host + "/")!,
+                              headers: ["Accept": "text/html,application/xhtml+xml", "User-Agent": DYPassport.userAgent,
+                                        "Accept-Language": "zh-CN,zh;q=0.9", "Accept-Encoding": "identity"],
+                              followRedirect: true)
+        // ttwid
+        let ttBody = #"{"aid":10006,"service":"sso.douyin.com","needFid":false,"union":true,"unionHost":"https://ttwid.bytedance.com","migrate_info":null,"fid":""}"#
+        let tt = await send("POST", URL(string: "https://ttwid.bytedance.com/ttwid/union/register/")!,
+                            headers: ["Content-Type": "application/json", "Accept": "application/json, text/plain, */*",
+                                      "User-Agent": DYPassport.userAgent], body: ttBody, followRedirect: true)
+        if let d = tt.text.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let redirect = o["redirect_url"] as? String, redirect.hasPrefix("http"), let u = URL(string: redirect) {
+            _ = await send("GET", u, headers: ["Accept": "application/json, text/plain, */*", "User-Agent": DYPassport.userAgent],
+                           followRedirect: true)
+        }
+        if jar.value("msToken") == nil { jar.set("msToken", Self.rand(107)) }
+        if jar.value("UIFID_TEMP") == nil { jar.set("UIFID_TEMP", Self.hex(80)) }
+        if jar.value("s_v_web_id") == nil { jar.set("s_v_web_id", Self.verifyFp()) }
+        if jar.value("webid") == nil {
+            let body = #"{"app_id":6383,"url":"https://www.douyin.com/","user_agent":"\#(DYPassport.userAgent)","referer":"","user_unique_id":""}"#
+            let w = await send("POST", URL(string: "https://mcs.zijieapi.com/webid")!,
+                               headers: ["Content-Type": "application/json", "User-Agent": DYPassport.userAgent],
+                               body: body, followRedirect: true, useCookies: false)
+            if let d = w.text.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let id = o["web_id"] as? String, id.count >= 6 { jar.set("webid", id) }
+        }
+        DDLog("DDNLOGIN bootstrap home=\(home.status) ttwid=\(jar.value("ttwid") != nil) nonce=\(jar.value("__ac_nonce") != nil) webid=\(jar.value("webid") != nil) ms=\(jar.value("__dd_ms_captured") ?? "0") cookies=\(jar.cookies.count)")
+    }
+
+    static func rand(_ n: Int) -> String {
+        let chars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        return String((0..<n).map { _ in chars.randomElement()! })
+    }
+
+    static func hex(_ bytes: Int) -> String {
+        (0..<bytes).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
     }
 
     private func strategy() async {
@@ -207,7 +252,10 @@ final class DYNativeLogin: ObservableObject {
         }
     }
 
-    /// 返回 (重定向地址, 状态串)
+    /// 返回 (重定向地址, 状态串)。
+    /// 关键：**不跟随跳转**。扫码确认后服务端回 302 + Location，如果交给 URLSession 自动跟随，
+    /// 它会把 POST 改成 GET 重新发且丢掉我们手写的 Cookie，服务端就回「系统繁忙」——
+    /// 所以跟 Amor 的 Java 版一样：自己抓 Location，再手动一步步跟（completeLogin）。
     private func poll(token: String) async -> (String?, String)? {
         let path = "/passport/web/check_qrconnect/"
         let body: [(String, String)] = [("need_logo", "false"), ("is_frontier", "false"), ("token", token),
@@ -218,37 +266,23 @@ final class DYNativeLogin: ObservableObject {
                                    dtrait: DYDtrait.session)
         let form = body.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
         let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
-                           followRedirect: true)
-        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location == nil ? "-" : "yes") url=\(r.url.replacingOccurrences(of: DYPassport.host, with: "")) err=\(r.error.isEmpty ? "-" : r.error) body=\(String(r.text.prefix(80)))")
-        if r.status < 0 || r.text.isEmpty {
-            // 跟随跳转这一路失败了：换不跟跳转的方式再发一次，至少把 302 的 Location 抓到手
-            let raw = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
-                                 followRedirect: false)
-            DDLog("DDNLOGIN poll-retry http=\(raw.status) loc=\(raw.location.map { String($0.prefix(80)) } ?? "-") err=\(raw.error.isEmpty ? "-" : raw.error)")
-            if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
-            if let loc = raw.location, !loc.isEmpty { return (loc, "3") }
-            if raw.status >= 200, raw.status < 300, !raw.text.isEmpty {
-                guard let d = raw.text.data(using: .utf8),
-                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
-                let data = (o["data"] as? [String: Any]) ?? o
-                for k in ["redirect_url", "redirect_uri", "login_url", "scan_url", "url"] {
-                    if let v = (data[k] as? String) ?? (o[k] as? String), !v.isEmpty { return (v, "3") }
-                }
-                return (nil, (data["status"] as? String) ?? "")
-            }
-            return nil
-        }
-        // 确认后服务端 302 到带 sessionid 的地址，跟过去 cookie 已经在罐里了
+                           followRedirect: false)
+        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location.map { String($0.prefix(60)) } ?? "-") err=\(r.error.isEmpty ? "-" : r.error) body=\(String(r.text.prefix(150)))")
+
         if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
         if let loc = r.location, !loc.isEmpty { return (loc, "3") }
         guard let d = r.text.data(using: .utf8),
-              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
         let data = (o["data"] as? [String: Any]) ?? o
         if (data["error_code"] as? Int) == 4031 { return (nil, "4031") }
         for k in ["redirect_url", "redirect_uri", "login_url", "scan_url", "url"] {
             if let v = (data[k] as? String) ?? (o[k] as? String), !v.isEmpty { return (v, "3") }
         }
-        return (nil, (data["status"] as? String) ?? "")
+        let st = (data["status"] as? String) ?? (data["status"].map { "\($0)" } ?? "")
+        if st.isEmpty, let err = (data["description"] as? String) ?? (o["description"] as? String) {
+            DDLog("DDNLOGIN poll-no-status desc=\(err)")
+        }
+        return (nil, st)
     }
 
     /// 跟着登录重定向把会话坐实，再进一次首页让 msToken / 票据落定
