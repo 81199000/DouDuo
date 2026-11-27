@@ -75,7 +75,10 @@ final class DYNativeLogin: ObservableObject {
 
     // MARK: 流程
 
+    private func DDLog(_ s: String) { DYLiveModel.log(s) }
+
     func start() async {
+        DDLog("DDNLOGIN start")
         pollTask?.cancel()
         phase = .loading
         qrImage = nil
@@ -93,7 +96,8 @@ final class DYNativeLogin: ObservableObject {
         var h = DYPassport.headers(path: path, post: false, traceID: traceID, portrait: portrait, dtrait: nil)
         h.removeValue(forKey: "web-sdk-version")
         h.removeValue(forKey: "x-tt-passport-verify-portrait")
-        _ = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: false)
+        let r = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: false)
+        DDLog("DDNLOGIN strategy http=\(r?.status ?? -1) cookies=\(DYCookieJar.shared.cookies.count) body=\(String((r?.text ?? "").prefix(90)))")
     }
 
     private func fetchQr() async {
@@ -103,20 +107,29 @@ final class DYNativeLogin: ObservableObject {
         let qs = DYPassport.signedQuery(DYPassport.base(.qr, traceID: traceID, verifyFp: fp), body: [])
         let h = DYPassport.headers(path: path, post: false, traceID: traceID, portrait: portrait,
                                    dtrait: DYDtrait.session)
-        guard let r = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: true),
+        let rr = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: true)
+        DDLog("DDNLOGIN get_qrcode http=\(rr?.status ?? -1) cookies=\(DYCookieJar.shared.cookies.count) body=\(String((rr?.text ?? "").prefix(120)))")
+        guard let r = rr,
               let d = r.text.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
             phase = .failed("取二维码失败（网络）")
             return
         }
         let data = (o["data"] as? [String: Any]) ?? o
-        guard let token = data["token"] as? String, !token.isEmpty,
-              let qr = data["qrcode"] as? String, let img = Data(base64Encoded: qr) else {
+        guard let token = data["token"] as? String, !token.isEmpty, var qr = data["qrcode"] as? String else {
+            DDLog("DDNLOGIN no-token keys=\(data.keys.sorted().prefix(8))")
             phase = .failed("取二维码失败：\((o["description"] as? String) ?? "无二维码")")
             return
         }
+        if let comma = qr.range(of: "base64,") { qr = String(qr[comma.upperBound...]) }
+        guard let img = Data(base64Encoded: qr) else {
+            DDLog("DDNLOGIN qr-not-base64 len=\(qr.count) head=\(String(qr.prefix(20)))")
+            phase = .failed("二维码解码失败")
+            return
+        }
+        DDLog("DDNLOGIN qr ok token=\(token.prefix(6))… img=\(img.count)B")
         qrImage = img
-        expiresAt = Date().addingTimeInterval(60)
+        expiresAt = Date().addingTimeInterval(120)
         phase = .waiting(token: token)
         startPolling(token: token)
     }
@@ -128,12 +141,16 @@ final class DYNativeLogin: ObservableObject {
             while polling, !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled || !polling { return }
-                if let exp = expiresAt, Date() > exp {
-                    // 过期自动换一张，用户不用重新点
+                if case .scanned = phase {
+                    // 已经扫过（等手机确认），别在确认前把码换掉——换了等于把这次扫码作废
+                } else if let exp = expiresAt, Date() > exp {
+                    DDLog("DDNLOGIN qr-expired, refreshing")
                     await fetchQr()
                     return
                 }
-                guard let step = await poll(token: token) else {
+                let step = await poll(token: token)
+                if let step { DDLog("DDNLOGIN poll status=\(step.1) redirect=\(step.0 == nil ? "-" : "yes")") }
+                guard let step else {
                     misses += 1
                     if misses > 90 { polling = false; phase = .failed("二维码已过期") }
                     continue
@@ -143,6 +160,7 @@ final class DYNativeLogin: ObservableObject {
                     phase = .scanned
                     polling = false
                     let ok = await completeLogin(redirect: redirect)
+                    DDLog("DDNLOGIN complete ok=\(ok) sessionid=\(DYCookieJar.shared.value("sessionid") == nil ? "none" : "set") ticket=\(DYNativeTicket.hasTicket)")
                     guard ok else { phase = .failed("登录未完成，请重试"); return }
                     await DYCookieJar.shared.pushToWebKit()
                     phase = .done
@@ -190,9 +208,11 @@ final class DYNativeLogin: ObservableObject {
         var url = redirect.isEmpty ? URL(string: DYPassport.host + "/")! : URL(string: redirect, relativeTo: URL(string: DYPassport.host))!
         for _ in 0..<6 {
             guard url.host?.hasSuffix("douyin.com") == true else { break }
-            guard let r = await send("GET", url, headers: ["Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            let r0 = await send("GET", url, headers: ["Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                                                            "Referer": DYPassport.host + "/", "User-Agent": DYPassport.userAgent],
-                                     followRedirect: false) else { break }
+                                     followRedirect: false)
+            guard let r = r0 else { break }
+            DDLog("DDNLOGIN hop http=\(r.status) loc=\(r.location == nil ? "-" : "yes")")
             guard r.status >= 300, r.status < 400, let loc = r.location, !loc.isEmpty,
                   let next = URL(string: loc, relativeTo: url) else { break }
             url = next

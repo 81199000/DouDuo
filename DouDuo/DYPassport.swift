@@ -93,7 +93,9 @@ enum DYDebugSeed {
 enum DYPassport {
     static let appKey = "163e7ce78d58971a41f5b969996d85c2"
     static let host = "https://www.douyin.com"
-    static let userAgent = DouyinWeb.userAgent
+    /// 必须和 account_sdk_source_info 的环境指纹配套（那份指纹是 Windows Chrome），
+    /// 用 Mac Safari 的 UA 去配 Windows 指纹会被判环境异常（error_code 4031，扫码后一直不返回已确认）。
+    static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     /// UTC 当天 12:00 的秒级时间戳
     static var dayTs: String {
@@ -134,11 +136,17 @@ enum DYPassport {
         sha256Hex("p_bd=1.0.1.19-fix.01&p_ca=\(pCa)&p_ts=\(pTs)&p_ver=1.1.4-beta.5&p_zt=3.3.34-beta.10&passport_jssdk_version=3.4.13")
     }
 
-    /// account_sdk_source_info：源码里 XOR 混淆的固定串，运行时按「浏览器环境」填真实值
+    /// account_sdk_source_info：源码里 XOR 混淆的固定串（还原自 Amor5207/douyin-tv），
+    /// 里面的 timeOrigin 每次请求按当前时间重算。自己瞎拼这套环境指纹会被判 4031 风控。
     static func accountSDKInfo() -> String {
-        let t = Int(Date().timeIntervalSince1970 * 1000)
-        return #"{"sdk_version":"1.0.1.19-fix.01","stage_params":{"tt_webid":"","webid":"","fp":"","aid":"6383","device_platform":"web","app_name":"douyin","channel":"channel_pc_web","pc_client_type":"1","version_code":"170400","version_name":"17.4.0","cookie_enabled":true,"screen_width":1536,"screen_height":864,"browser_language":"zh-CN","browser_platform":"MacIntel","browser_name":"Safari","browser_version":"26.0","browser_online":true,"engine_name":"WebKit","engine_version":"605.1.15","os_name":"Mac OS","os_version":"10.15.7","cpu_core_num":8,"device_memory":8,"platform":"PC","downlink":10,"effective_type":"4g","round_trip_time":50},"timeOrigin":\#(t),"url":"https://www.douyin.com/","referrer":""}"#
+        let origin = String(format: "%.1f", Double(Int(Date().timeIntervalSince1970 * 1000)) - 1250.3)
+        guard let key = sdkInfoTemplate.range(of: #""timeOrigin":"#) else { return sdkInfoTemplate }
+        let tail = sdkInfoTemplate[key.upperBound...]
+        let rest = tail.firstIndex(of: ",").map { tail[$0...] } ?? ""
+        return String(sdkInfoTemplate[..<key.upperBound]) + origin + rest
     }
+
+    private static let sdkInfoTemplate = #"{"hardwareConcurrency":12,"webdriver":false,"chromedriver":false,"shelldriver":false,"plugins":5,"innerHeight":770,"innerWidth":1272,"outerHeight":0,"outerWidth":0,"webgl":{"vendor":"Google Inc. (Microsoft)","renderer":"ANGLE (Microsoft, Microsoft Basic Render Driver (0x0000008C) Direct3D11 vs_5_0 ps_5_0, D3D11)"},"automation":{"s":"00000000","c":"0001","p":"0000000","s1":"00000000","c1":"0000","p1":"0"},"performance":{"timeOrigin":1794654461688.7,"usedJSHeapSize":149136654,"navigationTiming":{"decodedBodySize":919703,"entryType":"navigation","initiatorType":"navigation","name":"https://www.douyin.com/","renderBlockingStatus":"non-blocking","serverTiming":"cdn-cache,edge,origin,inner,tt_agw","guleStart":843.5,"guleDuration":12.5}},"browser":{"t":"2859744564971","bit_protocol":"false","bit_helper":false}}"#
 
     enum Step { case strategy, qr, status }
 
@@ -175,7 +183,11 @@ enum DYPassport {
         params.append(("sign", sha256Hex(raw)))
         params.append(("qs", x5(first.joined(separator: ","))))
         if let ms = DYCookieJar.shared.value("msToken"), !ms.isEmpty { params.append(("msToken", ms)) }
-        return query(params)
+        // passport 接口同样要 a_bogus（缺了它扫码轮询会一直返回 error_code 4031「存在安全风险」）
+        let rawQuery = query(params)
+        let form = body.map { "\($0.0)=\(encComponent($0.1))" }.joined(separator: "&")
+        let bogus = DYABogus.sign(query: rawQuery, form: form, userAgent: userAgent)
+        return rawQuery + "&a_bogus=" + encComponent(bogus)
     }
 
     /// x-tt-passport-aid-sign = HMAC-SHA256(HKDF-SHA256(HMAC-SHA256(ts, appKey)), "aid=6383&path=…&ts=…")
@@ -204,7 +216,8 @@ enum DYPassport {
     @MainActor
     static func headers(path: String, post: Bool, traceID: String, portrait: String, dtrait: String?) -> [String: String] {
         var h: [String: String] = [
-            "Accept": "application/json, text/javascript", "Origin": host, "Referer": host + "/",
+            "Accept": "application/json, text/javascript", "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "identity", "Origin": host, "Referer": host + "/",
             "User-Agent": userAgent, "web-sdk-version": "1", "x-tt-passport-aid-sign": aidSign(path),
             "x-tt-passport-trace-id": traceID, "x-tt-passport-verify-portrait": portrait,
         ]

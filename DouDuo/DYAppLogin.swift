@@ -17,7 +17,7 @@ struct DYAppLoginScreen: View {
     @State private var phone = ""
     @State private var code = ""
     @StateObject private var nativeLogin = DYNativeLogin.shared
-    @State private var mode: Mode = .code
+    @State private var mode: Mode = Self.nativeAvailable ? .native : .code
     @FocusState private var focus: Field?
 
     enum Mode { case code, qr, native }
