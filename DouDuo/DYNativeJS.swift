@@ -146,8 +146,7 @@ final class DYNativeJS {
         var r = URLRequest(url: url)
         if isPost {
             // 写接口：必须带登录票据签名；读不到票据就不发（缺票据会被服务端当异常设备、作废登录）
-            guard let ticket = await DYTicketStore.load(from: DouyinBridge.primary?.web),
-                  let tg = DYTicketGuard.headers(ticket, path: comps.path) else {
+            guard let tg = await DYSigning.headers(path: comps.path, web: DouyinBridge.primary?.web) else {
                 DYLiveModel.log("DDNATIVEJS post-blocked no-ticket path=\(comps.path)")
                 return ["s": -10, "t": ""]
             }

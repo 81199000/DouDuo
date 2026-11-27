@@ -16,10 +16,13 @@ struct DYAppLoginScreen: View {
     @StateObject private var page = DYLoginPage()
     @State private var phone = ""
     @State private var code = ""
+    @StateObject private var nativeLogin = DYNativeLogin.shared
     @State private var mode: Mode = .code
     @FocusState private var focus: Field?
 
-    enum Mode { case code, qr }
+    enum Mode { case code, qr, native }
+    /// 原生扫码登录只给 DouDuo N（签名与登录是配套的，正式包继续用网页登录）
+    static var nativeAvailable: Bool { (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native") }
     enum Field { case phone, code }
 
     var body: some View {
@@ -49,6 +52,7 @@ struct DYAppLoginScreen: View {
             }
         }
         .onChange(of: page.loggedIn) { _, ok in if ok { dismiss() } }
+        .onChange(of: nativeLogin.phase) { _, ph in if ph == .done { dismiss() } }
         .onChange(of: page.askScan) { _, ask in if ask { mode = .qr } }
         // 登录页里换 cookie 是预期内的，登录守护别弹
         .onAppear { DYSessionWatch.shared.loginScreenOpen = true }
@@ -61,11 +65,12 @@ struct DYAppLoginScreen: View {
                 Picker("登录方式", selection: $mode) {
                     Text("验证码登录").tag(Mode.code)
                     Text("扫码登录").tag(Mode.qr)
+                    if Self.nativeAvailable { Text("原生扫码").tag(Mode.native) }
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("douyin.login.mode")
 
-                if mode == .code { codeForm } else { qrForm }
+                if mode == .native { nativeForm } else if mode == .code { codeForm } else { qrForm }
 
                 if page.savingTrust {
                     HStack(spacing: 8) {
@@ -147,6 +152,38 @@ struct DYAppLoginScreen: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// 原生扫码：App 自己向抖音要二维码、自己轮询，不经过网页（登录后写接口用 App 自生成的密钥签名）
+    private var nativeForm: some View {
+        VStack(spacing: 14) {
+            switch nativeLogin.phase {
+            case .done:
+                Label("登录成功", systemImage: "checkmark.circle.fill").font(.headline)
+            case .failed(let why):
+                Text(why).font(.footnote).foregroundStyle(theme.status.danger.color(for: scheme))
+                Button("重试", systemImage: "arrow.clockwise") { Task { await nativeLogin.start() } }
+                    .buttonStyle(.bordered)
+            case .idle:
+                ProgressView("正在准备…").frame(height: 240)
+            case .loading:
+                ProgressView("正在取二维码…").frame(height: 240)
+            case .waiting, .scanned:
+                if let d = nativeLogin.qrImage, let img = UIImage(data: d) {
+                    Image(uiImage: img).interpolation(.none).resizable().scaledToFit()
+                        .frame(width: 240, height: 240)
+                        .padding(10).background(Color.white, in: RoundedRectangle(cornerRadius: WuWeiDesign.Spacing.lg))
+                        .accessibilityIdentifier("douyin.login.native.qr")
+                }
+                Text(nativeLogin.phase == .scanned ? "已扫码，正在登录…" : "用另一台手机扫码登录")
+                    .font(.headline)
+                    .accessibilityIdentifier("douyin.login.native.status")
+            }
+            Text("App 自己向抖音要码，不经过网页。扫完自动登录，过期的码会自动换新。")
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .task { if nativeLogin.phase == .idle { await nativeLogin.start() } }
     }
 
     private func digits(_ s: String) -> String { s.filter(\.isNumber) }

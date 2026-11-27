@@ -1,0 +1,323 @@
+// 原生扫码登录（DouDuo N）：整套移植自 Amor5207/douyin-tv（GPL-3.0）的 passport 登录流程。
+// 关键点：登录前 App 自己生成一把 EC 密钥（P-256）交给抖音绑定（bd-ticket-guard-client-data），
+// 登录成功后写接口就用这把密钥签名（sign-type 0）。这条路 2026-11-27 真机/小号实测：发评论成功、不掉登录。
+// 与「网页登录 + HMAC(ecdh_key) sign-type 1」并存：原生登录过的会话走这里，网页登录的会话仍走 DYTicketGuard。
+import CryptoKit
+import Foundation
+import WebKit
+
+// MARK: - 自己的 cookie 罐（原生请求用，登录后整份灌进网页）
+
+@MainActor
+final class DYCookieJar {
+    static let shared = DYCookieJar()
+    private static let key = "douduo_native_cookie_jar_v1"
+    private(set) var cookies: [String: String]
+
+    private init() {
+        cookies = UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
+    }
+
+    func value(_ name: String) -> String? { cookies[name] }
+    func set(_ name: String, _ value: String) { cookies[name] = value; save() }
+    func remove(_ name: String) { cookies.removeValue(forKey: name); save() }
+    func clear() { cookies = [:]; UserDefaults.standard.removeObject(forKey: Self.key) }
+    private func save() { UserDefaults.standard.set(cookies, forKey: Self.key) }
+
+    var header: String { cookies.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ") }
+
+    /// 收 Set-Cookie（同一响应可能多条）
+    func absorb(_ response: HTTPURLResponse) {
+        let fields = response.allHeaderFields
+        var raw: [String] = []
+        for (k, v) in fields where "\(k)".lowercased() == "set-cookie" { raw.append("\(v)") }
+        if let list = fields["Set-Cookie"] as? [String] { raw += list }
+        for line in raw { absorbCookie(line) }
+    }
+
+    func absorbCookie(_ line: String) {
+        let parts = line.components(separatedBy: ";")
+        guard let first = parts.first else { return }
+        let kv = first.components(separatedBy: "=")
+        guard kv.count >= 2 else { return }
+        let name = kv[0].trimmingCharacters(in: .whitespaces)
+        let value = kv.dropFirst().joined(separator: "=").trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if value.isEmpty || value == "deleted" { cookies.removeValue(forKey: name) } else { cookies[name] = value }
+        save()
+    }
+
+    /// 把原生登录拿到的整份 cookie 写进网页的共享存储，让网页和私信等仍能共用同一个登录
+    func pushToWebKit() async {
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        for (name, value) in cookies {
+            let c = HTTPCookie(properties: [
+                .name: name, .value: value, .domain: ".douyin.com", .path: "/",
+                .expires: Date(timeIntervalSinceNow: 60 * 60 * 24 * 300),
+                .secure: "TRUE",
+            ])
+            if let c { await store.setCookie(c) }
+        }
+        DYNativeCookies.invalidate()
+        DYTicketStore.invalidate()
+    }
+}
+
+// MARK: - 调试种子（只在 DEBUG 包；用于把跑通了的会话灌进模拟器做回归，不参与 Release）
+
+@MainActor
+enum DYDebugSeed {
+    /// Documents/ddseed.json：{"cookies":{...},"ec_priv":"...","ticket":"...","ts_sign":"..."}
+    static func applyIfPresent() {
+        #if DEBUG
+        let fm = FileManager.default
+        let url = fm.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddseed.json")
+        guard let d = try? Data(contentsOf: url),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        if let jar = o["cookies"] as? [String: String] {
+            for (k, v) in jar { DYCookieJar.shared.set(k, v) }
+        }
+        if let priv = o["ec_priv"] as? String { UserDefaults.standard.set(priv, forKey: "douduo_native_ec_key_v1") }
+        if let tk = o["ticket"] as? String, let ts = o["ts_sign"] as? String,
+           let data = try? JSONSerialization.data(withJSONObject: ["ticket": tk, "tsSign": ts]) {
+            UserDefaults.standard.set(data, forKey: "douduo_native_ticket_v1")
+        }
+        try? fm.removeItem(at: url)
+        DYLiveModel.log("DDSEED applied jar=\(DYCookieJar.shared.cookies.count) ticket=\(DYNativeTicket.hasTicket)")
+        #endif
+    }
+}
+
+// MARK: - passport 请求签名
+
+enum DYPassport {
+    static let appKey = "163e7ce78d58971a41f5b969996d85c2"
+    static let host = "https://www.douyin.com"
+    static let userAgent = DouyinWeb.userAgent
+
+    /// UTC 当天 12:00 的秒级时间戳
+    static var dayTs: String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        var c = cal.dateComponents([.year, .month, .day], from: Date())
+        c.hour = 12; c.minute = 0; c.second = 0
+        let d = cal.date(from: c) ?? Date()
+        return String(Int(d.timeIntervalSince1970))
+    }
+
+    static func sha256Hex(_ s: String) -> String {
+        SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// hex(utf8(s) XOR 0x05)
+    static func x5(_ s: String) -> String {
+        Data(s.utf8).map { String(format: "%02x", $0 ^ 0x05) }.joined()
+    }
+
+    /// encodeURIComponent 口径（空格 %20，保留 !*'()）
+    static func encComponent(_ s: String) -> String {
+        var out = ""
+        for b in s.utf8 {
+            let c = Int(b)
+            let plain = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)
+                || c == 45 || c == 95 || c == 46 || c == 33 || c == 126 || c == 42 || c == 39 || c == 40 || c == 41
+            if plain { out.append(Character(UnicodeScalar(b))) } else { out += String(format: "%%%02X", c) }
+        }
+        return out
+    }
+
+    static func query(_ pairs: [(String, String)]) -> String {
+        pairs.map { "\($0.0)=\(encComponent($0.1))" }.joined(separator: "&")
+    }
+
+    static func pNo(pTs: String, pCa: String) -> String {
+        sha256Hex("p_bd=1.0.1.19-fix.01&p_ca=\(pCa)&p_ts=\(pTs)&p_ver=1.1.4-beta.5&p_zt=3.3.34-beta.10&passport_jssdk_version=3.4.13")
+    }
+
+    /// account_sdk_source_info：源码里 XOR 混淆的固定串，运行时按「浏览器环境」填真实值
+    static func accountSDKInfo() -> String {
+        let t = Int(Date().timeIntervalSince1970 * 1000)
+        return #"{"sdk_version":"1.0.1.19-fix.01","stage_params":{"tt_webid":"","webid":"","fp":"","aid":"6383","device_platform":"web","app_name":"douyin","channel":"channel_pc_web","pc_client_type":"1","version_code":"170400","version_name":"17.4.0","cookie_enabled":true,"screen_width":1536,"screen_height":864,"browser_language":"zh-CN","browser_platform":"MacIntel","browser_name":"Safari","browser_version":"26.0","browser_online":true,"engine_name":"WebKit","engine_version":"605.1.15","os_name":"Mac OS","os_version":"10.15.7","cpu_core_num":8,"device_memory":8,"platform":"PC","downlink":10,"effective_type":"4g","round_trip_time":50},"timeOrigin":\#(t),"url":"https://www.douyin.com/","referrer":""}"#
+    }
+
+    enum Step { case strategy, qr, status }
+
+    static func base(_ step: Step, traceID: String, verifyFp: String?) -> [(String, String)] {
+        var p: [(String, String)] = [
+            ("passport_jssdk_version", "3.4.13"), ("passport_jssdk_type", "normal"), ("is_from_ttaccountsdk", "1"),
+            ("aid", "6383"), ("language", "zh"), ("account_app_language", "zh-CN"), ("ts", dayTs),
+        ]
+        if step == .qr {
+            p += [("next", host), ("need_short_url", "true"), ("need_logo", "false"), ("is_new_login", "1")]
+        }
+        if step != .strategy {
+            p += [("is_from_iesaccountsaas", "1"), ("p_ui", "2.4.15"), ("p_ca", "4.0.26"),
+                  ("p_ca_real", "1.0.0.1013")]
+            if let fp = verifyFp { p += [("fp", fp), ("verifyFp", fp)] }
+        }
+        p += [("account_sdk_source", "web"), ("account_sdk_source_info", x5(accountSDKInfo())),
+              ("p_js_v", "3.4.13"), ("p_js_t", "pro"), ("p_zt", "3.3.34-beta.10"), ("p_ver", "1.1.4-beta.5"),
+              ("p_ver_real", "0"), ("request_host", "https%3A%2F%2Fwww.douyin.com"), ("p_bd", "1.0.1.19-fix.01")]
+        let pTs = String(Int(Date().timeIntervalSince1970 * 1000))
+        p += [("p_ts", pTs), ("p_no", pNo(pTs: pTs, pCa: "4.0.26")), ("biz_trace_id", traceID),
+              ("device_platform", "web_app")]
+        return p
+    }
+
+    /// 加 sign / qs（前 10 个键 + body + app_key 做 sha256）；返回拼好的 query
+    @MainActor
+    static func signedQuery(_ base: [(String, String)], body: [(String, String)]) -> String {
+        var params = base
+        let sorted = params.map { $0.0 }.sorted()
+        let first = Array(sorted.prefix(10))
+        var raw = first.map { k in "\(k)=\(params.first { $0.0 == k }!.1)" }.joined(separator: "&")
+        raw += "&" + body.map { "\($0.0)=\($0.1)" }.joined(separator: "&") + "&app_key=" + appKey
+        params.append(("sign", sha256Hex(raw)))
+        params.append(("qs", x5(first.joined(separator: ","))))
+        if let ms = DYCookieJar.shared.value("msToken"), !ms.isEmpty { params.append(("msToken", ms)) }
+        return query(params)
+    }
+
+    /// x-tt-passport-aid-sign = HMAC-SHA256(HKDF-SHA256(HMAC-SHA256(ts, appKey)), "aid=6383&path=…&ts=…")
+    static func aidSign(_ path: String) -> String {
+        let ts = dayTs
+        let prk = hmac(key: Data(appKey.utf8), data: Data(ts.utf8))
+        let okm = hkdf(prk: prk, length: 32)
+        return hmac(key: okm, data: Data("aid=6383&path=\(path)&ts=\(ts)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func hmac(key: Data, data: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key)))
+    }
+
+    static func hkdf(prk: Data, length: Int) -> Data {
+        var out = Data(), block = Data(), counter: UInt8 = 1
+        while out.count < length {
+            block = hmac(key: prk, data: block + Data([counter]))
+            out += block
+            counter += 1
+        }
+        return out.prefix(length)
+    }
+
+    @MainActor
+    static func headers(path: String, post: Bool, traceID: String, portrait: String, dtrait: String?) -> [String: String] {
+        var h: [String: String] = [
+            "Accept": "application/json, text/javascript", "Origin": host, "Referer": host + "/",
+            "User-Agent": userAgent, "web-sdk-version": "1", "x-tt-passport-aid-sign": aidSign(path),
+            "x-tt-passport-trace-id": traceID, "x-tt-passport-verify-portrait": portrait,
+        ]
+        if let dt = dtrait { h["x-tt-session-dtrait"] = dt }
+        if let csrf = DYCookieJar.shared.value("passport_csrf_token") ?? DYCookieJar.shared.value("passport_csrf_token_default"),
+           !csrf.isEmpty { h["x-tt-passport-csrf-token"] = csrf }
+        if post {
+            h["Content-Type"] = "application/x-www-form-urlencoded"
+            h["x-secsdk-csrf-token"] = "DOWNGRADE"
+        }
+        return h
+    }
+}
+
+// MARK: - 自己的票据（原生登录后写接口用 ECDSA sign-type 0）
+
+@MainActor
+enum DYNativeTicket {
+    private static let keyTag = "douduo_native_ec_key_v1"
+    private static let ticketTag = "douduo_native_ticket_v1"
+
+    struct Ticket: Codable {
+        var ticket: String
+        var tsSign: String
+        var serverCert: String?
+        var clientCert: String?
+        var session: String?
+    }
+
+    private static var cachedKey: P256.Signing.PrivateKey?
+
+    /// 本机自己生成的 P-256 密钥（登录时交给抖音绑定；PKCS#8 base64 存本地）
+    static func key() -> P256.Signing.PrivateKey? {
+        if let k = cachedKey { return k }
+        if let b64 = UserDefaults.standard.string(forKey: keyTag), let d = Data(base64Encoded: b64),
+           let k = try? P256.Signing.PrivateKey(derRepresentation: d) {
+            cachedKey = k
+            return k
+        }
+        let k = P256.Signing.PrivateKey()
+        UserDefaults.standard.set(k.derRepresentation.base64EncodedString(), forKey: keyTag)
+        cachedKey = k
+        return k
+    }
+
+    static var publicPoint: String { key()?.publicKey.x963Representation.base64EncodedString() ?? "" }
+
+    /// 登录前：把公钥交给抖音绑定（cookie bd-ticket-guard-client-data），并要求网页域版本
+    static func prepareLogin() {
+        let data: [String: Any] = ["bd-ticket-guard-version": 2, "bd-ticket-guard-iteration-version": 1,
+                                   "bd-ticket-guard-ree-public-key": publicPoint, "bd-ticket-guard-web-version": 2]
+        guard let d = try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]) else { return }
+        let b64 = d.base64EncodedString()
+        let enc = b64.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? b64
+        DYCookieJar.shared.set("bd_ticket_guard_client_data", enc)
+        DYCookieJar.shared.set("bd_ticket_guard_client_web_domain", "2")
+    }
+
+    /// 抖音回给我们的服务端票据（响应头或 cookie）
+    static func capture(_ response: HTTPURLResponse) {
+        var raw = response.value(forHTTPHeaderField: "bd-ticket-guard-server-data")
+        if raw == nil || raw?.isEmpty == true { raw = DYCookieJar.shared.value("bd_ticket_guard_server_data") }
+        guard let raw, let t = parse(raw) else { return }
+        save(Ticket(ticket: t.0, tsSign: t.1))
+    }
+
+    private static func parse(_ raw: String) -> (String, String)? {
+        let decoded = raw.replacingOccurrences(of: "+", with: "%2B").removingPercentEncoding ?? raw
+        guard let d = Data(base64Encoded: decoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/"))
+            ?? Data(base64Encoded: decoded),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let ticket = o["ticket"] as? String, !ticket.isEmpty,
+              let ts = o["ts_sign"] as? String, !ts.isEmpty else { return nil }
+        return (ticket, ts)
+    }
+
+    private static func save(_ t: Ticket) {
+        if let d = try? JSONEncoder().encode(t) { UserDefaults.standard.set(d, forKey: ticketTag) }
+    }
+
+    static var saved: Ticket? {
+        guard let d = UserDefaults.standard.data(forKey: ticketTag), let t = try? JSONDecoder().decode(Ticket.self, from: d) else { return nil }
+        return t
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: ticketTag)
+        UserDefaults.standard.removeObject(forKey: keyTag)
+        cachedKey = nil
+    }
+
+    static var hasTicket: Bool { saved != nil }
+
+    /// 票据/密钥不可用时的原因（只用于日志，不含密钥内容）
+    static var debugWhy: String {
+        guard let t = saved else { return "no-ticket" }
+        guard let k = key() else { return "no-key" }
+        return t.ticket.isEmpty ? "empty-ticket" : "ok:\(k.publicKey.x963Representation.count)"
+    }
+
+    /// path 的写签名头（sign-type 0：用登录时绑定的私钥签 ticket+path+timestamp，DER 格式）
+    static func headers(path: String, now: Int = Int(Date().timeIntervalSince1970)) -> [String: String]? {
+        guard let t = saved, let k = key() else { return nil }
+        let payload = "ticket=\(t.ticket)&path=\(path)&timestamp=\(now)"
+        guard let sig = try? k.signature(for: Data(payload.utf8)).derRepresentation.base64EncodedString() else { return nil }
+        let client = #"{"ts_sign":"\#(t.tsSign)","req_content":"ticket,path,timestamp","req_sign":"\#(sig)","timestamp":\#(now)}"#
+        return [
+            "bd-ticket-guard-ree-public-key": publicPoint,
+            "bd-ticket-guard-version": "2",
+            "bd-ticket-guard-iteration-version": "1",
+            "bd-ticket-guard-web-version": t.tsSign.hasPrefix("ts.1") ? "1" : "2",
+            "bd-ticket-guard-web-sign-type": "0",
+            "bd-ticket-guard-client-data": Data(client.utf8).base64EncodedString(),
+        ]
+    }
+}

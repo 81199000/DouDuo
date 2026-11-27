@@ -152,6 +152,7 @@ struct DouDuoApp: App {
     @AppStorage(DDAppearance.key) private var appearance = DDAppearance.dark.rawValue
 
     init() {
+        DispatchQueue.main.async { DYDebugSeed.applyIfPresent() }
         // 信息里的图片/封面都走网页：默认的 URLCache 又小又是内存为主，进聊天每次都要重新下载。
         // 放大到 512MB 磁盘（跨启动复用），能省掉大部分重复请求。
         URLCache.shared = URLCache(memoryCapacity: 64 << 20,

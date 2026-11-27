@@ -67,6 +67,27 @@ enum DYTicketGuard {
     }
 }
 
+/// 写接口签名头：原生登录过的会话用 ECDSA（sign-type 0，密钥是登录前 App 自己生成并绑定的），
+/// 网页登录的会话用 HMAC(ecdh_key)（sign-type 1，密钥在网页存储里）。两套各自对应自己的登录，混用会被判异常。
+@MainActor
+enum DYSigning {
+    static func headers(path: String, web: WKWebView?) async -> [String: String]? {
+        if DYNativeTicket.hasTicket {
+            if let h = DYNativeTicket.headers(path: path) {
+                DYLiveModel.log("DDSIGN pick=native-ecdsa path=\(path)")
+                return h
+            }
+            DYLiveModel.log("DDSIGN native-ticket-unusable reason=\(DYNativeTicket.debugWhy)")
+        }
+        guard let b = await DYTicketStore.load(from: web) else { return nil }
+        if let h = DYTicketGuard.headers(b, path: path) {
+            DYLiveModel.log("DDSIGN pick=web-hmac path=\(path)")
+            return h
+        }
+        return nil
+    }
+}
+
 /// 从本 App 的抖音网页存储里读票据（读一次缓存 60 秒；切账号时 invalidate）
 @MainActor
 enum DYTicketStore {

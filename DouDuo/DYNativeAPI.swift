@@ -89,6 +89,10 @@ enum DYNativeCookies {
     static func invalidate() { cached = nil }
 
     static func load(maxAge: TimeInterval = 20) async -> (header: String, map: [String: String]) {
+        // 原生登录过的会话：cookie 在 App 自己的罐里（登录流程拿到的那份）
+        if DYNativeTicket.hasTicket, !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty {
+            return (DYCookieJar.shared.header, DYCookieJar.shared.cookies)
+        }
         if let c = cached, Date().timeIntervalSince(c.at) < maxAge { return (c.header, c.map) }
         let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
         var map: [String: String] = [:]
@@ -141,8 +145,7 @@ extension DYNative {
                          ticketWeb: WKWebView?) async throws -> (Response, ticketResult: String?) {
         let ck = await DYNativeCookies.load()
         guard !(ck.map["sessionid"] ?? "").isEmpty else { throw Failure.noLogin }
-        guard let ticket = await DYTicketStore.load(from: ticketWeb),
-              let tg = DYTicketGuard.headers(ticket, path: path) else { throw Failure.noTicket }
+        guard let tg = await DYSigning.headers(path: path, web: ticketWeb) else { throw Failure.noTicket }
         var pairs = baseParams + extra
         if let ms = ck.map["msToken"], !ms.isEmpty { pairs.append(("msToken", ms)) }
         let uifid = ck.map["UIFID"] ?? ck.map["UIFID_TEMP"] ?? ""
