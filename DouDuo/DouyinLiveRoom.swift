@@ -147,6 +147,11 @@ final class DYLiveModel: ObservableObject {
     private var loadedFollowSession = -1
     private var followedOnly = false
     @Published var clean = false
+    /// 「铺满」：开着时画面和屏幕同方向就裁剪铺满（横对横、竖对竖），关掉一律完整显示。
+    /// 默认开（跟以前竖屏直播在竖屏上默认铺满一致）；记住偏好，预览、进房、换直播间都沿用
+    @Published var fillScreen: Bool = UserDefaults.standard.object(forKey: "douduo_live_fill_v1") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(fillScreen, forKey: "douduo_live_fill_v1") }
+    }
     @Published var entered = false
     /// 「发现更多」面板展开（在挑直播间）：不播任何直播，免得后台挂着一个还在出声
     var browsing = false
@@ -474,7 +479,7 @@ final class DYLiveModel: ObservableObject {
         c.outputMuted = false
         let v = VLCPlayerUIView(frame: window.bounds)
         v.controller = c
-        v.fillWidth = room.portrait
+        v.fillWidth = fillScreen   // 跟当前这一路同一个铺满设置，接手时画面不跳
         v.backgroundColor = .clear
         v.isUserInteractionEnabled = false
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -1566,7 +1571,8 @@ struct DYLiveFeed: View {
             let shown = layout.shown
             let placement = layoutTogglePlacement(stable: layout.stable.decision, in: geo)
             // 整屏仍按竖屏铺满。只有桌面模式把横屏画面放到状态栏下面，并贴住上窗格底边。
-            let fillWidth = shown.layout == .existing && currentRoom?.portrait == true && geo.size.height > geo.size.width * 1.2
+            // 铺满完全听按钮的：开着就铺满，方向不同（横屏放竖屏 / 竖屏放横屏）由 DYVideoFit.vlcScale 自己不铺
+            let fillWidth = model.fillScreen
             let videoFrame = shown.layout == .layoutA
                 ? DYLiveLayoutAVideo.frame(
                     in: shown.video,
@@ -1651,6 +1657,10 @@ struct DYLiveFeed: View {
                 }
             }
         }
+        // 进直播间：隐藏时间 / 信号（官方同款，横屏时它们会盖住右上角的在线人数）；预览时照常显示。
+        // 直播页嵌在分页容器里，statusBarHidden 挂这里传不到窗口，改由根视图按 DDStatusBarPolicy 藏
+        .onChange(of: active && model.entered, initial: true) { _, hide in DDStatusBarPolicy.shared.liveRoom = hide }
+        .onDisappear { DDStatusBarPolicy.shared.liveRoom = false }
         .onLiveHingeChange { status in
             hingeStatus = status
             if status == .closed || status == .partiallyOpen { manualSplit = false }
@@ -1675,7 +1685,8 @@ struct DYLiveFeed: View {
             }
         }
         .task {
-            if model.rooms.isEmpty || Date().timeIntervalSince(model.fetchedAt) > 60 {
+            // 列表旧了就刷新——但人还在直播间里（比如去官网送礼物回来）时不能刷，不然会被甩回第一间
+            if model.rooms.isEmpty || (Date().timeIntervalSince(model.fetchedAt) > 60 && !model.entered) {
                 await model.load(bridge, reset: true)
             }
             scrollID = model.currentID
@@ -2445,7 +2456,8 @@ private struct DYLiveRoomPage: View {
         GeometryReader { geo in
             let video = livePane(videoPane, fallback: geo.size)
             let interaction = livePane(interactionPane, fallback: geo.size)
-            let topInset = DYLiveLayoutToggle.returnTopInset(paneMinY: interaction.minY, compact: hSize == .compact)
+            let topInset = DYLiveLayoutToggle.returnTopInset(paneMinY: interaction.minY, compact: hSize == .compact,
+                                                             statusHidden: model.entered)
             ZStack(alignment: .topLeading) {
                 ZStack {
                 if DYLivePlaybackGate.mask(isCurrent: isCurrent, ready: model.ready, failed: model.playbackError != nil) == .coverPrevious {
@@ -2511,7 +2523,11 @@ private struct DYLiveRoomPage: View {
                         Spacer(minLength: 12)
                         HStack(alignment: .bottom, spacing: 12) {
                             VStack(alignment: .leading, spacing: 12) {
-                                if !messages.isEmpty || ticker != nil { DYLiveChatOverlay(messages: messages, ticker: ticker) }
+                                if !messages.isEmpty || ticker != nil {
+                                    // 官方：横屏只露 5 行、竖屏多几行，上沿虚化淡出
+                                    DYLiveChatOverlay(messages: messages, ticker: ticker,
+                                                      rows: geo.size.width > geo.size.height ? 5 : 8)
+                                }
                                 // 底部一排（官方同款）：输入框（表情在框里）· 礼物 · 转发 · 更多。底对齐：表情面板展开时别的按钮不跟着飘上去
                                 HStack(alignment: .bottom, spacing: 10) {
                                     input
@@ -2605,6 +2621,14 @@ private struct DYLiveRoomPage: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 28)
+                    .overlay(alignment: .topTrailing) {
+                        // 预览也一直有铺满按钮；右边距让开外屏右侧的时间 / 信号和摄像头
+                        if isCurrent {
+                            fillButton
+                                .padding(.top, topInset)
+                                .padding(.trailing, hSize == .compact ? 82 : 18)
+                        }
+                    }
                 }
                 }
                 .frame(width: interaction.width, height: interaction.height)
@@ -2639,10 +2663,10 @@ private struct DYLiveRoomPage: View {
                         HStack(spacing: 8) {
                             avatar
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text(room.owner).font(.system(size: 16, weight: .semibold)).lineLimit(1)
                                 // 官方：进房后名字下面写「本场点赞」；还没收到时先用列表里的在看人数
                                 Text(stats.likeTotal.map { "\(DYLiveRoomStats.short($0))本场点赞" } ?? "\(room.viewers) 在看")
-                                    .font(.caption2).monospacedDigit()
+                                    .font(.caption2).monospacedDigit().lineLimit(1).fixedSize()
                                     .contentTransition(.numericText())
                                     .accessibilityIdentifier("live.room.likes")
                             }
@@ -2676,15 +2700,18 @@ private struct DYLiveRoomPage: View {
                         .themeShadow(.mediaLabel)
                 }
             }
+            .layoutPriority(1)   // 主播名 / 本场点赞先占位，右边的观众头像放不下就先去掉
             Spacer(minLength: 8)
             // 前三名观众头像 + 在线人数（官方同款）。窄屏放不下时先去掉头像，只留人数
             if stats.online != nil || stats.topViewers?.isEmpty == false {
                 ViewThatFits(in: .horizontal) {
                     viewerStrip(avatars: true)
                     viewerStrip(avatars: false)
+                    Color.clear.frame(width: 0, height: 0)
                 }
             }
-            // 退出直播间：官方同款右上角小 ×（右边距已让开 Duo 外屏右侧的系统状态栏）
+            fillButton
+            // 退出直播间：官方同款右上角小 ×（外屏右边距让开摄像头）
             if showsClose {
                 closeX(action: model.leaveRoom, id: "live.room.close")
             }
@@ -2727,6 +2754,22 @@ private struct DYLiveRoomPage: View {
             }
         }
         .fixedSize()
+    }
+
+    /// 铺满 / 还原（预览和进房都一直显示）：画面和屏幕同方向时裁剪铺满（横对横、竖对竖）；方向不同点了画面不变
+    private var fillButton: some View {
+        Button { withAnimation(.easeInOut(duration: 0.2)) { model.fillScreen.toggle() } } label: {
+            Image(systemName: model.fillScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(theme.media.onMedia.color(for: scheme))
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(.black.opacity(0.28)))
+                .frame(width: 40, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.fillScreen ? "还原画面" : "铺满全屏")
+        .accessibilityIdentifier("live.room.fill")
     }
 
     /// 退出直播间：官方直播间同款的小 × 圆钮（不再是「返回」胶囊）
@@ -2789,8 +2832,11 @@ enum DYLiveLayoutToggle {
     static let composerHeight: CGFloat = 44
     static let composerMaxWidth: CGFloat = 420
 
-    static func returnTopInset(paneMinY: CGFloat, compact: Bool) -> CGFloat {
-        paneMinY > 24 ? 12 : (compact ? 64 : 70)
+    /// statusHidden：进直播间后时间 / 信号已隐藏，头部贴到顶上（外屏右上的摄像头由右边距让开）
+    static func returnTopInset(paneMinY: CGFloat, compact: Bool, statusHidden: Bool = false) -> CGFloat {
+        if paneMinY > 24 { return 12 }
+        if statusHidden { return 16 }
+        return compact ? 64 : 70
     }
 
     /// 手动整屏只跟着当时那一种分屏。换成另一种分屏、竖屏或不支持时取消。

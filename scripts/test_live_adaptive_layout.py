@@ -444,7 +444,8 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
         self.assertEqual(feed.count("DYLiveLayoutAVideo.frame"), 1)
         self.assertIn(": shown.video", feed)
         self.assertIn("pages(video: shown.video, interaction: shown.interaction", feed)
-        self.assertIn("shown.layout == .existing && currentRoom?.portrait == true", feed)
+        # 铺满完全由按钮决定（model.fillScreen）；横竖方向不同不铺由 DYVideoFit.vlcScale 保证
+        self.assertIn("let fillWidth = model.fillScreen", feed)
         self.assertIn(".frame(width: videoFrame.width, height: videoFrame.height)", feed)
         self.assertIn(".position(x: videoFrame.midX, y: videoFrame.midY)", feed)
         self.assertNotIn(".frame(width: shown.video.width, height: shown.video.height)", feed)

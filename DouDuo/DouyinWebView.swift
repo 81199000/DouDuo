@@ -546,6 +546,8 @@ struct DouyinWebContainer: UIViewRepresentable {
         #endif
         cfg.allowsInlineMediaPlayback = true
         cfg.mediaTypesRequiringUserActionForPlayback = []
+        // 从直播间点「礼物」打开官网直播间：App 自己已经在播这一路，网页别再自动播（iPhone 上会弹系统播放器挡住页面）
+        if start.host == "live.douyin.com" { cfg.mediaTypesRequiringUserActionForPlayback = .all }
         #if DEBUG
         // Inspect the live page while paused; autoplay promotions can otherwise
         // cover XCTest's controls with the system video presenter.
