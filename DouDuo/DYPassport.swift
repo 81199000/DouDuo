@@ -24,6 +24,18 @@ final class DYCookieJar {
     func clear() { cookies = [:]; UserDefaults.standard.removeObject(forKey: Self.key) }
     /// 切换账号：整罐换成那个账号存着的
     func replaceAll(_ c: [String: String]) { cookies = c; save() }
+
+    /// 作废原生登录留下的整套会话（cookie 罐 + 票据 + 绑定的 EC 密钥）。
+    /// 网页登录 / 切换账号 / 退出时必须调：否则 DYNativeTicket.hasTicket 还是 true，
+    /// 读接口拿罐里的旧 sessionid、写接口用旧密钥签名，跟网页里新登录的账号对不上（服务端会作废登录）。
+    static func dropNativeSession(reason: String) {
+        let had = DYNativeTicket.hasTicket || !shared.cookies.isEmpty
+        shared.clear()
+        DYNativeTicket.clear()
+        DYNativeCookies.invalidate()
+        DYTicketStore.invalidate()
+        if had { DYLiveModel.log("DDNATIVE session dropped reason=\(reason)") }
+    }
     private func save() { UserDefaults.standard.set(cookies, forKey: Self.key); UserDefaults.standard.synchronize() }
 
     var header: String {
@@ -160,7 +172,7 @@ enum DYPassport {
 
     private static let sdkInfoTemplate = #"{"hardwareConcurrency":12,"webdriver":false,"chromedriver":false,"shelldriver":false,"plugins":5,"innerHeight":770,"innerWidth":1272,"outerHeight":0,"outerWidth":0,"webgl":{"vendor":"Google Inc. (Microsoft)","renderer":"ANGLE (Microsoft, Microsoft Basic Render Driver (0x0000008C) Direct3D11 vs_5_0 ps_5_0, D3D11)"},"automation":{"s":"00000000","c":"0001","p":"0000000","s1":"00000000","c1":"0000","p1":"0"},"performance":{"timeOrigin":1794654461688.7,"usedJSHeapSize":149136654,"navigationTiming":{"decodedBodySize":919703,"entryType":"navigation","initiatorType":"navigation","name":"https://www.douyin.com/","renderBlockingStatus":"non-blocking","serverTiming":"cdn-cache,edge,origin,inner,tt_agw","guleStart":843.5,"guleDuration":12.5}},"browser":{"t":"2859744564971","bit_protocol":"false","bit_helper":false}}"#
 
-    enum Step { case strategy, qr, status }
+    enum Step { case strategy, qr, status, sms }
 
     static func base(_ step: Step, traceID: String, verifyFp: String?) -> [(String, String)] {
         var p: [(String, String)] = [
@@ -170,6 +182,8 @@ enum DYPassport {
         if step == .qr {
             p += [("next", host), ("need_short_url", "true"), ("need_logo", "false"), ("is_new_login", "1")]
         }
+        // 手机号 send_code / sms_login（2026-11-28 真机抓官方登录页）：query 不带 ts、末尾带 is_new_login=1
+        if step == .sms, let i = p.firstIndex(where: { $0.0 == "ts" }) { p.remove(at: i) }
         if step != .strategy {
             p += [("is_from_iesaccountsaas", "1"), ("p_ui", "2.4.15"), ("p_ca", "4.0.26"),
                   ("p_ca_real", "1.0.0.1013")]
@@ -179,8 +193,8 @@ enum DYPassport {
               ("p_js_v", "3.4.13"), ("p_js_t", "pro"), ("p_zt", "3.3.34-beta.10"), ("p_ver", "1.1.4-beta.5"),
               ("p_ver_real", "0"), ("request_host", "https%3A%2F%2Fwww.douyin.com"), ("p_bd", "1.0.1.19-fix.01")]
         let pTs = String(Int(Date().timeIntervalSince1970 * 1000))
-        p += [("p_ts", pTs), ("p_no", pNo(pTs: pTs, pCa: "4.0.26")), ("biz_trace_id", traceID),
-              ("device_platform", "web_app")]
+        p += [("p_ts", pTs), ("p_no", pNo(pTs: pTs, pCa: "4.0.26")), ("biz_trace_id", traceID)]
+        p.append(step == .sms ? ("is_new_login", "1") : ("device_platform", "web_app"))
         return p
     }
 
@@ -201,6 +215,19 @@ enum DYPassport {
         let form = body.map { "\($0.0)=\(encComponent($0.1))" }.joined(separator: "&")
         let bogus = DYABogus.sign(query: rawQuery, form: form, userAgent: userAgent)
         return rawQuery + "&a_bogus=" + encComponent(bogus)
+    }
+
+    /// 手机号 send_code / sms_login 的 query：官方登录页这两个请求**没有 sign / qs**（扫码轮询才有），
+    /// 只有 passport 公共参数 + msToken + a_bogus（a_bogus 连表单一起签）
+    @MainActor
+    static func smsQuery(_ base: [(String, String)], body: [(String, String)]) -> String {
+        var params = base
+        // 跟扫码同口径：msToken 只在服务端真下发过（X-Ms-Token）才带，自造的随机值不带
+        if DYCookieJar.shared.value("__dd_ms_captured") == "1",
+           let ms = DYCookieJar.shared.value("msToken"), !ms.isEmpty { params.append(("msToken", ms)) }
+        let rawQuery = query(params)
+        let form = body.map { "\($0.0)=\(encComponent($0.1))" }.joined(separator: "&")
+        return rawQuery + "&a_bogus=" + encComponent(DYABogus.sign(query: rawQuery, form: form, userAgent: userAgent))
     }
 
     /// x-tt-passport-aid-sign = HMAC-SHA256(HKDF-SHA256(HMAC-SHA256(ts, appKey)), "aid=6383&path=…&ts=…")
@@ -278,6 +305,12 @@ enum DYNativeTicket {
     }
 
     static var publicPoint: String { key()?.publicKey.x963Representation.base64EncodedString() ?? "" }
+
+    /// 手机号 sms_login 请求头里带的那组（官方登录页就是在这一步把公钥交给抖音绑定的；sign-type 0 = 还没有票据可签）
+    static var loginHeaders: [String: String] {
+        ["bd-ticket-guard-ree-public-key": publicPoint, "bd-ticket-guard-version": "2",
+         "bd-ticket-guard-web-version": "2", "bd-ticket-guard-web-sign-type": "0"]
+    }
 
     /// 登录前：把公钥交给抖音绑定（cookie bd-ticket-guard-client-data），并要求网页域版本
     static func prepareLogin() {

@@ -23,11 +23,9 @@ final class DYNativeJS {
 
     static func name(of body: String) -> String? {
         let key = body.hashValue
+        // 写脚本能不能原生跑取决于当前是哪种登录（网页登录不许原生写），切换登录后要立刻生效：先判、不进缓存
+        if body.contains("'POST'") || body.contains("\"POST\""), !DYNative.writeEnabled { return nil }
         if let c = nameCache[key] { return c }
-        if !DYNative.writeEnabled, body.contains("'POST'") || body.contains("\"POST\"") {
-            nameCache[key] = .some(nil)
-            return nil
-        }
         let banned = ["document.", "window.", "location.", "localStorage", "navigator.",
                       "MutationObserver", "XMLHttpRequest", "fetch(", "byted_acrawler", "webpackChunk"]
         var result: String?

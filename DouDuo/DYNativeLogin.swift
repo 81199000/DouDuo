@@ -97,6 +97,7 @@ final class DYNativeLogin: ObservableObject {
 
     func start() async {
         DDLog("DDNLOGIN start")
+        smsPrepared = false
         pollTask?.cancel()
         phase = .loading
         qrImage = nil
@@ -498,6 +499,116 @@ final class DYNativeLogin: ObservableObject {
                  "User-Agent": DYPassport.userAgent, "Cookie": DYCookieJar.shared.header]
         _ = await send("POST", URL(string: DYPassport.host + path + "?aid=6383&is_from_ttaccountsdk=1")!,
                        headers: h, body: body, followRedirect: true)
+    }
+
+    // MARK: 手机号验证码登录（跟扫码同一套：App 自己的密钥在 sms_login 这一步交给抖音绑定）
+    //
+    // 2026-11-28 真机抓官方登录页（DOUDUO_LOGIN_DRYRUN 拦在本机）对齐的字段：
+    // - send_code：query 同 passport 公共参数（无 ts，末尾 is_new_login=1）+ msToken + a_bogus；
+    //   表单 is6Digits=1 / mix_mode=1 / mobile=xor5("+86 1xxxxxxxxxx") / type=xor5("24") / fixed_mix_mode=1
+    // - sms_login：表单 service=https://www.douyin.com / mix_mode=1 / mobile / code=xor5(验证码) / fixed_mix_mode=1；
+    //   头里带 bd-ticket-guard-ree-public-key（sign-type 0）——公钥就是在这里绑定的
+    // 官方这两个请求都不带 x-tt-passport-aid-sign / x-secsdk-csrf-token，这里也不带。
+
+    @Published private(set) var smsBusy = false
+    @Published private(set) var smsError = ""
+    @Published private(set) var smsHint = ""
+    @Published private(set) var smsCooldown = 0
+    private var smsPrepared = false
+
+    /// 进手机号登录：停掉扫码轮询，准备一份干净的会话（cookie 罐 + 新密钥）
+    func prepareSms() async {
+        guard !smsPrepared else { return }
+        polling = false
+        pollTask?.cancel(); pollTask = nil
+        DDLog("DDNLOGIN sms prepare")
+        DYCookieJar.shared.clear()
+        DYNativeTicket.clear()
+        await bootstrap()
+        startSession()
+        DYNativeTicket.prepareLogin()
+        await strategy()
+        smsPrepared = true
+    }
+
+    private func smsHeaders(_ path: String, bindKey: Bool) -> [String: String] {
+        var h = DYPassport.headers(path: path, post: true, traceID: traceID, portrait: portrait, dtrait: DYDtrait.session)
+        h.removeValue(forKey: "x-tt-passport-aid-sign")
+        h.removeValue(forKey: "x-secsdk-csrf-token")
+        if bindKey { for (k, v) in DYNativeTicket.loginHeaders { h[k] = v } }
+        return h
+    }
+
+    private func smsPost(_ path: String, form: [(String, String)], bindKey: Bool) async -> (data: [String: Any], code: Int, desc: String, http: Int) {
+        let qs = DYPassport.smsQuery(DYPassport.base(.sms, traceID: traceID, verifyFp: DYCookieJar.shared.value("s_v_web_id")), body: form)
+        let body = form.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
+        let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: smsHeaders(path, bindKey: bindKey),
+                           body: body, followRedirect: false)
+        DDLog("DDNLOGIN sms \(path) http=\(r.status) err=\(r.error.isEmpty ? "-" : r.error) body=\(Self.redact(String(r.text.prefix(200))))")
+        guard let d = r.text.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+            return ([:], -1, r.status == 200 ? "抖音返回了无法识别的内容" : "网络异常（\(r.status)）", r.status)
+        }
+        let data = (o["data"] as? [String: Any]) ?? [:]
+        let code = (data["error_code"] as? Int) ?? (o["error_code"] as? Int) ?? Int("\(data["error_code"] ?? "0")") ?? 0
+        let desc = (data["description"] as? String) ?? (o["description"] as? String) ?? ""
+        return (data, (o["message"] as? String) == "error" && code == 0 ? -2 : code, desc, r.status)
+    }
+
+    private static func smsMobile(_ phone: String) -> String { "+86 " + phone.filter(\.isNumber) }
+
+    func sendSmsCode(phone: String) async {
+        let phone = phone.filter(\.isNumber)
+        guard phone.count == 11, !smsBusy, smsCooldown == 0 else { return }
+        smsBusy = true; smsError = ""
+        await prepareSms()
+        let form: [(String, String)] = [("is6Digits", "1"), ("mix_mode", "1"), ("mobile", Self.xor5Hex(Self.smsMobile(phone))),
+                                        ("type", Self.xor5Hex("24")), ("fixed_mix_mode", "1")]
+        let r = await smsPost("/passport/web/send_code/", form: form, bindKey: false)
+        smsBusy = false
+        if r.code == 0, r.http == 200 {
+            smsHint = "验证码已发送至 \(Self.maskMobile(phone))"
+            let retry = (r.data["retry_time"] as? Int) ?? 60
+            startSmsCooldown(retry)
+        } else {
+            smsError = r.desc.isEmpty ? "验证码没发出去（\(r.code)）" : r.desc
+            DDLog("DDNLOGIN sms send-fail code=\(r.code) keys=\(r.data.keys.sorted().joined(separator: ","))")
+        }
+    }
+
+    private func startSmsCooldown(_ s: Int) {
+        smsCooldown = max(1, s)
+        Task { @MainActor in
+            while smsCooldown > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                smsCooldown -= 1
+            }
+        }
+    }
+
+    func smsLogin(phone: String, code: String) async {
+        let phone = phone.filter(\.isNumber), code = code.filter(\.isNumber)
+        guard phone.count == 11, code.count >= 4, !smsBusy else { return }
+        guard smsPrepared else { smsError = "请先获取验证码"; return }
+        smsBusy = true; smsError = ""
+        let form: [(String, String)] = [("service", DYPassport.host), ("mix_mode", "1"), ("mobile", Self.xor5Hex(Self.smsMobile(phone))),
+                                        ("code", Self.xor5Hex(code)), ("fixed_mix_mode", "1")]
+        let r = await smsPost("/passport/web/sms_login/", form: form, bindKey: true)
+        guard r.code == 0, r.http == 200 || loggedIn else {
+            smsBusy = false
+            let verify = r.code == 2046 || (r.data["account_flow"] as? String) == "verify"
+            smsError = verify ? "抖音要求额外的安全验证，这一步原生还不支持，请改用「原生扫码」登录"
+                : (r.desc.isEmpty ? "登录失败（\(r.code)）" : r.desc)
+            DDLog("DDNLOGIN sms login-fail code=\(r.code) verify=\(verify) keys=\(r.data.keys.sorted().joined(separator: ","))")
+            return
+        }
+        let redirect = (r.data["redirect_url"] as? String) ?? ""
+        let ok = await completeLogin(redirect: redirect.hasPrefix("http") || redirect.hasPrefix("/") ? redirect : "")
+        DDLog("DDNLOGIN sms complete ok=\(ok) sessionid=\(DYCookieJar.shared.value("sessionid") == nil ? "none" : "set") ticket=\(DYNativeTicket.hasTicket)")
+        smsBusy = false
+        guard ok else { smsError = "登录未完成，请重试"; return }
+        smsPrepared = false
+        await DYCookieJar.shared.pushToWebKit()
+        phase = .done
     }
 
     func cancel() {

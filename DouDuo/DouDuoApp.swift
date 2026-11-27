@@ -192,6 +192,9 @@ struct DouDuoApp: App {
                     DDAppearanceWebProbe()
                 } else if ProcessInfo.processInfo.environment["DOUDUO_TITLETEST"] == "1" {
                     DYTitleLayoutProbe()
+                } else if ProcessInfo.processInfo.environment["DOUDUO_LOGIN_AUTOCAP"] == "1" {
+                    // 真机抓手机号登录请求：直接打开登录页，自动填假号码点「获取验证码」「登录」（配合 DRYRUN，请求不出本机）
+                    DYAppLoginScreen()
                 } else if let target = LocalVideoLaunch.target {
                     LocalVideoPlaybackView(url: target.url, fillWidth: target.fill)
                 } else {

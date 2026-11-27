@@ -36,6 +36,11 @@ struct DYCommentNeedsVerify: Error { let decision: String }
  static func run(decision: String) async -> Outcome { runs += 1; lastDecision = decision; return next } }
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
 @MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
+// jibao 11-27 原生接口：本脚本只测网页接口那条路，原生全关（原生发评论另见 DYNativeAPI 自身日志 / 真机验证）
+@MainActor enum DYNative { static var enabled = false; static var nativeOnly = false; static var writeEnabled = false
+ static func replies(_ id: String, commentID: String, cursor: Int) async -> (items: [DYComment], cursor: Int, hasMore: Bool)? { nil }
+ static func publishComment(_ a: String, text: String, replyID: String?, replyToReplyID: String?, ticketWeb: Any?, op: String) async -> DYNativePublishOutcome { .notSent("off") } }
+enum DYNativePublishOutcome { case sent(DYComment), notSent(String), rejected(Int, String?), unknown, needsVerify(String) }
 enum DYCommentPanel { static let waitSignText = "等待签名完成才可以发送评论" }
 @MainActor enum DYLiveModel { static var lines = [String](); static func log(_ s: String) { lines.append(s) } }
 @MainActor final class DYAccountStore { static let shared = DYAccountStore(); var clears = 0, remembers = 0; func signOut() async { clears += 1 }; func remember(_ u: DYUser) async { remembers += 1 } }
@@ -46,6 +51,7 @@ enum DYCommentPanel { static let waitSignText = "等待签名完成才可以发�
  func prepareSigning() async { prepared += 1 }
  var profile: DYUser? = DYUser(name: "same", secUid: "self", uid: "100")
  var payloads = [String]()  // 依次返回；用完后回落到 payload
+ var web: Any? = nil  // 原生发评论取票据用的网页（本脚本原生关闭，不会用到）
  var payload = "", tops = [DYComment](), floors = [String:[DYComment]](), readFloors = [String](), readDelayMs = 0
  func ensureWriteReady() async -> Bool { ready }
  func publishViaWebUI(_ a: String, text: String, replyID: String?, replyToReplyID: String?, op: String) async throws -> DYComment? { nil }

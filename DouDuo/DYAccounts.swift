@@ -168,10 +168,7 @@ final class DYAccountStore: ObservableObject {
 
     /// 原生扫码登录的那一份（cookie 罐 + 票据 + 私钥）：全局只有一份，换账号时必须清掉或换成那个账号的
     private static func clearNativeLogin() {
-        DYCookieJar.shared.clear()
-        DYNativeTicket.clear()
-        DYNativeCookies.invalidate()
-        DYTicketStore.invalidate()
+        DYCookieJar.dropNativeSession(reason: "account-change")
         DYNativeIM.shared.resetForAccountChange()
     }
 
@@ -213,6 +210,8 @@ final class DYAccountStore: ObservableObject {
         // App 自己清的（退出 / 切换）：登录守护不弹「登录已失效」；cookie 变化通知是异步到的，多留 2 秒
         DYSessionWatch.shared.suppressed += 1
         defer { Task { @MainActor in try? await Task.sleep(for: .seconds(2)); DYSessionWatch.shared.suppressed -= 1 } }
+        // 原生登录的会话不在网页存储里，单删网页 cookie 清不掉它：切换 / 退出后还会拿旧票据签名
+        DYCookieJar.dropNativeSession(reason: "clear-session")
         let store = WKWebsiteDataStore.default()
         for c in await store.httpCookieStore.allCookies() where isDouyin(c.domain) {
             await store.httpCookieStore.deleteCookie(c)

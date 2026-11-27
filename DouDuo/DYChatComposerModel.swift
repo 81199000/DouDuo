@@ -8,6 +8,8 @@ final class DYChatComposerModel: ObservableObject {
     @Published private(set) var working = false
     @Published private(set) var error: String?
     @Published var isEditing = false
+    /// 网页输入框发送成功（输入框已清空）后回调：原生聊天先放一条「发送中」占位并加快轮询
+    var onSent: ((String) -> Void)?
     var canSend: Bool { ready && !deliveryUncertain && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var height: CGFloat = 44
     var bottomInset: CGFloat { isEditing ? 8 : 24 }
@@ -175,6 +177,7 @@ final class DYChatComposerModel: ObservableObject {
             if action == .send {
                 acknowledgedText = result.text
                 replaceLocalText(result.text)
+                if result.text.isEmpty { onSent?(draft) }
             }
         } catch {
             guard conversationID == id, self.web === web, accountScope == scope else { return }

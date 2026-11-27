@@ -100,11 +100,17 @@ final class DYChatPrewarm {
         }
         let cache = DYMessageCache.shared
         guard cache.hasSession, !cache.accountScope.isEmpty else { return }
-        guard let web, !web.isLoading else { return }
-        guard now.timeIntervalSince(lastRead) >= interval else { return }
-        lastRead = now
+        guard now.timeIntervalSince(lastRead) >= (DYNativeChat.enabled ? 20 : interval) else { return }
+        let out: DYConversationSync.Outcome
         let t0 = Date()
-        let out = await DYConversationSync.read(web: web, account: cache.accountScope)
+        if DYNativeChat.enabled, let bridge = DouyinBridge.primary {
+            lastRead = now
+            out = await DYNativeConversationSync.read(account: cache.accountScope, bridge: bridge, minInterval: 15)
+        } else {
+            guard let web, !web.isLoading else { return }
+            lastRead = now
+            out = await DYConversationSync.read(web: web, account: cache.accountScope)
+        }
         reads += 1
         rows = out.rows.count
         if now.timeIntervalSince(lastLog) > 60 {
