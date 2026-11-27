@@ -43,13 +43,20 @@ enum DDAudioSessionGuard {
         lock.lock(); allowDepth -= 1; lock.unlock()
     }
 
-    /// 关闭请求要不要放行
+    /// 关闭请求要不要放行。
+    /// 我们自己要关（allowDeactivate 包着）一律放行；第三方（VLC 停播）：前台一律拦，
+    /// 后台只在「后台播放」关着时放行——开着时后台还有视频在出声，延后 0.6 秒的直播停播
+    /// 如果落在切后台之后，会把正在后台播的那条一起掐掉。
     static func permitsDeactivate() -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return !foreground || allowDepth > 0
+        if allowDepth > 0 { return true }
+        return !foreground && !UserDefaults.standard.bool(forKey: "douyin_bg_play_v1")
     }
+    static func isOwn() -> Bool { lock.lock(); defer { lock.unlock() }; return allowDepth > 0 }
 
     nonisolated(unsafe) static var blocked = 0
+    /// 第三方关闭请求真的被放行了几次（会话确实被关了）：补救通知只在它涨了之后才发
+    nonisolated(unsafe) static var passedForeign = 0
 }
 
 extension AVAudioSession {
@@ -58,6 +65,10 @@ extension AVAudioSession {
             DDAudioSessionGuard.blocked += 1
             DYLiveModel.log("DDAUDIOGUARD 拦下前台关闭音频会话（多半是 VLC 停播） n=\(DDAudioSessionGuard.blocked)")
             return
+        }
+        if !active, !DDAudioSessionGuard.isOwn() {
+            DDAudioSessionGuard.passedForeign += 1
+            DYLiveModel.log("DDAUDIOGUARD 放行第三方关闭（后台、未开后台播放） n=\(DDAudioSessionGuard.passedForeign)")
         }
         try dd_setActive(active, options: options)   // 已交换：这里调的是系统原实现
     }
@@ -68,6 +79,7 @@ extension AVAudioSession {
             DYLiveModel.log("DDAUDIOGUARD 拦下前台关闭音频会话 n=\(DDAudioSessionGuard.blocked)")
             return
         }
+        if !active, !DDAudioSessionGuard.isOwn() { DDAudioSessionGuard.passedForeign += 1 }
         try dd_setActive(active)
     }
 }

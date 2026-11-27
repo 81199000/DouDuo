@@ -316,24 +316,29 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 不是抬手就起播（那样画面还在往上走就开播了）。
         if let id = targetID, id != currentID() {
             DYSwipeProbe.lift(); DYSwipeProbe.mark("lift(\(id.suffix(4)))")
-            // 抬手那一刻就告诉当前页「要走了」：直播卡据此先静音，不等下一条停住（老板 11-24：停住前 0.3 秒就该没声）
-            if let from = currentID() {
-                NotificationCenter.default.post(name: DYFeedLeaving.name, object: nil, userInfo: ["from": from, "to": id])
-            }
+            // 抬手那一刻统一撤出声权：旧页立刻静音，目标页提交前也不许出声（预热照常，只是不出声）
+            if let from = currentID() { DDAudioFloor.revoke(from: from, to: id) }
         } else {
             DYLiveModel.log("DDSWIPESKIP target=\(targetID?.suffix(4) ?? "-") cur=\(currentID()?.suffix(4) ?? "-")")
+            // 弹回原页（没拖够 / 下一条未就绪被拦 / 连划时甩回原页）：明确的取消事件，权还给原页
+            DDAudioFloor.cancel("bounce")
         }
     }
     @objc private func panChanged(_ gesture: UIPanGestureRecognizer) {
         if gesture.state == .cancelled || gesture.state == .failed {
             // A cancelled gesture must never commit the previous gesture's target.
+            DDAudioFloor.cancel("gesture-\(gesture.state == .cancelled ? "cancelled" : "failed")")
             reconcileAfterLayout()
         }
     }
     func tick(_ displayLink: CADisplayLink) {
         guard let scroll, let capturedTarget = target, let targetID,
               let index = ids().firstIndex(of: targetID), scroll.delegate === self,
-              !scroll.isDragging, scroll.window != nil else { stop(); return }
+              !scroll.isDragging, scroll.window != nil else {
+            // 收尾没走完就被中止（不是被新的拖动打断）：列表回到当前条 = 回弹，把权还给原页
+            if let s = self.scroll, !s.isDragging { DDAudioFloor.cancel("settle-abort") }
+            stop(); return
+        }
         // Re-resolve the stable item, never write an index captured from an older list.
         let target = CGPoint(x: capturedTarget.x,
                              y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top)
@@ -342,6 +347,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             earlyFired = true
             Self.settleEndsAt = startTime + animationDuration
             DYLiveModel.log("DDSETTLE-EARLY \(targetID.suffix(6)) 剩 \(Int(Self.earlyStart * 1000))ms 起播")
+            DDAudioFloor.commit(targetID, via: "settle-early")
             didSettle(targetID)
         }
         let progress = 1 - pow(1 - fraction, 3)
@@ -359,6 +365,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             ddWrite("DDPAGE settle id=\(targetID) ms=\(Int((CACurrentMediaTime() - startTime) * 1000))")
             #endif
             DYLiveModel.log("DDSETTLE \(targetID.suffix(6)) 停住 \(Int((CACurrentMediaTime() - startTime) * 1000))ms")
+            // 先提交出声权再切当前条：新页 isActive 起播那一刻规则已经允许它出声
+            DDAudioFloor.commit(targetID, via: "settle")
             didSettle(targetID)
         }
     }
@@ -391,6 +399,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         reconcileAfterLayout()
     }
     func reconcileAfterLayout() {
+        // 只有本分页器自己的收尾被打断才算回弹（别的分页器——关注页 / 离线库——布局变化不能取消推荐流的交接）
+        if link != nil { DDAudioFloor.cancel("reconcile") }
         stop()
         DispatchQueue.main.async { [weak self] in
             guard let self, let scroll = self.scroll, scroll.delegate === self,
@@ -402,6 +412,8 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     }
     private func stop() { link?.invalidate(); link = nil; target = nil; targetID = nil; expected = nil }
     func detach() {
+        // 收尾中被拆（切频道 / 换界面模式）：这次交接不会再有提交，按取消把权还给原页，别让两页一直禁声
+        if link != nil || target != nil { DDAudioFloor.cancel("detach") }
         stop()
         boundsObservation?.invalidate(); boundsObservation = nil
         guard let scroll else { return }

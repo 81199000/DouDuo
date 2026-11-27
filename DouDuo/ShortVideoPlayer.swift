@@ -431,6 +431,9 @@ struct PlayerPage: View {
     @State private var lastNowPlaying = -10.0
     /// 静音（右下角按钮，全局记住）
     @AppStorage("douyin_muted_v1") private var muted = false
+    /// 实际要不要出声：用户静音，或分页器还没把出声权交给这一条（抬手要走 / 还没停住提交），都按静音处理。
+    /// AVPlayer 原生声音、独立音频引擎、VLC 软解所有「解除静音」入口都走它（见 DDAudioFloor）。
+    private var outMuted: Bool { muted || !DDAudioFloor.may(id) }
     @Environment(\.ddScale) private var ui
 
     private var dmStress: Bool {
@@ -858,8 +861,12 @@ struct PlayerPage: View {
         .onChange(of: isActive) { _, active in if !active, rateBoost { handleLongPress(false) } }
         .onChange(of: muted) { _, m in
             guard isActive else { return }
-            seamAudio.setMuted(m)
-            vlc?.mediaPlayer.audio?.isMuted = m
+            seamAudio.setMuted(m || !DDAudioFloor.may(id))
+            vlc?.mediaPlayer.audio?.isMuted = m || !DDAudioFloor.may(id)
+        }
+        // 出声权（分页器统一交接，见 DDAudioFloor）：撤权立刻断声；回弹 / 提交后再按当前状态还声
+        .onReceive(NotificationCenter.default.publisher(for: DDAudioFloor.changed)) { note in
+            applyAudioFloor(phase: note.userInfo?["phase"] as? String, to: note.userInfo?["to"] as? String)
         }
         // 设置里改播放速度 = 明确要这个速度：撤掉本条的长按锁定，当前视频立刻生效
         .onChange(of: playbackRate) { _, newRate in
@@ -897,7 +904,7 @@ struct PlayerPage: View {
             if active && (userPaused || !canControlPlayback) { return }
             if let v = vlc {
                 if active {
-                    v.mediaPlayer.audio?.isMuted = muted
+                    v.mediaPlayer.audio?.isMuted = outMuted
                     v.resume()
                     isPlaying = true
                     watchVLC(v)
@@ -924,11 +931,12 @@ struct PlayerPage: View {
                 // 有 1 秒就直接播（原 1.5 秒）：不够时系统会先「攒够再播」，1–1.5 秒那几条白等 1 秒多（11-24 真机日志）
                 if DYPlaybackTelemetry.bufferedAhead(p) >= 1.0, p.currentItem?.status == .readyToPlay,
                    seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
-                    p.isMuted = seamAudio.mode == .noAudio || muted
+                    p.isMuted = seamAudio.mode == .noAudio || outMuted
                     p.playImmediately(atRate: playRate)
                 }
-                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted)
                 DYSwipeProbe.rate()
+                noteAudioGrant()
                 let shown = firstFrame
                 telemetry.begin(p, id: id, duration: knownDuration)
                 kickIfOverCautious(p)
@@ -1315,11 +1323,11 @@ struct PlayerPage: View {
             if let onEnded { onEnded() }
             else {
                 p.seek(to: .zero)
-                seamAudio.loopToZero(rate: playRate, muted: muted)
+                seamAudio.loopToZero(rate: playRate, muted: outMuted)
             }
         }
         let nativeAudio = DYAutoPiP.bindsNativeAudio(preference: autoPiP, cleanScreen: cleanScreen)
-        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: muted,
+        seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: outMuted,
                        useEngine: !nativeAudio && DDSeamlessController.engineWanted, engineHandoff: !nativeAudio)
     }
 
@@ -1387,6 +1395,7 @@ struct PlayerPage: View {
             DYSwipeProbe.active(id)
             watchdog(p); telemetry.begin(p, id: id, duration: knownDuration)
             watchFirstFrame(p)
+            noteAudioGrant()
         }
         else { primeFirstFrame(p) }
         #if DEBUG
@@ -1609,10 +1618,10 @@ struct PlayerPage: View {
             return
         }
         if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
-            p.isMuted = seamAudio.mode == .noAudio || muted
+            p.isMuted = seamAudio.mode == .noAudio || outMuted
         }
         p.playImmediately(atRate: playRate)
-        if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
+        if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted) }
         unstallCount += 1
         if unstallCount <= 3 || unstallCount % 10 == 0 {
             DYLiveModel.log("DDUNSTALL \(id.suffix(6)) n=\(unstallCount) t=\(String(format: "%.1f", p.currentTime().seconds)) buf=\(String(format: "%.1f", buf))s why=\(p.reasonForWaitingToPlay == .toMinimizeStalls ? "怕卡" : "评估") waited=\(String(format: "%.1f", Double(retry) * 0.5))s 不等直接播")
@@ -1682,7 +1691,7 @@ struct PlayerPage: View {
             if it?.status == .readyToPlay, p.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(p),
                DYPlaybackTelemetry.bufferedAhead(p) >= 1, kicks < 2 {
                 p.playImmediately(atRate: playRate)
-                if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted) }
+                if seamAudio.isEngaged { seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted) }
                 DYLiveModel.log("DDSTARTDIAG \(id) kick-in-place n=\(kicks + 1) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s")
                 watchdog(p, kicks: kicks + 1)   // 踢两次还不走才重建
                 return
@@ -1690,7 +1699,7 @@ struct PlayerPage: View {
             if it?.status == .readyToPlay, p.rate == 0, p.timeControlStatus == .paused, it?.isPlaybackLikelyToKeepUp == true {
                 DDAudioSessionGate.forceActive()
                 p.playImmediately(atRate: playRate)
-                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted)
                 DYLiveModel.log("DDSTARTDIAG \(id) resume-in-place")
                 watchdog(p)
                 return
@@ -1717,6 +1726,53 @@ struct PlayerPage: View {
                 DYLiveModel.log("DDFIRSTFRAME \(tag) ms=\(ms) fallback=vlc st=\(it?.status.rawValue ?? -1) tcs=\(p.timeControlStatus.rawValue) t=\(String(format: "%.2f", pos)) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s size=\(Int(it?.presentationSize.width ?? 0))x\(Int(it?.presentationSize.height ?? 0))")
                 startVLC(resumeAt: pos.isFinite && pos > 0.3 ? pos : 0)
             }))
+    }
+
+    /// 出声权变化：没权立刻断声（不等 isActive 变 false，那要等到新条停住）；回弹 / 提交拿回权且这一条在播就还声
+    private func applyAudioFloor(phase: String?, to: String?) {
+        guard player != nil || vlc != nil else { return }
+        // 提交 / 回弹只把权给 `to` 那一页：别的页（尤其刚交出权、isActive 还没来得及变 false 的旧页）
+        // 收到通知一律当作没权——以前旧页在这里看自己 may()==true 就把声音解开了（真机 ep=1 旧页 granted）
+        let addressed = phase == DDAudioFloor.Phase.revoke.rawValue || to == id
+        if !DDAudioFloor.may(id) || !addressed {
+            guard playbackIsActive else { return }
+            seamAudio.setMuted(true)
+            player?.isMuted = true
+            vlc?.mediaPlayer.audio?.isMuted = true
+            DDAudioFloor.noteRevoked(id, engine: vlc != nil ? "vlc" : (seamAudio.isEngaged ? "engine" : "av"))
+            return
+        }
+        guard playbackIsActive, isPlaying, !userPaused, !muted else { return }
+        if let v = vlc { v.outputMuted = false; v.mediaPlayer.audio?.isMuted = false }
+        else {
+            seamAudio.setMuted(false)
+            if seamAudio.mode == .fallbackAVPlayer { player?.isMuted = false }
+        }
+        noteAudioGrant()
+    }
+
+    /// 拿到权、出声指令已下：交给 DDAudioFloor 轮询「真的在往外送声音」再记一笔（指令 ≠ 耳朵听见）
+    private func noteAudioGrant() {
+        guard !outMuted, playbackIsActive else { return }
+        if let v = vlc {
+            let base = Int(v.mediaPlayer.media?.statistics.playedAudioBuffers ?? 0)
+            DDAudioFloor.noteGranted(id, engine: "vlc") { [weak v] in
+                guard let v, let a = v.mediaPlayer.audio, !a.isMuted, a.volume > 0 else { return false }
+                return Int(v.mediaPlayer.media?.statistics.playedAudioBuffers ?? 0) > base
+            }
+            return
+        }
+        guard let p = player else { return }
+        let seam = seamAudio
+        DDAudioFloor.noteGranted(id, engine: seam.isEngaged ? "engine" : "av") { [weak p] in
+            guard let p else { return false }
+            if seam.isEngaged {
+                let hub = DDAudioEngineHub.shared
+                return hub.activeOwner == seam.ownerID && hub.playerNode.isPlaying && hub.engine.mainMixerNode.outputVolume > 0
+            }
+            guard seam.mode == .fallbackAVPlayer, !p.isMuted, p.volume > 0, p.timeControlStatus == .playing else { return false }
+            return p.currentItem?.tracks.contains { $0.assetTrack?.mediaType == .audio && $0.isEnabled } ?? false
+        }
     }
 
     private func retryPlayback() {
@@ -1828,13 +1884,15 @@ struct PlayerPage: View {
 
     private func resumeIfStolen(reason: String = "tick") {
         guard vlc == nil, let p = player, canControlPlayback, isPlaying, !userPaused else { return }
+        // 只补救持有出声权的那一页：撤了权的旧页 / 还没提交的目标页不许被这条路拉起来出声
+        guard DDAudioFloor.may(id) else { return }
         guard p.rate == 0, p.currentItem?.status == .readyToPlay else { return }
         DDAudioSessionGate.forceActive()
         if seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
-            p.isMuted = seamAudio.mode == .noAudio || muted
+            p.isMuted = seamAudio.mode == .noAudio || outMuted
             p.playImmediately(atRate: playRate)
         }
-        seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+        seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted)
         DYLiveModel.log("DDRESUME \(id) 音频会话被关后恢复 t=\(String(format: "%.2f", p.currentTime().seconds)) by=\(reason)")
     }
 
@@ -1883,9 +1941,9 @@ struct PlayerPage: View {
             // 真机 11-26：buf=66s 照样重建 → 先黑一段、出了画面还没声音）
             if !failed, stuck, p.currentItem?.status == .readyToPlay, DYPlaybackTelemetry.bufferedAhead(p) >= 2 {
                 DDAudioSessionGate.forceActive()
-                p.isMuted = muted
+                p.isMuted = outMuted
                 p.playImmediately(atRate: playRate)
-                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: muted)
+                seamAudio.setActive(true, isPlaying: true, rate: playRate, muted: outMuted)
                 DYLiveModel.log("DDFGCHECK \(id.suffix(6)) from=\(String(format: "%.1f", from)) tcs=\(p.timeControlStatus.rawValue) why=\(p.reasonForWaitingToPlay?.rawValue ?? "-") buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s → 原地起播")
                 checkAfterKick(p, from: from)
                 return
@@ -1938,7 +1996,7 @@ struct PlayerPage: View {
         pictureInPicture.returnToInline()
         if DDPlayback.bgPlay && isPlaying {
             if (try? AVAudioSession.sharedInstance().setActive(true)) != nil { DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
-            seamAudio.syncAfterForeground(rate: playRate, muted: muted)
+            seamAudio.syncAfterForeground(rate: playRate, muted: outMuted)
             DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) bgPlay \(seamAudio.audioDiag())")
             if vlc == nil, let p = player { checkAfterForeground(p) }
             return
@@ -1947,7 +2005,7 @@ struct PlayerPage: View {
         if let v = vlc {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: DYLaunchMute.sessionOptions)
             try? AVAudioSession.sharedInstance().setActive(true)
-            v.mediaPlayer.audio?.isMuted = muted
+            v.mediaPlayer.audio?.isMuted = outMuted
             v.resume(); isPlaying = true
             watchVLC(v)
             return
@@ -1960,7 +2018,7 @@ struct PlayerPage: View {
             // （原生音轨又关着 → 有画面没声音，老板 11-26）。反正是从暂停恢复，直接把声音交回原生音轨，下次变速再交接。
             seamAudio.returnToNativeAudio(reason: "foreground")
             isPlaying = true
-            seamAudio.play(rate: playRate, muted: muted)
+            seamAudio.play(rate: playRate, muted: outMuted)
             DYLiveModel.log("DDFGAUDIO \(id.suffix(6)) resume session=\(sessionOK) \(seamAudio.audioDiag())")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 guard player === p, canControlPlayback else { return }
@@ -2014,7 +2072,7 @@ struct PlayerPage: View {
         }
         vlc = v
         vlcURL = source
-        v.outputMuted = muted   // 静音沿用当前设置（VLC 默认出声）
+        v.outputMuted = outMuted   // 静音沿用当前设置（VLC 默认出声）
         isPlaying = canControlPlayback && !userPaused
         if offlineContext != nil {
             v.onError = { [weak v] in
@@ -2140,7 +2198,7 @@ struct PlayerPage: View {
                         DispatchQueue.main.async {
                             guard canControlPlayback, isPlaying, player === p else { return }
                             if seamAudio.isEngaged {
-                                seamAudio.loopToZero(rate: playRate, muted: muted)
+                                seamAudio.loopToZero(rate: playRate, muted: outMuted)
                             } else if isPlaying {
                                 p.rate = playRate
                             }
@@ -2245,7 +2303,7 @@ struct PlayerPage: View {
             isPlaying = false
         } else {
             isPlaying = true
-            seamAudio.play(rate: playRate, muted: muted)
+            seamAudio.play(rate: playRate, muted: outMuted)
         }
         userPaused = !isPlaying
         let pos = seamAudio.currentMediaTime ?? p.currentTime().seconds
@@ -2284,7 +2342,7 @@ struct PlayerPage: View {
                 }
                 guard canControlPlayback else { return }
                 seamAudio.didFinishVideoSeek(landedSeconds: landed.isFinite ? landed : pos,
-                                             resumePlaying: isPlaying, rate: playRate, muted: muted)
+                                             resumePlaying: isPlaying, rate: playRate, muted: outMuted)
                 // 拖完：缓冲已经够了播放器还在「怕卡」干等（边下边播按播放进度放数据，它以为网慢）→ 直接起播。
                 // 真机 11-26：拖到 93.5s，目标附近已缓存 11 秒，画面冻了 14 秒不动，直到再拖一下才走。
                 if isPlaying, vlc == nil { kickIfOverCautious(player, delays: [0.3, 0.8, 1.5, 2.5, 4], why: " seek", seekGen: gen) }
