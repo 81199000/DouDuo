@@ -40,10 +40,10 @@ final class DYNativeLogin: ObservableObject {
 
     // MARK: HTTP
 
-    private struct Resp { let status: Int; let text: String; let location: String? }
+    private struct Resp { let status: Int; let text: String; let location: String?; var url: String = ""; var error: String = "" }
 
     private func send(_ method: String, _ url: URL, headers: [String: String], body: String? = nil,
-                      followRedirect: Bool) async -> Resp? {
+                      followRedirect: Bool) async -> Resp {
         var r = URLRequest(url: url)
         r.httpMethod = method
         if let body { r.httpBody = Data(body.utf8) }
@@ -51,12 +51,17 @@ final class DYNativeLogin: ObservableObject {
         if !DYCookieJar.shared.cookies.isEmpty { r.setValue(DYCookieJar.shared.header, forHTTPHeaderField: "Cookie") }
         var delegateSession = session
         if !followRedirect { delegateSession = noRedirectSession }
-        guard let (d, resp) = try? await delegateSession.data(for: r), let h = resp as? HTTPURLResponse else { return nil }
-        DYCookieJar.shared.absorb(h)
-        if let ms = h.value(forHTTPHeaderField: "X-Ms-Token"), !ms.isEmpty { DYCookieJar.shared.set("msToken", ms) }
-        DYNativeTicket.capture(h)
-        return Resp(status: h.statusCode, text: String(decoding: d, as: UTF8.self),
-                    location: h.value(forHTTPHeaderField: "Location"))
+        do {
+            let (d, resp) = try await delegateSession.data(for: r)
+            guard let h = resp as? HTTPURLResponse else { return Resp(status: -2, text: "", location: nil, error: "no-http") }
+            DYCookieJar.shared.absorb(h)
+            if let ms = h.value(forHTTPHeaderField: "X-Ms-Token"), !ms.isEmpty { DYCookieJar.shared.set("msToken", ms) }
+            DYNativeTicket.capture(h)
+            return Resp(status: h.statusCode, text: String(decoding: d, as: UTF8.self),
+                        location: h.value(forHTTPHeaderField: "Location"), url: h.url?.absoluteString ?? "")
+        } catch {
+            return Resp(status: -1, text: "", location: nil, error: String(describing: error))
+        }
     }
 
     /// 不自动跟随跳转的会话（要自己抓 Location 里的登录重定向）
@@ -97,7 +102,7 @@ final class DYNativeLogin: ObservableObject {
         h.removeValue(forKey: "web-sdk-version")
         h.removeValue(forKey: "x-tt-passport-verify-portrait")
         let r = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: false)
-        DDLog("DDNLOGIN strategy http=\(r?.status ?? -1) cookies=\(DYCookieJar.shared.cookies.count) body=\(String((r?.text ?? "").prefix(90)))")
+        DDLog("DDNLOGIN strategy http=\(r.status) cookies=\(DYCookieJar.shared.cookies.count) body=\(String(r.text.prefix(90)))")
     }
 
     private func fetchQr() async {
@@ -107,10 +112,9 @@ final class DYNativeLogin: ObservableObject {
         let qs = DYPassport.signedQuery(DYPassport.base(.qr, traceID: traceID, verifyFp: fp), body: [])
         let h = DYPassport.headers(path: path, post: false, traceID: traceID, portrait: portrait,
                                    dtrait: DYDtrait.session)
-        let rr = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: true)
-        DDLog("DDNLOGIN get_qrcode http=\(rr?.status ?? -1) cookies=\(DYCookieJar.shared.cookies.count) body=\(String((rr?.text ?? "").prefix(120)))")
-        guard let r = rr,
-              let d = r.text.data(using: .utf8),
+        let r = await send("GET", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, followRedirect: true)
+        DDLog("DDNLOGIN get_qrcode http=\(r.status) cookies=\(DYCookieJar.shared.cookies.count) body=\(String(r.text.prefix(120)))")
+        guard let d = r.text.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
             phase = .failed("取二维码失败（网络）")
             return
@@ -213,9 +217,27 @@ final class DYNativeLogin: ObservableObject {
         let h = DYPassport.headers(path: path, post: true, traceID: traceID, portrait: portrait,
                                    dtrait: DYDtrait.session)
         let form = body.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
-        guard let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
-                                 followRedirect: true) else { return nil }
-        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location == nil ? "-" : "yes") body=\(String(r.text.prefix(90)))")
+        let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
+                           followRedirect: true)
+        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location == nil ? "-" : "yes") url=\(r.url.replacingOccurrences(of: DYPassport.host, with: "")) err=\(r.error.isEmpty ? "-" : r.error) body=\(String(r.text.prefix(80)))")
+        if r.status < 0 || r.text.isEmpty {
+            // 跟随跳转这一路失败了：换不跟跳转的方式再发一次，至少把 302 的 Location 抓到手
+            let raw = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
+                                 followRedirect: false)
+            DDLog("DDNLOGIN poll-retry http=\(raw.status) loc=\(raw.location.map { String($0.prefix(80)) } ?? "-") err=\(raw.error.isEmpty ? "-" : raw.error)")
+            if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
+            if let loc = raw.location, !loc.isEmpty { return (loc, "3") }
+            if raw.status >= 200, raw.status < 300, !raw.text.isEmpty {
+                guard let d = raw.text.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
+                let data = (o["data"] as? [String: Any]) ?? o
+                for k in ["redirect_url", "redirect_uri", "login_url", "scan_url", "url"] {
+                    if let v = (data[k] as? String) ?? (o[k] as? String), !v.isEmpty { return (v, "3") }
+                }
+                return (nil, (data["status"] as? String) ?? "")
+            }
+            return nil
+        }
         // 确认后服务端 302 到带 sessionid 的地址，跟过去 cookie 已经在罐里了
         if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
         if let loc = r.location, !loc.isEmpty { return (loc, "3") }
@@ -234,10 +256,9 @@ final class DYNativeLogin: ObservableObject {
         var url = redirect.isEmpty ? URL(string: DYPassport.host + "/")! : URL(string: redirect, relativeTo: URL(string: DYPassport.host))!
         for _ in 0..<6 {
             guard url.host?.hasSuffix("douyin.com") == true else { break }
-            let r0 = await send("GET", url, headers: ["Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            let r = await send("GET", url, headers: ["Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                                                            "Referer": DYPassport.host + "/", "User-Agent": DYPassport.userAgent],
                                      followRedirect: false)
-            guard let r = r0 else { break }
             DDLog("DDNLOGIN hop http=\(r.status) loc=\(r.location == nil ? "-" : "yes")")
             guard r.status >= 300, r.status < 400, let loc = r.location, !loc.isEmpty,
                   let next = URL(string: loc, relativeTo: url) else { break }
