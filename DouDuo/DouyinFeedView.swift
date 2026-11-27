@@ -1967,6 +1967,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if ProcessInfo.processInfo.environment["DOUDUO_SEARCHCAT"] == "1" { Task { await DDSearchCatProbe.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_IMREAD"] == "1" { Task { await DDIMReadProbe.run() } }
             if let t = ProcessInfo.processInfo.environment["DOUDUO_IMSEND"], !t.isEmpty { Task { await DDIMSendProbe.run(t) } }
+            if let js = ProcessInfo.processInfo.environment["DOUDUO_CHATJS"], !js.isEmpty { Task { await DDChatJSProbe.run(js) } }
             if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_STRESS"] != nil { Task { await DDCommentStress.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #if DEBUG
@@ -3275,6 +3276,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if ProcessInfo.processInfo.environment["DOUDUO_SEARCHCAT"] == "1" { Task { await DDSearchCatProbe.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_IMREAD"] == "1" { Task { await DDIMReadProbe.run() } }
             if let t = ProcessInfo.processInfo.environment["DOUDUO_IMSEND"], !t.isEmpty { Task { await DDIMSendProbe.run(t) } }
+            if let js = ProcessInfo.processInfo.environment["DOUDUO_CHATJS"], !js.isEmpty { Task { await DDChatJSProbe.run(js) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }

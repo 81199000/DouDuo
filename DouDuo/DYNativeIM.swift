@@ -247,7 +247,16 @@ final class DYNativeIM {
         const bin = b => { if (!b) return null; const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; };
         const enc = buf => { if (!buf) return ''; const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
         const x = new XMLHttpRequest(); const names = [];
-        const set = x.setRequestHeader; x.setRequestHeader = function (k, v) { names.push(String(k).toLowerCase()); return set.apply(this, arguments); };
+        // extra 里给定的票据头是「最终值」：安全 SDK 之后再设同名头一律改回、client-data 丢弃（照官方 IM SDK 实际发出的形态）
+        const forced = {}; for (const [k, v] of Object.entries(extra || {})) if (/^bd-ticket-guard-/.test(k)) forced[k] = v;
+        const lock = Object.keys(forced).length > 0;
+        const set = x.setRequestHeader;
+        x.setRequestHeader = function (k, v) {
+          const n = String(k).toLowerCase(); names.push(n);
+          if (lock && n === 'bd-ticket-guard-client-data') return;
+          if (lock && n in forced) { if (this.__ddSet && this.__ddSet[n]) return; (this.__ddSet = this.__ddSet || {})[n] = 1; return set.call(this, k, forced[n]); }
+          return set.apply(this, arguments);
+        };
         return await new Promise(ok => {
           x.open(method, url, true); x.withCredentials = true; x.responseType = 'arraybuffer';
           x.setRequestHeader('accept', accept);
@@ -267,6 +276,14 @@ final class DYNativeIM {
         return (status, bytes, names)
     }
 
+    /// 官方私信网页在原生扫码登录的会话下实际发出的票据头（2026-11-27 23:03 模拟器真发成功抓包）：
+    /// 公钥空、sign-type 0、没有 client-data——即「不带票据签名」。网页安全 SDK 若自行补签，用的是跟这次登录不匹配的网页密钥，
+    /// 服务端判定异常直接作废登录。预先设好这几个头，SDK 看到已存在就不再补签。
+    static let officialGuardHeaders: [String: String] = [
+        "bd-ticket-guard-ree-public-key": "", "bd-ticket-guard-version": "2",
+        "bd-ticket-guard-web-sign-type": "0", "bd-ticket-guard-web-version": "2",
+    ]
+
     /// 身份令牌（经网页 SDK 签名）
     func identityTokenViaPage(force: Bool = false) async throws -> (token: String, deviceID: String) {
         if !force, let c = identityCache, Date().timeIntervalSince(c.at) < 240 { return (c.token, c.deviceID) }
@@ -282,7 +299,8 @@ final class DYNativeIM {
         if let ms = ck.map["msToken"], !ms.isEmpty { q.append(("msToken", ms)) }
         let qs = DYNative.query(q)
         let full = qs + "&a_bogus=" + DYNative.enc(DYABogus.sign(query: qs, userAgent: DouyinWeb.userAgent))
-        var extra = ["x-tt-passport-trace-id": trace]
+        var extra = Self.officialGuardHeaders
+        extra["x-tt-passport-trace-id"] = trace
         if let csrf = ck.map["passport_csrf_token"] ?? ck.map["passport_csrf_token_default"], !csrf.isEmpty { extra["x-tt-passport-csrf-token"] = csrf }
         let (http, data, names) = try await pageXHR(DYNative.host + "/passport/safe/get_identity_security_token/?" + full,
                                                    method: "GET", body: nil, accept: "application/json, text/javascript", extra: extra)
@@ -302,7 +320,7 @@ final class DYNativeIM {
         let url = Self.host + Self.paths[.send]!
         let body = envelope(.send, payload, identity: identity)
         let t0 = Date()
-        let (http, data, names) = try await pageXHR(url, method: "POST", body: body, accept: "application/x-protobuf")
+        let (http, data, names) = try await pageXHR(url, method: "POST", body: body, accept: "application/x-protobuf", extra: Self.officialGuardHeaders)
         DYLiveModel.log("DDNATIVEIM send via=page http=\(http) bytes=\(data.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) sdkHeaders=\(names.filter { $0.hasPrefix("bd-") || $0.hasPrefix("x-") }.joined(separator: ","))")
         if data.count <= 64 { DYLiveModel.log("DDNATIVEIM send-resp hex=\(data.map { String(format: "%02x", $0) }.joined()) shape=\(DYPB.shape(data))") }
         guard http == 200, let top = DYPB.decode(data) else { throw DYIMError.badResponse("HTTP \(http)") }
@@ -600,6 +618,31 @@ enum DDIMNativeCapture {
         let line = s + "\n"
         if let fh = try? FileHandle(forWritingTo: url) { fh.seekToEndOfFile(); fh.write(Data(line.utf8)); try? fh.close() }
         else { try? Data(line.utf8).write(to: url) }
+    }
+}
+#endif
+
+
+#if DEBUG
+/// DOUDUO_CHATJS=<js 表达式>：私信网页加载后执行并记录结果（只用于找网页 IM SDK 入口）
+@MainActor enum DDChatJSProbe {
+    static func run(_ js: String) async {
+        for _ in 0..<40 {
+            if let w = DouyinWeb.chatWeb, w.url?.path.hasPrefix("/chat") == true, !w.isLoading { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 6_000_000_000)
+        guard let w = DouyinWeb.chatWeb else { DYLiveModel.log("DDCHATJS no-web"); return }
+        do {
+            let r = try await w.callAsyncJavaScript(js, arguments: [:], contentWorld: .page)
+            let out = String(describing: r ?? "nil")
+            var i = out.startIndex
+            var n = 0
+            while i < out.endIndex, n < 30 {
+                let j = out.index(i, offsetBy: 900, limitedBy: out.endIndex) ?? out.endIndex
+                DYLiveModel.log("DDCHATJS[\(n)] \(out[i..<j])"); i = j; n += 1
+            }
+        } catch { DYLiveModel.log("DDCHATJS err \(error)") }
     }
 }
 #endif
