@@ -11,6 +11,8 @@ struct DYTicketBundle: Equatable {
     let privatePEM: String
     /// 65 字节未压缩公钥点的 base64（bd-ticket-guard-ree-public-key）
     let publicPoint: String
+    /// 网页 SDK 与服务端 ECDH 协商出的 32 字节对称密钥（base64）。网页写请求用它做 HMAC 签名（sign-type 1）
+    let ecdhKey: String?
 }
 
 enum DYTicketGuard {
@@ -30,7 +32,8 @@ enum DYTicketGuard {
         guard let pem = (wp["private_key"] as? String) ?? (cs?["ec_privateKey"] as? String), !pem.isEmpty,
               let key = privateKey(pem) else { return nil }
         return DYTicketBundle(ticket: ticket, tsSign: ts, privatePEM: pem,
-                              publicPoint: key.publicKey.x963Representation.base64EncodedString())
+                              publicPoint: key.publicKey.x963Representation.base64EncodedString(),
+                              ecdhKey: (wp["ecdh_key"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     /// 网页存的 PEM 把整段 base64 写在一行（184 字符），CryptoKit 的 PEM 解析只认 64 字符换行，
@@ -44,19 +47,22 @@ enum DYTicketGuard {
     }
 
     /// 某个接口 path 的票据签名头。
+    /// 与网页安全 SDK 完全一致（2026-11-27 模拟器抓包逐字节验证）：
+    ///   req_sign = base64(HMAC-SHA256(ecdh_key, "ticket=<t>&path=<p>&timestamp=<秒>"))，sign-type = 1，client-data 带 t_trust:1。
+    /// ⚠️ 不能用 ECDSA 私钥签（sign-type 0）：服务端回 1002 并作废登录（真机实测两次）。
     static func headers(_ b: DYTicketBundle, path: String, now: Int = Int(Date().timeIntervalSince1970)) -> [String: String]? {
-        guard let key = privateKey(b.privatePEM) else { return nil }
+        guard let kb64 = b.ecdhKey, let kd = Data(base64Encoded: kb64), kd.count == 32 else { return nil }
         let payload = "ticket=\(b.ticket)&path=\(path)&timestamp=\(now)"
-        guard let sig = try? key.signature(for: Data(payload.utf8)).derRepresentation.base64EncodedString() else { return nil }
-        let client: [String: Any] = ["ts_sign": b.tsSign, "req_content": "ticket,path,timestamp", "req_sign": sig, "timestamp": now]
-        guard let cd = try? JSONSerialization.data(withJSONObject: client, options: [.sortedKeys]) else { return nil }
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(payload.utf8), using: SymmetricKey(data: kd))
+        let sig = Data(mac).base64EncodedString()
+        // 键顺序照网页：ts_sign, req_content, req_sign, timestamp, t_trust
+        let client = "{\"ts_sign\":\"\(b.tsSign)\",\"req_content\":\"ticket,path,timestamp\",\"req_sign\":\"\(sig)\",\"timestamp\":\(now),\"t_trust\":1}"
         return [
             "bd-ticket-guard-ree-public-key": b.publicPoint,
             "bd-ticket-guard-version": "2",
-            "bd-ticket-guard-iteration-version": "1",
             "bd-ticket-guard-web-version": b.tsSign.hasPrefix("ts.1") ? "1" : "2",
-            "bd-ticket-guard-web-sign-type": "0",
-            "bd-ticket-guard-client-data": cd.base64EncodedString(),
+            "bd-ticket-guard-web-sign-type": "1",
+            "bd-ticket-guard-client-data": Data(client.utf8).base64EncodedString(),
         ]
     }
 }

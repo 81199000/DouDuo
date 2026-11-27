@@ -60,12 +60,26 @@ enum DYWriteCapture {
     }
 
     /// 同一时刻原生代码会发的票据头，写进同一个文件对照
-    @MainActor static func logNative(path: String, web: WKWebView?) async {
-        guard let b = await DYTicketStore.load(from: web), let h = DYTicketGuard.headers(b, path: path) else {
+    @MainActor static func logNative(path: String, web: WKWebView?, now: Int? = nil) async {
+        guard let b = await DYTicketStore.load(from: web),
+              let h = DYTicketGuard.headers(b, path: path, now: now ?? Int(Date().timeIntervalSince1970)) else {
             append(#"{"kind":"native","error":"no-ticket"}"#); return
         }
         if let d = try? JSONSerialization.data(withJSONObject: ["kind": "native", "u": path, "h": h]),
            let s = String(data: d, encoding: .utf8) { append(s) }
+    }
+
+    /// 最近一条网页干跑写请求里 client-data 的时间戳
+    static func lastWebTimestamp() -> Int? {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("ddcap.jsonl")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n").reversed() where line.contains("-dry") {
+            guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let h = o["h"] as? [String: String], let cd = h["bd-ticket-guard-client-data"],
+                  let d = Data(base64Encoded: cd), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+            return j["timestamp"] as? Int
+        }
+        return nil
     }
 
     static func append(_ s: String) {

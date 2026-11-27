@@ -59,6 +59,10 @@ enum DYNative {
     static func query(_ pairs: [(String, String)]) -> String { pairs.map { "\(enc($0.0))=\(enc($0.1))" }.joined(separator: "&") }
 
     struct Response { let status: Int; let data: Data; let ms: Int }
+    /// 最近一次写请求是否被人机验证（bdturing）拦下
+    @MainActor static var lastBdturing = false
+    /// 最近一次写请求的回应头里是否带了身份验证要求（风控：短时间评论太多等）
+    @MainActor static var lastVerify = false
 
     enum Failure: LocalizedError {
         case noLogin, noTicket, http(Int), empty
@@ -161,6 +165,9 @@ extension DYNative {
         let t0 = Date()
         let (d, resp) = try await session.data(for: r)
         let h = resp as? HTTPURLResponse
+        lastBdturing = h?.value(forHTTPHeaderField: "X-Vc-Bdturing-Parameters") != nil
+        lastVerify = h?.value(forHTTPHeaderField: "x-vc-bdturing-parameters") != nil
+            || (h?.allHeaderFields.keys.contains { "\($0)".lowercased().contains("verify") } ?? false)
         return (Response(status: h?.statusCode ?? -1, data: d, ms: Int(Date().timeIntervalSince(t0) * 1000)),
                 h?.value(forHTTPHeaderField: "Bd-Ticket-Guard-Result"))
     }
@@ -210,6 +217,9 @@ extension DYNative {
             return .unknown
         }
         let (r, tg) = result
+        if r.data.isEmpty {
+            DYLiveModel.log("DDSEND comment op=\(op) phase=native-empty hdrs=\(result.0.status) bdt=\(lastBdturing ? 1 : 0) verify=\(lastVerify ? 1 : 0)")
+        }
         let p = try? JSONDecoder().decode(DYRawPublish.self, from: r.data)
         DYLiveModel.log("DDSEND comment op=\(op) phase=native-response http=\(r.status) code=\(p?.status_code.map(String.init) ?? "nil") tg=\(tg ?? "-") bytes=\(r.data.count) ms=\(r.ms)")
         if r.status == 200, p?.status_code == 0, let c = p?.comment?.model(topLevel: replyID == nil || replyID == "0"), !c.id.isEmpty {

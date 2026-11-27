@@ -443,9 +443,10 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         // 干跑抓包：签名页就绪后让网页「发」一条评论，但 DRYRUN 拦住不发出去，只记录安全 SDK 加的头
         if DYWriteCapture.dryRun, let aw = ProcessInfo.processInfo.environment["DOUDUO_CAPTURE_PUBLISH"], !aw.isEmpty {
             Task { @MainActor in
-                await DYWriteCapture.logNative(path: "/aweme/v1/web/comment/publish", web: self.web)
                 _ = try? await self.call(Self.capturePublishJS, args: ["id": aw, "text": "dryrun", "reply": "0", "replyTo": "0",
                                                                      "imgUri": "", "imgW": "0", "imgH": "0", "imgFmt": ""], attempts: 1)
+                // 用网页那条的同一秒时间戳算原生签名，便于逐字节比对
+                await DYWriteCapture.logNative(path: "/aweme/v1/web/comment/publish", web: self.web, now: DYWriteCapture.lastWebTimestamp())
                 DYLiveModel.log("DDCAPTURE publish dry-run done")
             }
         }
@@ -1000,9 +1001,9 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
 
     private static let diggJS = #"""
     if (typeof sdkReady === 'function') await sdkReady(6000);
-    const P = Object.assign({}, base, { aweme_id: id, type: type, item_type: '0' });
-    const u = '/aweme/v1/web/commit/item/digg/?' + new URLSearchParams(P).toString();
-    const r = await req('POST', u, '');
+    // 网页版同款：参数在表单里（只放 query、body 为空时会被人机验证 bdturing 拦下）
+    const u = '/aweme/v1/web/commit/item/digg/?' + q({});
+    const r = await req('POST', u, new URLSearchParams({ aweme_id: id, item_type: '0', type: type }).toString());
     const d = parse(r.t) || {};
     return JSON.stringify({ status: r.s, statusCode: d.status_code, msg: d.status_msg || (r.s === 200 ? '' : r.t.slice(0, 120)) });
     """#

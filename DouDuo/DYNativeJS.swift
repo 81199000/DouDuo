@@ -172,6 +172,10 @@ final class DYNativeJS {
             let (d, resp) = try await DYNative.session.data(for: r)
             let h = resp as? HTTPURLResponse
             let hs = (h?.allHeaderFields ?? [:]).map { "\($0.key): \($0.value)" }.joined(separator: "\r\n")
+            if isPost {
+                let why = String(String(decoding: d.prefix(60), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
+                DYLiveModel.log("DDNATIVEJS post path=\(comps.path) http=\(h?.statusCode ?? -1) bytes=\(d.count) tg=\(h?.value(forHTTPHeaderField: "Bd-Ticket-Guard-Result") ?? "-") bdt=\(h?.value(forHTTPHeaderField: "X-Vc-Bdturing-Parameters") != nil ? 1 : 0) head=\(why)")
+            }
             if let code = h?.statusCode, code != 200 {
                 let why = String(String(decoding: d.prefix(80), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
                 DYLiveModel.log("DDNATIVEJS http=\(code) path=\(comps.path) why=\(why)")
