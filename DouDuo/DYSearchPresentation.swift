@@ -277,13 +277,56 @@ final class DYSearchPager<T: Identifiable>: ObservableObject {
     }
 }
 
+struct DYSearchDiag: Decodable { let nil_: String?; let keys: String?; let len: Int?; let vc: Bool?
+    enum CodingKeys: String, CodingKey { case nil_ = "nil", keys, len, vc }
+    var text: String { "nil=\(nil_ ?? "-") len=\(len ?? -1) vc=\(vc == true ? 1 : 0) keys=\(keys ?? "-")" }
+}
 private struct DYSearchGeneralPage: Decodable {
-    let status: Int; let code: Int?; let msg: String?
+    let status: Int; let code: Int?; let msg: String?; var diag: DYSearchDiag? = nil
     let items: [DYAweme]; let users: [DYSearchUser]; let guide: [String]
     let cursor: String; let hasMore: Bool
 }
-private struct DYSearchUserPage: Decodable { let status: Int; let code: Int?; let msg: String?; let items: [DYSearchUser]; let cursor: String; let hasMore: Bool }
-private struct DYSearchLivePage: Decodable { let status: Int; let code: Int?; let msg: String?; let items: [DYLiveRoom]; let cursor: String; let hasMore: Bool }
+private struct DYSearchUserPage: Decodable { let status: Int; let code: Int?; let msg: String?; var diag: DYSearchDiag? = nil; let items: [DYSearchUser]; let cursor: String; let hasMore: Bool }
+private struct DYSearchLivePage: Decodable { let status: Int; let code: Int?; let msg: String?; var diag: DYSearchDiag? = nil; let items: [DYLiveRoom]; let cursor: String; let hasMore: Bool }
+
+
+/// 搜索请求节流：抖音对同一账号短时间内连发搜索会回 verify_check（要求验证、结果为空），
+/// 实测几秒后自己恢复。这里把搜索请求排队、两次之间至少隔 1.2 秒，同一请求并发时只发一次；
+/// 碰到 verify_check 按 3 秒、6 秒各等一次再试，不做任何验证绕过。
+@MainActor
+enum DYSearchGate {
+    private static var nextSlot = Date.distantPast
+    private static var inflight: [String: Task<Data, Error>] = [:]
+    static let spacing: TimeInterval = 1.2
+
+    static func isThrottled(_ d: Data) -> Bool {
+        guard let s = String(data: d.prefix(4000), encoding: .utf8) else { return false }
+        return s.contains("\"nil\":\"verify_check\"") || s.contains("DIAG nil=verify_check")
+    }
+
+    static func fetch(key: String, _ op: @escaping @MainActor () async throws -> Data) async throws -> Data {
+        if let t = inflight[key] { return try await t.value }
+        let t = Task { @MainActor () throws -> Data in
+            var last = Data()
+            for (attempt, backoff) in [0.0, 3.0, 6.0].enumerated() {
+                let slot = max(Date(), nextSlot).addingTimeInterval(backoff)
+                nextSlot = slot.addingTimeInterval(spacing)
+                let wait = slot.timeIntervalSinceNow
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                last = try await op()
+                if !isThrottled(last) {
+                    if attempt > 0 { DYLiveModel.log("DDSEARCH throttle-recovered attempt=\(attempt)") }
+                    return last
+                }
+                DYLiveModel.log("DDSEARCH throttled attempt=\(attempt) key=\(key.prefix(24))")
+            }
+            throw DYError.bad("抖音暂时限制了搜索（短时间内搜得太多），过半分钟再试")
+        }
+        inflight[key] = t
+        defer { inflight[key] = nil }
+        return try await t.value
+    }
+}
 
 extension DouyinBridge {
     /// 搜索类接口抖音额外校验浏览器页面环境，这几段脚本只在隐藏网页里跑（DYNativeJS.isPageOnly）
@@ -295,6 +338,8 @@ extension DouyinBridge {
     const sq = (channel, extra) => q(Object.assign({ search_channel: channel, keyword: kw, search_source: 'normal_search', query_correct_type: '1',
       is_filter_search: '0', from_group_id: '', offset: cursor, count: '10', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }, extra || {}));
     const okA = a => a && (a.video || a.images) && !a.is_ads;
+    const diag = (r, d) => ({ nil: (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || null,
+      keys: Object.keys(d).slice(0, 10).join('|'), len: (r.t || '').length, vc: !!(r.h && /bdturing/i.test(String(r.h))) });
     """#
 
     static let searchGeneralJS = searchUserMap + #"""
@@ -304,14 +349,14 @@ extension DouyinBridge {
     const items = data.filter(x => x && x.type === 1 && okA(x.aweme_info)).map(x => mapA(x.aweme_info));
     const users = data.filter(x => x && x.type === 4).flatMap(x => (x.user_list || []).map(u => uumap(u && u.user_info))).filter(Boolean);
     const guide = (d.guide_search_words || []).map(w => w && w.word).filter(w => typeof w === 'string' && w);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, users, guide, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, users, guide, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
     """#
 
     static let searchUserJS = searchUserMap + #"""
     const r = await req('GET', '/aweme/v1/web/discover/search/?' + sq('aweme_user_web'));
     const d = parse(r.t) || {};
     const items = (d.user_list || []).map(u => uumap(u && u.user_info)).filter(Boolean);
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
     """#
 
     static let searchLiveJS = searchUserMap + #"""
@@ -327,7 +372,7 @@ extension DouyinBridge {
         viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || (room.user_count ? String(room.user_count) : ''),
         hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
     }).filter(x => x && x.id && (Object.keys(x.hls).length || Object.keys(x.flv).length));
-    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, diag: diag(r, d), items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
     """#
 
     private static func searchError(status: Int, code: Int?, msg: String?) -> Error? {
@@ -340,25 +385,25 @@ extension DouyinBridge {
 
     func searchGeneral(_ kw: String, offset: String) async throws -> (items: [DYAweme], users: [DYSearchUser], guide: [String], cursor: String, hasMore: Bool) {
         let t0 = Date()
-        let d = try await call(Self.searchGeneralJS, args: ["kw": kw, "cursor": offset])
+        let d = try await DYSearchGate.fetch(key: "general|\(kw)|\(offset)") { [self] in try await self.call(Self.searchGeneralJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchGeneralPage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=general off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        DYLiveModel.log("DDSEARCH tab=general off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
         return (p.items, p.users, p.guide, p.cursor, p.hasMore)
     }
 
     func searchUsers(_ kw: String, offset: String) async throws -> (items: [DYSearchUser], cursor: String, hasMore: Bool) {
-        let d = try await call(Self.searchUserJS, args: ["kw": kw, "cursor": offset])
+        let d = try await DYSearchGate.fetch(key: "user|\(kw)|\(offset)") { [self] in try await self.call(Self.searchUserJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchUserPage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=user off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count)")
+        DYLiveModel.log("DDSEARCH tab=user off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
         return (p.items, p.cursor, p.hasMore)
     }
 
     func searchLive(_ kw: String, offset: String) async throws -> (items: [DYLiveRoom], cursor: String, hasMore: Bool) {
-        let d = try await call(Self.searchLiveJS, args: ["kw": kw, "cursor": offset])
+        let d = try await DYSearchGate.fetch(key: "live|\(kw)|\(offset)") { [self] in try await self.call(Self.searchLiveJS, args: ["kw": kw, "cursor": offset]) }
         let p = try JSONDecoder().decode(DYSearchLivePage.self, from: d)
-        DYLiveModel.log("DDSEARCH tab=live off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count)")
+        DYLiveModel.log("DDSEARCH tab=live off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) \(p.diag?.text ?? "")")
         if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
         return (p.items, p.cursor, p.hasMore)
     }

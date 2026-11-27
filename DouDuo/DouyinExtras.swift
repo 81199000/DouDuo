@@ -121,7 +121,13 @@ private struct DYSugResp: Decodable { let status: Int; let items: [DYSug] }
 extension DouyinBridge {
     /// 列表通用：喜欢 / 收藏 / 历史 / 稍后再看 / 关注 / 搜索，统一回 (items, cursor, hasMore)
     private func list(_ js: String, _ args: [String: Any]) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        let d = try await call(js, args: args)
+        let d: Data
+        if js == Self.searchJS {
+            let key = "video|\(args["kw"] ?? "")|\(args["cursor"] ?? "")"
+            d = try await DYSearchGate.fetch(key: key) { [self] in try await self.call(js, args: args) }
+        } else {
+            d = try await call(js, args: args)
+        }
         let p = try JSONDecoder().decode(DYListPage.self, from: d)
         if p.code == 8 || p.code == 2483 || (p.msg ?? "").contains("未登录") || (p.msg ?? "").contains("请先登录") {
             throw DYError.bad("抖音未登录：请在「我的」中登录后重试")
@@ -130,6 +136,7 @@ extension DouyinBridge {
             throw DYError.bad(p.status == -2 || p.status == -3 ? "搜索请求超时，请稍后重试" : "搜索连接失败，请稍后重试")
         }
         guard p.status == 200 else { throw DYError.blocked("HTTP \(p.status)") }
+        if js == Self.searchJS, let m = p.msg, m.hasPrefix("DIAG ") { DYLiveModel.log("DDSEARCH tab=video empty \(m)") }
         if js == Self.searchJS, let code = p.code, code != 0 {
             let message = p.msg.flatMap { $0.isEmpty ? nil : $0 } ?? "搜索暂不可用（\(code)）"
             throw DYError.bad(message)
@@ -819,6 +826,8 @@ extension DouyinBridge {
       query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '16', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
+    const nilT = (d.search_nil_info && (d.search_nil_info.search_nil_type || d.search_nil_info.search_nil_item)) || '';
+    if (!arr.length) return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: 'DIAG nil=' + (nilT || '-') + ' len=' + (r.t || '').length + ' keys=' + Object.keys(d).slice(0, 10).join('|'), items: [], cursor: String(d.cursor ?? 0), hasMore: false });
     return pack(r, d, arr, d.cursor, d.has_more);
     """#
 
