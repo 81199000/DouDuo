@@ -43,6 +43,9 @@ final class DYAccountStore: ObservableObject {
             let c: [[String: Any]] = [["name": "sessionid", "value": "fake-\(uid)", "domain": ".douyin.com", "path": "/",
                                        "secure": true, "httpOnly": true, "expires": Date().addingTimeInterval(86400).timeIntervalSince1970]]
             if let d = try? JSONSerialization.data(withJSONObject: c) { Self.keychainSet(d, account: uid) }
+            // 每个假账号一份假的安全 SDK 密钥：切换后看 webRestored 条数 / 签名页 DDKEYS 的 sdkN 是否跟着换
+            let extras = DYAccountLoginExtras(webStorage: ["security-sdk/dd_fake_\(uid)": "fake-\(uid)"])
+            if let d = try? JSONEncoder().encode(extras) { Self.keychainSet(d, account: Self.extrasAccount(uid)) }
             accounts.append(DYSavedAccount(id: uid, name: name, avatar: nil, secUid: "sec\(uid)", savedAt: Date()))
         }
         persist()
@@ -62,6 +65,7 @@ final class DYAccountStore: ObservableObject {
         guard cookies.contains(where: { $0.name == "sessionid" && !$0.value.isEmpty }) else { return }
         guard let blob = Self.encode(cookies) else { return }
         Self.keychainSet(blob, account: user.uid)
+        await Self.saveExtras(uid: user.uid, cookies: cookies)
         let entry = DYSavedAccount(id: user.uid, name: user.name, avatar: user.avatar, secUid: user.secUid, savedAt: Date())
         if let i = accounts.firstIndex(where: { $0.id == user.uid }) { accounts[i] = entry } else { accounts.append(entry) }
         currentID = user.uid
@@ -71,21 +75,26 @@ final class DYAccountStore: ObservableObject {
 
     // MARK: 切换 / 退出 / 移除
 
-    /// 切到存着的账号：清掉当前抖音 cookie，写回那个账号的 cookie
+    /// 切到存着的账号：整份登录快照换回去——cookie、网页安全 SDK 的密钥、原生扫码登录的 cookie 罐 / 票据 / 私钥。
+    /// 只换 cookie 不够：登录绑着设备密钥，对不上的话写操作失败、严重时抖音直接作废登录（见 DYAccountLoginExtras）。
     func switchTo(_ account: DYSavedAccount) async -> Bool {
         guard let blob = Self.keychainGet(account: account.id), let cookies = Self.decode(blob), !cookies.isEmpty else {
             DYLiveModel.log("DDACCOUNT switch missing uid=…\(account.id.suffix(4))")
             return false
         }
-        // 先把当前账号的最新 cookie 存一下（抖音会续期 cookie，别拿旧的覆盖）
+        // 先把当前账号的最新快照存一下（抖音会续期 cookie / 票据，别拿旧的覆盖）
         await refreshCurrentSnapshot()
+        let extras = Self.loadExtras(account.id)
         await Self.clearDouyinSession()
+        Self.clearNativeLogin()
         let store = WKWebsiteDataStore.default().httpCookieStore
         for c in cookies { await store.setCookie(c) }
+        if extras.hasNativeLogin { Self.importNativeLogin(extras) }
+        let restored = await Self.restoreWebStorage(extras.webStorage)
         currentID = account.id
         persist()
         Self.clearAccountCaches()
-        DYLiveModel.log("DDACCOUNT switch uid=…\(account.id.suffix(4)) cookies=\(cookies.count)")
+        DYLiveModel.log("DDACCOUNT switch uid=…\(account.id.suffix(4)) cookies=\(cookies.count) \(extras.logSummary) webRestored=\(restored.map(String.init) ?? "fail")")
         #if DEBUG
         DYLiveModel.log("DDACCOUNT now sessionid=\(await Self.debugSessionValue() ?? "none")")
         #endif
@@ -96,6 +105,8 @@ final class DYAccountStore: ObservableObject {
     func signOut() async {
         await refreshCurrentSnapshot()
         await Self.clearDouyinSession()
+        // 原生扫码登录那一份也要清：不清的话原生请求仍按上一个账号发（已存进快照，切回来能恢复）
+        Self.clearNativeLogin()
         currentID = nil
         persist()
         Self.clearAccountCaches()
@@ -108,6 +119,7 @@ final class DYAccountStore: ObservableObject {
     /// 从列表里移除（连同存着的登录凭据）
     func remove(_ account: DYSavedAccount) {
         Self.keychainDelete(account: account.id)
+        Self.keychainDelete(account: Self.extrasAccount(account.id))
         accounts.removeAll { $0.id == account.id }
         persist()
         DYLiveModel.log("DDACCOUNT remove uid=…\(account.id.suffix(4)) n=\(accounts.count)")
@@ -119,6 +131,62 @@ final class DYAccountStore: ObservableObject {
         let cookies = await Self.douyinCookies()
         guard cookies.contains(where: { $0.name == "sessionid" && !$0.value.isEmpty }), let blob = Self.encode(cookies) else { return }
         Self.keychainSet(blob, account: id)
+        await Self.saveExtras(uid: id, cookies: cookies)
+    }
+
+    // MARK: 设备密钥快照（见 DYAccountLoginExtras）
+
+    static func extrasAccount(_ uid: String) -> String { uid + "#extras" }
+
+    private static func loadExtras(_ uid: String) -> DYAccountLoginExtras {
+        keychainGet(account: extrasAccount(uid), quiet: true)
+            .flatMap { try? JSONDecoder().decode(DYAccountLoginExtras.self, from: $0) } ?? DYAccountLoginExtras()
+    }
+
+    /// 读当前这份：签名页网页的安全 SDK 密钥；原生扫码登录只在它的 sessionid 就是当前登录时才算这个账号的
+    private static func captureExtras(cookies: [HTTPCookie]) async -> DYAccountLoginExtras {
+        var out = DYAccountLoginExtras()
+        if let web = DouyinBridge.primary?.web, web.url?.host == "www.douyin.com",
+           let raw = try? await web.callAsyncJavaScript(DYWebStorageScript.read, contentWorld: .page) as? [String: Any] {
+            out.webStorage = DYAccountLoginExtras.filterWebStorage(raw)
+        }
+        let session = cookies.first { $0.name == "sessionid" }?.value
+        if let st = DYNativeTicket.exportState(), let jarSession = DYCookieJar.shared.value("sessionid"), jarSession == session {
+            out.nativeJar = DYCookieJar.shared.cookies
+            out.nativeTicket = st.ticket
+            out.nativeKey = st.key
+        }
+        return out
+    }
+
+    private static func saveExtras(uid: String, cookies: [HTTPCookie]) async {
+        let merged = loadExtras(uid).merging(newer: await captureExtras(cookies: cookies))
+        guard let d = try? JSONEncoder().encode(merged) else { return }
+        keychainSet(d, account: extrasAccount(uid))
+        DYLiveModel.log("DDACCOUNT extras saved uid=…\(uid.suffix(4)) \(merged.logSummary)")
+    }
+
+    /// 原生扫码登录的那一份（cookie 罐 + 票据 + 私钥）：全局只有一份，换账号时必须清掉或换成那个账号的
+    private static func clearNativeLogin() {
+        DYCookieJar.dropNativeSession(reason: "account-change")
+        DYNativeIM.shared.resetForAccountChange()
+    }
+
+    private static func importNativeLogin(_ e: DYAccountLoginExtras) {
+        guard let jar = e.nativeJar, let ticket = e.nativeTicket, let key = e.nativeKey else { return }
+        DYCookieJar.shared.replaceAll(jar)
+        DYNativeTicket.importState(ticket: ticket, key: key)
+        DYNativeCookies.invalidate()
+        DYTicketStore.invalidate()
+    }
+
+    /// 把那个账号的安全 SDK 密钥写回 www.douyin.com 的 localStorage。
+    /// 用一个不联网、不跑抖音脚本的临时网页（空白页 + www.douyin.com 源）写，免得抖音的 SDK 在写的同时又生成一把新的。
+    /// 返回写入后的条数；没有要写的返回 0，写失败返回 nil。
+    private static func restoreWebStorage(_ entries: [String: String]) async -> Int? {
+        guard !entries.isEmpty else { return 0 }
+        let writer = DYWebStorageWriter()
+        return await writer.write(entries)
     }
 
     private func persist() {
@@ -209,13 +277,13 @@ final class DYAccountStore: ObservableObject {
         if st != errSecSuccess { DYLiveModel.log("DDACCOUNT keychain set status=\(st)") }
     }
 
-    private static func keychainGet(account: String) -> Data? {
+    private static func keychainGet(account: String, quiet: Bool = false) -> Data? {
         var q = baseQuery(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         let st = SecItemCopyMatching(q as CFDictionary, &out)
-        if st != errSecSuccess { DYLiveModel.log("DDACCOUNT keychain get status=\(st)") }
+        if st != errSecSuccess, !(quiet && st == errSecItemNotFound) { DYLiveModel.log("DDACCOUNT keychain get status=\(st)") }
         return st == errSecSuccess ? out as? Data : nil
     }
 
@@ -304,4 +372,47 @@ struct DYAccountsScreen: View {
             else if a.id == store.currentID { Image(systemName: "checkmark").foregroundStyle(.tint) }
         }
     }
+}
+
+/// 往 www.douyin.com 的 localStorage 写值的临时网页：空白 HTML、源设成 www.douyin.com，不联网、不跑抖音脚本。
+/// 和所有后台网页共用默认网站数据存储，写进去的值它们重新开页后就能读到。
+@MainActor
+final class DYWebStorageWriter: NSObject, WKNavigationDelegate {
+    private var web: WKWebView?
+    private var loaded: CheckedContinuation<Bool, Never>?
+
+    func write(_ entries: [String: String]) async -> Int? {
+        let cfg = WKWebViewConfiguration()
+        cfg.websiteDataStore = .default()
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1, height: 1), configuration: cfg)
+        web.navigationDelegate = self
+        self.web = web
+        defer { web.navigationDelegate = nil; self.web = nil }
+        let ok = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            loaded = c
+            web.loadHTMLString("<!doctype html><title></title>", baseURL: URL(string: "https://www.douyin.com/")!)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                self?.finish(false)
+            }
+        }
+        guard ok else { DYLiveModel.log("DDACCOUNT web-storage page-timeout"); return nil }
+        do {
+            let n = try await web.callAsyncJavaScript(DYWebStorageScript.write, arguments: ["entries": entries], contentWorld: .page)
+            return (n as? NSNumber)?.intValue
+        } catch {
+            DYLiveModel.log("DDACCOUNT web-storage write-failed \(String(describing: (error as? WKError)?.code))")
+            return nil
+        }
+    }
+
+    private func finish(_ ok: Bool) {
+        guard let c = loaded else { return }
+        loaded = nil
+        c.resume(returning: ok)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(true) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finish(false) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finish(false) }
 }

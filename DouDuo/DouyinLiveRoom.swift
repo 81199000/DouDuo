@@ -33,6 +33,73 @@ extension DYLiveRoom {
     }
 }
 
+/// 进房接口（webcast/room/web/enter）只用来换 H.264 播放线路：匿名直连，不经过隐藏网页、不带登录 cookie。
+/// 2026-11-28 实测：经隐藏网页（带登录 + 页面签名）发出去回 200 空包；只带一个匿名 ttwid 直连则稳定返回，约 0.4 秒。
+/// 只拿流地址，不碰账号，所以就算被风控也牵连不到登录。
+@MainActor
+enum DYLiveEnterClient {
+    private static var ttwid: String?
+    private static var ttwidTask: Task<String?, Never>?
+
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.httpCookieStorage = nil
+        c.httpShouldSetCookies = false
+        c.timeoutIntervalForRequest = 6
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: c)
+    }()
+
+    static func streams(webRid: String) async -> DYLiveEnterStreams? {
+        guard !webRid.isEmpty else { return nil }
+        for attempt in 0..<2 {
+            guard let tt = await anonymousTTWID(fresh: attempt > 0) else { return nil }
+            var q = URLComponents(string: "https://live.douyin.com/webcast/room/web/enter/")!
+            q.queryItems = [("aid", "6383"), ("app_name", "douyin_web"), ("live_id", "1"), ("device_platform", "web"),
+                            ("language", "zh-CN"), ("enter_from", "web_live"), ("cookie_enabled", "true"),
+                            ("screen_width", "1440"), ("screen_height", "900"), ("browser_language", "zh-CN"),
+                            ("browser_platform", "MacIntel"), ("browser_name", "Safari"), ("browser_version", "26.0"),
+                            ("channel", "channel_pc_web"), ("enter_source", ""), ("web_rid", webRid)]
+                .map { URLQueryItem(name: $0.0, value: $0.1) }
+            guard let url = q.url else { return nil }
+            var r = URLRequest(url: url)
+            r.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")
+            r.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            r.setValue("https://live.douyin.com/\(webRid)", forHTTPHeaderField: "Referer")
+            r.setValue("ttwid=\(tt)", forHTTPHeaderField: "Cookie")
+            guard let (data, resp) = try? await session.data(for: r) else { return nil }
+            let http = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if let s = DYLiveEnterStreams.parse(data) { return s }
+            DYLiveModel.log("DDLIVE_H264 why=enter-miss http=\(http) bytes=\(data.count) attempt=\(attempt)")
+            // 空包多半是这个 ttwid 被限了：换一个再试一次；有内容但不是在播的房间就不用再试
+            if !data.isEmpty { return nil }
+        }
+        return nil
+    }
+
+    /// 匿名 ttwid：对直播首页发一次 HEAD 就会下发，进程内复用
+    private static func anonymousTTWID(fresh: Bool) async -> String? {
+        if fresh { ttwid = nil; ttwidTask = nil }
+        if let ttwid { return ttwid }
+        if let ttwidTask { return await ttwidTask.value }
+        let task = Task<String?, Never> {
+            var r = URLRequest(url: URL(string: "https://live.douyin.com/")!)
+            r.httpMethod = "HEAD"
+            r.setValue(DouyinWeb.userAgent, forHTTPHeaderField: "User-Agent")
+            guard let (_, resp) = try? await session.data(for: r), let h = resp as? HTTPURLResponse, let url = h.url else { return nil }
+            var fields: [String: String] = [:]
+            for (k, v) in h.allHeaderFields { fields["\(k)"] = "\(v)" }
+            return HTTPCookie.cookies(withResponseHeaderFields: fields, for: url).first { $0.name == "ttwid" }?.value
+        }
+        ttwidTask = task
+        let value = await task.value
+        ttwidTask = nil
+        ttwid = value
+        if value == nil { DYLiveModel.log("DDLIVE_H264 why=no-ttwid") }
+        return value
+    }
+}
+
 enum DDLogWriter {
     static let queue = DispatchQueue(label: "douduo.log", qos: .utility)
     nonisolated(unsafe) static let formatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
@@ -117,7 +184,10 @@ final class DYLiveModel: ObservableObject {
             }
         }
     }
-    let vlc = VLCPlayerController()
+    /// 当前这一路。切到预加载好的下一间时会换成那一路（见「预加载下一间」），所以不是常量。
+    @Published private(set) var vlc = VLCPlayerController()
+    /// 当前这一路自己的画面视图：界面只负责把它挂上去，换台时连视图一起换，已经在出画的画面不用重连
+    private(set) var videoView = VLCPlayerUIView()
     private var requestGeneration = UUID()
     private var loadedRoom: String?
     private var roomRef: DYLiveRoom?
@@ -195,8 +265,19 @@ final class DYLiveModel: ObservableObject {
     }
 
     init() {
-        vlc.onProgress = { [weak self] time in
-            guard let self else { return }
+        bind(vlc)
+        // 低电量模式 / 发热状态变了：马上按新方式重新安排下一间（两路同时播 ↔ 只截一帧）
+        for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateWarmNext() }
+            }
+        }
+    }
+
+    /// 回调只认当前这一路：换台后旧的那一路还要 0.6 秒才停，它的就绪 / 出错不能算到新的这一间头上
+    private func bind(_ c: VLCPlayerController) {
+        c.onProgress = { [weak self, weak c] time in
+            guard let self, let c, c === self.vlc else { return }
             if self.suspended {
                 self.reapplyBackgroundMuteIfNeeded()
             } else if self.vlc.mediaPlayer.audio?.isMuted != DYLivePlaybackGate.foregroundOutputMuted(userMuted: self.muted) {
@@ -208,20 +289,26 @@ final class DYLiveModel: ObservableObject {
             self.ready = true
             self.retryTask?.cancel()
             Self.log("DDLIVE_READY room=\(self.loadedRoom ?? "-") elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.startedAt)) videoOut=true")
+            // 这一间出画了再预加载下一间，不跟它抢起播带宽
+            self.updateWarmNext()
         }
-        vlc.onVideoSize = { [weak self] size in
-            guard let self, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
+        c.onVideoSize = { [weak self, weak c] size in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.playbackVideoSize != size else { return }
             self.playbackVideoSize = size
         }
-        vlc.onError = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+        c.onError = { [weak self, weak c] in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.liveCanProgress else { return }
             self.tryNextSource(reason: "decoder/network error", generation: self.streamGeneration)
         }
-        vlc.onEnd = { [weak self] in
-            guard let self, self.loadedRoom != nil, self.liveCanProgress else { return }
+        c.onEnd = { [weak self, weak c] in
+            guard let self, let c, c === self.vlc, self.loadedRoom != nil, self.liveCanProgress else { return }
             self.playbackError = "直播已结束或连接中断，可重试或上滑换台"
             self.ready = false
         }
+    }
+
+    private func unbind(_ c: VLCPlayerController) {
+        c.onProgress = nil; c.onVideoSize = nil; c.onError = nil; c.onEnd = nil; c.onMediaAssigned = nil
     }
 
     func load(_ bridge: DouyinBridge, reset: Bool = false) async {
@@ -261,7 +348,9 @@ final class DYLiveModel: ObservableObject {
     }
 
     func play(_ room: DYLiveRoom?) {
-        guard let room else { return }
+        guard var room else { return }
+        // 列表里同一间可能还是 H.265 的旧数据（重新拉列表、从推荐卡片进来）：用换好的 H.264 版本
+        if !room.hasFLV, let upgraded = h264.upgraded(room.id, now: Date()) { room = upgraded }
         roomRef = room
         let restart = loadedRoom != room.id || DYLivePlaybackGate.shouldRestartSameRoom(
             state: playbackState(), ready: ready, hasMedia: vlc.mediaPlayer.media != nil)
@@ -279,13 +368,330 @@ final class DYLiveModel: ObservableObject {
             return
         }
         guard restart else { return }
-        loadedRoom = room.id
-        sources = room.liveStreams
-        // 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
-        if let q = quality, sources.contains(where: { $0.quality == q }) {
-            sources = sources.filter { $0.quality == q } + sources.filter { $0.quality != q }
+        // 下一间已经预加载好：直接接过那一路（画面已经在出），跟刷视频一样一划就有
+        if warm?.roomID == room.id, adoptWarm(room) { return }
+        // 只有 H.265 线路：先问进房接口要 H.264 FLV（约 0.3 秒），比直接起 H.265 HLS（4–7 秒）快得多
+        switch h264.next(room.id, wanted: needsH264(room), now: Date()) {
+        case .play: break
+        case .request:
+            requestH264(room)
+            holdForH264(room)
+            return
+        case .wait:
+            holdForH264(room)
+            return
         }
+        holdingH264 = nil
+        loadedRoom = room.id
+        sources = orderedSources(room)
         startCurrentSource()
+    }
+
+    /// 选了清晰度就把它排最前，起不来才退回其他档。全局清晰度跨直播间保留。
+    private func orderedSources(_ room: DYLiveRoom) -> [DYLiveStream] {
+        let all = room.liveStreams
+        guard let q = quality, all.contains(where: { $0.quality == q }) else { return all }
+        return all.filter { $0.quality == q } + all.filter { $0.quality != q }
+    }
+
+    // MARK: 预加载下一间（同推荐流里的 DYFeedLiveWarm）
+
+    /// 官方直播划过去几乎零延迟：下一间早就连上、解码好了。这里也一样——当前这间出画后，
+    /// 用第二个播放器把下一间静音（音量 0）播在窗口最底层看不见的地方；划过去时把那一路连同画面视图一起接过来。
+    /// 以前只有一个播放器，每划一次都要停掉重连（H.264 FLV 也要 0.4–1.8 秒）。
+    private struct WarmSlot {
+        let roomID: String
+        let source: DYLiveStream
+        let controller: VLCPlayerController
+        let view: VLCPlayerUIView
+        let startedAt: CFTimeInterval
+        /// preview 模式：只播到第一帧截图就停，不留着给划过去接手
+        let preview: Bool
+    }
+    private var warm: WarmSlot?
+    private var warmKeeper: Task<Void, Never>?
+    private var warmCap: Task<Void, Never>?
+    /// 现在用哪种预加载（见 DYLivePreloadPolicy）：低电量 / 用流量 / 发热时只截一帧，其余两路同时播
+    var preloadMode: DYLivePreloadMode {
+        #if DEBUG
+        if let m = ProcessInfo.processInfo.environment["DOUDUO_LIVE_PRELOAD"].flatMap(DYLivePreloadMode.init(rawValue:)) { return m }
+        #endif
+        return DYLivePreloadPolicy.mode(lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                                        cellular: DYNetPath.shared.cellular,
+                                        thermal: ProcessInfo.processInfo.thermalState.rawValue)
+    }
+
+    /// preview 模式截到的各间画面：划过去（以及划的过程中）先显示它，出画后由真画面盖过
+    @Published private(set) var previewFrames: [String: UIImage] = [:]
+    private var previewAt: [String: Date] = [:]
+
+    func previewFrame(for id: String) -> UIImage? {
+        guard let at = previewAt[id], Date().timeIntervalSince(at) < DYLivePreloadPolicy.previewShowSeconds else { return nil }
+        return previewFrames[id]
+    }
+
+    private func previewFresh(_ id: String) -> Bool {
+        previewAt[id].map { Date().timeIntervalSince($0) < DYLivePreloadPolicy.previewFreshSeconds } ?? false
+    }
+
+    /// 省流量用流量时、VLC 停播积压、线程吃紧时都不预加载（同推荐流）
+    private var warmAllowed: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["DOUDUO_LIVE_NOWARM"] == "1" { return false }
+        #endif
+        return !DYStream.saving && VLCPlayerCensus.releaseBacklog < 2 && !DYThreadGuard.pressured
+    }
+
+    /// 下一间（往上滑看到的那间）。还在等进房接口换 H.264 的先不预加载，换好后 warmNeighbors 会再叫一次。
+    private func warmTarget() -> (DYLiveRoom, DYLiveStream)? {
+        guard visible, !suspended, !browsing, ready, warmAllowed,
+              UIApplication.shared.applicationState == .active,
+              let id = currentID, loadedRoom == id,
+              let i = rooms.firstIndex(where: { $0.id == id }), rooms.indices.contains(i + 1) else { return nil }
+        var next = rooms[i + 1]
+        if !next.hasFLV, let up = h264.upgraded(next.id, now: Date()) { next = up }
+        if needsH264(next) { return nil }
+        guard let source = orderedSources(next).first else { return nil }
+        return (next, source)
+    }
+
+    func updateWarmNext() {
+        guard let (room, source) = warmTarget() else {
+            // 当前这间还在起播时别丢掉已经预加载好的（可能马上就划过去）；其余情况才放掉
+            if !ready || !visible || suspended || browsing { return }
+            releaseWarm(reason: "no-target")
+            return
+        }
+        let mode = preloadMode
+        if let w = warm, w.roomID == room.id, w.preview == (mode == .preview) { return }
+        if mode == .preview, previewFresh(room.id) {
+            if warm != nil { releaseWarm(reason: "preview-fresh") }
+            return
+        }
+        releaseWarm(reason: "switch")
+        guard let window = Self.keyWindow else { return }
+        let c = VLCPlayerController()
+        c.outputMuted = false
+        let v = VLCPlayerUIView(frame: window.bounds)
+        v.controller = c
+        v.fillWidth = room.portrait
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false
+        v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 窗口最底层：被整个界面盖住看不见，但在视图树里、有尺寸，VLC 照常解码出画
+        window.insertSubview(v, at: 0)
+        c.boundSurface = v
+        c.mediaPlayer.drawable = v
+        c.play(url: source.url, headers: DYMedia.liveHeaders, cachingMs: source.cacheMS)
+        c.mediaPlayer.audio?.volume = 0
+        warm = WarmSlot(roomID: room.id, source: source, controller: c, view: v, startedAt: CACurrentMediaTime(),
+                        preview: mode == .preview)
+        Self.log("DDLIVEWARM2 start room=\(room.id.suffix(6)) q=\(source.quality) flv=\(source.isFLV) mode=\(mode.rawValue)")
+        // 音量 0 而不是静音：静音会停掉音频输出，接过来时要重开、声音晚一截（同 DYFeedLiveWarm）。
+        // 音频输出建好前设音量无效，前 3 秒每 30ms 盯一次
+        warmKeeper?.cancel()
+        warmKeeper = Task { @MainActor [weak c] in
+            let t0 = CACurrentMediaTime()
+            while !Task.isCancelled {
+                guard let audio = c?.mediaPlayer.audio else { break }
+                if audio.volume != 0 { audio.volume = 0 }
+                if audio.isMuted { audio.isMuted = false }
+                try? await Task.sleep(for: .milliseconds(CACurrentMediaTime() - t0 < 3 ? 30 : 200))
+            }
+        }
+        warmCap?.cancel()
+        let roomID = room.id
+        if mode == .preview {
+            warmCap = Task { @MainActor [weak self] in await self?.capturePreview(roomID: roomID, controller: c) }
+        } else {
+            warmCap = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(DYLivePreloadPolicy.fullMaxSeconds))
+                guard !Task.isCancelled else { return }
+                self?.releaseWarm(reason: "cap")
+            }
+        }
+    }
+
+    /// preview：等到第一帧，截一张就停（每间只播约 1 秒，不再持续下载、解码）。
+    /// 停在这间久了画面会变旧，过一阵再叫一次 updateWarmNext，旧了就重截。
+    private func capturePreview(roomID: String, controller c: VLCPlayerController) async {
+        let t0 = CACurrentMediaTime()
+        while !Task.isCancelled, warm?.controller === c, CACurrentMediaTime() - t0 < DYLivePreloadPolicy.previewProbeSeconds {
+            if c.mediaPlayer.hasVideoOut, c.videoSize.width > 0, c.current > 0 { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !Task.isCancelled, warm?.controller === c else { return }
+        guard c.mediaPlayer.hasVideoOut, c.videoSize.width > 0 else {
+            releaseWarm(reason: "preview-timeout")
+            return
+        }
+        let image = await Self.snapshot(c)
+        guard warm?.controller === c else { return }
+        let ms = Int((CACurrentMediaTime() - t0) * 1000)
+        if let image {
+            previewFrames[roomID] = image
+            previewAt[roomID] = Date()
+            // 只留最近几间
+            while previewAt.count > 8, let oldest = previewAt.min(by: { $0.value < $1.value })?.key {
+                previewAt[oldest] = nil
+                previewFrames[oldest] = nil
+            }
+        }
+        Self.log("DDLIVEWARM2 preview room=\(roomID.suffix(6)) ok=\(image != nil ? 1 : 0) after=\(ms)ms")
+        releaseWarm(reason: image == nil ? "preview-miss" : "preview-done")
+        guard image != nil else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(DYLivePreloadPolicy.previewFreshSeconds + 1))
+            self?.updateWarmNext()
+        }
+    }
+
+    private static let snapshotQueue = DispatchQueue(label: "douduo.live.preview", qos: .userInitiated)
+
+    /// 截当前画面。VLCKit 截不到图时会直接 @throw NSException（见 DYLiveAmbient），交给 DDTryObjC 接住当没截到。
+    private static func snapshot(_ c: VLCPlayerController) async -> UIImage? {
+        guard let mp = c.mediaPlayer else { return nil }
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("dd-live-preview-\(UUID().uuidString).png").path
+        return await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+            snapshotQueue.async {
+                var reason: NSString?
+                let ok = DDTryObjC({ mp.saveVideoSnapshot(at: path, withWidth: 720, andHeight: 0) }, &reason)
+                // 先整份读进内存再删文件（UIImage(contentsOfFile:) 是延迟读的）；解码也放在后台
+                let image = ok ? (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap(UIImage.init(data:)).map { $0.preparingForDisplay() ?? $0 } : nil
+                try? FileManager.default.removeItem(atPath: path)
+                cont.resume(returning: image)
+            }
+        }
+    }
+
+    func releaseWarm(reason: String) {
+        warmKeeper?.cancel(); warmKeeper = nil
+        warmCap?.cancel(); warmCap = nil
+        guard let w = warm else { return }
+        warm = nil
+        Self.log("DDLIVEWARM2 drop room=\(w.roomID.suffix(6)) reason=\(reason) after=\(Int((CACurrentMediaTime() - w.startedAt) * 1000))ms")
+        DYFeedLiveWarm.dispose(DYFeedLiveWarm.Handle(roomID: w.roomID, controller: w.controller, view: w.view))
+    }
+
+    /// 划到预加载好的那间：接过那一路当当前播放器。那一路坏了（出错 / 已结束）返回 false，照常现连。
+    private func adoptWarm(_ room: DYLiveRoom) -> Bool {
+        guard let w = warm, w.roomID == room.id else { return false }
+        warm = nil
+        warmKeeper?.cancel(); warmKeeper = nil
+        warmCap?.cancel(); warmCap = nil
+        let state = w.controller.mediaPlayer.state
+        let warmHasFrame = w.controller.mediaPlayer.hasVideoOut && w.controller.current > 0
+        // preview 那一路本来马上就要停，还没出画就不接，照常现连（屏幕上先垫着截到的画面）
+        guard state != .error, state != .ended, state != .stopped, !(w.preview && !warmHasFrame) else {
+            Self.log("DDLIVEWARM2 drop room=\(w.roomID.suffix(6)) reason=broken state=\(state.rawValue)")
+            DYFeedLiveWarm.dispose(DYFeedLiveWarm.Handle(roomID: w.roomID, controller: w.controller, view: w.view))
+            return false
+        }
+        retryTask?.cancel()
+        holdingH264 = nil
+        // 旧的那一路：立刻无声，0.6 秒后再停、停完再留 10 秒才放（防主线程析构卡死，见 DYFeedLiveWarm）
+        let old = vlc
+        unbind(old)
+        old.cancelInterruptionRebuild()
+        DYFeedLiveWarm.stopLater(old)
+        w.view.removeFromSuperview()
+        vlc = w.controller
+        videoView = w.view
+        bind(vlc)
+        loadedRoom = room.id
+        sources = [w.source] + orderedSources(room).filter { $0.url != w.source.url }
+        streamGeneration = UUID()
+        startedAt = ProcessInfo.processInfo.systemUptime
+        playbackError = nil
+        playbackVideoSize = vlc.videoSize
+        if activatePlaybackSession() { sessionReleased = false }
+        let mute = DYLivePlaybackGate.foregroundOutputMuted(userMuted: muted)
+        vlc.outputMuted = mute
+        vlc.mediaPlayer.audio?.isMuted = mute
+        vlc.mediaPlayer.audio?.volume = mute ? 0 : 100
+        let hasFrame = vlc.mediaPlayer.hasVideoOut && vlc.current > 0
+        ready = hasFrame
+        if !hasFrame { armSourceTimeout(generation: streamGeneration, flv: w.source.isFLV) }
+        Self.log("DDLIVEPLAY room=\(room.id) protocol=\(w.source.isFLV ? "FLV" : "HLS") q=\(w.source.quality) warm=1 warmed=\(Int((CACurrentMediaTime() - w.startedAt) * 1000))ms frame=\(hasFrame)")
+        if hasFrame { Self.log("DDLIVE_READY room=\(room.id) elapsed=0.000 videoOut=true warm=1") }
+        return true
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }
+    }
+
+    // MARK: H.265 → H.264（见 DYLiveH264Upgrade）
+
+    private var h264 = DYLiveH264Upgrade<DYLiveRoom>()
+    /// 正在等进房接口的那一间：期间不起任何线路
+    private var holdingH264: String?
+
+    private func needsH264(_ room: DYLiveRoom) -> Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        if env["DOUDUO_LIVEMOCK"] == "1" || env["DOUDUO_LIVE_HLS"] == "1" { return false }
+        #endif
+        return DYLiveH264Upgrade<DYLiveRoom>.wanted(hasFLV: room.hasFLV, hasHLS: !room.hls.isEmpty, webRid: room.webRid)
+    }
+
+    private func requestH264(_ room: DYLiveRoom) {
+        let id = room.id, rid = room.webRid
+        h264.begin(id)
+        let start = ProcessInfo.processInfo.systemUptime
+        Task { [weak self] in
+            let streams = await DYLiveEnterClient.streams(webRid: rid)
+            guard let self else { return }
+            // 只认同一间、确实给了 H.264 FLV 的结果；其余照原线路播
+            let merged = streams.flatMap { s -> DYLiveRoom? in
+                guard s.id == id, !s.flv.isEmpty else { return nil }
+                var r = room
+                r.flv = s.flv
+                r.hls = s.hls.isEmpty ? room.hls : s.hls
+                r.def = s.def ?? room.def
+                return r
+            }
+            self.h264.finish(id, room: merged, now: Date())
+            Self.log("DDLIVE_H264 room=\(id) ok=\(merged != nil ? 1 : 0) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - start))")
+            let wasHolding = self.holdingH264 == id
+            if wasHolding { self.holdingH264 = nil }
+            guard let merged else {
+                // 换不到：照原来的 H.265 线路播
+                if wasHolding, self.roomRef?.id == id { self.play(self.roomRef) }
+                return
+            }
+            if let i = self.rooms.firstIndex(where: { $0.id == id }), !self.rooms[i].hasFLV { self.rooms[i] = merged }
+            if self.roomRef?.id == id {
+                // 还在等，或等超时先起了 HLS 但还没出画：换成 FLV。已经出画就不打断。
+                if wasHolding || !self.ready {
+                    self.loadedRoom = nil
+                    self.play(merged)
+                }
+            } else {
+                self.warmNeighbors()
+            }
+        }
+    }
+
+    /// 停掉上一间、先不起这一间，等进房接口；最多等 `waitLimit`，超时照原线路播。
+    private func holdForH264(_ room: DYLiveRoom) {
+        guard holdingH264 != room.id else { return }
+        retryTask?.cancel()
+        streamGeneration = UUID()
+        loadedRoom = nil
+        vlc.stop()
+        ready = false
+        playbackError = nil
+        holdingH264 = room.id
+        let id = room.id
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(DYLiveH264Upgrade<DYLiveRoom>.waitLimit))
+            guard let self, self.holdingH264 == id, self.h264.giveUp(id) else { return }
+            self.holdingH264 = nil
+            Self.log("DDLIVE_H264 room=\(id) wait-timeout")
+            if self.roomRef?.id == id { self.play(self.roomRef) }
+        }
     }
 
     /// 滑到另一间时先撤掉上一间的就绪状态，避免旧画面被当成这一间已经播出。
@@ -325,6 +731,7 @@ final class DYLiveModel: ObservableObject {
     }
 
     private func suspendForBackground() {
+        releaseWarm(reason: "background")
         let reason = DDPlayback.shared.pauseReason
         if reason == .inactive || !visible { return }
         if reason == .cover {
@@ -643,6 +1050,8 @@ final class DYLiveModel: ObservableObject {
         audioInterrupted = false
         sessionReleased = false
         retryTask?.cancel(); streamGeneration = UUID()
+        holdingH264 = nil
+        releaseWarm(reason: "stop")
         vlc.cancelInterruptionRebuild()
         loadedRoom = nil; vlc.stop(); ready = false
     }
@@ -697,6 +1106,11 @@ final class DYLiveModel: ObservableObject {
     func warmNeighbors() {
         guard let id = currentID, let i = rooms.firstIndex(where: { $0.id == id }) else { return }
         let ids = [i + 1, i + 2, i - 1].filter { rooms.indices.contains($0) }
+        // 相邻几间提前换好 H.264 FLV：滑过去时不用再等进房接口
+        let now = Date()
+        for idx in [i] + ids where h264.next(rooms[idx].id, wanted: needsH264(rooms[idx]), now: now) == .request {
+            requestH264(rooms[idx])
+        }
         for idx in ids {
             guard let source = rooms[idx].liveStreams.first, warmed.insert(source.url).inserted else { continue }
             if warmed.count > 40 { warmed.removeAll() }
@@ -712,6 +1126,7 @@ final class DYLiveModel: ObservableObject {
             // FLV 是无尽流：拿到首包就够，最多 3 秒后取消，别一直占着 CDN 连接。
             DispatchQueue.global().asyncAfter(deadline: .now() + 3) { task.cancel() }
         }
+        updateWarmNext()
     }
     private static let warmSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -1000,6 +1415,55 @@ private func livePane(_ requested: CGRect, fallback: CGSize) -> CGRect {
 }
 
 /// 预览和直播间共用同一个 drawable / VLC，不用网页开第二套播放器。
+/// 直播画面的挂载点：挂的是当前这一路自己的画面视图（不是每次新建）。
+/// 换到预加载好的下一间时，那一路的视图已经在出画，直接搬进来，不用重新挂 drawable、不用重连。
+/// 其余行为同 VLCPlayerSurface：drawable 丢了才补挂，页面拆掉时摘掉 drawable。
+struct DYLiveVideoHost: UIViewRepresentable {
+    let controller: VLCPlayerController
+    let view: VLCPlayerUIView
+    var fillWidth: Bool = true
+    var letterbox: UIColor? = nil
+
+    func makeUIView(context: Context) -> UIView {
+        let box = UIView()
+        box.clipsToBounds = true
+        box.backgroundColor = .clear
+        box.isUserInteractionEnabled = false
+        mount(in: box)
+        return box
+    }
+
+    func updateUIView(_ box: UIView, context: Context) { mount(in: box) }
+
+    private func mount(in box: UIView) {
+        if view.superview !== box {
+            for old in box.subviews { old.removeFromSuperview() }
+            view.removeFromSuperview()
+            view.frame = box.bounds
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            box.addSubview(view)
+        }
+        view.controller = controller
+        view.fillWidth = fillWidth
+        view.backgroundColor = letterbox ?? .black
+        view.isUserInteractionEnabled = false
+        controller.boundSurface = view
+        if !controller.blocksSurfaceAttachment, controller.mediaPlayer.drawable == nil {
+            controller.mediaPlayer.drawable = view
+            controller.drawableAttached()   // drawable 就绪后才真正 play，避免「有声无画」
+        }
+        view.applyFill()
+    }
+
+    static func dismantleUIView(_ box: UIView, coordinator: ()) {
+        for case let v as VLCPlayerUIView in box.subviews {
+            if let c = v.controller, c.mediaPlayer.drawable as? UIView === v { c.mediaPlayer.drawable = nil }
+            if v.controller?.boundSurface === v { v.controller?.boundSurface = nil }
+            v.removeFromSuperview()
+        }
+    }
+}
+
 
 /// 简洁 / 极简模块菜单发给直播页的一次性动作。token 变化才会再次触发。
 struct DYLiveModuleRequest: Equatable {
@@ -1047,6 +1511,8 @@ struct DYLiveFeed: View {
     @StateObject private var chat = DYLiveChat()
     @State private var draft = ""
     @State private var sending = false
+    /// 表情面板（跟官网直播间输入框的「小表情」一样：点一下把 [名称] 插进输入框）
+    @State private var emojiOpen = false
     @State private var sendError: String?
     @State private var showCategories = false
     @State private var showFollowLive = false
@@ -1109,7 +1575,7 @@ struct DYLiveFeed: View {
                 : shown.video
             ZStack {
                 (shown.layout == .existing ? Color.ddBackground : Color.black)
-                VLCPlayerSurface(controller: model.vlc, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
+                DYLiveVideoHost(controller: model.vlc, view: model.videoView, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
                     .frame(width: videoFrame.width, height: videoFrame.height)
                     .position(x: videoFrame.midX, y: videoFrame.midY)
                     .allowsHitTesting(false)
@@ -1217,6 +1683,8 @@ struct DYLiveFeed: View {
             model.warmNeighbors()
             // 并发拉取关注主播，不占用首播带宽也不阻塞起播
             Task { await model.loadFollowLive(bridge) }
+            // 弹幕里的 [表情] 要换成官方表情图（跟评论区同一套，已加载过不会重复拉）
+            Task { await DYEmojiStore.shared.load(bridge: bridge) }
         }
         .onChange(of: model.currentID) { _, id in
             if let id, scrollID != id { scrollID = id }
@@ -1755,6 +2223,8 @@ struct DYLiveFeed: View {
                 ForEach(model.rooms) { room in
                     DYLiveRoomPage(room: room, model: model, isCurrent: model.currentID == room.id,
                                    messages: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.messages : [],
+                                   ticker: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.ticker : nil,
+                                   stats: model.currentID == room.id && chat.loadedRoom == room.webRid ? chat.stats : DYLiveRoomStats(),
                                    keyboardOverlap: model.currentID == room.id ? keyboardOverlap : 0,
                                    input: AnyView(commentInput), onWeb: onWeb,
                                    videoPane: video, interactionPane: interaction,
@@ -1798,17 +2268,17 @@ struct DYLiveFeed: View {
                     onChannelDragEnd?(value.translation.width, value.predictedEndTranslation.width, paneWidth, false)
                     return
                 }
-                // 左缘右滑返回：与「我的 / 信息」页 DYEdgeSwipeBack 同一套判定（左缘 30pt 起、右滑 >70pt）。
+                // 进房后横滑（官方同款）：右滑一次把界面上的信息全划走（清屏），清屏后再右滑一次退出直播间；左滑恢复。
                 // 刻意复用分页这一个手势，不再叠第二层 simultaneousGesture，避免影响上滑换台。
-                if (model.entered || model.clean),
-                   value.startLocation.x < 30, value.translation.width > 70,
-                   abs(value.translation.height) < abs(value.translation.width) {
-                    if model.clean { model.clean = false } else { model.leaveRoom() }
+                if model.entered, DYLiveRoomSwipe.isHorizontal(width: value.translation.width, height: value.translation.height) {
+                    switch DYLiveRoomSwipe.action(width: value.translation.width, clean: model.clean) {
+                    case .clean: withAnimation(.easeInOut(duration: 0.2)) { model.clean = true }
+                    case .leave: model.leaveRoom()
+                    case .restore: withAnimation(.easeInOut(duration: 0.2)) { model.clean = false }
+                    case .none: break
+                    }
                     scrollEndTask?.cancel(); userScrolling = false; gestureStartID = nil
                     return
-                }
-                if abs(value.translation.width) > 80 && abs(value.translation.width) > abs(value.translation.height) && model.entered {
-                    withAnimation(.easeInOut(duration: 0.2)) { model.clean = value.translation.width > 0 }
                 }
                 scrollEndTask = Task {
                     try? await Task.sleep(for: .milliseconds(600))
@@ -1861,12 +2331,27 @@ struct DYLiveFeed: View {
     private var commentInput: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let sendError { Text(sendError).font(.caption).foregroundStyle(theme.status.warning.color(for: scheme)) }
+            if emojiOpen { DYLiveEmojiPanel { draft += $0 } }
             HStack(spacing: 8) {
-                TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
-                    .font(.subheadline).foregroundStyle(.primary).focused($inputFocused)
-                    .submitLabel(.send).onSubmit(sendComment)
-                    .padding(.horizontal, 14).frame(height: 40).ddMediaGlassCapsule()
-                    .accessibilityIdentifier("live.chat.input")
+                // 官方同款：表情按钮在输入框里面右侧
+                HStack(spacing: 4) {
+                    TextField(chat.composerReady ? "说点什么…" : "评论区连接中…", text: $draft)
+                        .font(.subheadline).foregroundStyle(.primary).focused($inputFocused)
+                        .submitLabel(.send).onSubmit(sendComment)
+                        .accessibilityIdentifier("live.chat.input")
+                        .onChange(of: inputFocused) { _, focused in if focused { emojiOpen = false } }
+                    Button {
+                        inputFocused = false
+                        withAnimation(.easeOut(duration: 0.2)) { emojiOpen.toggle() }
+                    } label: {
+                        Image(systemName: emojiOpen ? "keyboard" : "face.smiling").font(.system(size: 20, weight: .regular))
+                            .frame(width: 36, height: 40).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(emojiOpen ? "收起表情" : "表情")
+                    .accessibilityIdentifier("live.chat.emoji")
+                }
+                .padding(.leading, 14).padding(.trailing, 4).frame(height: 44).ddMediaGlassCapsule()
                 if !draft.isEmpty {
                     Button(action: sendComment) {
                         if sending { ProgressView() } else { Text(chat.composerReady ? "发送" : "连接中").font(.subheadline.weight(.semibold)) }
@@ -1886,9 +2371,37 @@ struct DYLiveFeed: View {
             let error = await chat.send(text)
             guard chatRoom == target else { sending = false; return }
             if let error { sendError = error }
-            else if draft == submittedDraft { draft = ""; sendError = nil; inputFocused = false }
+            else if draft == submittedDraft { draft = ""; sendError = nil; inputFocused = false; emojiOpen = false }
             sending = false
         }
+    }
+}
+
+/// 直播间「小表情」面板：官方表情（跟评论区同一套），点一下把 [名称] 插进输入框，发出去跟官网一样是表情代码
+private struct DYLiveEmojiPanel: View {
+    @ObservedObject private var store = DYEmojiStore.shared
+    let insert: (String) -> Void
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 8)
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(store.names, id: \.self) { name in
+                    Button { insert(name) } label: {
+                        if let img = store.images[name] {
+                            Image(uiImage: img).resizable().scaledToFit().frame(width: 28, height: 28)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(name)
+                }
+            }
+            .padding(10)
+        }
+        .frame(height: 168)
+        .overlay { if store.names.isEmpty { ProgressView() } }
+        .background(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.55)))
+        .accessibilityIdentifier("live.chat.emojiPanel")
     }
 }
 
@@ -1900,7 +2413,10 @@ private struct DYLiveRoomPage: View {
     let room: DYLiveRoom
     @ObservedObject var model: DYLiveModel
     let isCurrent: Bool
-    let messages: [DYLiveMsg]
+    let messages: [DYLiveIMEvent]
+    var ticker: DYLiveIMEvent? = nil
+    /// 头部：本场点赞、在线人数、前三名观众（来自弹幕数据）
+    var stats = DYLiveRoomStats()
     let keyboardOverlap: CGFloat
     let input: AnyView
     let onWeb: (URL) -> Void
@@ -1936,7 +2452,11 @@ private struct DYLiveRoomPage: View {
                     ZStack {
                         // 视频画面区出画前保持纯黑，不随亮色外观变白
                         Color.black
-                        if let cover = room.cover, let url = URL(string: cover) {
+                        // 省电预加载截到的真实画面优先（划的过程中、现连出画前都垫着它），没有才用封面
+                        if let frame = model.previewFrame(for: room.id) {
+                            Image(uiImage: frame).resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit)
+                                .frame(width: geo.size.width, height: geo.size.height).clipped()
+                        } else if let cover = room.cover, let url = URL(string: cover) {
                             CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
                                 placeholder: { Color.black }
                                 .frame(width: geo.size.width, height: geo.size.height).clipped()
@@ -1955,7 +2475,8 @@ private struct DYLiveRoomPage: View {
                             Button("重试", action: model.retry).buttonStyle(.bordered)
                         } else {
                             ProgressView().tint(foreground)
-                            Text("连接直播…").font(.caption)
+                            // 已经垫着这一间的真实画面时不再写「连接直播…」，看起来就是马上要动的画面
+                            if model.previewFrame(for: room.id) == nil { Text("连接直播…").font(.caption) }
                         }
                     }.foregroundStyle(foreground).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -1974,11 +2495,13 @@ private struct DYLiveRoomPage: View {
                 if !isCurrent {
                     Color.clear.allowsHitTesting(false)
                 } else if model.clean {
-                    // 与进房态同一套「返回」胶囊，放左上避开右上系统状态栏 / 前摄挖孔
-                    VStack { HStack { backCapsule(action: { model.clean = false }, id: "live.room.restore"); Spacer() }; Spacer() }
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.clean = false }
-                        .padding(.leading, 18).padding(.trailing, hSize == .compact ? 82 : 18).padding(.top, topInset)
+                    // 清屏：界面上什么都不留（官方同款），点任意处或左滑恢复，再右滑退出
+                    Button { withAnimation(.easeInOut(duration: 0.2)) { model.clean = false } } label: {
+                        Color.clear.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("恢复直播间界面")
+                    .accessibilityIdentifier("live.room.restore")
                 } else if model.entered {
                     let closeOnBottom = DYLiveChromePlacement.closeOnBottomTrailing(
                         regularWidth: hSize == .regular,
@@ -1988,9 +2511,27 @@ private struct DYLiveRoomPage: View {
                         Spacer(minLength: 12)
                         HStack(alignment: .bottom, spacing: 12) {
                             VStack(alignment: .leading, spacing: 12) {
-                                if !messages.isEmpty { DYLiveChatOverlay(messages: messages) }
-                                HStack(spacing: 12) {
+                                if !messages.isEmpty || ticker != nil { DYLiveChatOverlay(messages: messages, ticker: ticker) }
+                                // 底部一排（官方同款）：输入框（表情在框里）· 礼物 · 转发 · 更多。底对齐：表情面板展开时别的按钮不跟着飘上去
+                                HStack(alignment: .bottom, spacing: 10) {
                                     input
+                                    // 送礼物要花抖币：打开这一间的官网页面，用抖音自己的送礼和支付确认流程，App 不代发
+                                    Button { onWeb(room.webURL) } label: {
+                                        Image(systemName: "gift.fill").font(.system(size: 19, weight: .semibold))
+                                            .foregroundStyle(Color(red: 1.0, green: 0.36, blue: 0.55))
+                                            .frame(width: 44, height: 44).ddMediaGlassCircle()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("送礼物（打开官网直播间）")
+                                    .accessibilityIdentifier("live.room.gift")
+                                    ShareLink(item: room.webURL, subject: Text(room.owner),
+                                              message: Text(room.title.isEmpty ? "\(room.owner) 正在直播" : "\(room.owner) 正在直播：\(room.title)")) {
+                                        Image(systemName: "arrowshape.turn.up.right.fill").font(.system(size: 18, weight: .semibold))
+                                            .frame(width: 44, height: 44).ddMediaGlassCircle()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("转发直播间")
+                                    .accessibilityIdentifier("live.room.share")
                                     Menu {
                                     Button("清屏", systemImage: "rectangle") { model.clean = true }
                                     Toggle("静音", systemImage: "speaker.slash", isOn: $model.muted)
@@ -2018,7 +2559,7 @@ private struct DYLiveRoomPage: View {
                             .frame(maxWidth: 420, alignment: .leading)
                             if closeOnBottom {
                                 Spacer(minLength: 12)
-                                backCapsule(action: model.leaveRoom, id: "live.room.close", minHeight: 44)
+                                closeX(action: model.leaveRoom, id: "live.room.close")
                                     .modifier(DYRailReservedNudge())
                             }
                         }
@@ -2090,9 +2631,6 @@ private struct DYLiveRoomPage: View {
         // 完全展开的内屏改放右下，避免被内屏系统层盖住，并离开左下聊天和更多按钮。
         // 主视图不再挂 NavigationStack / toolbar，Duo 系统侧栏不会再多渲染一颗返回。
         HStack(spacing: 10) {
-            if showsClose {
-                backCapsule(action: model.leaveRoom, id: "live.room.close")
-            }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Button {
@@ -2102,7 +2640,11 @@ private struct DYLiveRoomPage: View {
                             avatar
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(room.owner).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text("\(room.viewers) 在看").font(.caption2)
+                                // 官方：进房后名字下面写「本场点赞」；还没收到时先用列表里的在看人数
+                                Text(stats.likeTotal.map { "\(DYLiveRoomStats.short($0))本场点赞" } ?? "\(room.viewers) 在看")
+                                    .font(.caption2).monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .accessibilityIdentifier("live.room.likes")
                             }
                         }
                         .contentShape(Rectangle())
@@ -2135,6 +2677,17 @@ private struct DYLiveRoomPage: View {
                 }
             }
             Spacer(minLength: 8)
+            // 前三名观众头像 + 在线人数（官方同款）。窄屏放不下时先去掉头像，只留人数
+            if stats.online != nil || stats.topViewers?.isEmpty == false {
+                ViewThatFits(in: .horizontal) {
+                    viewerStrip(avatars: true)
+                    viewerStrip(avatars: false)
+                }
+            }
+            // 退出直播间：官方同款右上角小 ×（右边距已让开 Duo 外屏右侧的系统状态栏）
+            if showsClose {
+                closeX(action: model.leaveRoom, id: "live.room.close")
+            }
         }
     }
 
@@ -2150,18 +2703,45 @@ private struct DYLiveRoomPage: View {
         try? await Task.sleep(for: .seconds(3))
         if followMsg == failure { followMsg = nil }
     }
-    /// 和 douyin.web.back / douyin.mine.back / douyin.messages.back 同一套返回键语义：
-    /// 「返回」标题 + chevron.backward 符号 + 胶囊底。直播间只保留这一颗，不再叠加系统侧栏返回。
-    private func backCapsule(action: @escaping () -> Void, id: String, minHeight: CGFloat = 40) -> some View {
+    private func viewerStrip(avatars: Bool) -> some View {
+        HStack(spacing: 6) {
+            if avatars, let tops = stats.topViewers, !tops.isEmpty {
+                HStack(spacing: -8) {
+                    ForEach(Array(tops.prefix(3).enumerated()), id: \.offset) { _, url in
+                        CachedAsyncImage(url: URL(string: url)) { $0.resizable().scaledToFill() }
+                            placeholder: { Color.white.opacity(0.18) }
+                            .frame(width: 30, height: 30).clipShape(Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.55), lineWidth: 1))
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+            if let n = stats.online {
+                Text(DYLiveRoomStats.short(n))
+                    .font(.footnote.weight(.semibold)).monospacedDigit()
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 10).frame(height: 30)
+                    .background(Capsule().fill(.black.opacity(0.28)))
+                    .accessibilityLabel("\(n) 人在线")
+                    .accessibilityIdentifier("live.room.online")
+            }
+        }
+        .fixedSize()
+    }
+
+    /// 退出直播间：官方直播间同款的小 × 圆钮（不再是「返回」胶囊）
+    private func closeX(action: @escaping () -> Void, id: String) -> some View {
         Button(action: action) {
-            Label("返回", systemImage: "chevron.backward")
-                .font(.system(size: theme.typography.pointSize(.headline), weight: .semibold))
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(theme.media.onMedia.color(for: scheme))
-                .padding(.horizontal, 14).frame(minWidth: 44).frame(height: minHeight)
-                .background(Capsule().fill(theme.media.chromeFill.color(for: scheme)))
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(.black.opacity(0.28)))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .themeShadow(.floatingPanel)
+        .accessibilityLabel("退出直播间")
         .accessibilityIdentifier(id)
     }
 }
@@ -2172,6 +2752,19 @@ enum DYLiveChromePlacement {
     /// 外屏是 compact；半折叠时折痕激活，两者都保持左上。
     static func closeOnBottomTrailing(regularWidth: Bool, foldActive: Bool) -> Bool {
         regularWidth && !foldActive
+    }
+}
+/// 进房后的横滑（官方直播间同款）：右滑一次清屏，清屏后再右滑退出直播间，左滑恢复界面。
+enum DYLiveRoomSwipe {
+    enum Action: Equatable { case none, clean, leave, restore }
+    /// 横向且够长才算（不跟上滑换台抢）
+    static let minDistance: CGFloat = 70
+    static func isHorizontal(width: CGFloat, height: CGFloat) -> Bool {
+        abs(width) > minDistance && abs(width) > abs(height) * 1.2
+    }
+    static func action(width: CGFloat, clean: Bool) -> Action {
+        if width > 0 { return clean ? .leave : .clean }
+        return clean ? .restore : .none
     }
 }
 // MARK: - live-close-placement-end

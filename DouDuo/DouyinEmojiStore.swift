@@ -7,6 +7,8 @@ import UIKit
 final class DYEmojiStore: ObservableObject {
     static let shared = DYEmojiStore()
     @Published private(set) var images: [String: UIImage] = [:]
+    /// 官方表情顺序（表情面板按这个排）
+    @Published private(set) var names: [String] = []
     private var started = false
 
     func load(bridge: DouyinBridge) async {
@@ -28,6 +30,7 @@ final class DYEmojiStore: ObservableObject {
                 if let img { images[name] = img }
             }
         }
+        names = list.map(\.displayName).filter { images[$0] != nil }
     }
 
     /// 等比缩放到指定边长（pt），供 Text 内联使用

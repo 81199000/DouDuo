@@ -1,17 +1,31 @@
-// 直播弹幕：后台开一个看不见的直播间网页（电脑版），让抖音页面自己连 WebSocket、解 protobuf，
-// 我们只读它渲染出来的聊天列表 DOM。签名 / 协议跟着官方走，不逆向。
+// 直播弹幕：后台开一个看不见的直播间网页（电脑版），让抖音页面自己连 WebSocket（签名 / 协议跟着官方走，不逆向）。
+// 网页收到的原始弹幕数据（WebSocket 帧、im/fetch 回包）在页面里截下来交给 Swift 解（DYLiveIM），
+// 礼物（带图）、表情、进场、点赞、关注都能原生显示。截不到时退回读页面渲染出来的聊天文字（只有文字）。
 import SwiftUI
 import WebKit
 
-struct DYLiveMsg: Identifiable, Equatable {
-    let id: Int
-    let name: String
-    let text: String
+/// WKScriptMessageHandler 会强持有处理者：用弱引用转一手，网页拆掉时 DYLiveChat 能正常释放
+private final class DYWeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(c, didReceive: message)
+    }
 }
 
 @MainActor
-final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
-    @Published private(set) var messages: [DYLiveMsg] = []
+final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate, WKScriptMessageHandler {
+    @Published private(set) var messages: [DYLiveIMEvent] = []
+    /// 进场 / 点赞：官方只在聊天区底下滚一行、不断被下一条替换，不进聊天列表（不然全是「xx 来了」）
+    @Published private(set) var ticker: DYLiveIMEvent?
+    /// 头部：本场点赞、在线人数、前三名观众头像（随弹幕数据一起来）
+    @Published private(set) var stats = DYLiveRoomStats()
+    /// 已经截到网页的原始弹幕数据：之后不再读页面文字（避免同一条出现两遍）
+    private var imActive = false
+    private var imFirstAt: TimeInterval?
+    #if DEBUG
+    private var imShapeLogged: [String: Int] = [:]
+    #endif
     @Published private(set) var composerReady = false
     let web: WKWebView
     private var timer: Timer?
@@ -29,12 +43,15 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
         cfg.allowsInlineMediaPlayback = true
         // 直播间页面会自己拉流播放：一律掐掉，只要聊天区
         cfg.userContentController.addUserScript(WKUserScript(source: Self.noMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // 截网页收到的原始弹幕数据：必须抢在页面脚本建 WebSocket 之前装上
+        cfg.userContentController.addUserScript(WKUserScript(source: Self.imHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         DYKeyStateProbe.install(in: cfg, tag: "livechat")
         DYLogoutBlock.install(in: cfg)
         web = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 800), configuration: cfg)
         web.customUserAgent = DouyinWeb.userAgent
         super.init()
         web.navigationDelegate = self
+        web.configuration.userContentController.add(DYWeakScriptHandler(self), name: Self.imHandler)
         Self.installLeanRules(on: web)
     }
 
@@ -62,6 +79,10 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
         DYLiveModel.log("DDCHAT_OPEN room=\(webRid)")
         composerReady = false
         messages = []
+        ticker = nil
+        stats = DYLiveRoomStats()
+        imActive = false
+        imFirstAt = nil
         ticks = 0
         web.load(URLRequest(url: URL(string: "https://live.douyin.com/\(webRid)")!))
         timer?.invalidate()
@@ -145,7 +166,9 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
         }
         await new Promise(resolve => setTimeout(resolve, 300));
         const actual = (box.tagName === 'TEXTAREA' ? box.value : box.innerText) || '';
-        if (actual.replace(/\u200b/g, '').trim() !== text.trim()) return fail('compose-error', '官网输入内容未同步，已取消提交');
+        // [表情] 代码官网编辑器可能换成图片节点（innerText 里就没有了）：比的时候两边都去掉表情代码
+        const plain = s => s.replace(/\u200b/g, '').replace(/\[[^\[\]]{1,12}\]/g, '').replace(/\s+/g, '');
+        if (plain(actual) !== plain(text)) return fail('compose-error', '官网输入内容未同步，已取消提交');
         const button = [...document.querySelectorAll('[class*="send"], button')].find(b => /发送/.test(b.innerText || '') || /send-btn|sendBtn|send_btn/i.test(String(b.className)));
         if (button && box.getAttribute('data-slate-editor') !== 'true') {
           if (button.disabled || button.getAttribute('aria-disabled') === 'true') return fail('disabled', '直播间暂不能发言，请查看官网限制提示');
@@ -164,12 +187,120 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
     })();
     """#
 
+    // MARK: 原始弹幕数据
+
+    static let imHandler = "ddLiveIM"
+
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == Self.imHandler, let body = message.body as? [String: Any],
+              let kind = body["k"] as? String else { return }
+        if kind == "open" {
+            DYLiveModel.log("DDLIVEIM ws-open after=\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - openedAt))s")
+            return
+        }
+        guard let b64 = body["b"] as? String, let raw = Data(base64Encoded: b64), room != nil else { return }
+        let token = generation
+        // 解 gzip / protobuf 放后台，别占主线程（热门直播间一秒几十条）
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (events, methods, stats) = DYLiveIM.events(fromFrame: raw, kind: kind)
+            DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                if !stats.isEmpty { var s = self.stats; s.apply(stats); if s != self.stats { self.stats = s } }
+                self.receive(events: events, methods: methods, kind: kind, bytes: raw.count, raw: raw)
+            }
+        }
+    }
+
+    private func receive(events: [DYLiveIMEvent], methods: [String], kind: String, bytes: Int, raw: Data) {
+        if !methods.isEmpty, imFirstAt == nil {
+            imFirstAt = ProcessInfo.processInfo.systemUptime
+            DYLiveModel.log("DDLIVEIM first kind=\(kind) after=\(String(format: "%.2f", imFirstAt! - openedAt))s n=\(methods.count) events=\(events.count)")
+        }
+        #if DEBUG
+        logShapes(raw: raw, kind: kind)
+        #endif
+        guard !events.isEmpty else { return }
+        if !imActive { imActive = true; DYLiveModel.log("DDLIVEIM active (页面文字停用)") }
+        let (list, passing) = DYLiveIM.split(events)
+        if !list.isEmpty { messages = DYLiveIM.merge(messages, list) }
+        if let passing { ticker = passing }
+    }
+
+    #if DEBUG
+    /// 每种消息记前两条的字段结构（只有字段号和长度，不含内容），用来核对字段号
+    private func logShapes(raw: Data, kind: String) {
+        var body = raw
+        if kind == "ws" { guard let f = DYLivePB.decode(raw), let p = f.data(8) else { return }; body = p }
+        if DYGzip.isGzip(body) { body = DYGzip.inflate(body) ?? Data() }
+        guard let r = DYLivePB.decode(body) else { return }
+        for m in r.subs(1) {
+            let method = m.string(1)
+            let n = imShapeLogged[method, default: 0]
+            imShapeLogged[method] = n + 1
+            guard n < 2, let payload = m.data(2) else { continue }
+            DYLiveModel.log("DDLIVEIM shape \(method) \(DYLivePB.shape(payload).prefix(500))")
+        }
+    }
+    #endif
+
+    /// 截网页收到的原始弹幕数据：WebSocket（webcast/im/push）帧、im/fetch 回包，原样 base64 交给 Swift。
+    /// 包一层的函数 toString 仍返回原生的，页面检测到被改的概率小一些；出任何错都不影响页面本身。
+    static let imHookJS = #"""
+    (() => {
+      if (window.__ddImHook) return; window.__ddImHook = 1;
+      const H = () => window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ddLiveIM;
+      const b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+      const post = (k, buf) => { try { const h = H(); if (h && buf && buf.byteLength) h.postMessage({ k, b: b64(new Uint8Array(buf)) }); } catch (e) {} };
+      const isIM = u => /webcast\/im\/(push|fetch)/.test(String(u || ''));
+      const native = (fn, orig) => { try { Object.defineProperty(fn, 'toString', { value: () => Function.prototype.toString.call(orig) }); } catch (e) {} return fn; };
+      try {
+        const WS = window.WebSocket;
+        const Hooked = native(function (url, protocols) {
+          const ws = protocols === undefined ? new WS(url) : new WS(url, protocols);
+          if (isIM(url)) {
+            try { const h = H(); if (h) h.postMessage({ k: 'open' }); } catch (e) {}
+            ws.addEventListener('message', ev => {
+              const d = ev.data;
+              if (d instanceof ArrayBuffer) post('ws', d);
+              else if (d && typeof d.arrayBuffer === 'function') d.arrayBuffer().then(b => post('ws', b)).catch(() => {});
+            });
+          }
+          return ws;
+        }, WS);
+        Hooked.prototype = WS.prototype;
+        for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) Hooked[k] = WS[k];
+        window.WebSocket = Hooked;
+      } catch (e) {}
+      try {
+        const f = window.fetch;
+        window.fetch = native(function (input) {
+          const p = f.apply(this, arguments);
+          try {
+            const u = input && input.url ? input.url : input;
+            if (/webcast\/im\/fetch/.test(String(u))) p.then(r => r.clone().arrayBuffer()).then(b => post('fetch', b)).catch(() => {});
+          } catch (e) {}
+          return p;
+        }, f);
+      } catch (e) {}
+      try {
+        const P = XMLHttpRequest.prototype, open = P.open, send = P.send;
+        P.open = native(function (m, u) { this.__ddIm = /webcast\/im\/fetch/.test(String(u)); return open.apply(this, arguments); }, open);
+        P.send = native(function () {
+          if (this.__ddIm) this.addEventListener('load', () => { try { if (this.response instanceof ArrayBuffer) post('fetch', this.response); } catch (e) {} });
+          return send.apply(this, arguments);
+        }, send);
+      } catch (e) {}
+    })();
+    """#
+
     func close() {
         timer?.invalidate(); timer = nil
         generation = UUID()
         room = nil
         composerReady = false
         messages = []
+        ticker = nil
+        stats = DYLiveRoomStats()
         web.stopLoading()
         web.loadHTMLString("", baseURL: nil)
     }
@@ -191,6 +322,11 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
             if self.composerReady != ready { DYLiveModel.log("DDCHAT composerReady=\(ready)") }
             if ready, !self.composerLogged {
                 self.composerLogged = true
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["DOUDUO_COMPOSERDIAG"] == "1" {
+                    self.web.evaluateJavaScript(Self.composerDiagJS) { d, _ in DYLiveModel.log("DDCHAT composer-diag \(String(describing: d ?? "nil").prefix(3500))") }
+                }
+                #endif
                 DYLiveModel.log("DDCHAT_COMPOSER_READY elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - self.openedAt))")
             }
             self.composerReady = ready
@@ -202,13 +338,14 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
                 }
                 #endif
             }
-            guard !arr.isEmpty else { return }
-            var m = self.messages
+            // 已经在用原始弹幕数据：页面文字只是同一批消息的渲染结果，不再重复加
+            guard !arr.isEmpty, !self.imActive else { return }
+            var m: [DYLiveIMEvent] = []
             for p in arr where p.count == 2 {
                 self.seq += 1
-                m.append(DYLiveMsg(id: self.seq, name: p[0], text: p[1]))
+                m.append(DYLiveIMEvent(id: "dom:\(self.seq)", kind: .chat, user: p[0], text: p[1]))
             }
-            self.messages = Array(m.suffix(40))
+            self.messages = DYLiveIM.merge(self.messages, m)
         }
     }
 
@@ -221,6 +358,30 @@ final class DYLiveChat: NSObject, ObservableObject, WKNavigationDelegate {
       new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
     })();
     """
+
+    #if DEBUG
+    /// 只读：输入框所在区域里有哪些按钮 / 面板（表情、快捷评论、@ 等），用来对齐网页能发什么
+    private static let composerDiagJS = #"""
+    (() => {
+      const box = document.querySelector('[data-e2e="live-chatting"] [contenteditable="true"], [contenteditable="true"]');
+      if (!box) return 'no-box';
+      let root = box; for (let i = 0; i < 6 && root.parentElement; i++) root = root.parentElement;
+      const out = [];
+      for (const e of root.querySelectorAll('*')) {
+        const cls = String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || '').slice(0, 50);
+        const aria = e.getAttribute('aria-label') || e.getAttribute('title') || e.getAttribute('data-e2e') || '';
+        const own = [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('').slice(0, 16);
+        const clickable = e.tagName === 'BUTTON' || e.getAttribute('role') === 'button' || getComputedStyle(e).cursor === 'pointer';
+        if (clickable || aria || own) out.push(e.tagName + '.' + cls + (aria ? '[' + aria + ']' : '') + (own ? '"' + own + '"' : '') + (e.querySelector('svg,img') ? '+icon' : ''));
+      }
+      const e2e = [...document.querySelectorAll('[data-e2e]')].map(e => e.getAttribute('data-e2e')).filter(x => /chat|emoji|gift|comment|input|send|quick|at/i.test(x));
+      const imgs = [...root.querySelectorAll('img')];
+      const attrs = imgs.slice(0, 4).concat(imgs.slice(-3)).map(i => ({ cls: String(i.className).slice(0, 30), alt: i.alt, title: i.title, dn: i.dataset ? JSON.stringify(i.dataset).slice(0, 60) : '', parent: String(i.parentElement && i.parentElement.className).slice(0, 30), ptitle: i.parentElement && (i.parentElement.title || i.parentElement.getAttribute('aria-label')) }));
+      const sections = [...root.querySelectorAll('h3, .tabs-nav-list-item')].map(h => h.innerText.trim());
+      return 'imgs=' + imgs.length + ' sections=' + JSON.stringify(sections) + ' attrs=' + JSON.stringify(attrs) + ' items=' + JSON.stringify(out.slice(0, 12)) + ' e2e=' + JSON.stringify([...new Set(e2e)].slice(0, 40));
+    })()
+    """#
+    #endif
 
     private static let diagJS = #"""
     (() => {
@@ -268,24 +429,94 @@ struct DYLiveChatHost: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
-/// 抖音直播同款：左下角滚动聊天列表，最新的在最下面
+/// 抖音直播同款：左下角滚动聊天列表，最新的在最下面。
+/// 弹幕里的 [表情] 换成官方表情图；礼物带礼物图和个数；大表情显示图片；进场 / 点赞 / 关注用淡一点的样式。
 struct DYLiveChatOverlay: View {
-    let messages: [DYLiveMsg]
+    let messages: [DYLiveIMEvent]
+    var ticker: DYLiveIMEvent? = nil
+    @ObservedObject private var emoji = DYEmojiStore.shared
+    private static let nameColor = Color(red: 0.6, green: 0.85, blue: 1.0)
+    private static let giftColor = Color(red: 1.0, green: 0.82, blue: 0.45)
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(messages.suffix(7)) { m in
-                (Text(m.name.isEmpty ? "" : m.name + "：").foregroundStyle(Color(red: 0.6, green: 0.85, blue: 1.0))
-                 + Text(m.text).foregroundStyle(.white))
-                    .font(.system(size: 14, weight: .medium))
-                    .lineLimit(2)
+            ForEach(messages.suffix(8)) { m in
+                row(m)
                     .padding(.horizontal, 9).padding(.vertical, 4)
-                    .background(Capsule().fill(.black.opacity(0.32)))
+                    .background(Capsule().fill(.black.opacity(m.kind == .member || m.kind == .like ? 0.22 : 0.32)))
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityIdentifier("live.chat.\(m.kind.rawValue)")
+            }
+            if let t = ticker {
+                row(t)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(Capsule().fill(.black.opacity(0.18)))
+                    .id(t.id)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("live.chat.ticker")
             }
         }
         .frame(maxWidth: 300, alignment: .leading)
         .animation(.easeOut(duration: 0.25), value: messages.last?.id)
+        .animation(.easeOut(duration: 0.2), value: messages.last?.count)
+        .animation(.easeOut(duration: 0.2), value: ticker?.id)
         .allowsHitTesting(false)
         .accessibilityIdentifier("live.chat")
+    }
+
+    private func name(_ m: DYLiveIMEvent) -> Text {
+        m.user.isEmpty ? Text("") : Text(m.user + (m.kind == .chat || m.kind == .emoji ? "：" : " ")).foregroundStyle(Self.nameColor)
+    }
+
+    /// 昵称前的徽章（等级 / 粉丝团 / 管理），官方下发的图片，按宽高比排成 16pt 高
+    @ViewBuilder private func badges(_ m: DYLiveIMEvent) -> some View {
+        if !m.badges.isEmpty {
+            HStack(spacing: 3) {
+                ForEach(m.badges, id: \.self) { b in
+                    CachedAsyncImage(url: URL(string: b.url)) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
+                        .frame(width: 16 * min(max(b.aspect, 0.5), 4), height: 16)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder private func row(_ m: DYLiveIMEvent) -> some View {
+        switch m.kind {
+        case .gift:
+            HStack(spacing: 4) {
+                badges(m)
+                (name(m) + Text(m.text).foregroundStyle(Self.giftColor))
+                    .font(.system(size: 14, weight: .medium)).lineLimit(1)
+                if let s = m.image, let url = URL(string: s) {
+                    CachedAsyncImage(url: url) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
+                        .frame(width: 24, height: 24)
+                }
+                if m.count > 1 {
+                    Text("×\(m.count)").font(.system(size: 15, weight: .heavy).italic()).foregroundStyle(Self.giftColor)
+                        .contentTransition(.numericText())
+                }
+            }
+        case .emoji:
+            HStack(spacing: 4) {
+                name(m).font(.system(size: 14, weight: .medium))
+                if let s = m.image, let url = URL(string: s) {
+                    CachedAsyncImage(url: url) { $0.resizable().scaledToFit() } placeholder: { Color.clear }
+                        .frame(width: 40, height: 40)
+                } else {
+                    emoji.rich(m.text).foregroundStyle(.white).font(.system(size: 14, weight: .medium))
+                }
+            }
+        case .member, .like, .social, .ended:
+            (name(m) + Text(m.text).foregroundStyle(.white.opacity(0.75)))
+                .font(.system(size: 13)).lineLimit(1)
+        case .chat:
+            HStack(alignment: .top, spacing: 4) {
+                badges(m).padding(.top, 1)
+                (name(m) + emoji.rich(m.text).foregroundStyle(.white))
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(2)
+            }
+        }
     }
 }

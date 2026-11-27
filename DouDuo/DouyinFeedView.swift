@@ -174,7 +174,7 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     let avatar: String?
     let cover: String?
     let viewers: String
-    let hls: [String: String]      // FULL_HD1 / HD1 / SD1 / SD2
+    var hls: [String: String]      // FULL_HD1 / HD1 / SD1 / SD2
     var flv: [String: String]? = nil
     let portrait: Bool
     var def: String? = nil
@@ -189,6 +189,9 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
         return DYAweme.Author(name: owner, avatar: avatar, secUid: sec,
                               uid: ownerUID?.isEmpty == false ? ownerUID : nil, follow: ownerFollow)
     }
+
+    /// 有没有 VLC 能快速起播的 H.264 FLV（compatibleLiveFLV 只留明确标成 H.264 的）
+    var hasFLV: Bool { !(flv ?? [:]).isEmpty }
 
     var bestHLS: URL? {
         for k in ["HD1", "FULL_HD1", "SD2", "SD1"] { if let s = hls[k], let u = URL(string: s) { return u } }

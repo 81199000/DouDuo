@@ -426,7 +426,9 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
     def test_live_feed_keeps_one_surface(self):
         room = (ROOT / "DouDuo/DouyinLiveRoom.swift").read_text()
         feed = room.split("struct DYLiveFeed: View", 1)[1].split("private struct DYLiveRoomPage", 1)[0]
-        self.assertEqual(feed.count("VLCPlayerSurface("), 1)
+        # 只有一个画面挂载点；挂的是当前这一路自己的视图（换到预加载的下一间时整块搬进来）
+        self.assertEqual(feed.count("DYLiveVideoHost("), 1)
+        self.assertEqual(feed.count("VLCPlayerSurface("), 0)
         self.assertIn("DYLiveAdaptiveLayoutEngine.decide", feed)
         self.assertIn("DYLiveAdaptiveLayoutEngine.stabilize", feed)
         self.assertIn("presentationSize", feed)
@@ -446,7 +448,7 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
         self.assertIn(".frame(width: videoFrame.width, height: videoFrame.height)", feed)
         self.assertIn(".position(x: videoFrame.midX, y: videoFrame.midY)", feed)
         self.assertNotIn(".frame(width: shown.video.width, height: shown.video.height)", feed)
-        surface = feed.split("VLCPlayerSurface(", 1)[1].split("if model.rooms.isEmpty", 1)[0]
+        surface = feed.split("DYLiveVideoHost(", 1)[1].split("if model.rooms.isEmpty", 1)[0]
         self.assertNotIn("mediaPlayer.drawable", surface)
         self.assertNotIn(".play(", surface)
         self.assertNotIn(".replace(", surface)
@@ -454,6 +456,7 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
         self.assertEqual(page.count("DouyinLiveAmbientBackground("), 1)
         self.assertIn("if isCurrent, let axis = ambientAxis", page)
         self.assertNotIn("VLCPlayerSurface(", page)
+        self.assertNotIn("DYLiveVideoHost(", page)
         self.assertNotIn("vlc.", page)
 
     def test_late_video_size_does_not_restart_playback(self):
@@ -478,7 +481,7 @@ class LiveAdaptiveLayoutTests(unittest.TestCase):
         self.assertNotIn("portrait", layout)
         self.assertNotIn(".play(", layout)
         self.assertNotIn(".replace(", layout)
-        self.assertIn("vlc.onVideoSize", room)
+        self.assertIn("c.onVideoSize", room)
         self.assertIn("playbackVideoSize = .zero", room)
         self.assertIn("onVideoSize?(next)", bridge)
 

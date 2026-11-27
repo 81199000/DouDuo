@@ -22,6 +22,8 @@ final class DYCookieJar {
     func set(_ name: String, _ value: String) { cookies[name] = value; save() }
     func remove(_ name: String) { cookies.removeValue(forKey: name); save() }
     func clear() { cookies = [:]; UserDefaults.standard.removeObject(forKey: Self.key) }
+    /// 切换账号：整罐换成那个账号存着的
+    func replaceAll(_ c: [String: String]) { cookies = c; save() }
 
     /// 作废原生登录留下的整套会话（cookie 罐 + 票据 + 绑定的 EC 密钥）。
     /// 网页登录 / 切换账号 / 退出时必须调：否则 DYNativeTicket.hasTicket 还是 true，
@@ -368,6 +370,21 @@ enum DYNativeTicket {
     }
 
     static var hasTicket: Bool { saved != nil }
+
+    /// 切换账号：导出这次原生登录的票据（原样 JSON）和私钥。没有完整的一份返回 nil。
+    static func exportState() -> (ticket: Data, key: String)? {
+        guard let t = saved, let d = try? JSONEncoder().encode(t),
+              let k = UserDefaults.standard.string(forKey: keyTag), !k.isEmpty else { return nil }
+        return (d, k)
+    }
+
+    /// 切换账号：换成那个账号存着的票据和私钥
+    static func importState(ticket: Data, key: String) {
+        cachedKey = nil
+        UserDefaults.standard.set(key, forKey: keyTag)
+        UserDefaults.standard.set(ticket, forKey: ticketTag)
+        UserDefaults.standard.synchronize()
+    }
 
     /// 票据/密钥不可用时的原因（只用于日志，不含密钥内容）
     static var debugWhy: String {

@@ -263,7 +263,10 @@ class LivePlaybackGateTests(unittest.TestCase):
         self.assertIn("PLAYER-REBUILD-FAILED", bridge)
         self.assertIn("STALE-CALLBACK rejected", bridge)
         self.assertIn("stopCompletionLimit", page)
-        self.assertEqual(page.count("VLCPlayerController()"), 1)
+        # 当前一路 + 预加载下一间的一路；第二个只能在预加载里建
+        self.assertEqual(page.count("VLCPlayerController()"), 2)
+        warm = page.split("func updateWarmNext()", 1)[1].split("func releaseWarm(", 1)[0]
+        self.assertEqual(warm.count("VLCPlayerController()"), 1)
         stop = page.split("func stop()", 1)[1].split("func reset()", 1)[0]
         self.assertIn("suspended = false", stop)
         self.assertIn("vlc.stop()", stop)
