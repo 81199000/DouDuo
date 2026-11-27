@@ -55,7 +55,7 @@ struct DYFeedLivePage: View {
             // 环境光：画面没铺满（横屏直播 / 竖屏直播在折叠屏外屏）时四周跟着画面颜色变，同视频页
             if isCurrent, ambientLevel > 0 {
                 DYLiveAmbientBackdrop(controller: warm?.controller ?? player, active: isCurrent,
-                                      dim: Double(ambientLevel) / 100, fillWidth: live.portrait)
+                                      dim: DYVideoAmbient.dim, fillWidth: live.portrait)
                     .id(warm?.roomID ?? "cold")
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.feed.live.ambient")

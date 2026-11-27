@@ -12,7 +12,7 @@ probe = (root / "DouDuo/DYDMProbe.swift").read_text()
 start = banner.index("// BEGIN DYDMBannerPolicy\n")
 end = banner.index("// END DYDMBannerPolicy\n", start)
 policy = banner[start:end].replace("// BEGIN DYDMBannerPolicy\n", "").replace("// END DYDMBannerPolicy\n", "")
-assert "doudou.dm.notify.v1" in banner and "doudou.dm.detail.v1" in banner
+assert "static let notificationsOn = true" in banner and "static let showsDetail = true" in banner, "私信通知与会话名称固定开"
 assert "DOUDUO_DM_SENDER" not in banner and "DOUDUO_DM_BANNER" not in banner
 assert "DOUDUO_DM_SHAPE" not in banner
 shape_at = probe.index("DOUDUO_DM_SHAPE")
@@ -124,15 +124,7 @@ route.apply(keep: false, routeID: "conv-a")
 route.cancel()
 precondition(route.route == nil && route.claim(generation: 3, epoch: 2, enabled: true) == nil, "logout clears the route before a tap")
 precondition(DYDMRouteState.normalized(" conversation") == nil)
-let store = UserDefaults(suiteName: "dm-settings-test")!
-store.removePersistentDomain(forName: "dm-settings-test")
-precondition(DYDMNotificationSettings.notifications(in: store) == false && DYDMNotificationSettings.showsDetail(in: store) == false, "a fresh install leaves both settings off")
-store.set(true, forKey: DYDMNotificationSettings.detailKey)
-precondition(DYDMNotificationSettings.showsDetail(in: store) == false, "names stay hidden while notifications are off")
-store.set(true, forKey: DYDMNotificationSettings.notifyKey)
-precondition(DYDMNotificationSettings.notifications(in: store) && DYDMNotificationSettings.showsDetail(in: store))
-store.set(false, forKey: DYDMNotificationSettings.detailKey)
-precondition(DYDMNotificationSettings.notifications(in: store) && DYDMNotificationSettings.showsDetail(in: store) == false)
+precondition(DYDMNotificationSettings.notificationsOn && DYDMNotificationSettings.showsDetail, "notifications and names are always on")
 var named = DYDMBannerPresentation()
 precondition(named.receive(present, first) == 1 && named.title == "甲" && named.enriched)
 named.concealIdentity()

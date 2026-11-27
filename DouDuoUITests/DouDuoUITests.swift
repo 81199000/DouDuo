@@ -1452,14 +1452,19 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             settings.tap()
             let manage = app.buttons["douyin.hashtags.manage"].firstMatch
-            if !manage.isHittable { app.swipeUp() }
+            for _ in 0..<4 where !manage.isHittable { app.swipeUp() }
             XCTAssertTrue(manage.waitForExistence(timeout: 5), app.debugDescription)
             manage.tap()
             XCTAssertTrue(app.textFields["douyin.hashtags.input"].waitForExistence(timeout: 5))
         }
         func closeFilters() {
+            for _ in 0..<2 where !app.buttons["settings.done"].firstMatch.isHittable {
+                let back = app.navigationBars.buttons.element(boundBy: 0)
+                if back.isHittable { back.tap() } else { break }
+            }
             let back = app.buttons.matching(NSPredicate(format: "label IN %@", ["Back", "返回", "设置"])).firstMatch
-            if back.isHittable {
+            if app.buttons["settings.done"].firstMatch.isHittable {
+            } else if back.isHittable {
                 back.tap()
             } else {
                 let window = app.windows.firstMatch
@@ -2285,10 +2290,8 @@ final class DouDuoUITests: XCTestCase {
             for _ in 0..<5 where !downloadLink.isHittable { app.swipeUp() }
             XCTAssertTrue(downloadLink.isHittable, app.debugDescription)
             if checkPosition {
-                let cache = app.descendants(matching: .any)["settings.cache.count"].firstMatch
                 let storage = app.descendants(matching: .any)["settings.storage"].firstMatch
-                XCTAssertTrue(cache.exists && storage.exists)
-                XCTAssertLessThan(cache.frame.midY, downloadLink.frame.midY)
+                XCTAssertTrue(storage.exists)
                 XCTAssertLessThan(downloadLink.frame.midY, storage.frame.midY)
             }
             downloadLink.tap()
@@ -2680,14 +2683,15 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(options.waitForNonExistence(timeout: 5))
         app.buttons["douyin.more"].firstMatch.tap()
         XCTAssertFalse(app.buttons["douyin.dislike"].exists)
-        XCTAssertFalse(app.buttons["刷新推荐"].exists, "刷新推荐只在设置页")
+        XCTAssertFalse(app.buttons["刷新推荐"].exists)
         XCTAssertFalse(app.buttons["播放设置"].exists)
         XCTAssertFalse(app.buttons["缓存管理"].exists)
         let settings = app.buttons["douyin.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         attach(app, "more-surface-mute-listen-settings")
         settings.tap()
-        XCTAssertTrue(app.buttons["settings.refresh"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings.done"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["settings.refresh"].exists)
         attach(app, "settings-screen")
         app.buttons["settings.done"].tap()
     }

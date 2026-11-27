@@ -1,14 +1,17 @@
-"""1.6.5 起「边看边缓存」「省流量模式」默认打开：没设置过的用户（含从旧版升级）取到 true，设置页开关默认值也一致。"""
+#!/usr/bin/env python3
+"""边看边缓存固定开；蜂窝 / Wi-Fi 省流量固定开；预缓存固定 10 条。"""
 import pathlib, re
 root = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 s = (root / "DYStreamCache.swift").read_text()
-assert re.search(r'static var enabled: Bool \{ UserDefaults\.standard\.object\(forKey: enabledKey\) as\? Bool \?\? true \}', s), "边看边缓存默认要开"
-assert re.search(r'static var saverOn: Bool \{ UserDefaults\.standard\.object\(forKey: saverKey\) as\? Bool \?\? true \}', s), "省流量模式默认要开"
+assert "static let enabled = true" in s and "enabledKey" not in s, "边看边缓存固定开"
+assert "static let saverOn = true" in s, "蜂窝省流量固定开"
+assert "static let wifiSaverOn = true" in s, "Wi-Fi 省流量固定开"
+assert "saverKey" not in s and "wifiSaverKey" not in s
+c = (root / "DouyinVideoCache.swift").read_text()
+assert "static let defaultCount = 10" in c and "static let limit = defaultCount" in c, "预缓存固定 10 条"
 st = (root / "DYSettingsScreen.swift").read_text()
-assert "@AppStorage(DYStream.enabledKey) private var streamCache = true" in st
-assert "@AppStorage(DYStream.saverKey) private var dataSaver = true" in st, "蜂窝省流量默认开"
-assert "@AppStorage(DYStream.wifiSaverKey) private var wifiSaver = false" in st, "Wi-Fi 省流量默认关"
-assert "static var wifiSaverOn: Bool { UserDefaults.standard.object(forKey: wifiSaverKey) as? Bool ?? false }" in s, "Wi-Fi 省流量默认关"
+for gone in ("Wi-Fi 省流量", "蜂窝数据省流量", "预缓存数量", "countKey", "边看边缓存"):
+    assert gone not in st, gone
 u = (root / "UpdateChecker.swift").read_text()
 assert 'giteeRepo = "remon8/douduo"' in u and 'static let repo = "81199000/DouDuo"' in u, "更新检查源与开源仓库地址不对"
 print("ok saver default + update source")

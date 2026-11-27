@@ -8,13 +8,10 @@ import Foundation
 /// 这里只做内存 + 本地文件，不碰网络；判断在 DYFeedModel.allowedRecommendations 里统一生效。
 final class DYSeenHistory: @unchecked Sendable {
     static let shared = DYSeenHistory()
-    static let enabledKey = "douyin_hide_seen_v1"
     static let cap = 5000
 
-    /// 开关：默认开
-    static var enabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
-    }
+    /// 固定开启
+    static let enabled = true
 
     private let lock = NSLock()
     private var scope = ""

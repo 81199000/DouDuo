@@ -144,7 +144,7 @@ class MenuPolicyTests(unittest.TestCase):
     def test_danmaku_settings_only_in_settings_screen(self):
         self.assertNotIn("struct DYDanmakuOptions", EXTRAS)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"', 'Toggle("10 秒内重复弹幕去重"'):
+        for token in ('Toggle("显示弹幕"', 'Picker("弹幕密度"'):
             self.assertIn(token, screen)
 
     def test_settings_paths_and_duration_preferences(self):
@@ -164,9 +164,9 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
         self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        order = ['Text("界面")', 'Text("播放与弹幕")', 'Text("推荐与内容")', 'Text("流量与缓存")',
-                 'Text("账号与私信")', 'Label("高级设置"', 'Text("关于")']
-        for section in ['Label("刷新推荐"'] + order:
+        order = ['Text("界面")', 'Text("播放")', 'Text("推荐")', 'Text("存储")', 'Text("关于")']
+        self.assertNotIn("刷新推荐", screen)
+        for section in order:
             self.assertIn(section, screen)
         idx = [screen.index(t) for t in order]
         self.assertEqual(idx, sorted(idx), "设置分组顺序")
@@ -175,14 +175,14 @@ class MenuPolicyTests(unittest.TestCase):
                      "short_ratio", "短视频占比", "ratioChoices", 'Toggle("静音"', 'Toggle("自动连播"', 'Toggle("铺满宽度',
                      'Toggle("听书模式', "$autoNext", "$muted", "$autoFit", "$backgroundPlay"):
             self.assertNotIn(gone, screen)
-        for token in ("DYVideoAmbient.key", '"douyin_wide_landscape_v1"', 'Toggle("横屏时只放横屏内容"',
+        for token in ("DYVideoAmbient.key",
                       "DYHashtagFilterScreen(currentTags: [], embedded: true)",
-                      '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey", "DYDanmakuPolicy.deduplicateKey",
-                      "DYVideoCache.countKey", "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
+                      '"douyin_danmaku_v1"', "DYDanmakuPolicy.densityKey",
+                      "DYStorageScreen(", "DYOfflineDownloadScreen(candidateSource:", "DDUpdateChecker.repoURL",
                       "DDAppVersion.display", "DDChromeMode.key"):
             self.assertIn(token, screen)
         self.assertEqual(FEED.count(".environment(\\.dyOpenSettings, { showSettings = true })"), 2)
-        self.assertEqual(FEED.count("onRefresh: { Task { await refreshRecommendations() } }"), 2)
+        self.assertEqual(FEED.count("DYSettingsScreen(onCacheCleared: { focusCurrent() },"), 2)
         # 经典长按面板只留当前视频相关：铺满 / 静音 / 听书 / 自动连播 / 不感兴趣 / 倍速 / 发弹幕
         panel = (ROOT / "DouDuo/DYVideoOptionsPanel.swift").read_text()
         for token in ('"douyin.options.fit"', '"douyin.options.muted"', '"douyin.options.bgplay"', '"douyin.options.autonext"',

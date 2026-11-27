@@ -176,7 +176,7 @@ struct DYTouchpadPane: View {
 private struct DYTouchpadDanmakuLayer: View {
     let items: [DYDanmaku]
     let clock: DYDanmakuClock
-    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
+    private let deduplicate = DYDanmakuPolicy.deduplicate
     @AppStorage(DYDanmakuPolicy.densityKey) private var densityRaw = DYDanmakuPolicy.Density.standard.rawValue
     var body: some View {
         GeometryReader { g in

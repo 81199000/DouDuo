@@ -21,9 +21,9 @@ w = HOST[HOST.index("func reportWatch(old"):]
 assert w.index("guard !feed.offlinePlayback") < w.index("DYSeenHistory.shared.mark(new)"), "离线/直播不记"
 assert "unseen(allowedRecommendations(r.items))" in FEED, "推荐新拉的要过滤看过"
 assert "DYFeedModel.isSeen = { id in DYSeenHistory.enabled && DYSeenHistory.shared.contains(id) }" in APP, "启动注入 + 跟开关"
-assert 'Toggle("不再推荐看过的视频", isOn: $hideSeen)' in SETTINGS
-assert "@AppStorage(DYSeenHistory.enabledKey) private var hideSeen = true" in SETTINGS, "默认开"
-assert "DYSeenHistory.shared.clear()" in SETTINGS, "能清空"
+assert "不再推荐看过的视频" not in SETTINGS and "hideSeen" not in SETTINGS, "开关去掉"
+assert "static let enabled = true" in SEEN, "固定开"
+assert "清空看过记录" not in SETTINGS, "清空入口去掉"
 key = SEEN.split('UserDefaults.standard.string(forKey: "')[1].split('"')[0]
 assert f'currentKey = "{key}"' in ACCOUNTS, f"账号 key 要与 DYAccountStore 一致: {key}"
 # 关注页不过滤（关注流按时间，过滤会空）
@@ -38,8 +38,7 @@ final class DYFeedModel {
 ''' + unseen_fn + '''
 }
 let d = UserDefaults.standard
-d.removeObject(forKey: DYSeenHistory.enabledKey)
-precondition(DYSeenHistory.enabled, "默认开")
+precondition(DYSeenHistory.enabled, "固定开")
 d.set("acctA", forKey: "''' + key + '''")
 let h = DYSeenHistory.shared
 h.clear()
@@ -59,13 +58,10 @@ h.clear(); h.mark("seen1")
 DYFeedModel.isSeen = { id in DYSeenHistory.enabled && h.contains(id) }
 let m = DYFeedModel()
 precondition(m.unseen([DYAweme(id: "seen1"), DYAweme(id: "new1")]).map(\\.id) == ["new1"], "看过的跳过")
-d.set(false, forKey: DYSeenHistory.enabledKey)
-precondition(m.unseen([DYAweme(id: "seen1"), DYAweme(id: "new1")]).count == 2, "关掉开关不过滤")
-d.removeObject(forKey: DYSeenHistory.enabledKey)
 h.clear()
 d.set("acctB", forKey: "''' + key + '''"); h.clear()
 d.removeObject(forKey: "''' + key + '''")
-print("PASS seen history: mark/dedupe, per-account, persisted, cap 5000 FIFO, feed skip, toggle off")
+print("PASS seen history: mark/dedupe, per-account, persisted, cap 5000 FIFO, feed skip")
 '''
 with tempfile.TemporaryDirectory() as tmp:
     src = Path(tmp) / "main.swift"

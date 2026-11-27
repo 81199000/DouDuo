@@ -35,7 +35,6 @@ struct DYCommentNeedsVerify: Error { let decision: String }
  static var next: Outcome = .cancelled; static var runs = 0, lastDecision = ""
  static func run(decision: String) async -> Outcome { runs += 1; lastDecision = decision; return next } }
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
-@MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
 // 只测网页接口路径，原生接口全关
 @MainActor enum DYNative { static var enabled = false; static var nativeOnly = false; static var writeEnabled = false
  static func replies(_ id: String, commentID: String, cursor: Int) async -> (items: [DYComment], cursor: Int, hasMore: Bool)? { nil }

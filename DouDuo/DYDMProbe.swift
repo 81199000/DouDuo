@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import SwiftUI
 
-/// Foreground DM monitoring. Off unless the user turns on in-app notifications.
+/// Foreground DM monitoring for in-app notifications.
 enum DYDMProbe {
     static var enabled: Bool { DYDMNotificationSettings.notificationsOn && !blocksFixture }
     /// Direct opening uses the same user switch. It does not reveal sender identity.

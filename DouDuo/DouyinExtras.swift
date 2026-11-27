@@ -307,49 +307,6 @@ extension DouyinBridge {
 
 
 
-    /// 返回 nil = 网页评论框这一步没把评论发出去（确定没发），可以退回接口方式；
-    /// 只要点过发送且结果不明，就抛「未确认」，绝不再用别的方式补发，免得重复评论。
-    private func publishViaWebUI(_ awemeID: String, text: String, replyID: String?, replyToReplyID: String?, op: String) async throws -> DYComment? {
-        let target = replyToReplyID ?? replyID
-        DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-submit reply=\(replyID == nil ? 0 : 1)/\(replyToReplyID == nil ? 0 : 1)")
-        let o: DYWebComposer.Outcome
-        do { o = try await DYWebComposer.shared.publish(awemeID: awemeID, text: text, top: replyID, replyTo: target, host: web.superview) }
-        catch {
-            DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-error")
-            return nil
-        }
-        DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-\(o.state) stage=\(o.stage ?? "-") status=\(o.status.map(String.init) ?? "nil") code=\(o.code.map(String.init) ?? "nil") diag=\(o.diagnostic ?? "-")")
-        switch o.state {
-        case "sent":
-            if let c = o.comment, Self.isServerCommentID(c.id) { return c }
-            throw DYCommentUnconfirmed(message: "抖音回了成功但没给评论编号；先刷新评论区核对")
-        case "blocked":
-            // 与接口方式一致：403 后服务端常常同时作废登录，交给恢复页核验
-            throw DYLoginExpired()
-        case "rejected":
-            if o.code == 8 { throw DYLoginExpired() }
-            throw DYError.bad(o.msg?.isEmpty == false ? o.msg! : "评论被拒绝（\(o.code ?? -1)），草稿已保留")
-        case "unconfirmed":
-            // 已点发送但回执读不到：和接口方式一样，限时回评论区找自己刚发的这条
-            let identity = try? await selfProfile()
-            if let mine = await Self.firstWithin(Self.reconcileTimeout, { [weak self] in
-                await self?.findMySentComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
-                                              imageSentAt: Date().timeIntervalSince1970 - 30, identity: identity, hasImage: false)
-            }) {
-                DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-verified")
-                return mine
-            }
-            DYLiveModel.log("DDSEND comment op=\(op) phase=web-ui-reconcile-miss")
-            throw DYCommentUnconfirmed(message: o.msg ?? "结果未确认，可能已发出；先刷新评论区核对")
-        case "logged-out":
-            throw DYLoginExpired()
-        case "busy":
-            throw DYError.bad("上一条评论还在发送，稍等再发；草稿已保留")
-        default:
-            // not-ready / not-found / compose-error / not-sent：确定没有发出请求
-            return nil
-        }
-    }
 
     func fetchReplies(_ id: String, commentID: String, cursor: Int) async throws -> (items: [DYComment], cursor: Int, hasMore: Bool) {
         if DYNative.enabled, let p = await DYNative.replies(id, commentID: commentID, cursor: cursor) { return p }
@@ -432,13 +389,6 @@ extension DouyinBridge {
                 }
                 DYLiveModel.log("DDSEND comment op=\(operationID) phase=native-fallback-web")
             }
-        }
-        // 纯文字（含回复/楼中楼）走「真人方式」：抖音网页自己的评论框 + 发送按钮。带图仍走接口。
-        if image == nil, DYWebComposer.enabled {
-            if let c = try await publishViaWebUI(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID, op: operationID) {
-                return c
-            }
-            DYLiveModel.log("DDSEND comment op=\(operationID) phase=web-ui-fallback")
         }
         guard await ensureWriteReady() else {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=not-ready")
@@ -933,7 +883,8 @@ enum DYDanmakuPolicy {
     static let laneHeight: CGFloat = 28
     static let gap: CGFloat = 28
     static let densityKey = "douyin_video_danmaku_density_v1"
-    static let deduplicateKey = "douyin_video_danmaku_deduplicate_v1"
+    /// 10 秒内重复弹幕去重：固定开
+    static let deduplicate = true
 
     enum Density: Int, CaseIterable, Identifiable {
         case sparse = 0, standard = 1, dense = 2
@@ -1077,7 +1028,7 @@ struct DYDanmakuLayer: View {
     let clock: DYDanmakuClock
     let topInset: CGFloat
     @AppStorage(DYDanmakuPolicy.densityKey) private var densityRaw = DYDanmakuPolicy.Density.standard.rawValue
-    @AppStorage(DYDanmakuPolicy.deduplicateKey) private var deduplicate = true
+    private let deduplicate = DYDanmakuPolicy.deduplicate
 
     private var renderItems: [DYDanmaku] {
         #if DEBUG
@@ -1534,8 +1485,7 @@ struct DYListPlayer: View {
         }
         .environment(\.dyOpenSettings, { if !offlineLibrary { showSettings = true } })
         .sheet(isPresented: $showSettings, onDismiss: { DDPlayback.shared.releaseCover() }) {
-            DYSettingsScreen(onOpenWeb: { showSettings = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { web = DYWebTarget(url: DouyinWeb.home) } })
+            DYSettingsScreen()
                 .onAppear { DDPlayback.shared.pauseAll(reason: .cover) }   // 设置页也停掉视频
         }
         .fullScreenCover(item: $web) { t in DouyinWebScreen(start: t.url) }
