@@ -93,7 +93,7 @@ final class DYNativeChatModel: ObservableObject {
                 byID[k] = nil
             }
         }
-        for m in incoming { byID[m.id] = m }
+        for m in incoming where m.visible(to: selfUID) { byID[m.id] = m }
         let next = byID.values.sorted { ($0.createdMS, $0.index) < ($1.createdMS, $1.index) }
         if next != messages {
             messages = next

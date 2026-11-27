@@ -136,7 +136,9 @@ extension DouyinBridge {
     const users = list.map(u => ({
       uid: String(u.uid || u.user_id || ''), sec: u.sec_uid || '',
       name: u.nickname || u.remark_name || '',
-      avatar: ((u.avatar_thumb || u.avatar_small || u.avatar_medium || {}).url_list || [])[0] || ''
+      avatar: ((u.avatar_thumb || u.avatar_small || u.avatar_medium || {}).url_list || [])[0] || '',
+      follow: typeof u.follow_status === 'number' ? u.follow_status : null,
+      follower: typeof u.follower_status === 'number' ? u.follower_status : null
     })).filter(u => u.uid);
     return JSON.stringify({ status: r.s, users, msg: d.status_msg || (list.length ? null : ('keys=' + Object.keys(d).join('|'))) });
     """#

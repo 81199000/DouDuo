@@ -37,14 +37,16 @@ enum DYNativeConversationSync {
     private static func run(account: String, bridge: DouyinBridge) async -> DYConversationSync.Outcome {
         let cache = DYMessageCache.shared
         let t0 = Date()
-        let list: [DYIMConversation]
-        do { list = try await DYNativeIM.shared.loadConversations(maxPages: 10) } catch {
+        let all: [DYIMConversation]
+        do { all = try await DYNativeIM.shared.loadConversations(maxPages: 10) } catch {
             DYLiveModel.log("DDNATIVECHAT list fail \(error.localizedDescription)")
             if case DYIMError.noLogin = error { return .init(status: "私信需要登录，请使用网页版 / 登录") }
             return .init(rows: cache.snapshot.conversations, status: cache.snapshot.conversations.isEmpty ? "私信加载失败，请稍后重试" : nil)
         }
         lastFull = Date()
         guard cache.accountScope == account else { return .init() }
+        let list = all.filter { !$0.hiddenInMainList }
+        DYLiveModel.log("DDNATIVECHAT filter total=\(all.count) shown=\(list.count) pending=\(all.filter { $0.type == 1 && $0.mode != 0 && $0.onlySystem }.count) folded=\(all.filter { $0.settingExt["a:s_is_folded"] == "1" }.count) strangerMode=\(all.filter { $0.mode != 0 }.count)")
         let people = list.flatMap { c -> [(uid: UInt64, sec: String)] in
             c.type == 1 ? [(c.peerUID, c.peerSec)] : []
         }
@@ -84,7 +86,14 @@ enum DYNativeConversationSync {
         }
         out.rows = merged
         if merged.isEmpty { out.status = "还没有私信" }
-        await cache.resolveFollow(merged.compactMap { $0.kind == 1 ? $0.sec : nil })
+        // 关注关系：im/user/info 已带回来就直接用；没带回来的才走旧的网页查询
+        var pairs: [String: (follow: Int, follower: Int?)] = [:]
+        for c in list where c.type == 1 {
+            if let u = users[String(c.peerUID)], let f = u.follow, !u.sec.isEmpty { pairs[u.sec] = (f, u.follower) }
+        }
+        cache.applyFollow(pairs)
+        let unresolved = merged.compactMap { $0.kind == 1 ? $0.sec : nil }.filter { pairs[$0] == nil }
+        if !unresolved.isEmpty { await cache.resolveFollow(unresolved) }
         DYLiveModel.log("DDNATIVECHAT list n=\(rows.count) users=\(users.count) ms=\(Int(tUsers.timeIntervalSince(t0) * 1000)) changed=\(out.changed)")
         return out
     }

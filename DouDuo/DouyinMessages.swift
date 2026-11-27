@@ -74,6 +74,18 @@ final class DYMessageCache: ObservableObject {
         return follow[sec] == 0
     }
 
+    /// 原生私信列表：关注关系直接用 im/user/info 带回来的（同官方私信页），不再逐个查网页主页
+    func applyFollow(_ pairs: [String: (follow: Int, follower: Int?)]) {
+        guard !pairs.isEmpty else { return }
+        for (sec, v) in pairs {
+            follow[sec] = v.follow
+            if let f = v.follower { follower[sec] = f }
+            followChecked.insert(sec)
+        }
+        snapshot.follow = follow; snapshot.follower = follower; save()
+        DYLiveModel.log("DDSTRANGER follow via=im-user-info n=\(pairs.count) unfollowed=\(pairs.values.filter { $0.follow == 0 }.count) fans=\(pairs.values.filter { ($0.follower ?? 0) > 0 }.count)")
+    }
+
     /// 查单聊对方的关注关系；每次启动每人只查一次（关注关系可能变）
     func resolveFollow(_ secs: [String]) async {
         let need = Array(Set(secs.filter { !$0.isEmpty && !followChecked.contains($0) }))
@@ -98,6 +110,11 @@ final class DYMessageCache: ObservableObject {
             return
         }
         guard scope == account else { return }
+        if pairs.count >= 5, pairs.values.allSatisfy({ $0.first == 0 && ($0.count < 2 || $0[1] <= 0) }) {
+            need.forEach { followChecked.remove($0) }
+            DYLiveModel.log("DDSTRANGER follow suspicious all-zero n=\(pairs.count) → 丢弃（多半是登录失效或被限流）")
+            return
+        }
         let m = pairs.compactMapValues { $0.first }
         let fm = pairs.compactMapValues { $0.count > 1 && $0[1] >= 0 ? $0[1] : nil }
         need.filter { m[$0] == nil }.forEach { followChecked.remove($0) }
@@ -1368,7 +1385,8 @@ struct DYMessagesScreen: View {
         let outcome: DYConversationSync.Outcome
         if DYNativeChat.enabled {
             // 原生：imapi 直接拉全部会话 + 头像昵称，不等私信网页、不用往下翻
-            outcome = await DYNativeConversationSync.read(account: account, bridge: bridge)
+            // 一次完整同步 1~2 秒（会话多时要翻 4 页），列表页 15 秒刷一次足够；新消息由聊天页自己 2~5 秒轮询
+            outcome = await DYNativeConversationSync.read(account: account, bridge: bridge, minInterval: 15)
         } else {
             guard let web = chatModel.web else { return }
             // 读取与合并都交给 DYConversationSync：后台预热和消息页用的是同一套逻辑

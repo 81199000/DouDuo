@@ -97,6 +97,20 @@ struct DYIMConversation: Equatable {
     var peerSec: String = ""        // 单聊对方 sec_uid（最后一条消息若由对方发出，取 sec_sender）
     var last: DYIMMessage?          // 最后一条消息
     var participants: [(uid: UInt64, sec: String)] = []
+    var mode = 0                         // core_info.mode（16）：非 0 = 陌生人关系会话
+    var coreExt: [String: String] = [:]  // core_info.ext（11）
+    var settingExt: [String: String] = [:] // setting_info.ext（9）
+    var onlySystem = true                // 随 init 下发的消息全是系统提示（或没有消息）
+
+    /// 官方私信页主列表的过滤（照网页 IM 的 sortedConversationIdList）：
+    /// 折叠会话进「折叠箱」、不是本 App 可见的不显示、「陌生人待回复」且只有系统提示的不显示
+    var hiddenInMainList: Bool {
+        if settingExt["a:s_is_folded"] == "1" { return true }
+        if let apps = coreExt["a:visible_app_id"], !apps.isEmpty,
+           !apps.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }).contains("6383") { return true }
+        if type == 1, mode != 0, onlySystem { return true }
+        return false
+    }
     static func == (a: DYIMConversation, b: DYIMConversation) -> Bool {
         a.id == b.id && a.ticket == b.ticket && a.badge == b.badge && a.readBadge == b.readBadge && a.pinned == b.pinned
             && a.muted == b.muted && a.last == b.last && a.name == b.name && a.avatar == b.avatar
@@ -114,6 +128,18 @@ struct DYIMMessage: Equatable, Identifiable {
     var index: UInt64 = 0           // index_in_conversation（翻页游标）
     var status: Int = 0             // 12 status
     var clientID: String = ""       // ext s:client_message_id
+    var ext: [String: String] = [:]
+    /// 系统提示（SYSTEM=1 / SYSTEM_COMPAT=1006 / 服务端下发）：如「对方回复或关注你之前，只能发送一条文字消息」
+    var isSystem: Bool { type == 1 || type == 1006 || ext["a:is_server"] == "true" }
+    /// 同官方 Message.visible：服务端禁用(status=1)、特殊消息(≥50000)不显示；s:visible / s:invisible 名单按自己 uid 判断
+    func visible(to me: UInt64) -> Bool {
+        if status == 1 || type >= 50000 { return false }
+        guard me > 0 else { return true }
+        let mine = String(me)
+        if let v = ext["s:visible"], !v.isEmpty { return v.split(separator: ",").contains { $0 == mine } }
+        if let v = ext["s:invisible"], !v.isEmpty { return !v.split(separator: ",").contains { $0 == mine } }
+        return true
+    }
     var id: String { serverID > 0 ? String(serverID) : clientID }
     var json: [String: Any] {
         guard let d = content.data(using: .utf8),
@@ -140,6 +166,10 @@ struct DYIMMessage: Equatable, Identifiable {
             return ((d?["url_list"] as? [String])?.first).flatMap(URL.init(string:))
         }
         func int(_ key: String) -> Int { (o[key] as? NSNumber)?.intValue ?? 0 }
+        if isSystem {
+            let t = (o["text"] as? String) ?? (o["tips"] as? String) ?? (o["hint_content"] as? String) ?? ""
+            return .system(t.isEmpty ? "[系统消息]" : t)
+        }
         if type == 7 || awe == 700 || awe == 0, let t = o["text"] as? String { return .text(t) }
         switch awe {
         case 500...599:
@@ -177,6 +207,9 @@ struct DYIMUser: Codable, Equatable {
     let sec: String
     let name: String
     let avatar: String
+    /// 我是否关注对方（0 未关注 / 1 已关注 / 2 互关…）、对方是否关注我；同官方私信页 usersInfoStore 的字段。nil = 接口没给
+    var follow: Int? = nil
+    var follower: Int? = nil
 }
 
 enum DYIMError: LocalizedError {
@@ -487,6 +520,9 @@ final class DYNativeIM {
         c.readBadge = Int(setting?.int(16) ?? 0)
         c.pinned = (setting?.int(7) ?? 0) != 0
         c.muted = (setting?.int(6) ?? 0) != 0
+        c.mode = Int(core?.int(16) ?? 0)
+        c.coreExt = Self.map(core?[11])
+        c.settingExt = Self.map(setting?[9])
         // first_page_participants（6）= ParticipantsPage{1: [Participant{1 user_id, 5 sec_uid}]}
         if let page = f.sub(6) {
             c.participants = (page[1] ?? []).compactMap { v in
@@ -505,11 +541,19 @@ final class DYNativeIM {
         m.secSender = f.string(14) ?? ""
         m.index = f.int(4) ?? 0
         m.status = Int(f.int(12) ?? 0)
-        for e in f[9] ?? [] {
-            guard let kv = e.data.flatMap(DYPB.decode), kv.string(1) == "s:client_message_id" else { continue }
-            m.clientID = kv.string(2) ?? ""
-        }
+        m.ext = Self.map(f[9])
+        m.clientID = m.ext["s:client_message_id"] ?? ""
         return m
+    }
+
+    /// protobuf map<string,string>（每项是 {1: key, 2: value}）
+    static func map(_ values: [DYPB.Value]?) -> [String: String] {
+        var out: [String: String] = [:]
+        for e in values ?? [] {
+            guard let kv = e.data.flatMap(DYPB.decode), let k = kv.string(1) else { continue }
+            out[k] = kv.string(2) ?? ""
+        }
+        return out
     }
 
     /// 单聊会话 id「0:1:<uidA>:<uidB>」里不是自己的那个 uid
@@ -527,7 +571,7 @@ final class DYNativeIM {
         for page in 0..<maxPages {
             // MessageByInitRequestBody：1 version / 2 page / 3 conv_limit / 4 msg_limit（同官方私信页）
             let payload = (cursor > 0 ? DYPB.field(1, cursor) : Data()) + DYPB.field(2, UInt64(page))
-                + DYPB.field(3, 50) + DYPB.field(4, 1)
+                + DYPB.field(3, 50) + DYPB.field(4, 5)
             let body = try await call(.initSync, payload)
             for item in body[1] ?? [] {
                 #if DEBUG
@@ -538,9 +582,11 @@ final class DYNativeIM {
                       seen.insert(c.id).inserted else { continue }
                 // 2 = 该会话随 init 下发的消息（可能多条、顺序不定）：取时间最新的一条
                 let msgs = (entry?[2] ?? []).compactMap { $0.data.flatMap(Self.message) }
-                if let last = msgs.max(by: { $0.createdMS < $1.createdMS }) { c.last = last }
+                let shown = msgs.filter { $0.visible(to: selfUID) }
+                if let last = shown.max(by: { $0.createdMS < $1.createdMS }) { c.last = last }
+                c.onlySystem = !shown.contains { !$0.isSystem }
                 #if DEBUG
-                DYLiveModel.log("DDNATIVEIM init conv=\(c.id.suffix(6)) msgs=\(msgs.count) times=\(msgs.map { String($0.createdMS / 1000) }.joined(separator: ","))")
+                DYLiveModel.log("DDNATIVEIM init conv=\(c.id.suffix(6)) msgs=\(msgs.count) shown=\(shown.count) mode=\(c.mode) sys=\(c.onlySystem)")
                 #endif
                 if c.type == 1 {
                     c.peerUID = peer(of: c.id)
@@ -584,6 +630,8 @@ final class DYNativeIM {
 
     private var userCache: [String: DYIMUser] = [:]
     private var userCacheLoaded = false
+    /// 本次启动已从接口拿到关注关系的 uid
+    private var followFresh = Set<String>()
     private static var userCacheURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("im-users.json")
     }
@@ -608,7 +656,8 @@ final class DYNativeIM {
         loadUserCache()
         var secOf: [String: String] = [:]
         for p in people where p.uid > 0 && !p.sec.isEmpty { secOf[String(p.uid)] = p.sec }
-        let missing = secOf.filter { refresh || userCache[$0.key] == nil }.map(\.value)
+        // 缺资料、或旧缓存里没有关注关系的都重查（关注关系每次启动重查一次）
+        let missing = secOf.filter { refresh || userCache[$0.key]?.follow == nil || !followFresh.contains($0.key) }.map(\.value)
         var changed = false
         for chunk in stride(from: 0, to: missing.count, by: 20).map({ Array(missing[$0..<min($0 + 20, missing.count)]) }) {
             do {
@@ -616,9 +665,11 @@ final class DYNativeIM {
                 for u in got {
                     let uid = u.uid.isEmpty ? secOf.first(where: { $0.value == u.sec })?.key ?? "" : u.uid
                     guard !uid.isEmpty else { continue }
-                    userCache[uid] = DYIMUser(uid: uid, sec: u.sec, name: u.name, avatar: u.avatar); changed = true
+                    userCache[uid] = DYIMUser(uid: uid, sec: u.sec, name: u.name, avatar: u.avatar, follow: u.follow, follower: u.follower)
+                    if u.follow != nil { followFresh.insert(uid) }
+                    changed = true
                 }
-                DYLiveModel.log("DDNATIVEIM users want=\(chunk.count) got=\(got.count)")
+                DYLiveModel.log("DDNATIVEIM users want=\(chunk.count) got=\(got.count) follow=\(got.filter { $0.follow != nil }.count) followed=\(got.filter { ($0.follow ?? 0) > 0 }.count)")
             } catch { DYLiveModel.log("DDNATIVEIM users fail \(error.localizedDescription)") }
         }
         if changed { saveUserCache() }
