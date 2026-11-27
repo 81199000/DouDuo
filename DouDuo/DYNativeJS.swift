@@ -9,7 +9,8 @@ final class DYNativeJS {
     static let shared = DYNativeJS()
 
     /// 与签名页网页同一个 UA；脚本里的公共参数（browser_name=Safari / os_name=Mac OS）就是按它声明的
-    static let userAgent = DouyinWeb.userAgent
+    /// 跟 DYNative 同口径：原生登录会话用登录时的 Windows Chrome，网页登录会话用 Mac Safari
+    static var userAgent: String { DYNative.userAgent }
 
     private let vm = JSVirtualMachine()!
 
@@ -121,6 +122,22 @@ final class DYNativeJS {
     }
 
     /// 真正发请求：GET 签 a_bogus；POST 不允许（只读引擎）
+    /// 脚本里的公共参数写死的是 Mac Safari。原生扫码登录的会话要换成登录时的 Windows Chrome 环境，
+    /// 否则同一个登录在抖音眼里一会儿是 Chrome 一会儿是 Safari，几条写请求后就要求身份验证、再作废登录。
+    static func alignEnvironment(_ qs: String) -> String {
+        guard DYNativeTicket.hasTicket, !qs.isEmpty else { return qs }
+        let env = Dictionary(DYNative.chromeParams, uniquingKeysWith: { a, _ in a })
+        let drop: Set<String> = ["pc_libra_divert", "update_version_code"]
+        var parts: [String] = []
+        for item in qs.split(separator: "&", omittingEmptySubsequences: true) {
+            let kv = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let k = String(kv[0])
+            if drop.contains(k) { continue }
+            if let v = env[k] { parts.append("\(k)=\(DYNative.enc(v))") } else { parts.append(String(item)) }
+        }
+        return parts.joined(separator: "&")
+    }
+
     static func perform(method: String, path: String, body: String?, headers: [String: Any]) async -> [String: Any] {
         let isPost = method.uppercased() == "POST"
         guard isPost || method.uppercased() == "GET" else { return ["s": -9, "t": ""] }
@@ -131,7 +148,7 @@ final class DYNativeJS {
             return ["s": -8, "t": ""]
         }
         // 网页里 SDK 会自动补的身份参数：msToken / verifyFp / fp / uifid / webid
-        var qs = comps.percentEncodedQuery ?? ""
+        var qs = Self.alignEnvironment(comps.percentEncodedQuery ?? "")
         func add(_ k: String, _ v: String?) {
             guard let v, !v.isEmpty, !qs.contains("\(k)=") else { return }
             qs += (qs.isEmpty ? "" : "&") + "\(k)=\(DYNative.enc(v))"

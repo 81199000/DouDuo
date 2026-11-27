@@ -34,11 +34,29 @@ enum DYNative {
 
     /// 发请求与签名必须是同一个 UA，而且要和「登录时」的网页一致（Mac Safari）：
     /// 登录票据绑定在那个设备环境上，换成别的 UA 发写请求，服务端会当成异常设备作废登录。
-    static let userAgent = DouyinWeb.userAgent
+    ///
+    /// 两套设备环境不能混用（2026-11-27 真机：原生扫码登录 = Windows Chrome 环境，评论却按 Mac Safari 发，
+    /// 第一条成功，第二条要求身份验证，第三条 403，随后抖音作废登录）：
+    /// - 网页登录的会话 → Mac Safari（跟后台网页一致）
+    /// - 原生扫码登录的会话 → Windows Chrome 131（跟登录时 passport 的环境指纹一致）
+    @MainActor static var userAgent: String { DYNativeTicket.hasTicket ? DYPassport.userAgent : DouyinWeb.userAgent }
     static let host = "https://www.douyin.com"
 
-    /// webapp 公共参数：与网页签名页脚本里的 base 完全一致（Mac / Safari 26 / WebKit）
-    static let baseParams: [(String, String)] = [
+    @MainActor static var baseParams: [(String, String)] { DYNativeTicket.hasTicket ? chromeParams : safariParams }
+
+    /// 原生扫码登录会话的公共参数（照 Amor5207/douyin-tv 的 base()：Windows / Chrome 131 / Blink）
+    static let chromeParams: [(String, String)] = [
+        ("device_platform", "webapp"), ("aid", "6383"), ("channel", "channel_pc_web"), ("pc_client_type", "1"),
+        ("version_code", "190500"), ("version_name", "19.5.0"), ("cookie_enabled", "true"),
+        ("screen_width", "1536"), ("screen_height", "864"), ("browser_language", "zh-CN"),
+        ("browser_platform", "Win32"), ("browser_name", "Chrome"), ("browser_version", "131.0.0.0"),
+        ("browser_online", "true"), ("engine_name", "Blink"), ("engine_version", "131.0.0.0"),
+        ("os_name", "Windows"), ("os_version", "10"), ("cpu_core_num", "16"), ("device_memory", "8"),
+        ("platform", "PC"), ("downlink", "10"), ("effective_type", "4g"), ("round_trip_time", "50"),
+    ]
+
+    /// 网页登录会话的公共参数：与网页签名页脚本里的 base 完全一致（Mac / Safari 26 / WebKit）
+    static let safariParams: [(String, String)] = [
         ("device_platform", "webapp"), ("aid", "6383"), ("channel", "channel_pc_web"), ("pc_client_type", "1"),
         ("pc_libra_divert", "Mac"), ("update_version_code", "170400"), ("support_h265", "1"), ("support_dash", "0"),
         ("version_code", "170400"), ("version_name", "17.4.0"), ("cookie_enabled", "true"),
@@ -67,6 +85,8 @@ enum DYNative {
     @MainActor static var lastBdturing = false
     /// 最近一次写请求的回应头里是否带了身份验证要求（风控：短时间评论太多等）
     @MainActor static var lastVerify = false
+    /// 最近一次写请求回应头 x-tt-verify-passport-decision 的原值（只在内存里转给官方验证组件，不进日志）
+    @MainActor static var lastVerifyDecision: String?
 
     enum Failure: LocalizedError {
         case noLogin, noTicket, http(Int), empty
@@ -175,6 +195,8 @@ extension DYNative {
         lastBdturing = h?.value(forHTTPHeaderField: "X-Vc-Bdturing-Parameters") != nil
         lastVerify = h?.value(forHTTPHeaderField: "x-vc-bdturing-parameters") != nil
             || (h?.allHeaderFields.keys.contains { "\($0)".lowercased().contains("verify") } ?? false)
+        let decision = h?.value(forHTTPHeaderField: "x-tt-verify-passport-decision")?.trimmingCharacters(in: .whitespaces)
+        lastVerifyDecision = (decision?.isEmpty == false) ? decision : nil
         return (Response(status: h?.statusCode ?? -1, data: d, ms: Int(Date().timeIntervalSince(t0) * 1000)),
                 h?.value(forHTTPHeaderField: "Bd-Ticket-Guard-Result"))
     }
@@ -198,6 +220,8 @@ enum DYNativePublishOutcome {
     case rejected(Int, String?)
     /// 请求可能已到达抖音但结果不明：交给上层回查，不重发
     case unknown
+    /// 200 空包 + 要求身份验证（风控）：上层回查确认没收下后，弹官方验证，通过再发一次
+    case needsVerify(String)
 }
 
 extension DYNative {
@@ -225,7 +249,7 @@ extension DYNative {
         }
         let (r, tg) = result
         if r.data.isEmpty {
-            DYLiveModel.log("DDSEND comment op=\(op) phase=native-empty hdrs=\(result.0.status) bdt=\(lastBdturing ? 1 : 0) verify=\(lastVerify ? 1 : 0)")
+            DYLiveModel.log("DDSEND comment op=\(op) phase=native-empty hdrs=\(result.0.status) bdt=\(lastBdturing ? 1 : 0) verify=\(lastVerify ? 1 : 0) decision=\(lastVerifyDecision == nil ? 0 : 1)")
         }
         let p = try? JSONDecoder().decode(DYRawPublish.self, from: r.data)
         DYLiveModel.log("DDSEND comment op=\(op) phase=native-response http=\(r.status) code=\(p?.status_code.map(String.init) ?? "nil") tg=\(tg ?? "-") bytes=\(r.data.count) ms=\(r.ms)")
@@ -233,6 +257,7 @@ extension DYNative {
             return .sent(c)
         }
         if let code = p?.status_code, code != 0 { return .rejected(code, p?.status_msg) }
+        if r.data.isEmpty, let decision = lastVerifyDecision { return .needsVerify(decision) }
         return .unknown
     }
 }

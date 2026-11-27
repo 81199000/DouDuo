@@ -123,7 +123,8 @@ enum DYPassportVerify {
             cfg.userContentController.addUserScript(WKUserScript(source: DouyinBridge.composerNoMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             DYLogoutBlock.install(in: cfg)
             web = WKWebView(frame: .zero, configuration: cfg)
-            web.customUserAgent = DouyinWeb.userAgent
+            // 验证页跟这次登录同一个设备环境（原生扫码登录 = Windows Chrome），换环境做验证抖音不认
+            web.customUserAgent = DYNative.userAgent
             web.navigationDelegate = self
             web.translatesAutoresizingMaskIntoConstraints = false
 

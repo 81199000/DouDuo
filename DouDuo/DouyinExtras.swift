@@ -388,6 +388,37 @@ extension DouyinBridge {
                     return mine
                 }
                 throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
+            case .needsVerify(let decision):
+                // 抖音风控要求身份验证（短时间评论多了常见）。先回查确认确实没收下，再弹官方验证，通过后原生再发一次
+                DYLiveModel.log("DDSEND comment op=\(operationID) phase=verify-required via=native")
+                if let mine = await Self.firstWithin(Self.reconcileTimeout, { [weak self] in
+                    await self?.findMySentComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                                  imageSentAt: t0, identity: identity, hasImage: false)
+                }) {
+                    DYLiveModel.log("DDSEND comment op=\(operationID) phase=verified via=native")
+                    return mine
+                }
+                switch await DYPassportVerify.run(decision: decision) {
+                case .passed:
+                    switch await DYNative.publishComment(awemeID, text: text, replyID: replyID, replyToReplyID: replyToReplyID,
+                                                         ticketWeb: web, op: operationID) {
+                    case .sent(let c):
+                        DYLiveModel.log("DDSEND comment op=\(operationID) phase=acknowledged via=native-after-verify")
+                        return c
+                    case .rejected(let code, let msg):
+                        if code == 8 { throw DYLoginExpired() }
+                        throw DYError.bad(msg?.isEmpty == false ? msg! : "评论被拒绝（\(code)），草稿已保留")
+                    case .needsVerify:
+                        DYLiveModel.log("DDSEND comment op=\(operationID) phase=verify-again via=native")
+                        throw DYError.bad("验证通过了，但抖音仍要求验证，这条没发出去；草稿已保留，稍后再试")
+                    case .unknown, .notSent:
+                        throw DYCommentUnconfirmed(message: "结果未确认，可能已发出；先刷新评论区核对")
+                    }
+                case .cancelled:
+                    throw DYError.bad("已取消身份验证，这条没发出去；草稿已保留")
+                case .failed(let why):
+                    throw DYError.bad("身份验证没完成（\(why)），这条没发出去；草稿已保留")
+                }
             case .notSent(let why):
                 if DYNative.nativeOnly {
                     DYLiveModel.log("DDSEND comment op=\(operationID) phase=native-not-sent native-only")

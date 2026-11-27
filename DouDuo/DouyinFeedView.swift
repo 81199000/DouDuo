@@ -1963,6 +1963,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_STRESS"] != nil { Task { await DDCommentStress.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
