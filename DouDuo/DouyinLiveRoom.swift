@@ -1050,7 +1050,7 @@ struct DYLiveFeed: View {
     @State private var sendError: String?
     @State private var showCategories = false
     @State private var showFollowLive = false
-    /// 直播间里点了主播：打开原生主播主页（工单 B32）
+    /// 直播间里点了主播：打开原生主播主页
     @State private var liveAuthor: DYAweme.Author?
     /// 「发现更多」只放分类。关注开播走旁边的「关注直播」。
     @State private var showDiscover = false
@@ -1471,7 +1471,7 @@ struct DYLiveFeed: View {
     }
 
     /// 顶部第一行：发现更多、关注直播选择器。位置由导航下沿和安全区决定。
-    /// 2026-11-20 老板嫌两颗文字胶囊碍眼 → 都收成小号图标：发现 = 圆形网格钮；关注在播 = 叠起来的红圈头像，不写字。
+    /// 关注在播 = 叠起来的红圈头像，不写字。
     private var discoverBar: some View {
         HStack(spacing: 8) {
             Button {
@@ -1911,7 +1911,7 @@ private struct DYLiveRoomPage: View {
     var splitRole: DYLiveLayoutToggleRole = .hidden
     var splitAction: () -> Void = {}
     var isolationID: String
-    /// 关注主播 / 读关注状态用（工单 B32）
+    /// 关注主播 / 读关注状态用
     @ObservedObject var bridge: DouyinBridge
     /// 点主播头像/昵称：打开原生主播主页
     var onAuthor: (DYAweme.Author) -> Void = { _ in }
@@ -1934,7 +1934,7 @@ private struct DYLiveRoomPage: View {
                 ZStack {
                 if DYLivePlaybackGate.mask(isCurrent: isCurrent, ready: model.ready, failed: model.playbackError != nil) == .coverPrevious {
                     ZStack {
-                        // 视频画面区出画前保持纯黑，不随亮色外观变白（老板定；test_live_playback_gate 守着）
+                        // 视频画面区出画前保持纯黑，不随亮色外观变白
                         Color.black
                         if let cover = room.cover, let url = URL(string: cover) {
                             CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
@@ -2031,7 +2031,7 @@ private struct DYLiveRoomPage: View {
                         safeBottom: geo.safeAreaInsets.bottom,
                         keyboardOverlap: isCurrent ? keyboardOverlap : 0))
                 } else {
-                    // 与推荐流里的直播卡同一套（老板 2026-11-20）：下方居中「点击进入直播间」，
+                    // 与推荐流里的直播卡同一套：下方居中「点击进入直播间」
                     // 左下「直播中」小标签 + @主播 + 标题；不挡画面中间。
                     VStack(spacing: 14) {
                         Spacer()

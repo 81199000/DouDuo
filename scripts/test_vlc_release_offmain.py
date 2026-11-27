@@ -1,5 +1,4 @@
-"""VLC 播放器最后一次释放不能发生在主线程（2026-11-21 Duo 两次卡死被系统看门狗杀：
-主线程 libvlc_media_player_destroy → pthread_join，VLC 线程卡在 input_Close / ca_Flush）。"""
+"""主线程 libvlc_media_player_destroy → pthread_join，VLC 线程卡在 input_Close / ca_Flush）。"""
 import pathlib, re
 s = (pathlib.Path(__file__).resolve().parent.parent / "DouDuo/VLCPlayerBridge.swift").read_text()
 m = re.search(r"\n    deinit \{(.*?)\n    \}\n", s, re.S)

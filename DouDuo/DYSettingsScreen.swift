@@ -21,7 +21,6 @@ struct DYSettingsScreen: View {
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @AppStorage(DYAutoPiP.storageKey) private var autoPiP = false
     // 内容
-    // 老板 11-24：横竖屏筛选默认关（按抖音推荐原样播），放进「高级设置」
     @AppStorage("douyin_wide_landscape_v1") private var landscapeOnly = false
     @AppStorage("douyin_portrait_mix_v1") private var portraitMix = false
     @AppStorage(DYSeenHistory.enabledKey) private var hideSeen = true
@@ -47,13 +46,12 @@ struct DYSettingsScreen: View {
     @State private var showNotes = false
     @AppStorage(DYWebComposer.enabledKey) private var commentViaWebUI = false
 
-    /// 老板 11-24：只留 1 / 5 / 10 三档（提前备的播放器上限就是 10，再多没意义）
     private static let cacheChoices: [(Int, String)] = [(1, "1 条"), (5, "5 条"), (10, "10 条")]
 
     var body: some View {
         NavigationStack {
             Form {
-                // 11-24 老板重排：常用在上；每项后面 ⓘ 点开看这项具体改了什么；极少动的收进「高级设置」。
+                // 每项后面 ⓘ 点开看这项具体改了什么；极少动的收进「高级设置」。
                 // 1 界面  2 播放与弹幕  3 推荐与内容  4 流量与缓存  5 账号  6 高级设置  7 关于
                 Section {
                     Picker("外观", selection: $appearance) {
@@ -241,7 +239,7 @@ struct DYSettingsScreen: View {
         }
     }
 
-    /// 高级设置：极少调的开关（老板 11-24 归拢）
+    /// 高级设置：极少调的开关
     private var advanced: some View {
         Form {
             Section {
@@ -331,7 +329,7 @@ struct DYSettingsScreen: View {
     }
 }
 
-/// 每个设置项的 ⓘ 说明：开 / 关分别会怎样（老板 11-24）
+/// 每个设置项的 ⓘ 说明：开 / 关分别会怎样
 enum DYSettingInfo: String, Identifiable {
     case chrome, ambient, launchMuted, danmaku, danmakuDensity, keywords, hideSeen, feedLive, feedAds, feedProduct
     case wifiSaver, cellSaver, cacheCount, dmNotify, dmDetail

@@ -1,4 +1,4 @@
-// 选档不能选到 format=dash（只有画面没有声音）。档位结构按 2026-11-20 真机抓到的抖音 bit_rate。
+// 选档不能选到 format=dash（只有画面没有声音）。
 const fs = require('fs'), path = require('path'), assert = require('assert');
 const s = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DouyinFeedView.swift'), 'utf8');
 const cut = (from, to) => { const i = s.indexOf(from); assert(i > 0, from); return s.slice(i, s.indexOf(to, i)); };

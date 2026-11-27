@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""回前台卡十几秒（老板 11-26 真机：DDSTALL 13.69s / 4.09s，tcs=1 一直等数据）：
+"""回前台卡十几秒
 挂起时边下边播的连接被冻住，回来还占着「正在下这段」，播放器干等到 20 秒超时。
 回前台作废旧连接 → 从已喂到的位置用新连接续拉。这里起本地慢速服务器真跑 DYChunkStream。"""
 import http.server, pathlib, socketserver, subprocess, sys, tempfile, threading, time

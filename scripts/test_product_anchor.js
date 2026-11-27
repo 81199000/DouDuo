@@ -1,4 +1,4 @@
-// 小黄车解析：mapProduct 只认 anchor_info.extra 里带抖音官方详情页的商品项（真实样本 2026-11-20，视频 7709006252159896875）
+// 小黄车解析：mapProduct 只认 anchor_info.extra 里带抖音官方详情页的商品项
 const fs = require('fs'), path = require('path'), assert = require('assert');
 const s = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DouyinFeedView.swift'), 'utf8');
 const i = s.indexOf('function mapProduct(a)'); assert(i > 0, 'mapProduct missing');

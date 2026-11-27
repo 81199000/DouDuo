@@ -74,7 +74,7 @@ extension DYRecommendFeedHost {
         advance(from: feed.items[i].id, to: feed.items[j].id)
     }
 
-    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    /// 自动连播翻页带滑动动画；分页代理没接上时退回直接切
     func advance(from: String, to: String) {
         if !DYPagerAdvance.request(from: from, to: to) { withAnimation { currentID = to } }
     }
@@ -356,7 +356,7 @@ extension DYRecommendFeedHost {
         guard !feed.offlinePlayback else { DYFeedLiveWarm.shared.release(reason: "offline"); return }
         // 下一条是直播：先在后台连上（划到就有画面）
         DYFeedLiveWarm.shared.update(current: feed.items[i], next: feed.items.indices.contains(i + 1) ? feed.items[i + 1] : nil)
-        // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
+        // 不再预解首帧：界面已不用首帧图顶替，省 CPU 和解码
         let curID = feed.items[i].id
         let ahead = Array(feed.items.dropFirst(i + 1))
         let regionIDs = ahead.prefix(2).filter {
@@ -372,7 +372,7 @@ extension DYRecommendFeedHost {
         let want = max(6, min(DYVideoCache.limit, 60))
         // 正在拉的时候不重复发起，也不占用节流窗口（否则这一批拉完后要白等 4 秒才接着拉）
         // 后面只剩 3 条以内时节流缩到 1.5 秒：「不再推荐看过的」会筛掉近一半新推的，快划时 4 秒节流跟不上，
-        // 新条到了才开始预热，划到时只缓冲了 1 秒多（11-24 真机：一页 3 条筛掉 2 条后紧接着就划到了）
+        // 新条到了才开始预热，划到时只缓冲了 1 秒多
         let left = feed.items.count - i - 1
         if left < want, !feed.loading, Date().timeIntervalSince(lastFeedPull) > (left <= 3 ? 1.5 : 4) {
             lastFeedPull = Date()
@@ -388,7 +388,7 @@ extension DYRecommendFeedHost {
     }
 
     /// 推荐列表在当前条之后已经没东西可划（开 App 时拉推荐失败，只剩启动缓存那一条）：补拉一页。
-    /// 以前只有「换条」时才补拉，列表就一条时根本换不了条 → 永远划不动（老板 11-21 真机：拉推荐网络失败后卡在一条上）。
+    /// 以前只有「换条」时才补拉，列表就一条时根本换不了条 → 永远划不动。
     /// 由签名就绪和定时器触发；有在拉的、离线模式、刷新中都不动。
     func refillIfStuck(reason: String) {
         guard initialized, !refreshing, !feed.offlinePlayback, !feed.loading else { return }
@@ -508,7 +508,7 @@ extension DYRecommendFeedHost {
         if feed.finishedOfflineID == old { feed.finishedOfflineID = nil }
         if feed.onlineContinuationID == old { feed.onlineContinuationID = nil }
         guard !feed.offlinePlayback, let new, let item = feed.items.first(where: { $0.id == new }), item.live == nil else { return }
-        // 只要划到就算看过（老板 2026-11-22）：之后推荐再推这条直接跳过
+        // 只要划到就算看过：之后推荐再推这条直接跳过
         DYSeenHistory.shared.mark(new)
         var seen = false
         if let old, let prev = feed.items.first(where: { $0.id == old }), prev.duration > 0,
@@ -623,11 +623,9 @@ struct DYRefreshProbeAnchor: View {
 #endif
 
 /// 推荐流按横 / 竖选片的口径，四种界面共用（「横屏时只放横屏内容」开关据此生效）。
-/// 老板 2026-11-17 定：半折叠时横竖反过来——
 /// - 竖着拿半折（桌面姿态，上面放视频、下面评论）→ 视频区是横的，按**横屏**规则放
 /// - 横着拿半折（书本姿态，左边视频、右边评论）→ 视频区是竖的，按**竖屏**规则放
 /// - 没半折：看整个窗口宽 > 高
-/// （1.3.14 曾按视频块判断后又撤回，那次是「短视频变少」；这次是老板明确要求半折按反向选片。）
 enum DYFeedOrientation {
     static func playAreaIsWide(_ geo: GeometryProxy) -> Bool {
         #if DEBUG

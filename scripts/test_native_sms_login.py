@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""原生手机号登录（DouDuo N / 豹子）：字段必须照 2026-11-28 真机抓到的官方登录页请求，静态检查别被改丢。"""
+""""""
 import pathlib, sys
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 login = (R / "DYNativeLogin.swift").read_text()

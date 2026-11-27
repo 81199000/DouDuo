@@ -59,7 +59,6 @@ function page({ loggedOut = false, respond = (u) => ({ status: 200, body: { stat
     const it = el('div'); it.setAttribute('data-e2e', 'comment-item');
     it.__reactFiberT = { memoizedProps: {}, return: { memoizedProps: { commentInfo: { cid } }, return: null } };
     it.appendChild(el('span', '', '内容'));
-    // 11-19 真机：「回复」格里带图标、悬停才显示（尺寸为 0）
     const rb = el('div', 'reply-cell'); rb.appendChild(d.createElementNS('http://www.w3.org/2000/svg', 'svg')); const rt = el('span', '', '回复'); rt.hidden = true; rb.appendChild(rt);
     rt.addEventListener('click', () => { const c = composer(); c.dataset.reply = parentTop || cid; c.dataset.to = parentTop ? cid : '0'; it.appendChild(c); });
     it.appendChild(rb);

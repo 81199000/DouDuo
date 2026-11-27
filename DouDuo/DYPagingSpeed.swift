@@ -38,7 +38,7 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
     static func dismantleUIView(_ view: DYPagingSpeedHost, coordinator: ()) { view.detach() }
 }
 
-/// 自动连播翻页：播完后像手滑一样把下一条推上来（议题 #21-4：以前是直接切换，没有滑动动画）。
+/// 自动连播翻页：播完后像手滑一样把下一条推上来。
 /// 由正挂着的分页代理执行收尾动画，停稳后照常走 didSettle 切当前条起播（「停住才播」不变）。
 @MainActor
 enum DYPagerAdvance {
@@ -51,7 +51,7 @@ enum DYPagerAdvance {
     /// 返回 false = 没有分页代理接手（系统「减少动态效果」等），调用方自己直接切
     static func request(from: String, to: String) -> Bool {
         // App 在后台（后台播放 / 锁屏听）时屏幕不刷新，滑动动画靠 CADisplayLink 驱动、一帧都不走，
-        // 动画「接手」了却永远停不下来 → 后台自动连播卡在播完的那条（议题 #52-3）。后台直接切，不放动画。
+        // 动画「接手」了却永远停不下来 → 后台自动连播卡在播完的那条。后台直接切，不放动画。
         if UIApplication.shared.applicationState != .active {
             DYLiveModel.log("DDAUTONEXT background → direct \(from.suffix(4))→\(to.suffix(4))")
             return false
@@ -186,9 +186,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     private var expected: CGPoint?
     /// 提前起播时收尾动画还要走多久：这段时间里别让 SwiftUI 的 scrollPosition 跟着当前条改（会和收尾动画抢位置 → DDJUMPFIX）
     @MainActor static var settleEndsAt: CFTimeInterval = 0
-    /// 收尾动画剩最后这么久时就切当前条起播（老板 11-21 选 2A：停住那一刻画面正好动起来，不再停住后干等约 0.15s）
-    /// ⚠️ 11-21 晚改回 0：切当前条那一帧主线程要忙 50–70ms（播放器换成当前、整页重算），
-    /// 提前 0.1s 切 = 这一顿正好落在画面还在往上走的时候，老板看到「每条快到位都卡一下」（真机 244 次长帧里 117 次紧跟提前起播）。
+    /// 收尾动画剩最后这么久时就切当前条起播
     /// 停住再切，这一顿发生在画面静止时，肉眼看不出。
     static let earlyStart: TimeInterval = 0
     private var earlyFired = false
@@ -276,7 +274,6 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                                step, dragged, h, v, velocity.y, recent.map { String(format: "%.2f", $0) } ?? "-"))
         targetContentOffset.pointee.y = CGFloat(index) * h - top
         guard items.indices.contains(index) else { return }
-        // 老板要求：下一个视频还没加载好就别让它翻过去（跟抖音原版一样）
         // 只拦「往前翻」；往回翻是看过的，直接放行
         let curIndex = baseIndex ?? index
         if index > curIndex, !DYReadiness.isReady(items[index]) {
@@ -306,13 +303,11 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
         if let t = target {
             let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
-            // 停住才起播后，收尾时长就是起播等待：0.22–0.32s 实测 lift→active≈320ms，老板觉得「又慢了」。
             // 收到 0.16–0.22s：仍是推上来的减速，不是 0.10s 的闪
             animationDuration = 0.16 + 0.06 * Double(min(remain, 1))
         } else { animationDuration = duration }
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
         link = next; next.add(to: .main, forMode: .common)
-        // 老板定（11-21 改 2A）：收尾动画剩最后 0.1s 时切当前条起播（tick 里 earlyStart），停住那一刻画面正好在动；
         // 不是抬手就起播（那样画面还在往上走就开播了）。
         if let id = targetID, id != currentID() {
             DYSwipeProbe.lift(); DYSwipeProbe.mark("lift(\(id.suffix(4)))")

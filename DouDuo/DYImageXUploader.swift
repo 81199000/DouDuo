@@ -365,7 +365,7 @@ enum DYImageXUploader {
 enum DYImageXLogicTests {
     static let fixedCred = DYImageXCredential(accessKeyID: "AKTESTKEY", secretAccessKey: "c2VjcmV0LWZvci10ZXN0cw==",
                                               sessionToken: "STS2token/with+odd=chars", serviceID: "svc123")
-    static let fixedNow = Date(timeIntervalSince1970: 1_794_851_580) // 2026-11-16T17:53:00Z
+    static let fixedNow = Date(timeIntervalSince1970: 1_794_851_580)
 
     static func run() -> [String] {
         var failures: [String] = []

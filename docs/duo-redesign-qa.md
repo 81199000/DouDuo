@@ -2,7 +2,7 @@
 
 ## 对象与结论
 
-- 工作树 `douduo-shayu`，分支 `shayu`；本地合并 redbao `7e96ee7`、baihu `de95f81`，后合并修复 `061cbc1`，当前验证业务提交 `eb1e2f0`。
+- 本地合并 `7e96ee7`、`de95f81`，后合并修复 `061cbc1`，当前验证业务提交 `eb1e2f0`。
 - main 基线 `cdb95e13d2212ad0ca94f9b3af5acc0bbaa895e0`。
 - 前轮 postJS 重复声明已由上游修复，本轮集成 **BUILD SUCCEEDED**。但 UI 测试 **4 passed / 3 failed / 2 skipped**，故不满足发布验收，不能因编译成功宣布改版通过。
 - 业务代码未修改、未 push、未卸载 App；只改本报告和 UI 测试。现有 Vendor 软链未入提交。

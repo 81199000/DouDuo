@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-/// App 内原生登录（老板 2026-11-17）：界面是 App 自己的，背后跑抖音网页的独立登录页
+/// App 内原生登录：界面是 App 自己的，背后跑抖音网页的独立登录页
 /// （https://www.douyin.com/login_page），手机号 / 验证码 / 二维码都是网页登录组件真发真收：
 /// - 「获取验证码」= 网页里的「获取验证码」（它只认 mousedown，不认 click）
 /// - 「登录」= 网页里的「登录」
@@ -18,7 +18,7 @@ struct DYAppLoginScreen: View {
     @State private var code = ""
     @StateObject private var nativeLogin = DYNativeLogin.shared
     @State private var mfaCode = ""
-    /// 原生包默认手机号（11-28 起手机号也走原生、跟扫码同一套签名）；以前默认原生扫码，一打开就清会话开始轮询二维码
+    /// 原生包默认手机号；以前默认原生扫码，一打开就清会话开始轮询二维码
     @State private var mode: Mode = .code
     #if DEBUG
     static var autoCapture: Bool { ProcessInfo.processInfo.environment["DOUDUO_LOGIN_AUTOCAP"] == "1" }
@@ -28,7 +28,6 @@ struct DYAppLoginScreen: View {
     @FocusState private var focus: Field?
 
     enum Mode { case code, qr, native }
-    /// 原生扫码登录只给 DouDuo N（签名与登录是配套的，正式包继续用网页登录）
     static var nativeAvailable: Bool { (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native") }
     enum Field { case phone, code }
 
@@ -167,7 +166,7 @@ struct DYAppLoginScreen: View {
         }
     }
 
-    /// 原生包（DouDuo N / 豹子）手机号登录走 App 自己的 passport 请求（跟原生扫码同一套密钥绑定）；正式包仍驱动网页
+    /// 原生包手机号登录走 App 自己的 passport 请求（跟原生扫码同一套密钥绑定）；正式包仍驱动网页
     private var smsCountdown: Int { Self.nativeAvailable ? nativeLogin.smsCooldown : page.countdown }
     private var smsBusy: Bool { Self.nativeAvailable ? nativeLogin.smsBusy : page.busy }
 
@@ -181,7 +180,7 @@ struct DYAppLoginScreen: View {
                 Text(page.askScan ? "抖音要求扫码确认" : (page.qrStatus ?? "用另一台手机扫码登录"))
                     .font(.headline).multilineTextAlignment(.center)
                     .accessibilityIdentifier("douyin.login.qr.status")
-                // 抖音不认相册里的二维码图（老板 11-17 实测存相册再扫不通过）：必须另一台设备对着屏幕扫
+                // 抖音不认相册里的二维码图：必须另一台设备对着屏幕扫
                 Text("拿另一台已登录抖音的手机 → 打开抖音 App → 左上角「扫一扫」→ 对准这块屏幕上的二维码 → 在那台手机上确认登录")
                     .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .accessibilityIdentifier("douyin.login.qr.hint")
@@ -287,7 +286,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var askScan = false
     private var loginClickedAt: Date?
     /// 打开登录页时已有的 sessionid。抖音那边过期的旧 cookie 不会自己消失——
-    /// 只看「有没有」会把它当成已登录、登录页一打开就自己关掉（老板 11-17 实测：点登录框缩回去）。
+    /// 只看「有没有」会把它当成已登录、登录页一打开就自己关掉。
     /// 所以只认「换了一个新的 sessionid」才是这次登录成功。
     private var baseline: String??
 
@@ -307,7 +306,6 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         web.navigationDelegate = self
         #if DEBUG
         // 诊断（不拦截）：登录页发出的 passport 请求和抖音的回包写进日志（手机号掩码、验证码/票据不记）。
-        // 老板 11-28：点「获取验证码」没反应——要看清是网页没发、被风控拦，还是抖音回了错误
         web.configuration.userContentController.addUserScript(WKUserScript(source: #"""
         (() => {
           const hit = u => /passport\/web\/(send_code|sms_login|user\/login|validate_code)/.test(String(u));
@@ -374,7 +372,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         #endif
         Task { @MainActor in
             #if DEBUG
-            // 测试：造一个过期的旧 sessionid（老板真机就是这种状态：cookie 在、账号未登录）
+            // 测试：造一个过期的旧 sessionid
             if ProcessInfo.processInfo.environment["DOUDUO_STALE_SESSION"] == "1", await DYLoginState.sessionValue() == nil,
                let c = HTTPCookie(properties: [.domain: ".douyin.com", .path: "/", .name: "sessionid", .value: "stale0000",
                                                .expires: Date().addingTimeInterval(86400)]) {
@@ -397,7 +395,7 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
         ready = webView.url?.path.hasPrefix("/login_page") == true
         DYLiveModel.log("DDAPPLOGIN page \(webView.url?.path ?? "-") ready=\(ready)")
         if ready { let p = pending; pending = []; p.forEach { run($0) } }
-        // 网页登录成功会跳回 service（/jingxuan 等）：以前这里 ready=false 后轮询就停了，成功没人发现（老板 11-17 实测）
+        // 网页登录成功会跳回 service（/jingxuan 等）：以前这里 ready=false 后轮询就停了，成功没人发现
         else { Task { await confirmLogin() } }
     }
 
@@ -462,7 +460,6 @@ final class DYLoginPage: NSObject, ObservableObject, WKNavigationDelegate {
           qr: qrImg ? qrImg.src : null, cd: cd ? Number(cd) : 0, tip: tip || null, qrTip: qrTip || null, verify,
           dry: window.__ddDry || [], scanAsk, cap: (window.__ddCap || []).splice(0), net: (window.__ddNet || []).splice(0),
           toast: leaf.filter(t => /验证码|频繁|失败|错误|稍后|风险|异常|上限|安全/.test(t)).slice(0, 4).join('|'),
-          // 点登录后网页上能看到的字 + 有没有大号方图/弹窗：抖音新设备二次验证页没见过，靠这个从日志还原
           seen: leaf.slice(0, 60).join('|'),
           boxes: [...document.querySelectorAll('img,canvas,iframe')].filter(e => { const r = e.getBoundingClientRect(); return r.width > 100 && r.height > 100; })
                    .map(e => e.tagName + ':' + Math.round(e.getBoundingClientRect().width) + 'x' + Math.round(e.getBoundingClientRect().height) + ':' + String(e.src || '').slice(0, 40)).join(',')

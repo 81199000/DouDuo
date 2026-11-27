@@ -49,7 +49,7 @@ protocol ObservableObject {}
 }
 
 enum DYLiveModel { static func log(_ message: String) {} }
-// jibao 11-27 原生私信直发：本脚本只测网页输入框那条路，原生发送关着
+// 只测网页输入框路径，原生发送关闭
 enum DYNative { static let imSendEnabled = false }
 enum DYIMError: Error { case noLogin, badResponse(String), rejected(String), unconfirmed }
 @MainActor final class DYNativeIM { static let shared = DYNativeIM(); func sendText(_ t: String, to: String) async throws -> String { throw DYIMError.noLogin } }

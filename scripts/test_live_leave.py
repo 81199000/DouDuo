@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""直播离开 / 进直播出声 / 直播后视频起播（11-24）：静态检查关键改动没被回退。"""
+"""直播离开 / 进直播出声 / 直播后视频起播：静态检查关键改动没被回退。"""
 import re, sys, pathlib
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 page = (R / "DYFeedLivePage.swift").read_text()
@@ -18,7 +18,6 @@ check("player.stop()" not in stop and "DYFeedLiveWarm.dispose(w)" not in stop, "
 check(re.search(r"static let stopDelay: TimeInterval = 0\.[4-9]", warm) is not None, "停播延后 0.4–0.9 秒")
 check("audio?.volume = 0" in warm[warm.index("static func stopLater"):], "延后停播前先把音量拉到 0")
 check("cancelPendingStop(player)" in page, "0.6 秒内划回来会取消停播")
-# 11-24 真机：关音轨再选回＝音频解码器重建，静音 1.2 秒还丢 14 块，比不动更糟 → 不许再这么做
 check("currentAudioTrackIndex = -1" not in page, "接过预热直播时不再关开音轨")
 check("func fillHead(" in stream, "有只下开头的 fillHead")
 job = cache[cache.index("let heads = DYStream.enabled"):]

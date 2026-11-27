@@ -296,7 +296,7 @@ struct DYExpandableTitle: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             Text(caption)
-                .lineLimit(expanded ? nil : 1)   // 老板定：默认只显示一行，点「展开」看全部
+                .lineLimit(expanded ? nil : 1)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { visibleHeight = $0 }
@@ -307,7 +307,6 @@ struct DYExpandableTitle: View {
                         .hidden().accessibilityHidden(true)
                 }
                 .accessibilityIdentifier("douyin.description")
-                // 老板 11-23：「展开」两个字太小常点不到——点标题正文本身也展开/收起（话题链接仍是搜索，SwiftUI 链接优先吃掉点按）
                 .contentShape(Rectangle())
                 .onTapGesture { if canExpand { withAnimation(.snappy) { expanded.toggle() } } }
             ZStack {

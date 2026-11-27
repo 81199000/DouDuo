@@ -4,7 +4,6 @@ import Foundation
 import SwiftUI
 
 enum DYNativeChat {
-    /// DouDuo N（原生接口开）时，私信列表与聊天记录改走原生
     static var enabled: Bool {
         if let v = UserDefaults.standard.object(forKey: "douduo_native_chat_ui_v1") as? Bool { return v }
         return DYNative.enabled

@@ -1,6 +1,6 @@
-// 原生扫码登录（DouDuo N）：整套移植自 Amor5207/douyin-tv（GPL-3.0）的 passport 登录流程。
+// 原生扫码登录：整套移植自 Amor5207/douyin-tv（GPL-3.0）的 passport 登录流程。
 // 关键点：登录前 App 自己生成一把 EC 密钥（P-256）交给抖音绑定（bd-ticket-guard-client-data），
-// 登录成功后写接口就用这把密钥签名（sign-type 0）。这条路 2026-11-27 真机/小号实测：发评论成功、不掉登录。
+// 登录成功后写接口就用这把密钥签名（sign-type 0）。
 // 与「网页登录 + HMAC(ecdh_key) sign-type 1」并存：原生登录过的会话走这里，网页登录的会话仍走 DYTicketGuard。
 import CryptoKit
 import Foundation
@@ -180,7 +180,7 @@ enum DYPassport {
         if step == .qr {
             p += [("next", host), ("need_short_url", "true"), ("need_logo", "false"), ("is_new_login", "1")]
         }
-        // 手机号 send_code / sms_login（2026-11-28 真机抓官方登录页）：query 不带 ts、末尾带 is_new_login=1
+        // 手机号 send_code / sms_login：query 不带 ts、末尾带 is_new_login=1
         if step == .sms, let i = p.firstIndex(where: { $0.0 == "ts" }) { p.remove(at: i) }
         if step != .strategy {
             p += [("is_from_iesaccountsaas", "1"), ("p_ui", "2.4.15"), ("p_ca", "4.0.26"),

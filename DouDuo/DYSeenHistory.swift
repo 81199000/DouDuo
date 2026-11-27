@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-/// 「看过的视频不再推荐」（老板 2026-11-22：只要划到就算看过）。
+/// 「看过的视频不再推荐」。
 /// 推荐页每划到一条就记下 id；之后推荐接口再推这条（重启、刷新、换一批之后也一样）直接跳过。
 /// 按登录账号分开存（账号 uid；没登录记在 guest），每个账号保留最近 5000 条，先进先出。
 /// 只作用于推荐页：关注页是「关注的人最新作品」按时间排的，过滤掉会变空。
@@ -106,7 +106,7 @@ final class DYSeenHistory: @unchecked Sendable {
     }
 }
 
-/// 粉丝许愿（11-23）：「打开抖音时默认静音播放」——开着时每次启动把全局静音打开，并且不打断别的 App 正在放的音乐。
+/// 粉丝许愿：「打开抖音时默认静音播放」——开着时每次启动把全局静音打开，并且不打断别的 App 正在放的音乐。
 enum DYLaunchMute {
     static let key = "douyin_launch_muted_v1"
     static let mutedKey = "douyin_muted_v1"

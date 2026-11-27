@@ -1,5 +1,4 @@
-"""音频会话守卫：前台不让第三方（VLC）关会话，我们自己要关的地方必须包 allowDeactivate。
-2026-11-20 真机：直播卡后面那条视频开播后被停住，根因是 VLC 停播时 setActive:NO。"""
+"""音频会话守卫：前台不让第三方（VLC）关会话，我们自己要关的地方必须包 allowDeactivate。"""
 import pathlib, re, sys
 root = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 bad = []

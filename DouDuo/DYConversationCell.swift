@@ -5,7 +5,7 @@ struct DYConversationCell: View {
     var compact = false
     /// 对方和我的关注关系（关注了你 / 相互关注），名字后面一枚小标签
     var relation: DYRelationLabel? = nil
-    /// 对方关注了我：头像右下角一颗红底爱心（老板 2026-11-20）
+    /// 对方关注了我：头像右下角一颗红底爱心
     var followsMe = false
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme

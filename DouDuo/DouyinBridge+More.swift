@@ -276,7 +276,7 @@ extension DouyinBridge {
         // 楼中楼：reply_id = 一级评论 cid（网页 comment/list/reply 实测）；一级评论为 '0'
         // 通知里的 comment 没有 reply_id，楼中楼的一级评论在 n.comment.parent_id（一级评论时为 0 或等于自身）
         const pick = v => (v !== undefined && v !== null && String(v) !== '0' && String(v) !== '') ? String(v) : null;
-        // ⚠️ 一级评论的通知里 parent_id 是「作品 id」不是评论 id（11-19 真机：parent=aweme_id），
+        // ⚠️ 一级评论的通知里 parent_id 是「作品 id」不是评论 id
         // 当成楼中楼去回复 → reply_id=作品 id，抖音回 code=0 但这条挂到不存在的楼下，谁都看不到
         const awemeOf = (c.aweme_id && String(c.aweme_id)) || (n.comment.aweme && n.comment.aweme.aweme_id && String(n.comment.aweme.aweme_id)) || (n.aweme_id ? String(n.aweme_id) : '');
         const notAweme = v => { const x = pick(v); return x && x !== awemeOf ? x : null; };
@@ -361,7 +361,7 @@ extension DouyinBridge {
     const r = await req('GET', '/aweme/v1/web/aweme/detail/?' + q({ aweme_id: id }));
     const d = parse(r.t) || {};
     const a = d.aweme_detail || d.aweme || null;
-    // 诊断（2026-11-21 图文/文字帖）：记下作品类型和图文相关字段，看网页接口怎么给「文字」帖
+    // 诊断：记下作品类型和图文相关字段，看网页接口怎么给「文字」帖
     let shape = null;
     if (a) {
       const v = a.video || {};

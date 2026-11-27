@@ -33,7 +33,7 @@ final class DYRelationsPagingTests: XCTestCase {
             if now > last { grew = true; last = now }
         }
         attach(app, "relations-\(kind)-after")
-        XCTAssertTrue(grew, "\(kind) 列表只停留在首屏 \(firstPage) 条，翻页没生效（这是老板报的「只能显示 20 个人」）")
+        XCTAssertTrue(grew, "\(kind) 列表只停留在首屏 \(firstPage) 条，翻页没生效")
         XCTAssertGreaterThan(last, firstPage, "\(kind) 翻页后条数没有增加")
     }
 

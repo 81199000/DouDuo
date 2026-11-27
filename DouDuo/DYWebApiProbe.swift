@@ -5,7 +5,7 @@ import UIKit
 /// 网页端还没接的接口，在登录态的签名页里实测一遍（方案见 docs/web-api-gap-plan.md）。
 /// 用法：启动环境变量 DOUDUO_WEBAPI=1，结果在 Documents/ddlog.txt 里找 DDGAP 开头的行。
 /// 只发读请求；只记 HTTP 状态、status_code、字段名和列表长度，不记正文、cookie、凭证。
-/// 参数名都照网页 bundle 里的调用写（2026-11-17 抓取）。
+/// 参数名都照网页 bundle 里的调用写。
 @MainActor
 enum DYWebApiProbe {
     private struct Case {

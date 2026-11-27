@@ -47,7 +47,7 @@ enum DYTicketGuard {
     }
 
     /// 某个接口 path 的票据签名头。
-    /// 与网页安全 SDK 完全一致（2026-11-27 模拟器抓包逐字节验证）：
+    /// 与网页安全 SDK 完全一致
     ///   req_sign = base64(HMAC-SHA256(ecdh_key, "ticket=<t>&path=<p>&timestamp=<秒>"))，sign-type = 1，client-data 带 t_trust:1。
     /// ⚠️ 不能用 ECDSA 私钥签（sign-type 0）：服务端回 1002 并作废登录（真机实测两次）。
     static func headers(_ b: DYTicketBundle, path: String, now: Int = Int(Date().timeIntervalSince1970)) -> [String: String]? {

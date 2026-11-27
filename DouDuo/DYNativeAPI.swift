@@ -4,26 +4,25 @@ import Foundation
 import WebKit
 
 enum DYNative {
-    /// 总开关：DouDuo N（对比包）默认开，正式包默认关。设置里可切。
+    /// 设置里可切。
     static let enabledKey = "douduo_native_api_v1"
     static var enabled: Bool {
         if let v = UserDefaults.standard.object(forKey: enabledKey) as? Bool { return v }
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
-    /// 只走原生（不回落网页）：DouDuo N 默认开，方便看清哪个接口原生不通。正式包默认关。
+    /// 正式包默认关。
     static let nativeOnlyKey = "douduo_native_only_v1"
     static var nativeOnly: Bool {
         if let v = UserDefaults.standard.object(forKey: nativeOnlyKey) as? Bool { return v }
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
-    /// 原生写接口（发评论/点赞/收藏/关注…）：默认关。2026-11-27 真机实测原生发评论回 code 8 后登录被作废；
+    /// 原生写接口（发评论/点赞/收藏/关注…）：默认关。
     /// 在模拟器里对齐网页真实请求前不许开。
     static let writeKey = "douduo_native_write_v1"
-    /// DouDuo N 默认开（签名已改为网页同款 HMAC，模拟器小号实测发评论/赞/收藏不掉登录）；正式包默认关
+    /// 正式包默认关
     /// ⚠️ 只有原生登录（App 自己生成并绑定密钥）的会话才许原生写：
-    /// 网页登录的会话借网页票据做 HMAC 签名，2026-11-28 真机手机号登录后原生发评论 403，随即整个登录被作废
     /// （之后 profile/self 一律 code 8「用户未登录」）。网页登录的会话写操作一律回到网页里由安全 SDK 自己签。
     @MainActor static var writeEnabled: Bool {
         guard DYNativeTicket.hasTicket else { return false }
@@ -31,7 +30,7 @@ enum DYNative {
         return (Bundle.main.bundleIdentifier ?? "").hasSuffix(".native")
     }
 
-    /// 原生发私信：默认关。2026-11-27 真机两次实测——imapi 直发一出去服务端立刻作废登录
+    /// 原生发私信：默认关。
     /// （之后所有请求回 "unexepcted session length"）。缺网页 IM 的身份令牌/票据签名，查清前不许开。
     static let imSendKey = "douduo_native_im_send_v1"
     static var imSendEnabled: Bool { UserDefaults.standard.bool(forKey: imSendKey) }
@@ -39,7 +38,6 @@ enum DYNative {
     /// 发请求与签名必须是同一个 UA，而且要和「登录时」的网页一致（Mac Safari）：
     /// 登录票据绑定在那个设备环境上，换成别的 UA 发写请求，服务端会当成异常设备作废登录。
     ///
-    /// 两套设备环境不能混用（2026-11-27 真机：原生扫码登录 = Windows Chrome 环境，评论却按 Mac Safari 发，
     /// 第一条成功，第二条要求身份验证，第三条 403，随后抖音作废登录）：
     /// - 网页登录的会话 → Mac Safari（跟后台网页一致）
     /// - 原生扫码登录的会话 → Windows Chrome 131（跟登录时 passport 的环境指纹一致）

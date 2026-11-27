@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""长视频快进卡（老板 11-26）：拖进度的预览小图跟播放器共用同一资源，手指扫过的位置都去联网下，
+"""长视频快进卡：拖进度的预览小图跟播放器共用同一资源，手指扫过的位置都去联网下
 抢掉松手后真正要播那段的带宽。改为预览只读本地已有（ddstream://…?peek=1），松手取消未出的预览。"""
 import pathlib, subprocess, sys, tempfile
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"

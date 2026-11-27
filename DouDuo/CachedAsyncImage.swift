@@ -38,7 +38,7 @@ final class ImageCache {
     /// ⚠️ 绝不能用 String.hashValue：Swift 的 hashValue 每次进程启动都换随机种子，
     /// 同一个 URL 每次启动算出的文件名都不一样 → 磁盘缓存跨启动 100% 不命中
     /// （上面注释吹的「跨启动不丢」是假的，实际每次启动把所有图重下一遍），
-    /// 而且旧文件永远没人认领也没人删，缓存目录只增不减（2026-08-09 修复）。
+    /// 而且旧文件永远没人认领也没人删，缓存目录只增不减。
     /// SHA256 是确定性的，同一 URL 永远同一文件名。
     private func diskPath(_ url: URL) -> URL {
         let name = SHA256.hash(data: Data(url.absoluteString.utf8))
@@ -77,7 +77,7 @@ final class ImageCache {
 
     /// 同步命中（首帧用）：只查内存，绝不碰磁盘。
     /// ⚠️ 磁盘同步读会卡主线程（Data(contentsOf:) 在主线程跑），
-    /// 图片多时滑动画廊每页都同步读盘 → 卡顿（2026-08-07 老板反馈）。
+    /// 图片多时滑动画廊每页都同步读盘 → 卡顿。
     /// 磁盘命中改走 diskCachedAsync（后台线程读，不回主线程）。
     func memoryCached(_ url: URL) -> UIImage? {
         cache.object(forKey: url as NSURL)
@@ -158,7 +158,7 @@ final class ImageCache {
     }
 }
 
-// MARK: - 缩略图（2026-10-14 角色/收藏面板卡顿优化）
+// MARK: - 缩略图
 // 库卡片只有 ~180pt 宽，封面原图中位 830×830、最大 1536px：原来整张解码进内存，
 // 且 UIImage(data:) 是懒解码——第一次上屏时在主线程解码，面板一打开十几张同时解 = 卡一下。
 // 缩略图在后台用 ImageIO 直接按目标尺寸解码，内存缓存单独一份（key = url#thumbN），原图缓存不受影响。
@@ -260,7 +260,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     var body: some View {
         // 关键：body 同步读缓存作为兜底。即使 @State 因 view 重建被重置，
         // 只要缓存里有图，当前帧也能立刻显示，不会闪回 placeholder。
-        // 只读内存缓存——磁盘读改异步（diskCachedAsync），主线程不碰盘（2026-08-07 卡顿修复）。
+        // 只读内存缓存——磁盘读改异步（diskCachedAsync），主线程不碰盘。
         let display = uiImage ?? url.flatMap { Self.memoryHit($0, thumbnailMaxPixel) }
         return Group {
             if let phaseContent {
@@ -284,7 +284,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             //  - 命中当前 url 的缓存（内存/磁盘）→ 显示（幂等，无网络）
             //  - 未命中（= cacheBust 换了 URL 或首次）→ 后台下载，完成后替换
             // ⚠️ 别用 "uiImage != nil 就 return" —— 重新生成打 cacheBust 后 URL 变了，
-            //    但旧图还在 uiImage 里，直接 return 会让新图永远不加载（2026-08-06 bug）。
+            //    但旧图还在 uiImage 里，直接 return 会让新图永远不加载。
             //    下载期间保留旧图（不闪 placeholder），新图就绪后无缝替换。
             if let hit = Self.memoryHit(url, thumbnailMaxPixel) {
                 uiImage = hit
@@ -327,7 +327,7 @@ struct ProgressiveImage<Content: View, Placeholder: View>: View {
         self.fullURL = fullURL
         self.content = content
         self.placeholder = placeholder
-        // 同步命中：优先大图，否则小图（只内存，磁盘走 .task 异步，2026-08-07 卡顿修复）
+        // 同步命中：优先大图，否则小图
         let initial = fullURL.flatMap { ImageCache.shared.memoryCached($0) }
             ?? thumbURL.flatMap { ImageCache.shared.memoryCached($0) }
         _uiImage = State(initialValue: initial)
@@ -337,7 +337,6 @@ struct ProgressiveImage<Content: View, Placeholder: View>: View {
     var body: some View {
         // 与 CachedAsyncImage 保持一致：body 里同步兜底读一次内存缓存。
         // @State 会随 view 重建（滚动回收 cell）被重置，只要缓存里有图，
-        // 当前帧就该立刻显示，不该闪回 placeholder（2026-08-09 补齐，
         // 之前只有 CachedAsyncImage 有这个兜底，ProgressiveImage 漏了）。
         let display = uiImage
             ?? fullURL.flatMap { ImageCache.shared.memoryCached($0) }

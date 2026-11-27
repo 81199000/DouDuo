@@ -3,7 +3,7 @@ import CoreImage
 import UIKit
 import VLCKitSPM
 
-/// 推荐流里刷到的直播：环境光（老板 11-26「跟视频一样」）。
+/// 推荐流里刷到的直播：环境光。
 /// 视频那套（DYAmbientFrameView）是从 AVPlayerItem 取帧；直播走 VLC，没有 AVPlayerItem，
 /// 改用 VLC 自带截图：每 0.5 秒截一张 48px 宽的小图，同样模糊 + 降饱和 + 压暗铺满背景。
 /// - 截图在后台串行队列做（libvlc 截图会等下一帧，不能放主线程）；上一张没好不截下一张
@@ -104,7 +104,7 @@ final class DYLiveAmbientView: UIView {
             let t0 = CACurrentMediaTime()
             // ⚠️ VLCKit 截不到图（视频输出刚拆掉 / 换流 / 停播中）时不是返回失败，而是直接 @throw NSException
             // （"Can't take a video snapshot: No video output"）。Swift 接不住，后台队列上未捕获 = 整个 App 闪退，
-            // 刷到直播每 0.5 秒截一次，碰上就崩、重开再崩（工单 B48：1.7.4 会自己重启）。交给 ObjC 接住，当一次没出图。
+            // 刷到直播每 0.5 秒截一次，碰上就崩、重开再崩。交给 ObjC 接住，当一次没出图。
             var reason: NSString?
             let ok = DDTryObjC({ mp.saveVideoSnapshot(at: path, withWidth: Self.width, andHeight: 0) }, &reason)
             let cg = ok ? Self.blurred(UIImage(contentsOfFile: path)) : nil

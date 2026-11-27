@@ -1,7 +1,6 @@
 import UIKit
 import WebKit
 
-/// 抖音「身份验证」（二次验证）——老板 2026-11-19：第一条评论发出，后面几条全失败。
 ///
 /// 真机 12:35–12:36：评论接口回 200 空 body，响应头带 `x-tt-verify-passport-decision`（日志 vp=1）。
 /// 官方网页版（client-entry 请求层）遇到这个头：动态加载身份验证 SDK（webpack 块 5747 / 模块 581289），

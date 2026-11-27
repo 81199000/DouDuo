@@ -1,6 +1,5 @@
 # DouDuo · iPhone Duo 标准化改版方案（v1.3.0）
 
-> 统筹：豹子（baozi）｜执行：红暴（redbao，简单件）、白虎（baihu，难件）｜验证：鲨鱼（shayu）
 > 依据：skill `iphone-duo-design`（Apple HIG「Designing for iPhone Duo」+ Tech Talk 111461/111463/111466）
 > 工具链：Xcode 27.2 / iOS 27.2 SDK（已具备 `ArrangementView`、`GeometryProxy.reservedRegions`、`glassEffect`）。
 > 部署目标保持 iOS 17：所有 27.1 / 26 新 API 一律 `if #available` 包起来，老系统走旧布局，不许因此抬高 deploymentTarget。
@@ -58,23 +57,16 @@
 | 关注列表 | `GET /aweme/v1/web/user/following/list/?user_id=&sec_user_id=&offset=0&min_time=0&max_time=0&count=20&source_type=2&gps_access=0&address_book_access=0&is_top=1` → `followings[]` | 200/0 |
 | 粉丝列表 | `GET /aweme/v1/web/user/follower/list/?`（同上去掉 is_top）→ `followers[]` | 200/0 |
 | 收藏的合集 | `GET /aweme/v1/web/mix/listcollection/?cursor=0&count=12` → `mix_infos[]` | 200/0（本期可选） |
-| 评论点赞 | `POST /aweme/v1/web/comment/digg`，参数 `cid, aweme_id, digg_type(1赞/0取消), channel_id=0, app_name=aweme, item_type=0` | 网页 JS 原样抓取，**未用老板账号真发** |
+| 评论点赞 | `POST /aweme/v1/web/comment/digg`，参数 `cid, aweme_id, digg_type(1赞/0取消), channel_id=0, app_name=aweme, item_type=0` ||
 | 关注作者 | `POST /aweme/v1/web/commit/follow/user/`，body `user_id=<uid>&type=1|0`，回包 `follow_status` | 同上，未真发 |
 | 私信 | 走 `imapi.douyin.com` protobuf + websocket | **不做原生**，消息页放「私信（网页版）」入口 |
 | 访客 | `/view/user/visited/list/` 返回 code 5 | 不做 |
 
 接口都在签名页里发（`requestJS` 的 `req()`+`base`），安全 SDK 自动补签名；登录判定看 `status_code`（8 = 未登录），不读 cookie。
 
-## 3. 分工与文件归属（避免互相覆盖）
+## 3. 提交规则
 
-| 人 | 分支 / worktree | 负责 | 只许改的文件区域 |
-|---|---|---|---|
-| 红暴 | `redbao` / `~/Projects/douduo-redbao` | 2.1 状态栏、2.3 侧栏+更多菜单+液态按钮（含顶栏图标）、「我的」页加「作品」页签 + 关注/粉丝列表 | `project.yml`（仅删 UIStatusBarHidden）、`Theme.swift`、`DouyinFeedView.swift` 中 `DYVideoPage.actions/action/save`、`topIcon`、`menuButton` label、两处 statusBarHidden；`DouyinExtras.swift` 中 `DYListKind`、`myList`、`DYMineScreen`；新文件 `DouyinRelations.swift` |
-| 白虎 | `baihu` / `~/Projects/douduo-baihu` | 2.2 三姿态、消息中心、作者页原生作品+关注按钮、评论点赞 | `DouyinFeedView.swift` 根 `body` 布局（GeometryReader/wide/HStack/sheet）、`DYCommentPanel`、`:650` 方向判断；`DouyinExtras.swift` 中 `DYAuthorScreen`；新文件 `DouyinDuoLayout.swift`、`DouyinMessages.swift`、`DouyinBridge+More.swift`；顶栏右侧加一个「消息」入口（只加一行调用） |
-| 鲨鱼 | `shayu` / `~/Projects/douduo-shayu` | 合并 redbao+baihu 到 shayu 分支 → 编译 → duo-lint → UI 测试 → 模拟器内外屏截图 → 接口数据核对 → 出验收报告 | 只读，不改业务代码（只许改 UI 测试） |
-| 豹子 | `main` | 方案、冲突解决、最终合并、版本号（1.3.0 / build 23）、CHANGELOG、真机装包 | — |
-
-规则：只本地 commit，**不 push**（DouDuo 是公开仓，半成品分支不上 GitHub）；不改版本号；不 `git add -A`；commit message 中文 `feat/fix(模块): …`；**禁止用老板账号发评论/弹幕/点赞评论/关注做测试**（写接口只接线，日志打 `DDSEND`）；编译验证用 `-derivedDataPath build/dd` 别和别人抢 DerivedData。
+规则：只本地 commit，**不 push**（DouDuo 是公开仓，半成品分支不上 GitHub）；不改版本号；不 `git add -A`；commit message 中文 `feat/fix(模块): …`；编译验证用 `-derivedDataPath build/dd` 别和别人抢 DerivedData。
 
 ## 4. 验收标准
 1. 推荐/关注/直播/列表播放页均显示系统时间、信号、电量；顶栏不压状态栏。

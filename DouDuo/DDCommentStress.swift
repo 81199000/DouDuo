@@ -11,7 +11,7 @@ enum DDCommentStress {
         try? await Task.sleep(nanoseconds: 8_000_000_000)
         func log(_ s: String) { DYLiveModel.log("DDSTRESS " + s) }
         guard let me = try? await b.selfProfile(), !me.secUid.isEmpty else { log("abort no-login"); return }
-        // 目标作品：DOUDUO_COMMENT_STRESS_AWEME 指定（老板自己的作品），否则取当前账号自己的第一个作品
+        // 目标作品：DOUDUO_COMMENT_STRESS_AWEME 指定，否则取当前账号自己的第一个作品
         var target = ProcessInfo.processInfo.environment["DOUDUO_COMMENT_STRESS_AWEME"] ?? ""
         if target.isEmpty {
             guard let posts = try? await b.userPosts(me.secUid, cursor: "0"), let a = posts.items.first else {

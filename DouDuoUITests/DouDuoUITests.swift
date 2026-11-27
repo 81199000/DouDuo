@@ -123,7 +123,6 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "mine-light-grid-bounds")
     }
 
-    /// 工单 B13：大屏（iPad / Duo 内屏展开）播放时打开侧栏评论，视频不能从头播。
     /// 看日志 DDB13 setup 行的 handoff 值和之后的播放进度。
     func testCommentPaneKeepsPosition() throws {
         let app = XCUIApplication()
@@ -148,7 +147,7 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "b13-comments-closed")
     }
 
-    /// 「我的」下拉刷新：作品格子往下拉，出现系统转圈并重新拉第一页（老板 2026-11-21）
+    /// 「我的」下拉刷新：作品格子往下拉，出现系统转圈并重新拉第一页
     func testMinePullToRefresh() throws {
         let app = XCUIApplication()
         // 带假的已登录资料：不带的话未登录会自动弹登录页，拖动落在登录页上而不是列表
@@ -540,7 +539,7 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(row.waitForExistence(timeout: 15))
             let started = Date()
             row.tap()
-            // 打开中其他会话行不能整列变禁用（禁用 = 整列变暗，老板看到的「整个列表闪一下」）
+            // 打开中其他会话行不能整列变禁用
             let others = app.buttons.matching(identifier: "douyin.conversation.row").allElementsBoundByIndex
             print("MESSAGE_ROWS enabled=\(others.filter(\.isEnabled).count)/\(others.count)")
             // 第二次起进同一条会话：网页切会话期间先铺上次的聊天快照（像微信，点进去立刻有内容，不转圈）
@@ -900,7 +899,6 @@ final class DouDuoUITests: XCTestCase {
     func testLiveHashtagClassicFlow() throws { verifyLiveHashtags(mode: "duoClassic") }
     func testLiveHashtagDefaultFlow() throws { verifyLiveHashtags(mode: "classic") }
 
-    /// 老板 11-16 报：搜索出来的视频点作者头像不跳，要返回关掉播放器才看到作者页。
     /// 作者页必须直接弹在播放器上面，播放器不能先被关掉。
     func testSearchResultAvatarOpensAuthorDirectly() throws {
         continueAfterFailure = false
@@ -934,7 +932,7 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "search-result-author-direct")
     }
 
-    /// 老板 11-16 报：视频快进过就不会自动连播。播到一半拖进度条快进，播完必须照样切下一条。
+    /// 播到一半拖进度条快进，播完必须照样切下一条。
     func testAutoNextAfterSeek() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -1046,7 +1044,6 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "playback-" + mode + "-next-paused")
     }
 
-    /// 工单 B13：大屏（宽 ≥ 700，侧栏评论）播放中开关评论，进度不能倒退 / 归零
     func testSideCommentsKeepProgress() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -1654,7 +1651,7 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertEqual(app.textFields["douyin.search.field"].firstMatch.value as? String, "iPhone")
     }
 
-    /// 「我的」点「去登录」要打开抖音网页登录页（老板 2026-11-17 报「点击登录无反应」）
+    /// 「我的」点「去登录」要打开抖音网页登录页
     func testMineLoginOpensWeb() throws {
         continueAfterFailure = false
         let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["duoClassic", "rail", "classic"]
@@ -1680,7 +1677,7 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
-    /// 简洁 / 极简：信息页 → 右侧栏「我的」→「去登录」要打开网页（老板真机走的这条路）
+    /// 简洁 / 极简：信息页 → 右侧栏「我的」→「去登录」要打开网页
     func testMessagesMineLoginOpensWeb() throws {
         continueAfterFailure = false
         let mode = ProcessInfo.processInfo.environment["DD_ONLY_MODE"] ?? "rail"
@@ -1702,7 +1699,7 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(opened, "信息页里的「我的」点「去登录」没打开登录页")
     }
 
-    /// 点「我的」直接进「我的」；未登录先弹 App 内登录页：验证码 / 扫码两种，扫码页有二维码（老板 2026-11-17）
+    /// 点「我的」直接进「我的」；未登录先弹 App 内登录页：验证码 / 扫码两种，扫码页有二维码
     func testMineOpensAppLoginWhenLoggedOut() throws {
         continueAfterFailure = false
         let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["rail", "classic", "duoClassic"]
@@ -1776,14 +1773,14 @@ final class DouDuoUITests: XCTestCase {
         let code = app.textFields["douyin.login.code"].firstMatch
         code.tap(); code.typeText("123456")
         app.buttons["douyin.login.submit"].tap()
-        // 网页提交后跳走（真机登录成功时就是这样）：App 必须核对登录态并给出结果，不能没反应（老板 11-17）
+        // 网页提交后跳走（真机登录成功时就是这样）：App 必须核对登录态并给出结果，不能没反应
         let msg = app.staticTexts["douyin.login.message"].firstMatch
         XCTAssertTrue(msg.waitForExistence(timeout: 15), "网页跳走后 App 没有任何反馈")
         attach(app, "app-login-dry-submit")
         XCTAssertTrue(msg.label.contains("没登录上"), "提示不对：\(msg.label)")
     }
 
-    /// 刚启动签名页还没好就点「我的」，也要弹登录（老板真机：启动后马上进「我的」不弹）
+    /// 刚启动签名页还没好就点「我的」，也要弹登录
     func testMineAutoLoginRightAfterLaunch() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -1798,7 +1795,7 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(app.buttons["douyin.login.sendcode"].firstMatch.waitForExistence(timeout: 15), "启动后马上进「我的」没弹登录")
     }
 
-    /// cookie 里有过期的旧 sessionid、账号其实未登录：登录页要停住让人输入，不能一打开就自己关掉（老板 11-17）
+    /// cookie 里有过期的旧 sessionid、账号其实未登录：登录页要停住让人输入，不能一打开就自己关掉
     func testLoginSheetStaysOpenWithStaleSession() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -2034,7 +2031,7 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
-    /// 「我的」等列表播放页：外屏横屏视频上移 / 内屏右侧 / 半折常驻，四种界面与推荐页同一套（老板 2026-11-17）
+    /// 「我的」等列表播放页：外屏横屏视频上移 / 内屏右侧 / 半折常驻，四种界面与推荐页同一套
     func testListPlayerCommentsMatchFeedInEveryMode() throws {
         continueAfterFailure = false
         let modes = ProcessInfo.processInfo.environment["DD_ONLY_MODE"].map { [$0] } ?? ["rail", "classic", "minimal", "duoClassic"]
@@ -2074,7 +2071,7 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
-    /// 内屏横拿：评论从右侧滑出，右划关闭——四种界面同一套（评论统一，老板 2026-11-17）
+    /// 内屏横拿：评论从右侧滑出，右划关闭——四种界面同一套
     func testInnerSideCommentsSwipeRightToCloseInEveryMode() throws {
         continueAfterFailure = false
         for mode in ["duoClassic", "rail", "classic", "minimal"] {
@@ -2101,7 +2098,7 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
-    /// 半折评论常驻：四种界面同一套（评论统一，老板 2026-11-17）
+    /// 半折评论常驻：四种界面同一套
     func testPhysicalHalfFoldCommentsHideSidebar() throws {
         continueAfterFailure = false
         for mode in ["duoClassic", "rail", "classic", "minimal"] {
@@ -2633,7 +2630,6 @@ final class DouDuoUITests: XCTestCase {
         XCTAssertTrue(lastAction.isHittable)
         XCTAssertLessThan(window.frame.maxY - lastAction.frame.maxY, 65,
                           "The bottom sheet should end shortly below the last button")
-        // 2026-11-14：全局偏好只在设置页，长按面板不再重复
         XCTAssertFalse(app.switches["横屏时只放横屏内容"].exists)
         XCTAssertFalse(app.switches["显示弹幕"].exists)
         attach(app, "options-current-video-only")
@@ -3704,7 +3700,7 @@ final class DouDuoUITests: XCTestCase {
         }
     }
 
-    /// 外屏横屏视频打开评论：四种界面都把视频移到评论上方（经典几何，老板 2026-11-17）
+    /// 外屏横屏视频打开评论：四种界面都把视频移到评论上方
     func testOuterLandscapeVideoLiftsAboveCommentsInEveryMode() throws {
         continueAfterFailure = false
         for mode in ["rail", "classic", "minimal", "duoClassic"] {
@@ -3813,7 +3809,7 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(list.waitForExistence(timeout: 10))
             if !closeOnly {
                 XCTAssertTrue(related.waitForExistence(timeout: 20))
-                // 评论面板四种界面统一经典样式（老板 2026-11-17）：相关搜索在评论列表上方
+                // 评论面板四种界面统一经典样式：相关搜索在评论列表上方
                 XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方")
                 if app.windows.firstMatch.frame.width < 700 {
                     XCTAssertEqual(list.frame.maxX, app.windows.firstMatch.frame.maxX, accuracy: 2, mode + " 评论右边不应留空")
@@ -3898,7 +3894,7 @@ final class DouDuoUITests: XCTestCase {
             XCTAssertTrue(related.waitForExistence(timeout: 20))
             let input = app.descendants(matching: .any).matching(identifier: "douyin.comment.input").firstMatch
             XCTAssertTrue(input.isHittable)
-            // 评论四种界面统一用经典样式（老板 2026-11-17 定，docs/ui-modes.md）：
+            // 评论四种界面统一用经典样式
             // 相关搜索在评论列表上方；窄屏贴边占满宽，不在右边留空；打开评论时视频上的按钮收起。
             XCTAssertLessThanOrEqual(related.frame.maxY, list.frame.minY + 2, mode + " 相关搜索应在评论上方（经典样式）")
             if app.windows.firstMatch.frame.width < 700 {
@@ -5922,7 +5918,6 @@ extension DouDuoUITests {
 }
 
 extension DouDuoUITests {
-    /// 老板 11-17 报：冷启动（没有缓存）时卡在第一条，看了一半再上滑也翻不过去，要滑好几次。
     /// 第一条播了一阵之后，第一下上滑就必须翻到下一条。只读，不点赞不发帖。
     func testColdStartFirstSwipeAdvances() throws {
         continueAfterFailure = false
@@ -5943,7 +5938,7 @@ extension DouDuoUITests {
             XCTAssertTrue(current.waitForExistence(timeout: 30))
             XCTAssertTrue(waitUntil(timeout: 60) { current.label != "-" }, "二次启动推荐流没有加载出来")
         }
-        // 先看一阵再滑（老板报的是「看到一半还滑不动」）。刚启动头几秒推荐还没拉回来时滑不动是既定规则，不在这里测。
+        // 先看一阵再滑。刚启动头几秒推荐还没拉回来时滑不动是既定规则，不在这里测。
         let wait = Double(ProcessInfo.processInfo.environment["DD_WATCH_SECONDS"] ?? "") ?? 12
         Thread.sleep(forTimeInterval: wait)
         let window = app.windows.firstMatch
@@ -5960,7 +5955,6 @@ extension DouDuoUITests {
 }
 
 extension DouDuoUITests {
-    /// 老板 11-18 报：私信聊天里键盘弹出来把输入框和最后几条消息盖住，而且键盘收不回去。
     /// 离线聊天样张，不联网、不发送。
     func testChatKeyboardLiftsComposerAndCanDismiss() throws {
         continueAfterFailure = false
@@ -6005,7 +5999,6 @@ extension DouDuoUITests {
         print("CHATKB editor=\(editor.frame) keyboardTop=\(top) rest=\(restY) window=\(app.windows.firstMatch.frame)")
         print("CHATKB up web=\(frameOf(webProbe)) header=\(frameOf(headerProbe))")
         if railRest != nil {
-            // 老板定：键盘弹起来时右侧栏不许动（位置一模一样），返回键照常能点
             let back = app.buttons["douyin.messages.back"].firstMatch
             print("CHATKB back frame=\(back.exists ? "\(back.frame)" : "none") hittable=\(back.isHittable)")
             XCTAssertTrue(back.isHittable, "返回键要一直能点")
@@ -6042,7 +6035,7 @@ extension DouDuoUITests {
 }
 
 final class DYForwardSearchKeyboardTests: XCTestCase {
-    /// 老板 11-23：分享「更多」里的搜索框调不出键盘。合成联系人，不发任何消息。
+    /// 合成联系人，不发任何消息。
     func testMoreSearchShowsKeyboard() throws {
         for mode in ["classic", "duoClassic"] {
             let app = XCUIApplication()

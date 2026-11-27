@@ -1,4 +1,3 @@
-// 短视频播放页：从 無為 影库播放器（PlayerPage）精简而来，只留抖音需要的部分——
 // AVPlayer 直连、横滑快进（预览缩略图 + 目标时间 HUD）、双击、长按 2 倍速、单击暂停、竖滑切视频、底部可拖进度条。
 import SwiftUI
 import AVFoundation
@@ -24,7 +23,7 @@ final class DDPlayback {
     private var starters: [UUID: () -> Void] = [:]
     private var sessionRetainers: [UUID: () -> Bool] = [:]
     /// 播放器所在的遮罩层级：0 = 首页；从信息页/我的里点开的全屏播放器 = 打开时的遮罩数。
-    /// 遮罩数没超过这一层，说明它就是最上面那层，可以播（老板 11-18：信息里点开的视频要等十几秒才动）。
+    /// 遮罩数没超过这一层，说明它就是最上面那层，可以播。
     private var coverLevels: [UUID: Int] = [:]
     private var lock = NSLock()
     /// App 当前是否在前台：注册晚于切后台时（视频刚起播），要立刻停，不能接着响
@@ -219,7 +218,6 @@ enum DYMedia {
 }
 
 extension PlayerPage {
-    /// 与 無為 同名同参的构造入口，DouyinFeedView 原样复用
     static func external(id: String, title: String, url: URL, durationSec: Double, isActive: Bool,
                          topInset: CGFloat, bottomInset: CGFloat, resumePosition: Double?,
                          compactChrome: Bool,
@@ -532,7 +530,7 @@ struct PlayerPage: View {
     @Environment(\.dyCommentVideoFrame) private var commentVideoFrame
     @Environment(\.accessibilityReduceMotion) private var commentReduceMotion
 
-    /// 评论打开且外屏要把横屏视频移到评论上方：四种界面都一样（评论统一用经典几何，老板 2026-11-17 定）
+    /// 评论打开且外屏要把横屏视频移到评论上方：四种界面都一样
     private var showsVideoAboveComments: Bool { isActive && commentVideoFrame != nil }
 
     private var fillsVideoPlane: Bool { fillWidth && !showsVideoAboveComments }
@@ -546,7 +544,7 @@ struct PlayerPage: View {
     private var canControlPlayback: Bool {
         playbackIsActive && (!DDPlayback.shared.offlineLibraryPresented || offlineContext?.inLibrary == true)
     }
-    /// 同一条视频的播放器被重建时接手的实时进度（工单 B13：内屏开评论从头播）
+    /// 同一条视频的播放器被重建时接手的实时进度
     @State private var handoffPosition: Double?
     private var initialResumePosition: Double? {
         guard let seconds = handoffPosition ?? resumePosition, seconds.isFinite,
@@ -568,7 +566,7 @@ struct PlayerPage: View {
     private func restorePosition(_ seconds: Double, using player: AVPlayer) {
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
         guard offlineContext?.inLibrary == true else {
-            // 重建接手（开关侧栏评论）要精确落点：默认容差会吸到前一个关键帧，关评论时往回跳好几秒（工单 B13）
+            // 重建接手（开关侧栏评论）要精确落点：默认容差会吸到前一个关键帧，关评论时往回跳好几秒
             if handoffPosition != nil { player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) }
             else { player.seek(to: time) }
             return
@@ -593,11 +591,10 @@ struct PlayerPage: View {
     var body: some View {
         let offlinePosition = isActive && firstFrame && playingLocalFile ? offlineContext?.position : nil
         ZStack {
-            // 视频画面区出画前与留边一律纯黑，不随亮色外观变白（老板定：出帧前纯黑）
+            // 视频画面区出画前与留边一律纯黑，不随亮色外观变白
             Color.black
             // All playback entry points share this backdrop. Mask the player's
             // opaque letterbox below so uncovered areas reveal the blurred cover.
-            // 老板要求「不要封面、不要预览图」：没出画面就保持纯黑（原来这里铺模糊封面，起播时会闪一下）
             // 实时环境光：盖在模糊封面上，出第一帧后淡入；VLC 兜底时没有 AVPlayerItem，保留封面
             if ambientLevel > 0, vlc == nil, let player {
                 DYAmbientBackdrop(player: player, active: isActive, dim: Double(ambientLevel) / 100, fillWidth: fillWidth)
@@ -698,7 +695,7 @@ struct PlayerPage: View {
         }
         .overlay(alignment: .topLeading) {
             playbackBadge(offlinePosition: offlinePosition)
-                // Duo 上 66pt 正好在顶栏下面；其他手机的顶栏让到了安全区下沿（#16），角标跟着往下让
+                // Duo 上 66pt 正好在顶栏下面；其他手机的顶栏让到了安全区下沿，角标跟着往下让
                 .padding(.leading, 14)
                 .padding(.top, DYDuoMetrics.isDuoHardware ? 66 * ui : DYDuoMetrics.windowSafeTop + 56)
                 .animation(commentReduceMotion ? nil : .easeOut(duration: 0.18), value: offlineBadgeVisible)
@@ -731,7 +728,7 @@ struct PlayerPage: View {
             life.generation += 1
             let generation = life.generation
             playbackIsActive = isActive
-            // 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论）：接上旧实例的实时进度，不从头播（工单 B13）
+            // 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论）：接上旧实例的实时进度，不从头播
             if isActive, player == nil, vlc == nil, offlineContext?.inLibrary != true {
                 handoffPosition = DDNowPlaying.handoff(id, to: playbackID)
                 DYLiveModel.log("DDB13 setup \(id.suffix(6)) handoff=\(handoffPosition.map { String(format: "%.2f", $0) } ?? "nil") resume=\(resumePosition.map { String(format: "%.2f", $0) } ?? "nil") now=\(DDNowPlaying.id.suffix(6))@\(String(format: "%.2f", DDNowPlaying.time))")
@@ -851,7 +848,7 @@ struct PlayerPage: View {
         }
         .onChange(of: rateBoost) { _, on in boost?.boosting = on }
         // ⚠️ 不能在 current 的 setter 里直接推：setter 常在播放器时间回调里调，那个闭包捕获的是旧的 PlayerPage 副本，
-        // 里面的 isActive 是挂回调时的值（预热时 = false）→ 极简模式进度环永远不动（老板 11-21）。
+        // 里面的 isActive 是挂回调时的值（预热时 = false）→ 极简模式进度环永远不动。
         // onReceive 每次都用当前这一版视图跑，且不会让 PlayerPage 整页重算。
         .onReceive(clock.$current) { _ in pushRailProgress(); syncTouchpad() }
         .onChange(of: touchpadEngaged) { _, _ in syncTouchpad() }
@@ -875,7 +872,7 @@ struct PlayerPage: View {
             if !rateBoost { lockedBoost = false }
             let target = rateBoost ? 2 : newRate
             // 起播一律原生声音；播放中改速度交给 seamAudio.setRate：原生时就地交接给独立引擎（不断声），
-            // 已在引擎上就直接改引擎速率。不再按 1x / 非 1x 换声音通路（换通路要重绑，会断一下声，#52-1）。
+            // 已在引擎上就直接改引擎速率。不再按 1x / 非 1x 换声音通路。
             if let v = vlc { v.setRate(Float(target)); dmClock.sync(v.current, playing: v.isPlaying, rate: target) }
             else if isPlaying {
                 seamAudio.setRate(Float(target))
@@ -928,7 +925,7 @@ struct PlayerPage: View {
                 // 先开播：已缓冲够就跳过 AVPlayer 的「评估缓冲速率」等待，直接按目标速率走（抖音同款「零首帧」的关键）
                 DDAudioSessionGate.ensureActive()
                 isPlaying = true
-                // 有 1 秒就直接播（原 1.5 秒）：不够时系统会先「攒够再播」，1–1.5 秒那几条白等 1 秒多（11-24 真机日志）
+                // 有 1 秒就直接播（原 1.5 秒）：不够时系统会先「攒够再播」，1–1.5 秒那几条白等 1 秒多
                 if DYPlaybackTelemetry.bufferedAhead(p) >= 1.0, p.currentItem?.status == .readyToPlay,
                    seamAudio.mode == .fallbackAVPlayer || seamAudio.mode == .noAudio {
                     p.isMuted = seamAudio.mode == .noAudio || outMuted
@@ -995,7 +992,7 @@ struct PlayerPage: View {
                 VideoSurface(player: hd, fillWidth: fillsVideoPlane).ignoresSafeArea(edges: playbackSafeAreaEdges)
                     .opacity(hdVisible ? 1 : 0.001).allowsHitTesting(false)
             }
-            // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面（老板嫌「开头跳一下预览图」）
+            // 不再铺首帧图/封面临时顶替：出帧前就是纯黑，出帧即真画面
         }
     }
 
@@ -1014,7 +1011,6 @@ struct PlayerPage: View {
         }
         guard let p = player else { return }
         DYBoostProbe.begin(pressing ? "on" : "off", mode: "\(seamAudio.mode)", player: p)
-        // PR #42（@ImSingee）：1x 原生声音下第一次变速，就地把声音交给独立引擎（AVPlayer 带音轨改速率会冲刷音频队列、画面停 50~110ms）。
         // 之后这一条留在引擎上，松手/再按都是 0ms 变速。所以这里统一走 seamAudio.setRate，不再直接调 AVPlayer.softRate。
         if pressing { rateBoost = true; seamAudio.setRate(2) }
         else if rateBoost {
@@ -1369,7 +1365,6 @@ struct PlayerPage: View {
         ffWatch.attach(p.currentItem)   // 还停着时挂取帧输出，起播时不动管线
         if let seconds = initialResumePosition { restorePosition(seconds, using: p) }
         if isActive {
-            // 工单 B13 排查：重建后接到哪、0.6 秒后实际播到哪（模拟器接得上，真机仍从头播，差在哪一步）
             let src = (p.currentItem?.asset as? AVURLAsset)?.url.scheme ?? "-"
             DYLiveModel.log("DDB13 restore \(id.suffix(6)) to=\(initialResumePosition.map { String(format: "%.2f", $0) } ?? "nil") src=\(src) status=\(p.currentItem?.status.rawValue ?? -1)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak p] in
@@ -1585,7 +1580,7 @@ struct PlayerPage: View {
 
     /// 常驻防「怕卡」：当前播放的条只要进入「为减少卡顿而等待」且缓冲够 2 秒，就立刻接着播。
     /// 边下边播只比播放位置多下几十秒，系统看到数据「刚好够用」就判定网慢、反复停下来攒（缓冲 40 秒也停），
-    /// 以前只在起播 / 跳转 / 回前台那几个时刻踢一下，踢完又停（真机 11-26：回前台停 4 秒，踢起来 0.6 秒又停 5 秒）。
+    /// 以前只在起播 / 跳转 / 回前台那几个时刻踢一下，踢完又停。
     private func watchStalls(_ p: AVPlayer) {
         stallGuard?.invalidate()
         stallReasonGuard?.invalidate()
@@ -1593,7 +1588,6 @@ struct PlayerPage: View {
             guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(pl) else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { unstall(pl) }
         }
-        // 真机 11-27（长视频 254450）：起播时原因是「评估缓冲速率」，几秒后变成「怕卡」且已缓冲 4 秒，
         // 但 timeControlStatus 一直是 waiting 没变 → 上面那个监听不触发，没人踢，干等到看门狗重建
         stallReasonGuard = p.observe(\.reasonForWaitingToPlay, options: [.new]) { pl, _ in
             guard pl.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(pl) else { return }
@@ -1686,7 +1680,6 @@ struct PlayerPage: View {
             // 数据已经够了却停着（rate=0 / 暂停态）：是播放被打断了不是数据问题，
             // 重新激活音频会话再播一下就行，不必重建播放器
             // 数据其实够了，只是播放器「怕卡 / 评估速率」不肯走：原地踢，不重建。
-            // 真机 11-27（10 小时回放 254450，moov 47MB）：这时已缓冲 4 秒，看门狗却去重建 → 重新解析 47MB 头，
             // 重建后只剩 1.1 秒缓冲，干等 20 秒划走。重建只留给真坏了 / 一点数据都没来的情况。
             if it?.status == .readyToPlay, p.timeControlStatus == .waitingToPlayAtSpecifiedRate, Self.isOverCautious(p),
                DYPlaybackTelemetry.bufferedAhead(p) >= 1, kicks < 2 {
@@ -1785,7 +1778,6 @@ struct PlayerPage: View {
     }
 
     /// 播放器拆了重建（卡死 / 出错 / 换 VLC）时从哪接着播：离线库按记下的进度；在线视频按刚才播到的位置
-    /// （11-24 老板：长视频退出 App 回来播不了，等一会儿又从头播——以前在线视频重建一律从 0 开始）
     private var rebuildResumePosition: Double? {
         if offlineContext?.inLibrary == true { return pendingOfflineSeek ?? (firstFrame ? current : initialResumePosition) }
         let here = firstFrame ? current : (initialResumePosition ?? 0)
@@ -1808,7 +1800,7 @@ struct PlayerPage: View {
             return
         }
         // 能接着用边下边播就接着用（同一份本地缓存，落点附近已经下好的直接读）；
-        // 以前一律换在线直连 altURL：缓存全丢、重新起连接，回前台先黑一段（真机 11-26）
+        // 以前一律换在线直连 altURL：缓存全丢、重新起连接，回前台先黑一段
         let streamAsset = offlineContext?.localOnly == true ? nil : DYStream.reuseAsset(id: id)
         let item = makeItem(asset: streamAsset ?? DYMedia.asset(source))
         let p = AVPlayer(playerItem: item)
@@ -1834,12 +1826,12 @@ struct PlayerPage: View {
         isPlaying = true
         // 用 playbackIsActive（@State，实时）不用 isActive：rebuild 常从回前台的注册闭包里跑，
         // 那里的 isActive 是 onAppear 当时的旧值——预加载页 onAppear 时是 false，
-        // 重建后就按「不是当前页」把声音静掉，接着 p.rate 又把画面拉起来 → 有画面没声音（真机 11-26 vMuted=true want=false）
+        // 重建后就按「不是当前页」把声音静掉，接着 p.rate 又把画面拉起来 → 有画面没声音
         bindSeamlessAudio(to: p, initialPos: localResume, active: playbackIsActive, playing: true)
         p.rate = playRate
         watchdog(p)
         watchFirstFrame(p)
-        // 重建后的诊断：3 秒时画面/声音什么状态（真机 11-26：重建后出了画面没声音）
+        // 重建后的诊断：3 秒时画面/声音什么状态
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             guard player === p else { return }
             DYLiveModel.log("DDREBUILD \(id.suffix(6)) +3s t=\(String(format: "%.1f", p.currentTime().seconds)) ready=\(firstFrame) \(seamAudio.audioDiag())")
@@ -1849,7 +1841,7 @@ struct PlayerPage: View {
     /// 失焦/切后台：短视频立即暂停。音频会话由 DDPlayback 统一释放，
     /// 避免把仍在出声的直播会话一起拆掉。「后台播放」打开时这里直接返回。
     /// 应该在播（当前条、没被用户暂停、能控制播放）却 rate=0：多半是别的播放器把音频会话关了，重新激活接着播
-    /// 起播「过度谨慎」兜底（老板 11-24：划到后停在第一帧 2–4 秒）。
+    /// 起播「过度谨慎」兜底。
     /// 真机 DDWAIT：已缓冲 9–29 秒、st=readyToPlay、rate=1，可 AVPlayer 还在 waitingToMinimizeStalls——
     /// 它按边下边播「一段一段到」估出来的下载速度判断会卡，于是一直不肯起播，最后 2.8–3.8 秒才放行。
     /// 缓冲已经够 2 秒以上就别等它的估算：直接 playImmediately（真不够时它会正常进缓冲，不会出错）。
@@ -1938,7 +1930,6 @@ struct PlayerPage: View {
             let failed = p.currentItem?.status == .failed
             let stuck = p.timeControlStatus != .playing && now.isFinite && now <= from + 0.3
             // 缓冲够、只是「怕卡」在等：踢一下就走，不用重建（重建要丢掉边下边播缓存、换在线直连从头加载，
-            // 真机 11-26：buf=66s 照样重建 → 先黑一段、出了画面还没声音）
             if !failed, stuck, p.currentItem?.status == .readyToPlay, DYPlaybackTelemetry.bufferedAhead(p) >= 2 {
                 DDAudioSessionGate.forceActive()
                 p.isMuted = outMuted
@@ -2015,7 +2006,7 @@ struct PlayerPage: View {
             let sessionOK = (try? AVAudioSession.sharedInstance().setActive(true)) != nil
             if sessionOK { DDAudioSessionGate.invalidate(); DDAudioEngineHub.shared.clearInterruptionAfterForeground() }
             // 变速时交给独立引擎的这一条：切后台时引擎被整个停掉、排着的声音丢了，回来再接引擎会错位甚至不出声
-            // （原生音轨又关着 → 有画面没声音，老板 11-26）。反正是从暂停恢复，直接把声音交回原生音轨，下次变速再交接。
+            // 。反正是从暂停恢复，直接把声音交回原生音轨，下次变速再交接。
             seamAudio.returnToNativeAudio(reason: "foreground")
             isPlaying = true
             seamAudio.play(rate: playRate, muted: outMuted)
@@ -2148,7 +2139,6 @@ struct PlayerPage: View {
                 }
                 // 报给下载的播放位置用 currentTime()，不用回调参数 t：跳转还没落地时 t 仍是跳之前的旧位置（还在往前走），
                 // 会把 seekTo 刚设好的落点覆盖回去 → 下载以为还在开头、不给落点的数据，播放器等数据，两边互等卡死
-                // （模拟器复现 11-27：拖到 128s，t 一直报 4→9s，落点请求挂起 10 秒直到再拖一下）
                 if playbackIsActive {
                     DDNowPlaying.note(id, pos, owner: playbackID)
                     let now = p.currentTime().seconds
@@ -2344,7 +2334,6 @@ struct PlayerPage: View {
                 seamAudio.didFinishVideoSeek(landedSeconds: landed.isFinite ? landed : pos,
                                              resumePlaying: isPlaying, rate: playRate, muted: outMuted)
                 // 拖完：缓冲已经够了播放器还在「怕卡」干等（边下边播按播放进度放数据，它以为网慢）→ 直接起播。
-                // 真机 11-26：拖到 93.5s，目标附近已缓存 11 秒，画面冻了 14 秒不动，直到再拖一下才走。
                 if isPlaying, vlc == nil { kickIfOverCautious(player, delays: [0.3, 0.8, 1.5, 2.5, 4], why: " seek", seekGen: gen) }
                 watchSeekStuck(player, target: pos, gen: gen)
             }
@@ -2468,7 +2457,7 @@ final class PlayerUIView: UIView {
         super.init(frame: .zero)
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
-        backgroundColor = .black   // 视频留边纯黑（老板定）
+        backgroundColor = .black   // 视频留边纯黑
         let nc = NotificationCenter.default
         bgObs = [
             nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in

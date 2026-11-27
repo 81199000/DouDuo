@@ -3,7 +3,6 @@ import Combine
 import SwiftUI
 
 /// 图文（图集）作品的背景音乐。
-/// 之前图集只显示图片、完全不播音乐，老板反馈「播放图文的时候没有背景音乐」。
 /// 这里用 AVQueuePlayer + AVPlayerLooper 循环播放作品的音乐地址，跟随「当前页 / 静音」开关。
 @MainActor
 final class DYGalleryAudio: ObservableObject {
@@ -67,7 +66,7 @@ struct DYImageGallery: View {
     let isActive: Bool
     let muted: Bool
     var hidesIndex = false
-    /// 双击点赞（视频页是播放器手势处理的；图集原来没接 → 老板说「图文无法双击点赞」）
+    /// 双击点赞
     var onDoubleTap: (() -> Void)? = nil
 
     @StateObject private var audio = DYGalleryAudio()

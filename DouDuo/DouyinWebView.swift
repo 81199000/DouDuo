@@ -419,7 +419,7 @@ private let ddVideoTapHookJS = #"""
         const id = pick(payload?.itemId) || pick(payload?.item_id)
           || pick(payload?.aweme_info?.aweme_id) || pick(payload?.aweme_info?.item_id);
         if (typeof id !== 'string' || !/^\d{15,25}$/.test(id)) return null;
-        // 11055：私聊里的同款视频卡（11-18 真机：keys=aweme_info,cover_url,item_id…），以前没认出来就交给网页自己播
+        // 11055：私聊里的同款视频卡，以前没认出来就交给网页自己播
         if ([11054, 11055].includes(Number(payload?.aweType)) && (payload?.item_id || payload?.aweme_info)) return id;
         // 800 = 分享视频；图文（笔记）分享的 aweType 是 0，payload 里带 image_count / is_slides /
         // awemeType=68。只认「确实是作品卡」的 payload，避免把普通消息里的 id 当作品 id。
@@ -567,7 +567,7 @@ struct DouyinWebContainer: UIViewRepresentable {
             WKUserScript(source: ddVideoTapHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // 信息里的图片本地缓存：ddimg:// 由 App 供图，键只认路径（签名变化也能命中）
         if isChat {
-            // 实证：后台私信页开页 2 秒内自己发了 passport/web/logout（11-18 19:04:39），App 原生没有调用登出
+            // 实证：后台私信页开页 2 秒内自己发了 passport/web/logout，App 原生没有调用登出
             DYLogoutBlock.install(in: cfg)
             cfg.setURLSchemeHandler(DYChatImageSchemeHandler(), forURLScheme: DYChatImageCache.scheme)
             cfg.userContentController.addUserScript(

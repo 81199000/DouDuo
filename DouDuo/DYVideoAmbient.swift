@@ -80,7 +80,7 @@ final class DYAmbientFrameView: UIView {
     }
 
     /// 取帧输出必须在视频「还停着」的时候挂上：给正在起播的 AVPlayerItem 加 VideoOutput 会让播放管线重建，
-    /// 画面和声音一起顿一下、往回弹一帧（老板实测「有的视频会、有的不会」= 挂上去的时机碰上了起播）。
+    /// 画面和声音一起顿一下、往回弹一帧。
     /// 页面一挂载（预热播放器已经接上）就挂，切过去起播时不再动管线。
     private func attachEarly() {
         guard window != nil, let item = player.currentItem, attachedItem !== item else { return }

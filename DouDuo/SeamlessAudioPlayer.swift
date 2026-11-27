@@ -60,7 +60,7 @@ final class DDAudioEngineHub {
     let playerNode = AVAudioPlayerNode()
     let timePitch = AVAudioUnitTimePitch()
     /// 倍速补响度：TimePitch 加速时叠接窗口会削掉一部分能量，2x 实测比原声小 0.5–2.8 dB（11 条真实抖音音轨，
-    /// 戴耳机很明显，老板 11-26）。这里按倍速补回增益；PeakLimiter 兜住峰值，补完也不会削顶爆音。
+    /// 这里按倍速补回增益；PeakLimiter 兜住峰值，补完也不会削顶爆音。
     let loudness = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
         componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
@@ -194,7 +194,7 @@ final class DDAudioEngineHub {
 
     /// 回到前台、音频会话重新激活成功 = 别的 App 的打断已经结束。
     /// 打断结束的通知不一定送达（别的 App 没带 notifyOthers 就关会话时系统不发 ended），
-    /// 门闩会一直停在 active：引擎永远不出声，原生音轨又关着 → 画面走、没声音（老板 11-26）。
+    /// 门闩会一直停在 active：引擎永远不出声，原生音轨又关着 → 画面走、没声音。
     func clearInterruptionAfterForeground() {
         guard interruption.phase != .clear else { return }
         DYLiveModel.log("DDAUDIOINT gate-cleared-on-foreground was=\(interruption.phase)")
@@ -582,7 +582,7 @@ final class DDSeamlessController {
     /// 起播一律用 AVPlayer 原生声音（任何倍速），只在播放中**改速度**（长按加速、锁定、菜单改速）时
     /// 才就地交给独立引擎（engineHandoff），保住变速不断声不爆音。
     /// 原生声音才有系统空间音频；以前设置里的速度不是 1x 时整条视频都走引擎，倍速看视频就没了空间音频
-    /// （议题 #52-1，老板 2026-11-18 定方案 B）。引擎在主线程解码，平时不用它也省了滑动开销。
+    /// 。引擎在主线程解码，平时不用它也省了滑动开销。
     /// 交接后这条视频剩下的时间留在引擎上（切回原生会再断一下声），滑到下一条重新用原生声音。
     nonisolated static var engineWanted: Bool { false }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""设置页 11-24 重排：两个省流量开关、每项 ⓘ 说明、高级设置归拢、横竖屏筛选默认关。"""
+""""""
 import re, sys, pathlib
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 s = (R / "DYSettingsScreen.swift").read_text()

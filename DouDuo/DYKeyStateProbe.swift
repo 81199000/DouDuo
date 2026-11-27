@@ -1,7 +1,7 @@
 import Foundation
 import WebKit
 
-/// 登录凭证密钥一致性探针（老板 2026-11-19：评论 403 后被强制退出）。
+/// 登录凭证密钥一致性探针。
 ///
 /// 抖音网页登录后，安全 SDK 在本页 localStorage 存一套密钥（security-sdk/s_sdk_crypt_sdk 等），
 /// 写接口（评论）用它签名；服务器认定签名与登录不匹配时 403 并作废登录。

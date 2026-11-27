@@ -20,7 +20,7 @@ struct DYHashtagFilter {
 
     func contains(_ tag: String) -> Bool { keys.contains(DYHashtag.key(tag)) }
 
-    /// 关键词屏蔽（粉丝建议 11-23）：标题或话题标签里**含有**这个词就屏蔽——屏蔽「美食」时 #美食推荐、「美食探店」也屏蔽。
+    /// 关键词屏蔽：标题或话题标签里**含有**这个词就屏蔽——屏蔽「美食」时 #美食推荐、「美食探店」也屏蔽。
     /// 以前只比完整标签，#美食 屏蔽不掉 #美食推荐。忽略大小写和全角/半角。存储沿用原来的键，旧的屏蔽标签自动当关键词用。
     func blocks(description: String, knownNames: [String] = []) -> Bool {
         guard !keys.isEmpty else { return false }

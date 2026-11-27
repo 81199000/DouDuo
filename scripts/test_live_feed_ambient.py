@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""推荐流里刷到的直播加环境光（老板 11-26「跟视频一样」）：直播走 VLC 没有 AVPlayerItem，
+"""推荐流里刷到的直播加环境光：直播走 VLC 没有 AVPlayerItem
 用 VLC 截小图 → 同一套模糊铺背景；画面层缩到画面大小居中，留边不盖住环境光。"""
 import pathlib, sys
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
@@ -21,7 +21,7 @@ check("dim: Double(ambientLevel) / 100" in body, "压暗程度跟设置走")
 check("controller: warm?.controller ?? player" in body[i_amb:i_amb + 200], "预热那一路也有环境光")
 
 check("saveVideoSnapshot(at: path, withWidth: Self.width, andHeight: 0)" in a, "用 VLC 截小图取色")
-check("DDTryObjC({ mp.saveVideoSnapshot(" in a, "截图包在 ObjC @try 里：VLCKit 截不到图会抛 NSException，不接住整个 App 闪退（工单 B48）")
+check("DDTryObjC({ mp.saveVideoSnapshot(" in a, "截图包在 ObjC @try 里：VLCKit 截不到图会抛 NSException，不接住整个 App 闪退")
 check("mp.hasVideoOut" in a, "没有视频输出时不截")
 tk = a[a.index("    private func tick() {"):a.index("    static func blurred(")]
 check("Self.queue.async" in tk and tk.index("Self.queue.async") < tk.index("saveVideoSnapshot"), "截图不在主线程")

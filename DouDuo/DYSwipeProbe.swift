@@ -72,7 +72,6 @@ import UIKit
 
 /// 静音保活（照搬 GuoDuo 540ee7b）：前台时常开一路全零音频，音频输出链路一直不断。
 /// GuoDuo 真机（蓝牙耳机）：每换一集 AVPlayer 都要重新拉起蓝牙音频链路，画面等声音约 1.4 秒；挂上后切集 1.7 → 0.5 秒。
-/// DouDuo 老板 11-24：蓝牙下进直播一两秒才有声、离开直播声音拖尾——直播（VLC）和视频（AVPlayer）来回切，
 /// 每次都是另一个播放器重新起音频输出，链路空下来就要重连。全零样本不出声；进后台一律停。
 @MainActor enum DDAudioKeepAlive {
     private static var engine: AVAudioEngine?
@@ -148,7 +147,6 @@ enum DDAudioSessionGate {
         DDAudioKeepAlive.start()
     }
     /// 不看缓存标记，直接再激活一次（便宜）。VLC 停播时会把音频会话关掉（setActive:NO），
-    /// 这里的 active 标记却还是 true → 下一条短视频 play 后一直停着（2026-11-20 真机：
     /// 推荐里刷过直播卡后，下一条缓冲满了 rate=0 不动）。
     static func forceActive() {
         active = false
@@ -157,7 +155,7 @@ enum DDAudioSessionGate {
     /// 被打断 / 切后台后要重新激活
     static func invalidate() { active = false }
     /// VLC（推荐里的直播卡）停播是异步的，停完会把整个 App 的音频会话关掉——这时下一条短视频
-    /// 往往已经开播了，会被系统直接暂停（2026-11-20 真机：直播后面那条「开始播放然后卡住」）。
+    /// 往往已经开播了，会被系统直接暂停。
     /// 直播卡停播后连续几次发这个通知，当前短视频若被意外停住就重新激活会话接着播。
     static let lostNotification = Notification.Name("DDAudioSessionMaybeLost")
     private static var lostAt = Date.distantPast
@@ -192,7 +190,7 @@ enum DDAudioSessionGate {
 
 import MachO
 /// 内存/播放器数打点：判断「同时暖 N 个播放器」到底吃多少内存
-/// 进程线程数守卫（2026-11-23 卡死：刷 8 小时线程堆到 623 个，后台线程池 512 个上限被占满，主线程等不到回应被系统杀掉）。
+/// 进程线程数守卫。
 /// 每 30 秒采一次；过了 300 就算「有压力」——收掉预热、不再预热直播，只留正在看的这条。
 enum DYThreadGuard {
     static let limit = 300
