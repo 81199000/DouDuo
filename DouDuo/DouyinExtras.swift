@@ -226,36 +226,11 @@ extension DouyinBridge {
         return (p.items, p.cursor, p.hasMore)
     }
 
-    /// 搜索：网页接口只给第一页（翻第二页安全 SDK 直接压住不返回，换参数 / search_id 都一样）
-    /// → 只拉一次、hasMore 置 false，免得底部一直转圈或报「拦截」
+    /// 视频分类搜索：在隐藏网页里跑（DYNativeJS.isPageOnly），按 cursor 翻页
     func search(_ kw: String, offset: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
-        guard offset == "0" else { return ([], offset, false) }
-        let r = try await list(Self.searchJS, ["kw": kw, "cursor": "0"])
-        if r.items.isEmpty, DYNative.readWasCaptcha("/aweme/v1/web/search/") {
-            var c = URLComponents(string: "https://www.douyin.com/search/")!
-            c.path = "/search/" + kw
-            c.queryItems = [URLQueryItem(name: "type", value: "video")]
-            var got: (items: [DYAweme], cursor: String)?
-            let tryOnce: @MainActor () async -> Bool = { [self] in
-                guard let r2 = try? await self.list(Self.searchJS, ["kw": kw, "cursor": "0"]) else { return false }
-                if r2.items.isEmpty { return false }
-                got = (r2.items, r2.cursor); return true
-            }
-            guard let u = c.url, await DYCaptchaPage.run(url: u, reason: "这次搜索", probe: tryOnce) else {
-                throw DYError.bad("抖音要求安全验证后才能搜索，请重新搜索并完成验证")
-            }
-            // 用户手动点「完成」时：抖音放行有几秒延迟，隔一会儿再试几次
-            if got == nil {
-                for wait in [0, 2, 3, 4] {
-                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
-                    if await tryOnce() { break }
-                }
-            }
-            DYLiveModel.log("DDSEARCH after-captcha n=\(got?.items.count ?? 0)")
-            guard let got else { throw DYError.bad("抖音仍要求安全验证，稍后再搜") }
-            return (got.items, got.cursor, false)
-        }
-        return (r.items, r.cursor, false)
+        let r = try await list(Self.searchJS, ["kw": kw, "cursor": offset])
+        DYLiveModel.log("DDSEARCH tab=video off=\(offset) n=\(r.items.count) more=\(r.hasMore)")
+        return r
     }
 
     /// 抖音热搜
@@ -841,7 +816,7 @@ extension DouyinBridge {
 
     static let searchJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/search/item/?' + q({ search_channel: 'aweme_video_web', keyword: kw, search_source: 'normal_search',
-      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '24', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
+      query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: cursor, count: '16', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }));
     const d = parse(r.t) || {};
     const arr = (d.data || []).map(x => x && (x.aweme_info || x.aweme)).filter(Boolean);
     return pack(r, d, arr, d.cursor, d.has_more);
@@ -1786,6 +1761,7 @@ struct DYSearchScreen: View {
 
     @FocusState private var focused: Bool
     @Environment(\.dySearchInSplitPane) private var edgeIsSplitDivider
+    @Environment(\.dyOpenLiveRoom) private var openLiveRoom
     @AppStorage("douyin_search_history_v1") private var historyRaw = ""
 
     private var history: [String] { historyRaw.split(separator: "\n").map(String.init) }
@@ -1830,11 +1806,8 @@ struct DYSearchScreen: View {
             .padding(.horizontal, 20)
             .padding(.top, 18).padding(.bottom, 12)
 
-            if let model = state.model {
-                DYSearchResults(model: model, onOpen: { i in
-                    state.presentsVideo = true
-                    open = DYListTarget(title: "搜索：\(state.keyword)", items: model.items, start: i, model: model)
-                })
+            if state.model != nil {
+                resultsSection
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -1918,6 +1891,117 @@ struct DYSearchScreen: View {
         }
     }
 
+    private var tabs: [DYSearchTab] {
+        openLiveRoom == nil ? [.general, .video, .user] : DYSearchTab.allCases
+    }
+
+    /// 搜索结果：分类标签 + 细分词 + 当前分类的列表（官方同款排布）
+    @ViewBuilder private var resultsSection: some View {
+        VStack(spacing: 8) {
+            DYSearchTabBar(tabs: tabs, selected: Binding(get: { state.tab }, set: { selectTab($0) }))
+            if !state.guide.isEmpty, state.tab == .general || state.tab == .video {
+                DYSearchChips(words: state.guide, selected: Binding(get: { state.chip }, set: { selectChip($0) }))
+            }
+        }
+        .padding(.bottom, 4)
+        switch state.tab {
+        case .general:
+            if let model = state.model {
+                generalResults(model)
+            }
+        case .video:
+            if let model = state.videos {
+                DYSearchResults(model: model, onOpen: { i in openVideo(model, i) })
+            }
+        case .user:
+            if let pager = state.users {
+                DYSearchUserList(pager: pager) { u in onAuthor(DYSearchAuthorStub.aweme(u.author)) }
+            }
+        case .live:
+            if let pager = state.lives {
+                DYSearchLiveList(pager: pager) { room in
+                    DYLiveModel.log("DDSEARCH open-live room=\(room.id)")
+                    openLiveRoom?(room)
+                }
+            }
+        }
+    }
+
+    /// 综合：用户卡在最上（同官方「用户」块），下面是视频网格
+    @ViewBuilder private func generalResults(_ model: DYPagedModel) -> some View {
+        VStack(spacing: 0) {
+            if let u = state.generalUsers.first {
+                Button { onAuthor(DYSearchAuthorStub.aweme(u.author)) } label: { DYSearchUserRow(user: u) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("douyin.search.general.user")
+                Divider().opacity(0.3)
+            }
+            DYSearchResults(model: model, onOpen: { i in openVideo(model, i) })
+        }
+    }
+
+    private func openVideo(_ model: DYPagedModel, _ i: Int) {
+        state.presentsVideo = true
+        open = DYListTarget(title: "搜索：\(state.keyword)", items: model.items, start: i, model: model)
+    }
+
+    /// 实际发给抖音的关键词：选了细分词就是「关键词 细分词」（官方点胶囊也是这样拼）
+    private var effectiveKeyword: String {
+        guard let c = state.chip, !c.isEmpty else { return state.lastRun }
+        return state.lastRun + " " + c
+    }
+
+    private func selectTab(_ t: DYSearchTab) {
+        guard t != state.tab else { return }
+        state.tab = t
+        DYLiveModel.log("DDSEARCH tab-select \(t)")
+        prepareTab(t)
+    }
+
+    private func selectChip(_ c: String?) {
+        guard c != state.chip else { return }
+        state.chip = c
+        // 细分词只影响综合 / 视频；用户、直播按原关键词
+        state.videos = nil
+        startGeneral(keepGuide: true)
+        if state.tab == .video { prepareTab(.video) }
+    }
+
+    private func prepareTab(_ t: DYSearchTab) {
+        let w = effectiveKeyword
+        switch t {
+        case .general: if state.model == nil { startGeneral(keepGuide: true) }
+        case .video:
+            if state.videos == nil {
+                let m = DYPagedModel { [bridge] cur in try await bridge.search(w, offset: cur) }
+                state.videos = m
+                Task { await m.loadMore() }
+            }
+        case .user:
+            if state.users == nil { let kw = state.lastRun; state.users = DYSearchPager { [bridge] cur in try await bridge.searchUsers(kw, offset: cur) } }
+        case .live:
+            if state.lives == nil { let kw = state.lastRun; state.lives = DYSearchPager { [bridge] cur in try await bridge.searchLive(kw, offset: cur) } }
+        }
+    }
+
+    /// 综合第一页顺带拿用户卡和细分词；之后翻页只追加视频
+    private func startGeneral(keepGuide: Bool) {
+        let w = effectiveKeyword
+        let session = state
+        let m = DYPagedModel { [bridge] cur in
+            let r = try await bridge.searchGeneral(w, offset: cur)
+            if cur == "0" {
+                await MainActor.run {
+                    session.generalUsers = r.users
+                    if !keepGuide || session.guide.isEmpty { session.guide = r.guide }
+                }
+            }
+            return (r.items, r.cursor, r.hasMore)
+        }
+        state.model = m
+        Task { await m.loadMore() }
+    }
+
     private var hotSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("抖音热搜").font(.subheadline.weight(.semibold)).foregroundStyle(Color.primary)
@@ -1955,9 +2039,24 @@ struct DYSearchScreen: View {
         var h = history.filter { $0 != w }
         h.insert(w, at: 0)
         historyRaw = h.prefix(15).joined(separator: "\n")
-        let m = DYPagedModel { [bridge] cur in try await bridge.search(w, offset: cur) }
-        state.model = m
-        Task { await m.loadMore() }
+        state.chip = nil
+        state.guide = []
+        state.generalUsers = []
+        state.videos = nil
+        state.users = nil
+        state.lives = nil
+        if !tabs.contains(state.tab) { state.tab = .general }
+        startGeneral(keepGuide: false)
+        if state.tab != .general { prepareTab(state.tab) }
+    }
+}
+
+/// 用户结果转成作者页入口（作者页只用 author 字段）
+enum DYSearchAuthorStub {
+    static func aweme(_ a: DYAweme.Author) -> DYAweme {
+        DYAweme(id: "search-user-" + (a.secUid ?? a.name), desc: "", width: 0, height: 0, duration: 0, play: nil,
+                cover: nil, images: [], author: a, stats: .init(digg: 0, comment: 0, collect: 0, share: 0),
+                music: "", userDigged: nil, isCollect: nil)
     }
 }
 

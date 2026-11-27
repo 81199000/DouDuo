@@ -17,6 +17,10 @@ final class DYNativeJS {
     /// 判定一段脚本能否在原生引擎里跑：不发 POST、不碰页面（DOM / 安全 SDK / window 全局）。
     /// 返回用于日志的短名（脚本首行的接口路径），nil = 必须走网页。结果按脚本文本缓存。
     private static var nameCache: [Int: String?] = [:]
+    static func isPageOnly(_ body: String) -> Bool {
+        ["/web/search/item/", "/web/general/search/", "/web/discover/search/", "/web/live/search/"].contains(where: { body.contains($0) })
+    }
+
     static func name(of body: String) -> String? {
         let key = body.hashValue
         if let c = nameCache[key] { return c }
@@ -27,6 +31,12 @@ final class DYNativeJS {
         let banned = ["document.", "window.", "location.", "localStorage", "navigator.",
                       "MutationObserver", "XMLHttpRequest", "fetch(", "byted_acrawler", "webpackChunk"]
         var result: String?
+        // 搜索类接口（search/item、general/search、discover/search、live/search）抖音额外校验浏览器页面环境，
+        // 原生直连会被 verify_check / bdturing 拦下；一律留在网页里跑。联想词 search/sug 不受影响，仍走原生。
+        if isPageOnly(body) {
+            nameCache[key] = .some(nil)
+            return nil
+        }
         if !banned.contains(where: { body.contains($0) }), body.contains("req(") {
             let path = body.range(of: #"/(aweme|webcast|web)/v\d/[a-zA-Z0-9_/]+"#, options: .regularExpression).map { String(body[$0]) }
             result = path ?? "script"

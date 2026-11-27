@@ -13,6 +13,14 @@ final class DYSearchSession: Identifiable {
     var initialized = false
     // Keep the host suspended through the result player's dismissal animation.
     var presentsVideo = false
+    /// 分类：当前选中的标签、细分词、各分类自己的分页（切分类不重拉已拉过的）
+    var tab: DYSearchTab = .general
+    var chip: String?
+    var guide: [String] = []
+    var generalUsers: [DYSearchUser] = []
+    var users: DYSearchPager<DYSearchUser>?
+    var lives: DYSearchPager<DYLiveRoom>?
+    var videos: DYPagedModel?
 
     init(query: String = "") { initialQuery = query }
 
@@ -214,5 +222,313 @@ struct DYHotSearchRow: View {
         if item.hot >= 100_000_000 { return String(format: "%.1f亿", Double(item.hot) / 100_000_000) }
         if item.hot >= 10_000 { return String(format: "%.1f万", Double(item.hot) / 10_000) }
         return String(item.hot)
+    }
+}
+
+// MARK: - 搜索分类（综合 / 视频 / 用户 / 直播）
+
+/// 网页版能搜的分类。店铺 / 团购 / 商品 / 图文只有 App 接口，网页搜索接口不提供。
+enum DYSearchTab: String, CaseIterable, Identifiable {
+    case general = "综合", video = "视频", user = "用户", live = "直播"
+    var id: String { rawValue }
+}
+
+struct DYSearchUser: Decodable, Identifiable, Hashable {
+    let name: String
+    let avatar: String?
+    let secUid: String
+    let uid: String
+    let uniqueId: String
+    let followers: Int
+    let followersText: String
+    let signature: String
+    let verify: String
+    let liveRoomID: String
+    var id: String { secUid.isEmpty ? uid : secUid }
+    var author: DYAweme.Author { .init(name: name, avatar: avatar, secUid: secUid.isEmpty ? nil : secUid, uid: uid.isEmpty ? nil : uid) }
+}
+
+/// 用户 / 直播两个分类的分页列表（视频类复用 DYPagedModel）
+@MainActor
+final class DYSearchPager<T: Identifiable>: ObservableObject {
+    @Published var items: [T] = []
+    @Published var loading = false
+    @Published var error: String?
+    @Published var hasMore = true
+    private var cursor = "0"
+    private let fetch: (String) async throws -> (items: [T], cursor: String, hasMore: Bool)
+    init(fetch: @escaping (String) async throws -> (items: [T], cursor: String, hasMore: Bool)) { self.fetch = fetch }
+
+    func loadMore() async {
+        guard !loading, hasMore else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let r = try await fetch(cursor)
+            let seen = Set(items.map { "\($0.id)" })
+            items.append(contentsOf: r.items.filter { !seen.contains("\($0.id)") })
+            hasMore = r.hasMore && !r.items.isEmpty && r.cursor != cursor
+            cursor = r.cursor
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+            hasMore = false
+        }
+    }
+}
+
+private struct DYSearchGeneralPage: Decodable {
+    let status: Int; let code: Int?; let msg: String?
+    let items: [DYAweme]; let users: [DYSearchUser]; let guide: [String]
+    let cursor: String; let hasMore: Bool
+}
+private struct DYSearchUserPage: Decodable { let status: Int; let code: Int?; let msg: String?; let items: [DYSearchUser]; let cursor: String; let hasMore: Bool }
+private struct DYSearchLivePage: Decodable { let status: Int; let code: Int?; let msg: String?; let items: [DYLiveRoom]; let cursor: String; let hasMore: Bool }
+
+extension DouyinBridge {
+    /// 搜索类接口抖音额外校验浏览器页面环境，这几段脚本只在隐藏网页里跑（DYNativeJS.isPageOnly）
+    private static let searchUserMap = #"""
+    const uumap = u => u ? ({ name: u.nickname || '', avatar: first(u.avatar_thumb) || first(u.avatar_medium) || first(u.avatar_larger),
+      secUid: u.sec_uid || '', uid: u.uid ? String(u.uid) : '', uniqueId: u.unique_id || u.short_id || '',
+      followers: u.follower_count || 0, followersText: u.follower_count_str || '', signature: u.signature || '',
+      verify: u.custom_verify || u.enterprise_verify_reason || '', liveRoomID: u.room_id_str || (u.room_id ? String(u.room_id) : '') }) : null;
+    const sq = (channel, extra) => q(Object.assign({ search_channel: channel, keyword: kw, search_source: 'normal_search', query_correct_type: '1',
+      is_filter_search: '0', from_group_id: '', offset: cursor, count: '10', need_filter_settings: cursor === '0' ? '1' : '0', list_type: 'single' }, extra || {}));
+    const okA = a => a && (a.video || a.images) && !a.is_ads;
+    """#
+
+    static let searchGeneralJS = searchUserMap + #"""
+    const r = await req('GET', '/aweme/v1/web/general/search/single/?' + sq('aweme_general'));
+    const d = parse(r.t) || {};
+    const data = Array.isArray(d.data) ? d.data : [];
+    const items = data.filter(x => x && x.type === 1 && okA(x.aweme_info)).map(x => mapA(x.aweme_info));
+    const users = data.filter(x => x && x.type === 4).flatMap(x => (x.user_list || []).map(u => uumap(u && u.user_info))).filter(Boolean);
+    const guide = (d.guide_search_words || []).map(w => w && w.word).filter(w => typeof w === 'string' && w);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, users, guide, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    """#
+
+    static let searchUserJS = searchUserMap + #"""
+    const r = await req('GET', '/aweme/v1/web/discover/search/?' + sq('aweme_user_web'));
+    const d = parse(r.t) || {};
+    const items = (d.user_list || []).map(u => uumap(u && u.user_info)).filter(Boolean);
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    """#
+
+    static let searchLiveJS = searchUserMap + #"""
+    const r = await req('GET', '/aweme/v1/web/live/search/?' + sq('aweme_live'));
+    const d = parse(r.t) || {};
+    const items = (d.data || []).map(x => x && x.lives).filter(Boolean).map(l => {
+      const room = typeof l.rawdata === 'string' ? parse(l.rawdata) : l.rawdata;
+      if (!room) return null;
+      const su = room.stream_url || {}, o = room.owner || {};
+      return { id: String(room.id_str || room.id || ''), webRid: String(o.web_rid || ''), title: room.title || '',
+        owner: o.nickname || '', avatar: first(o.avatar_thumb), cover: first(room.cover), ownerSec: o.sec_uid || null,
+        ownerUID: o.id_str || (o.id ? String(o.id) : null), ownerFollow: (o.follow_info && o.follow_info.follow_status) || 0,
+        viewers: (room.stats && room.stats.user_count_str) || room.user_count_str || (room.user_count ? String(room.user_count) : ''),
+        hls: su.hls_pull_url_map || {}, flv: compatibleLiveFLV(su), portrait: su.stream_orientation !== 2, def: su.default_resolution || null };
+    }).filter(x => x && x.id && (Object.keys(x.hls).length || Object.keys(x.flv).length));
+    return JSON.stringify({ status: r.s, code: d.status_code ?? null, msg: d.status_msg || null, items, cursor: String(d.cursor ?? 0), hasMore: !!d.has_more });
+    """#
+
+    private static func searchError(status: Int, code: Int?, msg: String?) -> Error? {
+        if code == 8 || code == 2483 || (msg ?? "").contains("未登录") { return DYError.bad("抖音未登录：请在「我的」中登录后重试") }
+        if status < 0 { return DYError.bad("搜索连接失败，请稍后重试") }
+        if status != 200 { return DYError.blocked("HTTP \(status)") }
+        if let code, code != 0 { return DYError.bad(msg.flatMap { $0.isEmpty ? nil : $0 } ?? "搜索暂不可用（\(code)）") }
+        return nil
+    }
+
+    func searchGeneral(_ kw: String, offset: String) async throws -> (items: [DYAweme], users: [DYSearchUser], guide: [String], cursor: String, hasMore: Bool) {
+        let t0 = Date()
+        let d = try await call(Self.searchGeneralJS, args: ["kw": kw, "cursor": offset])
+        let p = try JSONDecoder().decode(DYSearchGeneralPage.self, from: d)
+        DYLiveModel.log("DDSEARCH tab=general off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count) users=\(p.users.count) guide=\(p.guide.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
+        return (p.items, p.users, p.guide, p.cursor, p.hasMore)
+    }
+
+    func searchUsers(_ kw: String, offset: String) async throws -> (items: [DYSearchUser], cursor: String, hasMore: Bool) {
+        let d = try await call(Self.searchUserJS, args: ["kw": kw, "cursor": offset])
+        let p = try JSONDecoder().decode(DYSearchUserPage.self, from: d)
+        DYLiveModel.log("DDSEARCH tab=user off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count)")
+        if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
+        return (p.items, p.cursor, p.hasMore)
+    }
+
+    func searchLive(_ kw: String, offset: String) async throws -> (items: [DYLiveRoom], cursor: String, hasMore: Bool) {
+        let d = try await call(Self.searchLiveJS, args: ["kw": kw, "cursor": offset])
+        let p = try JSONDecoder().decode(DYSearchLivePage.self, from: d)
+        DYLiveModel.log("DDSEARCH tab=live off=\(offset) http=\(p.status) code=\(p.code.map(String.init) ?? "-") n=\(p.items.count)")
+        if let e = Self.searchError(status: p.status, code: p.code, msg: p.msg) { throw e }
+        return (p.items, p.cursor, p.hasMore)
+    }
+}
+
+extension EnvironmentValues {
+    /// 搜索结果里点直播间：由推荐页宿主关掉搜索、切到直播频道进房。没有宿主（列表播放页）时不显示「直播」分类。
+    @Entry var dyOpenLiveRoom: ((DYLiveRoom) -> Void)? = nil
+}
+
+/// 分类标签栏（同官方：文字 + 选中下划线）
+struct DYSearchTabBar: View {
+    let tabs: [DYSearchTab]
+    @Binding var selected: DYSearchTab
+    var body: some View {
+        HStack(spacing: 26) {
+            ForEach(tabs) { t in
+                Button { selected = t } label: {
+                    VStack(spacing: 5) {
+                        Text(t.rawValue)
+                            .font(.body.weight(t == selected ? .semibold : .regular))
+                            .foregroundStyle(t == selected ? Color.primary : Color.primary.opacity(0.55))
+                        Capsule().fill(t == selected ? Color.primary : Color.clear).frame(width: 14, height: 3)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("douyin.search.tab.\(t.rawValue)")
+                .accessibilityAddTraits(t == selected ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+    }
+}
+
+/// 细分词（官方第二行灰色胶囊：全部 / 最新 / …）。点了就按「关键词 + 细分词」重搜。
+struct DYSearchChips: View {
+    let words: [String]
+    @Binding var selected: String?
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip("全部", on: selected == nil) { selected = nil }
+                ForEach(words, id: \.self) { w in chip(w, on: selected == w) { selected = w } }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+    private func chip(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.subheadline.weight(on ? .semibold : .regular))
+                .foregroundStyle(Color.primary.opacity(on ? 1 : 0.7))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(on ? 0.16 : 0.07)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("douyin.search.chip.\(title)")
+    }
+}
+
+struct DYSearchUserRow: View {
+    let user: DYSearchUser
+    var body: some View {
+        HStack(spacing: 12) {
+            CachedAsyncImage(url: user.avatar.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() }
+                placeholder: { Color.primary.opacity(0.08) }
+                .frame(width: 56, height: 56).clipShape(Circle())
+                .overlay(alignment: .bottom) {
+                    if !user.liveRoomID.isEmpty && user.liveRoomID != "0" {
+                        Text("直播中").font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.pink)).offset(y: 4)
+                    }
+                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(user.name).font(.body.weight(.semibold)).foregroundStyle(Color.primary).lineLimit(1)
+                if !user.verify.isEmpty {
+                    Text(user.verify).font(.caption).foregroundStyle(Color.primary.opacity(0.6)).lineLimit(1)
+                }
+                Text(fansLine).font(.caption).foregroundStyle(Color.primary.opacity(0.55)).lineLimit(1)
+                if !user.signature.isEmpty {
+                    Text(user.signature).font(.caption).foregroundStyle(Color.primary.opacity(0.45)).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+    private var fansLine: String {
+        let fans = user.followersText.isEmpty ? DYSearchUserRow.count(user.followers) : user.followersText
+        return user.uniqueId.isEmpty ? "粉丝 \(fans)" : "粉丝 \(fans)  ·  抖音号 \(user.uniqueId)"
+    }
+    static func count(_ n: Int) -> String {
+        n >= 10_000 ? String(format: "%.1fw", Double(n) / 10_000) : "\(n)"
+    }
+}
+
+struct DYSearchUserList: View {
+    @ObservedObject var pager: DYSearchPager<DYSearchUser>
+    let onOpen: (DYSearchUser) -> Void
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(pager.items) { u in
+                    Button { onOpen(u) } label: { DYSearchUserRow(user: u) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.search.user.\(u.id)")
+                        .onAppear { if u.id == pager.items.last?.id { Task { await pager.loadMore() } } }
+                }
+                DYSearchFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty)
+            }
+        }
+        .task { if pager.items.isEmpty { await pager.loadMore() } }
+    }
+}
+
+struct DYSearchLiveList: View {
+    @ObservedObject var pager: DYSearchPager<DYLiveRoom>
+    let onOpen: (DYLiveRoom) -> Void
+    private let cols = [GridItem(.adaptive(minimum: 160), spacing: 6)]
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: cols, spacing: 6) {
+                ForEach(pager.items) { room in
+                    Button { onOpen(room) } label: { cell(room) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("douyin.search.live.\(room.id)")
+                        .onAppear { if room.id == pager.items.last?.id { Task { await pager.loadMore() } } }
+                }
+            }
+            .padding(.horizontal, 6)
+            DYSearchFooter(loading: pager.loading, error: pager.error, empty: pager.items.isEmpty)
+        }
+        .task { if pager.items.isEmpty { await pager.loadMore() } }
+    }
+    private func cell(_ room: DYLiveRoom) -> some View {
+        Color.black.aspectRatio(3/4, contentMode: .fit)
+            .overlay { CachedAsyncImage(url: room.cover.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() } placeholder: { Color.white.opacity(0.06) } }
+            .clipped()
+            .overlay(alignment: .topLeading) {
+                Text("直播中").font(.caption2.weight(.bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.pink)).padding(6)
+            }
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(room.title.isEmpty ? room.owner : room.title).font(.caption.weight(.semibold)).lineLimit(2)
+                    Text(room.viewers.isEmpty ? room.owner : "\(room.owner) · \(room.viewers)人在看").font(.caption2).opacity(0.8).lineLimit(1)
+                }
+                .foregroundStyle(.white).padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+struct DYSearchFooter: View {
+    let loading: Bool
+    let error: String?
+    let empty: Bool
+    var body: some View {
+        if let error {
+            Text(error).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(24)
+        } else if loading {
+            ProgressView().tint(.primary).padding(24)
+        } else if empty {
+            Text("这里还没有内容").font(.footnote).foregroundStyle(.secondary).padding(40)
+        }
     }
 }

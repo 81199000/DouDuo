@@ -363,6 +363,52 @@ struct LocalVideoPlaybackView: View {
 }
 #endif
 
+#if DEBUG
+/// 搜索分类探针：DOUDUO_SEARCHCAT=1，在隐藏网页里跑各分类搜索接口，只记形状（键名/条数/业务码），不记内容
+@MainActor enum DDSearchCatProbe {
+    static func run(_ b: DouyinBridge) async {
+        try? await Task.sleep(nanoseconds: 8_000_000_000)
+        let pre = #"""
+        const shape = (name, r) => {
+          const d = parse(r.t) || {};
+          const arr = d.data || d.user_list || d.aweme_list || [];
+          const first = Array.isArray(arr) && arr[0] ? arr[0] : {};
+          const fk = Object.keys(first).slice(0, 12).join('|');
+          const sub = first.aweme_info ? 'aweme_info' : first.user_info ? 'user_info' : first.lives ? 'lives' : first.aweme_mix_info ? 'mix' : first.card_info ? 'card' : '-';
+          const types = Array.isArray(arr) ? [...new Set(arr.map(x => x && x.type))].join(',') : '-';
+          const nil = d.search_nil_info ? (d.search_nil_info.search_nil_type || '') : '-';
+          return name + ' http=' + r.s + ' code=' + d.status_code + ' n=' + (Array.isArray(arr) ? arr.length : -1) + ' more=' + d.has_more + ' cur=' + d.cursor + ' nil=' + nil + ' types=' + types + ' sub=' + sub + ' fk=' + fk + ' top=' + Object.keys(d).slice(0, 16).join('|');
+        };
+        const sb = { keyword: '无为', search_source: 'normal_search', query_correct_type: '1', is_filter_search: '0', from_group_id: '', offset: '0', count: '10', need_filter_settings: '1', list_type: 'single' };
+        """#
+        let tests: [(String, String)] = [
+            ("l-raw", """
+             const d = parse((await req('GET', '/aweme/v1/web/live/search/?' + q({ ...sb, search_channel: 'aweme_live' }))).t) || {};
+             const l = ((d.data || [])[0] || {}).lives || {};
+             const raw = typeof l.rawdata === 'string' ? (parse(l.rawdata) || {}) : (l.rawdata || {});
+             const su = raw.stream_url || {};
+             return 'l rawType=' + typeof l.rawdata + ' raw=' + Object.keys(raw).join('|') + ' || owner=' + Object.keys(raw.owner || {}).join('|').slice(0, 300) + ' || su=' + Object.keys(su).join('|') + ' hls=' + Object.keys(su.hls_pull_url_map || {}).join(',') + ' flv=' + Object.keys(su.flv_pull_url || {}).join(',') + ' || author=' + Object.keys(l.author || {}).filter(k => /nick|avatar|sec_uid|room/.test(k)).join(',');
+            """),
+            ("guide", """
+             const d = parse((await req('GET', '/aweme/v1/web/search/item/?' + q({ ...sb, search_channel: 'aweme_video_web' }))).t) || {};
+             return 'guide ' + (d.guide_search_words || []).slice(0, 5).map(w => JSON.stringify({ w: w.word, t: w.type, a: w.attached_text })).join(' ');
+            """),
+        ]
+        for (name, body) in tests {
+            let r = await withTaskGroup(of: String.self) { g -> String in
+                g.addTask { await b.probe(pre + body) }
+                g.addTask { try? await Task.sleep(nanoseconds: 30_000_000_000); return "TIMEOUT" }
+                let first = await g.next() ?? "?"
+                g.cancelAll()
+                return first
+            }
+            DYLiveModel.log("DDSCAT \(r.prefix(700))")
+        }
+        DYLiveModel.log("DDSCAT done")
+    }
+}
+#endif
+
 /// 让窗口里从根到最上层的每个控制器重新上报状态栏外观（修信息页切后台回来时间/信号消失）。
 enum DDStatusBarRefresh {
     @MainActor static func run() {

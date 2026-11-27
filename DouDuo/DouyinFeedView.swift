@@ -543,7 +543,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
                 return d
             }
             if DYNative.nativeOnly { throw DYError.bad("原生接口失败：\(name)") }
-        } else if DYNative.nativeOnly, !(body.contains("'POST'") || body.contains("\"POST\"")) {
+        } else if DYNative.nativeOnly, !DYNativeJS.isPageOnly(body), !(body.contains("'POST'") || body.contains("\"POST\"")) {
             // 这段脚本依赖网页（DOM / 页面 SDK），原生跑不了：只走原生模式下照实报出来
             let tag = body.range(of: #"/(aweme|webcast|web)/v\d/[a-zA-Z0-9_/]+"#, options: .regularExpression).map { String(body[$0]) } ?? "页面脚本"
             DYLiveModel.log("DDNATIVEJS needs-page \(tag)")
@@ -1963,6 +1963,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_SEARCHCAT"] == "1" { Task { await DDSearchCatProbe.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_COMMENT_STRESS"] != nil { Task { await DDCommentStress.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #if DEBUG
@@ -2154,6 +2155,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         loadedFeed
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
+        .environment(\.dyOpenLiveRoom, { room in
+            DYSearchSession.transition { searchSession = nil }
+            enterFeedLive(room)
+        })
         .onChange(of: showComments) { _, shown in if shown { searchSession = nil } }
         .environment(\.dyOpenSettings, { showSettings = true })
         .sheet(isPresented: $showSettings, onDismiss: {
@@ -3239,6 +3244,10 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
         systemTabs
         .modifier(DYSearchPresentation(bridge: bridge, session: $searchSession, isSplit: $searchIsSplit,
                                       onOpen: { showComments = false }))
+        .environment(\.dyOpenLiveRoom, { room in
+            DYSearchSession.transition { searchSession = nil }
+            enterFeedLive(room)
+        })
         .onChange(of: showComments) { _, shown in
             if shown { searchSession = nil }
             else { captionItem = nil }
@@ -3260,6 +3269,7 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_SELFTEST"] == "1" { Task { await DDSelfTest.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_APITEST"] == "1" { Task { await DDApiProbe.run(bridge) } }
+            if ProcessInfo.processInfo.environment["DOUDUO_SEARCHCAT"] == "1" { Task { await DDSearchCatProbe.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
