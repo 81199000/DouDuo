@@ -87,19 +87,96 @@ struct DYIMConversation: Equatable {
     let type: Int           // 1 单聊 / 2 群聊
     let ticket: String      // 发消息要带的会话票据
     let name: String
+    /// 以下字段来自 ConversationInfoV2（core_info=50 / setting_info=51）与 init 同步里的最后一条消息
+    var avatar: String = ""         // 群头像（core_info.icon）
+    var badge: Int = 0              // 未读角标（10 badge_count）
+    var readBadge: Int = 0          // 已读到的角标（setting_info.read_badge_count）
+    var pinned = false              // setting_info.stick_on_top
+    var muted = false               // setting_info.mute
+    var peerUID: UInt64 = 0         // 单聊对方 uid（会话 id 0:1:a:b 里不是自己的那个）
+    var peerSec: String = ""        // 单聊对方 sec_uid（最后一条消息若由对方发出，取 sec_sender）
+    var last: DYIMMessage?          // 最后一条消息
+    var participants: [(uid: UInt64, sec: String)] = []
+    static func == (a: DYIMConversation, b: DYIMConversation) -> Bool {
+        a.id == b.id && a.ticket == b.ticket && a.badge == b.badge && a.readBadge == b.readBadge && a.pinned == b.pinned
+            && a.muted == b.muted && a.last == b.last && a.name == b.name && a.avatar == b.avatar
+    }
+    var unread: Int { max(0, badge - readBadge) }
 }
 
-struct DYIMMessage: Equatable {
+struct DYIMMessage: Equatable, Identifiable {
     let serverID: UInt64
     let type: Int           // 7 = 普通消息（content 里 aweType 区分文字/视频卡等）
     let sender: UInt64
     let createdMS: UInt64
     let content: String     // JSON 原文
-    var text: String? {
+    var secSender: String = ""
+    var index: UInt64 = 0           // index_in_conversation（翻页游标）
+    var status: Int = 0             // 12 status
+    var clientID: String = ""       // ext s:client_message_id
+    var id: String { serverID > 0 ? String(serverID) : clientID }
+    var json: [String: Any] {
         guard let d = content.data(using: .utf8),
-              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
-        return o["text"] as? String
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return o
     }
+    var text: String? { json["text"] as? String }
+
+    /// 消息内容分类（抖音 aweType）：只解析界面要画的几类，其余按「未支持」显示提示
+    enum Body: Equatable {
+        case text(String)
+        case sticker(url: URL?, width: Int, height: Int)
+        case image(url: URL?, width: Int, height: Int)
+        case video(itemID: String, cover: URL?, title: String, author: String, width: Int, height: Int)
+        case recalled
+        case system(String)
+        case unsupported(Int)
+    }
+    var body: Body {
+        let o = json
+        let awe = (o["aweType"] as? NSNumber)?.intValue ?? 0
+        func url(_ key: String) -> URL? {
+            let d = o[key] as? [String: Any]
+            return ((d?["url_list"] as? [String])?.first).flatMap(URL.init(string:))
+        }
+        func int(_ key: String) -> Int { (o[key] as? NSNumber)?.intValue ?? 0 }
+        if type == 7 || awe == 700 || awe == 0, let t = o["text"] as? String { return .text(t) }
+        switch awe {
+        case 500...599:
+            return .sticker(url: url("url"), width: int("width"), height: int("height"))
+        case 800, 801, 802, 803:
+            let id = o["itemId"] as? String ?? (o["itemId"] as? NSNumber)?.stringValue ?? ""
+            return .video(itemID: id, cover: url("cover_url") ?? url("content_thumb"),
+                          title: o["content_title"] as? String ?? "", author: o["content_name"] as? String ?? "",
+                          width: int("cover_width"), height: int("cover_height"))
+        case 2702, 2701, 27:
+            return .image(url: url("resource_url") ?? url("cover_url") ?? url("url"), width: int("cover_width"), height: int("cover_height"))
+        default:
+            if let t = o["text"] as? String, !t.isEmpty { return .text(t) }
+            if let tip = (o["tips"] as? String) ?? (o["hint_content"] as? String), !tip.isEmpty { return .system(tip) }
+            return .unsupported(awe)
+        }
+    }
+    /// 会话列表里的一行预览
+    var preview: String {
+        switch body {
+        case .text(let t): t
+        case .sticker: "[表情]"
+        case .image: "[图片]"
+        case .video(_, _, let title, _, _, _): title.isEmpty ? "[视频]" : "[视频] " + title
+        case .recalled: "[已撤回]"
+        case .system(let t): t
+        case .unsupported: "[消息]"
+        }
+    }
+}
+
+/// 抖音用户（私信头像 / 昵称）
+struct DYIMUser: Codable, Equatable {
+    let uid: String
+    let sec: String
+    let name: String
+    let avatar: String
 }
 
 enum DYIMError: LocalizedError {
@@ -402,8 +479,45 @@ final class DYNativeIM {
 
     private static func conversation(_ raw: Data) -> DYIMConversation? {
         guard let f = DYPB.decode(raw), let id = f.string(1), !id.isEmpty else { return nil }
-        return DYIMConversation(id: id, shortID: f.int(2) ?? 0, type: Int(f.int(3) ?? 0),
-                                ticket: f.string(4) ?? "", name: f.sub(50)?.string(5) ?? "")
+        let core = f.sub(50), setting = f.sub(51)
+        var c = DYIMConversation(id: id, shortID: f.int(2) ?? 0, type: Int(f.int(3) ?? 0),
+                                 ticket: f.string(4) ?? "", name: core?.string(5) ?? "")
+        c.avatar = core?.string(7) ?? ""
+        c.badge = Int(f.int(10) ?? 0)
+        c.readBadge = Int(setting?.int(16) ?? 0)
+        c.pinned = (setting?.int(7) ?? 0) != 0
+        c.muted = (setting?.int(6) ?? 0) != 0
+        // first_page_participants（6）= ParticipantsPage{1: [Participant{1 user_id, 5 sec_uid}]}
+        if let page = f.sub(6) {
+            c.participants = (page[1] ?? []).compactMap { v in
+                guard let p = v.data.flatMap(DYPB.decode), let uid = p.int(1) else { return nil }
+                return (uid, p.string(5) ?? "")
+            }
+        }
+        return c
+    }
+
+    /// MessageBody（字段号取自官方网页 IM SDK 的 protobuf 定义）
+    static func message(_ raw: Data) -> DYIMMessage? {
+        guard let f = DYPB.decode(raw) else { return nil }
+        var m = DYIMMessage(serverID: f.int(3) ?? 0, type: Int(f.int(6) ?? 0), sender: f.int(7) ?? 0,
+                            createdMS: f.int(10) ?? 0, content: f.string(8) ?? "")
+        m.secSender = f.string(14) ?? ""
+        m.index = f.int(4) ?? 0
+        m.status = Int(f.int(12) ?? 0)
+        for e in f[9] ?? [] {
+            guard let kv = e.data.flatMap(DYPB.decode), kv.string(1) == "s:client_message_id" else { continue }
+            m.clientID = kv.string(2) ?? ""
+        }
+        return m
+    }
+
+    /// 单聊会话 id「0:1:<uidA>:<uidB>」里不是自己的那个 uid
+    func peer(of conversationID: String) -> UInt64 {
+        let parts = conversationID.split(separator: ":").compactMap { UInt64($0) }
+        guard parts.count >= 4 else { return 0 }
+        let a = parts[2], b = parts[3]
+        return a == selfUID ? b : b == selfUID ? a : (selfUID == 0 ? 0 : a)
     }
 
     /// 全部会话（分页同步，最多 maxPages 页）
@@ -417,8 +531,15 @@ final class DYNativeIM {
                 #if DEBUG
                 if debugLastInitItem == nil { debugLastInitItem = item.data }
                 #endif
-                guard let head = item.data.flatMap(DYPB.decode)?.data(1), let c = Self.conversation(head),
+                let entry = item.data.flatMap(DYPB.decode)
+                guard let head = entry?.data(1), var c = Self.conversation(head),
                       seen.insert(c.id).inserted else { continue }
+                if let lastRaw = entry?.data(2), let last = Self.message(lastRaw) { c.last = last }
+                if c.type == 1 {
+                    c.peerUID = peer(of: c.id)
+                    if let p = c.participants.first(where: { $0.uid == c.peerUID }), !p.sec.isEmpty { c.peerSec = p.sec }
+                    else if let last = c.last, last.sender == c.peerUID, !last.secSender.isEmpty { c.peerSec = last.secSender }
+                }
                 out.append(c)
             }
             let more = body.int(2) ?? 0
@@ -438,14 +559,65 @@ final class DYNativeIM {
 
     /// 某会话最近 limit 条消息（新→旧）
     func recentMessages(_ c: DYIMConversation, limit: Int = 30) async throws -> [DYIMMessage] {
+        try await messagePage(c, before: 0, limit: limit).messages
+    }
+
+    /// 一页消息（新→旧）。before = 0 取最新一页；否则取 index_in_conversation 小于它的更早一页。
+    /// MessagesInConversationRequestBody：1 conversation_id / 2 type / 3 short_id / 4 direction（0 旧）/ 5 anchor_index / 6 limit
+    func messagePage(_ c: DYIMConversation, before: UInt64, limit: Int = 30) async throws -> (messages: [DYIMMessage], hasMore: Bool, next: UInt64) {
         let payload = DYPB.field(1, c.id) + DYPB.field(2, UInt64(c.type)) + DYPB.field(3, c.shortID)
-            + DYPB.field(4, 0) + DYPB.field(5, 0) + DYPB.field(6, UInt64(limit))
+            + DYPB.field(4, 0) + DYPB.field(5, before) + DYPB.field(6, UInt64(limit))
         let body = try await call(.messages, payload)
-        return (body[1] ?? []).compactMap { v in
-            guard let f = v.data.flatMap(DYPB.decode) else { return nil }
-            return DYIMMessage(serverID: f.int(3) ?? 0, type: Int(f.int(6) ?? 0), sender: f.int(7) ?? 0,
-                               createdMS: f.int(10) ?? 0, content: f.string(8) ?? "")
+        let list = (body[1] ?? []).compactMap { $0.data.flatMap(Self.message) }
+        let next = body.int(2) ?? (list.map(\.index).min() ?? 0)
+        return (list, (body.int(3) ?? 0) != 0, next)
+    }
+
+    // MARK: 用户资料（头像 / 昵称）
+
+    private var userCache: [String: DYIMUser] = [:]
+    private var userCacheLoaded = false
+    private static var userCacheURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("im-users.json")
+    }
+    func cachedUser(uid: UInt64) -> DYIMUser? {
+        loadUserCache()
+        return userCache[String(uid)]
+    }
+    private func loadUserCache() {
+        guard !userCacheLoaded else { return }
+        userCacheLoaded = true
+        if let d = try? Data(contentsOf: Self.userCacheURL), let list = try? JSONDecoder().decode([DYIMUser].self, from: d) {
+            for u in list { userCache[u.uid] = u }
         }
+    }
+    private func saveUserCache() {
+        if let d = try? JSONEncoder().encode(Array(userCache.values)) { try? d.write(to: Self.userCacheURL, options: .atomic) }
+    }
+
+    /// 批量补头像昵称：先查缓存（按 uid），缺的走网页版 im/user/info（同官方私信页：按 sec_uid 批量，原生签名直连）
+    /// people: (uid, sec_uid)；返回 uid → 用户
+    func users(_ people: [(uid: UInt64, sec: String)], bridge: DouyinBridge, refresh: Bool = false) async -> [String: DYIMUser] {
+        loadUserCache()
+        var secOf: [String: String] = [:]
+        for p in people where p.uid > 0 && !p.sec.isEmpty { secOf[String(p.uid)] = p.sec }
+        let missing = secOf.filter { refresh || userCache[$0.key] == nil }.map(\.value)
+        var changed = false
+        for chunk in stride(from: 0, to: missing.count, by: 20).map({ Array(missing[$0..<min($0 + 20, missing.count)]) }) {
+            do {
+                let got = try await bridge.imUserInfo(secs: chunk)
+                for u in got {
+                    let uid = u.uid.isEmpty ? secOf.first(where: { $0.value == u.sec })?.key ?? "" : u.uid
+                    guard !uid.isEmpty else { continue }
+                    userCache[uid] = DYIMUser(uid: uid, sec: u.sec, name: u.name, avatar: u.avatar); changed = true
+                }
+                DYLiveModel.log("DDNATIVEIM users want=\(chunk.count) got=\(got.count)")
+            } catch { DYLiveModel.log("DDNATIVEIM users fail \(error.localizedDescription)") }
+        }
+        if changed { saveUserCache() }
+        var out: [String: DYIMUser] = [:]
+        for p in people { if let u = userCache[String(p.uid)] { out[String(p.uid)] = u } }
+        return out
     }
 
     /// 刷新单个会话（拿最新发送票据）
@@ -583,12 +755,24 @@ final class DYNativeIM {
                     }
                 }
             }
+            if let bridge = DouyinBridge.primary {
+                let users = await DYNativeIM.shared.users(list.map { ($0.peerUID, $0.peerSec) }, bridge: bridge)
+                for c in list.prefix(5) {
+                    let u = users[String(c.peerUID)]
+                    DYLiveModel.log("DDIMREAD row type=\(c.type) peer=\(c.peerUID > 0) sec=\(!c.peerSec.isEmpty) name=\((u?.name ?? c.name).count) avatar=\(!(u?.avatar ?? c.avatar).isEmpty) preview=\(c.last?.preview.count ?? -1) last=\(c.last?.createdMS ?? 0) unread=\(c.unread) pinned=\(c.pinned) muted=\(c.muted)")
+                }
+            }
             for c in list.prefix(3) {
                 let msgs = try await DYNativeIM.shared.recentMessages(c, limit: 20)
                 let mine = msgs.filter { $0.sender == DYNativeIM.shared.selfUID }.count
                 let texts = msgs.filter { $0.text != nil }.count
                 let types = Set(msgs.map(\.type)).sorted().map(String.init).joined(separator: ",")
                 DYLiveModel.log("DDIMREAD msgs conv=\(c.id.suffix(6)) type=\(c.type) n=\(msgs.count) mine=\(mine) text=\(texts) types=\(types)")
+                let kinds = msgs.map { m -> String in
+                    switch m.body { case .text: "t"; case .sticker: "s"; case .image: "i"; case .video: "v"; case .recalled: "r"; case .system: "y"; case .unsupported(let a): "u\(a)" }
+                }.joined(separator: ",")
+                let page2 = try? await DYNativeIM.shared.messagePage(c, before: msgs.map(\.index).min() ?? 0, limit: 20)
+                DYLiveModel.log("DDIMREAD kinds=\(kinds) idx=\(msgs.map(\.index).min() ?? 0)..\(msgs.map(\.index).max() ?? 0) page2=\(page2?.messages.count ?? -1) more=\(page2?.hasMore ?? false)")
             }
             // 身份令牌（只取，不发消息）
             do { let id = try await DYNativeIM.shared.identityToken(force: true); DYLiveModel.log("DDIMREAD identity token=\(id.token.count) did=\(id.deviceID.count)") }

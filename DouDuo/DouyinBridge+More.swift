@@ -117,6 +117,30 @@ private struct DYDetailShape: Decodable {
 }
 
 extension DouyinBridge {
+    /// 私信头像昵称：同官方私信页的 im/user/info（POST 表单 sec_user_ids=JSON 数组）
+    func imUserInfo(secs: [String]) async throws -> [DYIMUser] {
+        let d = try await call(Self.imUserInfoJS, args: ["secs": secs.joined(separator: ",")], attempts: 1)
+        struct Page: Decodable { let status: Int; let users: [DYIMUser]?; let msg: String? }
+        let p = try JSONDecoder().decode(Page.self, from: d)
+        guard p.status == 200 else { throw DYError.blocked(p.msg ?? "HTTP \(p.status)") }
+        return p.users ?? []
+    }
+
+    static let imUserInfoJS = #"""
+    const ids = String(secs || '').split(',').filter(Boolean);
+    const body = 'sec_user_ids=' + encodeURIComponent(JSON.stringify(ids));
+    const r = await req('POST', '/aweme/v1/web/im/user/info/?' + q({ version_code: '170400' }), body,
+                        { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' });
+    const d = parse(r.t) || {};
+    const list = Array.isArray(d.data) ? d.data : [];
+    const users = list.map(u => ({
+      uid: String(u.uid || u.user_id || ''), sec: u.sec_uid || '',
+      name: u.nickname || u.remark_name || '',
+      avatar: ((u.avatar_thumb || u.avatar_small || u.avatar_medium || {}).url_list || [])[0] || ''
+    })).filter(u => u.uid);
+    return JSON.stringify({ status: r.s, users, msg: d.status_msg || (list.length ? null : ('keys=' + Object.keys(d).join('|'))) });
+    """#
+
     func noticeCounts() async throws -> [DYNoticeCount] {
         let d = try await call(Self.noticeCountJS, args: [:], attempts: 1)
         let p = try JSONDecoder().decode(DYNoticeCountPage.self, from: d)
