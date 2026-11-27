@@ -87,6 +87,12 @@ enum DYNative {
     @MainActor static var lastVerify = false
     /// 最近一次写请求回应头 x-tt-verify-passport-decision 的原值（只在内存里转给官方验证组件，不进日志）
     @MainActor static var lastVerifyDecision: String?
+    /// 最近一次被人机验证（滑块）拦下的原生读接口路径与时间（空包 + x-vc-bdturing-parameters）
+    @MainActor static var lastReadCaptcha: (path: String, at: Date)?
+    @MainActor static func readWasCaptcha(_ pathPrefix: String, within: TimeInterval = 15) -> Bool {
+        guard let c = lastReadCaptcha else { return false }
+        return c.path.hasPrefix(pathPrefix) && Date().timeIntervalSince(c.at) < within
+    }
 
     enum Failure: LocalizedError {
         case noLogin, noTicket, http(Int), empty

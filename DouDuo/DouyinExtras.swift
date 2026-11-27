@@ -231,6 +231,30 @@ extension DouyinBridge {
     func search(_ kw: String, offset: String) async throws -> (items: [DYAweme], cursor: String, hasMore: Bool) {
         guard offset == "0" else { return ([], offset, false) }
         let r = try await list(Self.searchJS, ["kw": kw, "cursor": "0"])
+        if r.items.isEmpty, DYNative.readWasCaptcha("/aweme/v1/web/search/") {
+            var c = URLComponents(string: "https://www.douyin.com/search/")!
+            c.path = "/search/" + kw
+            c.queryItems = [URLQueryItem(name: "type", value: "video")]
+            var got: (items: [DYAweme], cursor: String)?
+            let tryOnce: @MainActor () async -> Bool = { [self] in
+                guard let r2 = try? await self.list(Self.searchJS, ["kw": kw, "cursor": "0"]) else { return false }
+                if r2.items.isEmpty { return false }
+                got = (r2.items, r2.cursor); return true
+            }
+            guard let u = c.url, await DYCaptchaPage.run(url: u, reason: "这次搜索", probe: tryOnce) else {
+                throw DYError.bad("抖音要求安全验证后才能搜索，请重新搜索并完成验证")
+            }
+            // 用户手动点「完成」时：抖音放行有几秒延迟，隔一会儿再试几次
+            if got == nil {
+                for wait in [0, 2, 3, 4] {
+                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                    if await tryOnce() { break }
+                }
+            }
+            DYLiveModel.log("DDSEARCH after-captcha n=\(got?.items.count ?? 0)")
+            guard let got else { throw DYError.bad("抖音仍要求安全验证，稍后再搜") }
+            return (got.items, got.cursor, false)
+        }
         return (r.items, r.cursor, false)
     }
 

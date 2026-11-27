@@ -205,6 +205,18 @@ final class DYNativeJS {
                 DYLiveModel.log("DDNATIVEJS small path=\(comps.path) bytes=\(d.count) code=\(code) nil=\(nil_) keys=\(keys)")
             }
             #endif
+            if !isPost, d.isEmpty, h?.value(forHTTPHeaderField: "X-Vc-Bdturing-Parameters") != nil {
+                DYNative.lastReadCaptcha = (comps.path, Date())
+                DYLiveModel.log("DDNATIVEJS captcha path=\(comps.path) kind=bdturing")
+            }
+            // 搜索的另一种拦法：200 正常包，但 search_nil_info.search_nil_type = verify_check（要求先做安全验证）
+            if !isPost, comps.path.contains("/search/"), d.count < 20000,
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let nilInfo = o["search_nil_info"] as? [String: Any],
+               "\(nilInfo["search_nil_type"] ?? "")" == "verify_check" {
+                DYNative.lastReadCaptcha = (comps.path, Date())
+                DYLiveModel.log("DDNATIVEJS captcha path=\(comps.path) kind=verify_check")
+            }
             if let code = h?.statusCode, code != 200 {
                 let why = String(String(decoding: d.prefix(80), as: UTF8.self).filter { $0.isASCII && !$0.isNewline })
                 DYLiveModel.log("DDNATIVEJS http=\(code) path=\(comps.path) why=\(why)")

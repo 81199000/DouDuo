@@ -22,7 +22,7 @@ final class DYCookieJar {
     func set(_ name: String, _ value: String) { cookies[name] = value; save() }
     func remove(_ name: String) { cookies.removeValue(forKey: name); save() }
     func clear() { cookies = [:]; UserDefaults.standard.removeObject(forKey: Self.key) }
-    private func save() { UserDefaults.standard.set(cookies, forKey: Self.key) }
+    private func save() { UserDefaults.standard.set(cookies, forKey: Self.key); UserDefaults.standard.synchronize() }
 
     var header: String {
         cookies.filter { !$0.key.hasPrefix("__dd_") }.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
@@ -270,6 +270,7 @@ enum DYNativeTicket {
         }
         let k = P256.Signing.PrivateKey()
         UserDefaults.standard.set(k.derRepresentation.base64EncodedString(), forKey: keyTag)
+        UserDefaults.standard.synchronize()
         cachedKey = k
         return k
     }
@@ -306,11 +307,24 @@ enum DYNativeTicket {
     }
 
     private static func save(_ t: Ticket) {
-        if let d = try? JSONEncoder().encode(t) { UserDefaults.standard.set(d, forKey: ticketTag) }
+        if let d = try? JSONEncoder().encode(t) { UserDefaults.standard.set(d, forKey: ticketTag); UserDefaults.standard.synchronize() }
     }
 
     static var saved: Ticket? {
-        guard let d = UserDefaults.standard.data(forKey: ticketTag), let t = try? JSONDecoder().decode(Ticket.self, from: d) else { return nil }
+        let raw = UserDefaults.standard.object(forKey: ticketTag)
+        // 正常存的是 Data；早期调试种子/外部写入可能留下 JSON 字符串，两种都认，认出后统一改存 Data
+        let d: Data? = (raw as? Data) ?? (raw as? String).flatMap { $0.data(using: .utf8) }
+        if let d, let t = try? JSONDecoder().decode(Ticket.self, from: d) {
+            if raw is String { save(t); DYLiveModel.log("DDNATIVE ticket migrated string→data") }
+            return t
+        }
+        if raw != nil { DYLiveModel.log("DDNATIVE ticket unreadable type=\(String(describing: type(of: raw!)))") }
+        // 兜底：重装/更新后偏好设置偶尔没及时读到，但 cookie 罐里还留着抖音回的票据，从罐里恢复（密钥也必须还在）
+        guard UserDefaults.standard.string(forKey: keyTag) != nil,
+              let raw = DYCookieJar.shared.value("bd_ticket_guard_server_data"), let p = parse(raw) else { return nil }
+        let t = Ticket(ticket: p.0, tsSign: p.1)
+        save(t)
+        DYLiveModel.log("DDNATIVE ticket restored-from-jar")
         return t
     }
 

@@ -76,7 +76,7 @@ enum DYPassportVerify {
     }
     #endif
 
-    private static func topController() -> UIViewController? {
+    static func topController() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
         var top = scene?.windows.first { $0.isKeyWindow }?.rootViewController
@@ -160,6 +160,7 @@ enum DYPassportVerify {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            DYPassportVerify.log("DDVERIFY phase=page-loaded path=\(webView.url?.path ?? "-")")
             didLoad = true
             loaded?.resume(); loaded = nil
         }
@@ -176,14 +177,149 @@ enum DYPassportVerify {
                 }
             }
             guard cont != nil else { return }
-            let r = try? await web.callAsyncJavaScript(DYPassportVerify.runJS, arguments: ["decision": decision], contentWorld: .page)
-            guard let s = r as? String, let d = s.data(using: .utf8),
-                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-                finish(.failed("身份验证页没有返回结果")); return
+            // 抖音首页加载后会自己跳一次（/jingxuan → /?recommend=1 等），跳转会打断正在跑的脚本。
+            // 打断了就等页面稳定再跑，最多 3 次；每次失败都把真实错误记下来。
+            var j: [String: Any]?
+            for attempt in 1...3 {
+                guard cont != nil else { return }
+                do {
+                    let r = try await web.callAsyncJavaScript(DYPassportVerify.runJS, arguments: ["decision": decision], contentWorld: .page)
+                    if let s = r as? String, let d = s.data(using: .utf8),
+                       let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                        j = o
+                        if (o["stage"] as? String) == "no-webpack" || (o["stage"] as? String) == "no-require", attempt < 3 {
+                            DYPassportVerify.log("DDVERIFY phase=retry attempt=\(attempt) stage=\(o["stage"] as? String ?? "-")")
+                            try? await Task.sleep(for: .seconds(2)); continue
+                        }
+                        break
+                    }
+                    DYPassportVerify.log("DDVERIFY phase=retry attempt=\(attempt) type=\(r.map { String(describing: type(of: $0)) } ?? "nil")")
+                } catch {
+                    let e = error as NSError
+                    DYPassportVerify.log("DDVERIFY phase=js-error attempt=\(attempt) code=\(e.code) msg=\(String((e.userInfo["WKJavaScriptExceptionMessage"] as? String ?? e.localizedDescription).prefix(90)))")
+                }
+                try? await Task.sleep(for: .seconds(2))
             }
+            guard let j else { finish(.failed("身份验证页没有返回结果")); return }
             DYPassportVerify.log("DDVERIFY phase=result stage=\(j["stage"] as? String ?? "-") status=\((j["status"] as? Bool) == true ? 1 : 0)")
             if (j["status"] as? Bool) == true { finish(.passed) }
             else { finish(.failed(j["msg"] as? String ?? "身份验证未通过")) }
+        }
+    }
+}
+
+
+/// 读接口被抖音人机验证（滑块，响应头 x-vc-bdturing-parameters + 空包）拦下时：
+/// 打开抖音官方对应页面，让用户本人在页面里完成滑块，完成后点「完成」，调用方再重试一次。
+/// App 不识别、不代做、不绕过验证；页面内容不读不存，日志只记阶段。
+@MainActor
+enum DYCaptchaPage {
+    private static var current: Controller?
+    /// 同一段时间只弹一次：用户刚处理过（或取消）就别连着弹
+    private static var lastShown = Date.distantPast
+
+    /// probe：页面打开后每隔几秒试一次原生请求，通了就自动关页面（抖音多数时候只要网页打开过一次就放行，
+    /// 不一定出滑块；出了滑块就等用户本人滑完，probe 自然会通）
+    static func run(url: URL, reason: String, probe: (@MainActor () async -> Bool)? = nil) async -> Bool {
+        guard current == nil, Date().timeIntervalSince(lastShown) > 20,
+              let top = DYPassportVerify.topController() else { return false }
+        lastShown = Date()
+        let vc = Controller(url: url, reason: reason, probe: probe)
+        current = vc
+        defer { current = nil; lastShown = Date() }
+        DYPassportVerify.log("DDCAPTCHA phase=present reason=\(reason)")
+        let ok = await vc.start(on: top)
+        DYPassportVerify.log("DDCAPTCHA phase=\(ok ? "done" : "cancelled")")
+        return ok
+    }
+
+    final class Controller: UIViewController {
+        let url: URL
+        let reason: String
+        let probe: (@MainActor () async -> Bool)?
+        private var cont: CheckedContinuation<Bool, Never>?
+        private var probeTask: Task<Void, Never>?
+        init(url: URL, reason: String, probe: (@MainActor () async -> Bool)?) {
+            self.url = url; self.reason = reason; self.probe = probe
+            super.init(nibName: nil, bundle: nil)
+            modalPresentationStyle = .fullScreen
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        func start(on host: UIViewController) async -> Bool {
+            await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+                cont = c
+                host.present(self, animated: true)
+            }
+        }
+
+        private func finish(_ ok: Bool) {
+            guard let c = cont else { return }
+            cont = nil
+            probeTask?.cancel()
+            dismiss(animated: true)
+            c.resume(returning: ok)
+        }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .systemBackground
+            let cfg = WKWebViewConfiguration()
+            cfg.websiteDataStore = .default()
+            cfg.allowsInlineMediaPlayback = true
+            cfg.mediaTypesRequiringUserActionForPlayback = .all
+            cfg.userContentController.addUserScript(WKUserScript(source: DouyinBridge.composerNoMediaJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            DYLogoutBlock.install(in: cfg)
+            let web = WKWebView(frame: .zero, configuration: cfg)
+            web.customUserAgent = DYNative.userAgent
+            web.translatesAutoresizingMaskIntoConstraints = false
+
+            let title = UILabel()
+            title.text = "抖音要求安全验证"
+            title.font = .preferredFont(forTextStyle: .headline)
+            let hint = UILabel()
+            hint.text = "\(reason)被抖音拦下了。通常打开这个页面几秒后就会自动放行并关闭；如果页面里出现滑块等验证，请按提示完成，或点「完成」。"
+            hint.font = .preferredFont(forTextStyle: .footnote)
+            hint.textColor = .secondaryLabel
+            hint.numberOfLines = 0
+            let cancel = UIButton(type: .system, primaryAction: UIAction(title: "取消") { [weak self] _ in self?.finish(false) })
+            cancel.accessibilityIdentifier = "douyin.captcha.cancel"
+            let done = UIButton(type: .system, primaryAction: UIAction(title: "完成") { [weak self] _ in self?.finish(true) })
+            done.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+            done.accessibilityIdentifier = "douyin.captcha.done"
+            let head = UIStackView(arrangedSubviews: [cancel, title, UIView(), done])
+            head.axis = .horizontal
+            head.spacing = 12
+            let bar = UIStackView(arrangedSubviews: [head, hint])
+            bar.axis = .vertical
+            bar.spacing = 4
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(bar)
+            view.addSubview(web)
+            let g = view.safeAreaLayoutGuide
+            NSLayoutConstraint.activate([
+                bar.topAnchor.constraint(equalTo: g.topAnchor, constant: 8),
+                bar.leadingAnchor.constraint(equalTo: g.leadingAnchor, constant: 16),
+                bar.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -16),
+                web.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 8),
+                web.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                web.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            web.load(URLRequest(url: url))
+            if let probe {
+                probeTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(3))
+                    for i in 1...40 {
+                        guard let self, self.cont != nil, !Task.isCancelled else { return }
+                        if await probe() {
+                            DYPassportVerify.log("DDCAPTCHA phase=auto-pass try=\(i)")
+                            self.finish(true); return
+                        }
+                        try? await Task.sleep(for: .seconds(3))
+                    }
+                }
+            }
         }
     }
 }
