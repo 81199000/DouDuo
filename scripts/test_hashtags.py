@@ -202,3 +202,4 @@ console.log('PASS bridge mapper and absent metadata');
         subprocess.run(['node','-e',script,str(ROOT/'DouDuo/DouyinFeedView.swift')],check=True)
 
 if __name__ == '__main__': unittest.main()
+

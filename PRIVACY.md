@@ -35,3 +35,4 @@ DouDuo 是一个开源的第三方视频客户端，**与抖音、北京字节�
 DouDuo does not operate any server and does not collect, store or share personal data. Account sign-in and all content requests go directly from your device to Douyin and are governed by Douyin's own privacy policy. Saved-to-Photos is used only when you tap Save.
 
 Domestic publication regions are displayed by default. Missing metadata for displayed works, lazily mounted neighbours and the next two recommendations is fetched directly from aweme.snssdk.com using the work ID, without login cookies or credentials. Only a bounded local region cache is retained. The service receives the normal network source IP. These work fields are not verified IP attribution or real-time location.
+
