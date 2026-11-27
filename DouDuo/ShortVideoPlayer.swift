@@ -501,6 +501,11 @@ struct PlayerPage: View {
     @State private var savedPlaybackStarted = false
     @State private var savedPlaybackCompleted = false
     @State private var avRetried = false
+    /// 首帧看门狗：接管起播后 800ms 没拿到像素帧（解码器解不动）→ 同一条换 VLC 软解，一条只降级一次
+    @State private var ffWatch = DDFirstFrameWatch()
+    @State private var ffFellBack = false
+    /// 画面层报过 isReadyForDisplay（firstFrame 会被时间轴走动置真，不能拿来判「真出画」）
+    @State private var layerReady = false
     /// 秒开期间：高清播放器（静音、几乎透明地叠在低清上面缓冲），就绪后淡入接管
     @State private var hdPlayer: AVPlayer?
     @State private var hdVisible = false
@@ -932,7 +937,9 @@ struct PlayerPage: View {
                 logSwipeStart(p)
                 #endif
                 watchdog(p)
+                watchFirstFrame(p)
             } else {
+                ffWatch.stop()
                 telemetry.end()
                 let savedPos = seamAudio.currentMediaTime ?? p.currentTime().seconds
                 isPlaying = false
@@ -951,7 +958,7 @@ struct PlayerPage: View {
                 // 画面层真正有帧可显示（isReadyForDisplay）就撤掉封面：预加载 / 本地缓存的视频滑过来就是真画面，
                 // 不再「先闪一下封面再播」
                 ZStack {
-                    VideoSurface(player: player, fillWidth: fillsVideoPlane, onReady: { if !firstFrame { firstFrame = true }; DYReadiness.mark(id) },
+                    VideoSurface(player: player, fillWidth: fillsVideoPlane, onReady: { if !firstFrame { firstFrame = true }; layerReady = true; DYReadiness.mark(id) },
                                  pictureInPicture: pictureInPicture,
                                  pictureInPictureEnabled: DYAutoPiP.shortVideoWantsAutomaticPiP(
                                      preference: autoPiP, cleanScreen: cleanScreen, isActive: isActive),
@@ -1351,6 +1358,7 @@ struct PlayerPage: View {
         gen.requestedTimeToleranceAfter = CMTime(seconds: 1.5, preferredTimescale: 600)
         imgGen = gen
         attachObservers(p)
+        ffWatch.attach(p.currentItem)   // 还停着时挂取帧输出，起播时不动管线
         if let seconds = initialResumePosition { restorePosition(seconds, using: p) }
         if isActive {
             // 工单 B13 排查：重建后接到哪、0.6 秒后实际播到哪（模拟器接得上，真机仍从头播，差在哪一步）
@@ -1378,6 +1386,7 @@ struct PlayerPage: View {
         if shouldPlay {
             DYSwipeProbe.active(id)
             watchdog(p); telemetry.begin(p, id: id, duration: knownDuration)
+            watchFirstFrame(p)
         }
         else { primeFirstFrame(p) }
         #if DEBUG
@@ -1690,6 +1699,26 @@ struct PlayerPage: View {
         }
     }
 
+    /// 首帧看门狗：每条接管起播都记 DDFIRSTFRAME ms=（首个像素帧耗时）；
+    /// readyToPlay + 数据到了 + 播放器自认为在播，却 800ms 不出像素 → 拆 AVPlayer 换 VLC 软解（一条只换一次）
+    private func watchFirstFrame(_ p: AVPlayer) {
+        guard !ffFellBack, vlc == nil, player === p else { return }
+        let tag = String(id.suffix(6))
+        ffWatch.begin(.init(
+            player: p,
+            eligible: { playbackIsActive && isPlaying && !userPaused && !seeking && player === p && vlc == nil },
+            layerShown: { layerReady },
+            log: { DYLiveModel.log("DDFIRSTFRAME \(tag) \($0)") },
+            fallback: { ms in
+                guard !ffFellBack, player === p, vlc == nil else { return }
+                ffFellBack = true
+                let pos = p.currentTime().seconds
+                let it = p.currentItem
+                DYLiveModel.log("DDFIRSTFRAME \(tag) ms=\(ms) fallback=vlc st=\(it?.status.rawValue ?? -1) tcs=\(p.timeControlStatus.rawValue) t=\(String(format: "%.2f", pos)) buf=\(String(format: "%.1f", DYPlaybackTelemetry.bufferedAhead(p)))s size=\(Int(it?.presentationSize.width ?? 0))x\(Int(it?.presentationSize.height ?? 0))")
+                startVLC(resumeAt: pos.isFinite && pos > 0.3 ? pos : 0)
+            }))
+    }
+
     private func retryPlayback() {
         if avRetried {
             startVLC()
@@ -1739,6 +1768,7 @@ struct PlayerPage: View {
             imgGen = gen
         }
         attachObservers(p)
+        ffWatch.attach(item)
         let localResume = rebuildResumePosition
         if let localResume {
             restorePosition(localResume, using: p)
@@ -1752,6 +1782,7 @@ struct PlayerPage: View {
         bindSeamlessAudio(to: p, initialPos: localResume, active: playbackIsActive, playing: true)
         p.rate = playRate
         watchdog(p)
+        watchFirstFrame(p)
         // 重建后的诊断：3 秒时画面/声音什么状态（真机 11-26：重建后出了画面没声音）
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             guard player === p else { return }
@@ -1942,16 +1973,18 @@ struct PlayerPage: View {
     }
 
     /// VLC 软解接管（AVPlayer 两次起不来 / 状态 failed）
-    private func startVLC() {
+    private func startVLC(resumeAt: Double? = nil) {
         cancelUpgrade()
         teardownPlayerOnly()
-        let source = offlineContext?.localOnly == true ? offlineContext?.localURL() : url
+        // 首帧降级（resumeAt 有值）时整条已在本地缓存就读本地，不再联网
+        let cached = resumeAt != nil ? DYVideoCache.localURL(id) : nil
+        let source = offlineContext?.localOnly == true ? offlineContext?.localURL() : (cached ?? url)
         guard let source else {
             if playbackIsActive { offlineContext?.onFailure() }
             return
         }
         let v = VLCPlayerController()
-        var restoreWithVLC = rebuildResumePosition
+        var restoreWithVLC = resumeAt.flatMap { $0 > 0.3 ? $0 : nil } ?? rebuildResumePosition
         if let restoreWithVLC { pendingOfflineSeek = restoreWithVLC; current = restoreWithVLC }
         v.onProgress = { [weak v] pos in
             guard let v else { return }
@@ -1981,6 +2014,7 @@ struct PlayerPage: View {
         }
         vlc = v
         vlcURL = source
+        v.outputMuted = muted   // 静音沿用当前设置（VLC 默认出声）
         isPlaying = canControlPlayback && !userPaused
         if offlineContext != nil {
             v.onError = { [weak v] in
@@ -2118,6 +2152,7 @@ struct PlayerPage: View {
     }
 
     private func teardownPlayerOnly() {
+        ffWatch.detach()
         stallGuard?.invalidate(); stallGuard = nil; stallReasonGuard?.invalidate(); stallReasonGuard = nil
         pictureInPicture.invalidate()
         seamAudio.reset()
@@ -2297,6 +2332,8 @@ struct PlayerPage: View {
         if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
         if let np = nextPlayer { np.pause(); np.replaceCurrentItem(with: nil); nextPlayer = nil }
         player?.pause()
+        ffWatch.detach()   // 还给预热池前摘掉取帧输出，别跟着 item 回池
+        layerReady = false
         // 还没轮到播就被回收的相邻页：播放器还给预热池接着缓冲，下次滑过来直接用
         if let p = player, returnable, returnPlayer?(p) == true {
             DYLiveModel.log("DDGIVEBACK \(id.suffix(6)) status=\(p.currentItem?.status.rawValue ?? -1)")

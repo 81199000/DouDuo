@@ -289,12 +289,25 @@ final class DYStreamStore: @unchecked Sendable {
         lock.lock()
         let previous = currentID
         let changed = previous != id
-        if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds } }
+        // 上一条到切走都没再跟 ddstream 要字节 = 预热已缓冲够（或走本地整条），记一笔 src=buffered
+        let unmet = changed ? ttfbArmed : nil
+        if changed { currentID = id; advancedAt = Date(); if playhead[id] == nil { playhead[id] = seconds }; ttfbArmed = (id, Date()) }
         let leaving = changed ? entries.values.filter { $0.id == previous } : []
         lock.unlock()
+        if let unmet { DYLiveModel.log("DDTTFB \(unmet.id.suffix(6)) ms=-1 src=buffered") }
         if changed { DYStreamLoader.shared.bump(); scheduleTrim() }
         logLeave(leaving)
         if let e = entry(forVideo: id) { DYStreamLoader.shared.pump(e) }
+    }
+
+    /// DDTTFB 测量：页面接管（activate）时刻 → 播放器第一次从 ddstream 拿到字节
+    private var ttfbArmed: (id: String, at: Date)?
+    func noteFirstByte(_ id: String, src: String) {
+        lock.lock()
+        guard let a = ttfbArmed, a.id == id else { lock.unlock(); return }
+        ttfbArmed = nil
+        lock.unlock()
+        DYLiveModel.log("DDTTFB \(id.suffix(6)) ms=\(Int(Date().timeIntervalSince(a.at) * 1000)) src=\(src)")
     }
 
     private var trimScheduled = false
@@ -734,7 +747,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                         guard let d = try h.read(upToCount: Int(min(end - cursor, 2 * 1024 * 1024))), !d.isEmpty else { break }
                         dr.respond(with: d); cursor += Int64(d.count)
                     }
-                    if cursor >= end { req.finishLoading(); return }
+                    if cursor >= end { DYStreamStore.shared.noteFirstByte(e.id, src: "file"); req.finishLoading(); return }
                 }
             }
             while cursor < end {
@@ -748,6 +761,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                     e.lock.lock(); let d = e.read(cursor, n); e.lock.unlock()
                     guard let d, !d.isEmpty else { throw URLError(.cannotOpenFile) }
                     dr.respond(with: d)
+                    DYStreamStore.shared.noteFirstByte(e.id, src: "local")
                     cursor += Int64(d.count)
                     continue
                 }
@@ -820,6 +834,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                         guard room > 0 else { return }
                         let piece = Int64(data.count) <= room ? data : data.prefix(Int(room))
                         dr.respond(with: piece)
+                        if fed == cursor { DYStreamStore.shared.noteFirstByte(e.id, src: "net") }
                         fed += Int64(piece.count)
                     }
                 } catch where DYChunkStream.isRevive(error) && revives < 3 {
@@ -877,6 +892,12 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 // 按块收（URLSession 每次给几十 KB），不再逐字节 `for try await b in bytes`：
                 // 逐字节一条 10MB 视频就是一千万次异步迭代，真机分析里是后台 CPU 第一大户（发烫原因之一）
                 let chunks = DYChunkStream(session: session, request: r)
+                // 握手占比：每段网络请求是否复用连接、DNS/建连/TLS 各花多少（只记当前条）
+                chunks.onMetrics = { m in
+                    guard DYStreamStore.shared.isCurrent(e.id), let t = m.transactionMetrics.last else { return }
+                    func ms(_ a: Date?, _ b: Date?) -> Int { guard let a, let b else { return -1 }; return Int(b.timeIntervalSince(a) * 1000) }
+                    DYLiveModel.log("DDSTREAMCONN \(e.id.suffix(6)) at=\(range.lowerBound / 1024)KB reused=\(t.isReusedConnection) dns=\(ms(t.domainLookupStartDate, t.domainLookupEndDate)) connect=\(ms(t.connectStartDate, t.connectEndDate)) tls=\(ms(t.secureConnectionStartDate, t.secureConnectionEndDate)) ttfb=\(ms(t.requestStartDate, t.responseStartDate)) proto=\(t.networkProtocolName ?? "-") host=\(t.request.url?.host ?? "-")")
+                }
                 let cid = ObjectIdentifier(chunks)
                 track(chunks)
                 defer { chunks.cancel(); untrack(cid) }
@@ -1022,6 +1043,10 @@ final class DYChunkStream: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func cancel() { task?.cancel() }
 
     private var revived = false
+    var onMetrics: ((URLSessionTaskMetrics) -> Void)?
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        onMetrics?(metrics)
+    }
     static func isRevive(_ error: Error) -> Bool {
         let n = error as NSError
         return n.domain == NSURLErrorDomain && n.code == URLError.networkConnectionLost.rawValue && n.userInfo["dd.revive"] as? Bool == true

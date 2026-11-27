@@ -21,6 +21,7 @@
 		1710FB16E0B12F7246B4ADDE /* DYStreakBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6D96CD4F0723A239A6567B9 /* DYStreakBadge.swift */; };
 		18EC4F1B223F415D3E4CB8F7 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33BFCEEAF50CAF105B25611 /* UpdateChecker.swift */; };
 		196DFE4B096524D7B0FC5A7B /* DYSwipeProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 730650A08AE183BAB384340D /* DYSwipeProbe.swift */; };
+		19A195B7D2504A8F07AF97E5 /* DDFirstFrameWatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 208133C982A1F0A220DB01A9 /* DDFirstFrameWatch.swift */; };
 		19ECC8D42A077E8652DD8714 /* DYRelationsPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */; };
 		1C1DFA2A3BC33A54BA080EEE /* DYHashtagFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A40470F20A49FE6787F16E /* DYHashtagFilter.swift */; };
 		1D2745F338DA81638C4BC74A /* DYLiveAmbient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CC6CF50CD6FBA493434991 /* DYLiveAmbient.swift */; };
@@ -189,6 +190,7 @@
 		155B32250F5E880D0E5980F8 /* DYStreamPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYStreamPlan.swift; sourceTree = "<group>"; };
 		1AFCBE4FE0ED5F396B476B89 /* DYPassportVerify.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYPassportVerify.swift; sourceTree = "<group>"; };
 		1B5F31F40D5B41BBD9FD011C /* DYRelationsPagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYRelationsPagingTests.swift; sourceTree = "<group>"; };
+		208133C982A1F0A220DB01A9 /* DDFirstFrameWatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDFirstFrameWatch.swift; sourceTree = "<group>"; };
 		21E706CE2EE957B9C81B44D2 /* DYReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYReadiness.swift; sourceTree = "<group>"; };
 		247A523C254CDEF946BEA5A1 /* DouyinForwardPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DouyinForwardPanel.swift; sourceTree = "<group>"; };
 		248FD41A9E79A4955789001E /* DYOfflinePlaybackIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DYOfflinePlaybackIndicator.swift; sourceTree = "<group>"; };
@@ -348,6 +350,7 @@
 				E049F77CC7B7331FD0750ECD /* DDAppearance.swift */,
 				110D29956FE874A340F5A465 /* DDAppearanceProbe.swift */,
 				A9B20C3E24E2BCC516B851FC /* DDAudioSessionGuard.swift */,
+				208133C982A1F0A220DB01A9 /* DDFirstFrameWatch.swift */,
 				69F908E196DB8C186A646FD2 /* DDObjCCatch.h */,
 				E2E9BD2FEFEECADD0286D29B /* DDObjCCatch.m */,
 				6CA7EEC582B3E1800F3868EE /* DDPerfExperiment.swift */,
@@ -679,6 +682,7 @@
 				6279D68970644B3297B72542 /* DDAppearance.swift in Sources */,
 				115E503A4451900455784A66 /* DDAppearanceProbe.swift in Sources */,
 				65B7CD540F494F463C4D1A9E /* DDAudioSessionGuard.swift in Sources */,
+				19A195B7D2504A8F07AF97E5 /* DDFirstFrameWatch.swift in Sources */,
 				2B681409CD2793B1BBC473BA /* DDObjCCatch.m in Sources */,
 				80ADD5B724F81D4CD80F7EC8 /* DDPerfExperiment.swift in Sources */,
 				640D8F930CE33AACE1C2FE24 /* DDReleaseNotes.swift in Sources */,
