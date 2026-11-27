@@ -86,7 +86,7 @@ enum DYCollectSub: String, CaseIterable, Identifiable {
 }
 
 enum DYListKind: String, CaseIterable, Identifiable {
-    // 「私密作品」单独一栏（老板 11-23，网页版同款：作品 / 私密作品 / …，接口 /aweme/v1/web/private/aweme/）
+    // 「私密作品」单独一栏
     case post, secret, like, collect, history, later
     var id: String { rawValue }
     /// 网页版「批量管理」在作品 / 私密作品 / 喜欢 / 收藏
@@ -155,7 +155,7 @@ extension DouyinBridge {
         let d = try await call(Self.selfJS, args: [:])
         let r = try JSONDecoder().decode(DYUserResp.self, from: d)
         if let u = r.user, !u.secUid.isEmpty { return u }
-        // 只有抖音明确回了「未登录」才说未登录（工单 B17）：以前超时 / 断网 / 403 / 风控空包也报「抖音未登录」，
+        // 只有抖音明确回了「未登录」才说未登录：以前超时 / 断网 / 403 / 风控空包也报「抖音未登录」
         // 「我的」据此自动弹登录页、评论恢复页判成登录作废——隔天冷启动网络一慢，用户就以为每天都被退出了
         if r.status < 0 { throw DYError.bad("读取账号资料超时或网络不通，请稍后重试") }
         guard r.status == 200 else { throw DYError.blocked("HTTP \(r.status)") }
@@ -503,7 +503,7 @@ extension DouyinBridge {
             DYLiveModel.log("DDSEND comment op=\(operationID) phase=rejected")
             throw DYError.bad(r.msg?.isEmpty == false ? r.msg! : "评论被拒绝（\(code)），草稿已保留")
         }
-        // 回查有总时限：读接口在风控期间可能被安全 SDK 压住十几秒，界面不能一直转圈（老板 11-18 实测卡约 30 秒）。
+        // 回查有总时限：读接口在风控期间可能被安全 SDK 压住十几秒，界面不能一直转圈。
         DYLiveModel.log("DDSEND comment op=\(operationID) phase=reconcile")
         let started = Date()
         let mine = await Self.firstWithin(Self.reconcileTimeout) { [weak self] in
@@ -746,9 +746,9 @@ extension DouyinBridge {
     static let postJS = listTail + #"""
     const r = await req('GET', '/aweme/v1/web/aweme/post/?' + qPost({ sec_user_id: sec, max_cursor: cursor, locate_query: 'false', show_live_replay_strategy: '1', need_time_list: '1', time_list_query: '0', whale_cut_token: '', cut_version: '1', count: '18' }));
     const d = parse(r.t) || {};
-    // 自己的作品：origin_cover 是全黑占位图（2026-11-16 实测 360×721 全 0），改用 cover
+    // 自己的作品：origin_cover 是全黑占位图，改用 cover
     (d.aweme_list || []).forEach(a => { if (a) a.__ddSelfList = true; });
-    // 私密作品单独在「私密作品」栏，这里不再混着显示（老板 11-23）。
+    // 私密作品单独在「私密作品」栏，这里不再混着显示。
     // status.private_status：0 公开 / 1 私密 / 2 好友可见（网页版枚举）；好友可见仍留在「作品」
     const list = (d.aweme_list || []).filter(a => !(a && a.status && Number(a.status.private_status) === 1));
     return pack(r, d, list, d.max_cursor, d.has_more);
@@ -916,7 +916,7 @@ extension DouyinBridge {
         if whilePlaying { releasedAt = Date() }
     }
 
-    /// 同一条视频的播放器被 SwiftUI 重建（内屏开关侧栏评论时 DDClipIf 换视图身份，#52-2 / 工单 B13）：
+    /// 同一条视频的播放器被 SwiftUI 重建
     /// 新实例建好时外层的 resume 还是旧值（旧实例 onDisappear 才回写），直接接旧实例的实时进度，否则从头播。
     static func handoff(_ id: String, to instance: UUID) -> Double? {
         guard self.id == id, time.isFinite, time > 0 else { return nil }
@@ -1224,7 +1224,7 @@ struct DYGrid: View {
 
     var body: some View {
         // 底部哨兵只在真正滚进可视区时才翻页：ScrollView 的非惰性子视图会立刻 onAppear，
-        // 直接 onAppear 会一页接一页把作者作品全拉下来（2026-11-07 实测）。
+        // 直接 onAppear 会一页接一页把作者作品全拉下来。
         GeometryReader { outer in
           ScrollViewReader { proxy in
             ScrollView {
@@ -1413,7 +1413,7 @@ struct DYListPlayer: View {
     /// 打开时外面已经盖了几层遮罩（信息页 / 我的）：这个播放器就在那一层之上，可以照常播
     @State private var coverLevel = DDPlayback.shared.coverDepth
     /// 点头像时作者页由播放器自己弹在上面。播放器是全屏页：交给底下的页面弹，会被播放器盖住，
-    /// 要返回关掉播放器后才看到（老板 11-16 报：搜索出来的视频点头像不跳，返回才跳）
+    /// 要返回关掉播放器后才看到
     let presentsAuthor: Bool
     @State private var authorSheet: DYAweme.Author?
     let offlineLibrary: Bool
@@ -1506,7 +1506,7 @@ struct DYListPlayer: View {
                 return
             }
             preloader.update(playback.items, current: i)
-            // 不再预解首帧：界面已不用首帧图顶替（老板要纯黑直出），省 CPU 和解码
+            // 不再预解首帧：界面已不用首帧图顶替，省 CPU 和解码
             if i >= playback.items.count - 4, let loadMore, !playback.loadingMore {
                 playback.loadingMore = true
                 Task {
@@ -1633,7 +1633,7 @@ struct DYListPlayer: View {
     }
 
     /// 「自动连播」打开时播完切下一条；到尾部先拉下一页
-    /// 自动连播翻页带滑动动画（议题 #21-4）；分页代理没接上时退回直接切
+    /// 自动连播翻页带滑动动画；分页代理没接上时退回直接切
     private func advance(from: String, to: String) {
         if !DYPagerAdvance.request(from: from, to: to) { withAnimation { playback.currentID = to } }
     }
@@ -2159,7 +2159,7 @@ struct DYMineScreen: View {
     @State private var manageMsg: String?
     @State private var confirmClearHistory = false
     @State private var clearingHistory = false
-    /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它（老板 2026-11-17）
+    /// App 内登录页（DYAppLoginScreen）；检测到未登录时进「我的」先弹它
     @State private var showLogin = false
     @State private var showAccounts = false
     /// 发布作品：开抖音创作者中心的上传页（DYUploadScreen），关掉后刷新作品列表
@@ -2193,7 +2193,6 @@ struct DYMineScreen: View {
                     if !embedded && chromeModeRaw != DDChromeMode.duoClassic.rawValue {
                         ToolbarItem(placement: .navigation) { Button("返回", systemImage: "chevron.backward") { dismiss() } }
                     }
-                    // 「网页版 / 登录」按钮已按老板要求去掉：未登录时页内仍有「去登录」入口，功能不受影响
                     // 嵌在信息页（简洁 / 极简）时「账号」在右侧栏，顶栏不放，免得跟返回键挤在一起
                     if !embedded {
                         ToolbarItem(placement: .primaryAction) {
@@ -2385,7 +2384,7 @@ struct DYMineScreen: View {
             #endif
             DYLiveModel.log("DDMINE appear cachedUser=\(user != nil) lists=\(models.count)")
             // 未登录：进「我的」先弹登录。看共享 cookie 有没有 sessionid，不等资料接口——
-            // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹（老板 11-17）
+            // 真机上签名页没加载好时接口报的是「页面还没加载好 / 被拦截」，不是「未登录」，以前因此不弹
             #if DEBUG
             let selfFixture = ProcessInfo.processInfo.environment["DOUDUO_SELF_FIXTURE"] == "1"
             #else
@@ -2451,7 +2450,7 @@ struct DYMineScreen: View {
         }
     }
 
-    /// 下拉刷新（老板 2026-11-21）：资料（粉丝 / 获赞 / 作品数）和当前这一栏一起重拉；
+    /// 下拉刷新：资料（粉丝 / 获赞 / 作品数）和当前这一栏一起重拉
     /// 其它栏的缓存作废，切过去时再拉新的。拉不到就保留原内容。
     private func pullRefresh(_ m: DYPagedModel) async {
         DYLiveModel.log("DDMINE pull-refresh kind=\(kind.rawValue)")

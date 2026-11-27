@@ -83,7 +83,7 @@ enum DYDuoMetrics {
 
     /// 是不是 iPhone Duo 真机/模拟器（iPhone19,4）。
     /// 外屏顶栏的 -80 贴顶只对 Duo 成立：Duo 外屏窗口内容区比物理屏顶端低约 80pt；
-    /// 普通 iPhone 窗口从物理顶端开始，再往上推 80 就把顶栏推出屏幕（issue #16：点不到）。
+    /// 普通 iPhone 窗口从物理顶端开始，再往上推 80 就把顶栏推出屏幕。
     static let isDuoHardware: Bool = {
         #if targetEnvironment(simulator)
         let id = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""
@@ -753,7 +753,7 @@ struct DYCommentPlayerLayout<Video: View>: View {
     private var commentItem: DYAweme? { allowsComments ? aweme ?? captionItem : nil }
     private var showsComments: Bool { showComments && !searchPresented && commentItem != nil }
 
-    /// 评论四种界面统一用经典那套（老板 2026-11-17）：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板。
+    /// 评论四种界面统一用经典那套：外屏横屏视频上移、内屏右侧滑出、半折常驻、贴边底部面板。
     /// 只有菜单（经典的系统导航栏 / 原生按钮）和简介面板按模式分，见 docs/ui-modes.md「必须分开」。
     var body: some View {
         Group {

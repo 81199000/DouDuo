@@ -44,14 +44,14 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 5. **简介（视频描述）**
    - 经典：默认 3 行，点正文 / 「…展开」打开简介面板（作者、关注、全文、发布时间，下面接评论）——`DYClassicExpandableTitle`。
    - 默认 / 简洁 / 极简：默认 1 行，点「展开」原地展开、「收起」收回——`DYExpandableTitle`。
-   - 理由：老板 2026-11-17 试用后决定各管各的（统一成面板的版本已回滚，见 bf20b3f 的 revert）。不要再把两边合并。
+   - 不要再把两边合并。
 
 ## 已统一 / 计划统一给所有模式
 
 - [x] 推荐流数据操作（14 个函数）合成一份
 - [x] 弹幕拉取 / 发送 / 输入条合成一份
 - [x] 点已选中的「推荐」刷新推荐（简洁 / 极简的模块菜单里显示为「刷新推荐」）
-- [x] 推荐页评论（老板 2026-11-17 定「直接套经典的评论区」）：四种模式同一份 `DYCommentStage` + 经典评论面板样式
+- [x] 推荐页评论：四种模式同一份 `DYCommentStage` + 经典评论面板样式
   - Duo 外屏：横屏视频移到顶部，评论在下，贴满宽（原来简洁右边空约 84pt 的问题随之消失）
   - 内屏横拿：评论从右侧滑出、视频缩窄；横屏右划关闭
   - 半折：评论常驻
@@ -59,7 +59,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
   - 外屏叠放评论时状态栏让位（原「必须分开」第 4 条，已统一）
   - 坑：侧栏评论时视频区必须裁边（`DDClipIf`），否则播放器的环境光底（忽略安全区、铺满整屏）会盖住右侧评论栏 → 简洁内屏评论空白
   - 回归：`testOuterLandscapeVideoLiftsAboveCommentsInEveryMode`、`testInnerSideCommentsSwipeRightToCloseInEveryMode`、`testPhysicalHalfFoldCommentsHideSidebar`（四种模式）、`testCommentPresentationIsUnifiedAcrossLayouts`
-- [x] 推荐流横竖选片（老板 2026-11-17）：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
+- [x] 推荐流横竖选片：**半折叠时横竖反过来**——竖拿半折（视频在上半块）按横屏规则；横拿半折（视频在左半块）按竖屏规则；没半折看窗口宽高。单元测试 `halfFoldFlipsFeedOrientation`
 - [x] 「我的 / 作者页 / 搜索」点进去的列表播放页（`DYCommentPlayerLayout`）：四种模式同一套经典评论几何（`playerLayout`），删掉非经典的 `upstreamBody`；只有菜单（经典系统导航栏 / 原生按钮）和简介面板按模式分。回归 `testListPlayerCommentsMatchFeedInEveryMode`、`testStandaloneCommentsRespectLayout`
 
 ## 验证分档（按改动大小，不默认跑模拟器）
@@ -71,7 +71,7 @@ DouDuo 有四种界面：**默认 / 简洁 / 极简 / 经典**（`DDChromeMode`�
 | 跨模式的重构、合并别人的大改动、发版 | 编译 + 全部脚本测试；UI 测试只挑与改动同区域的几个，不跑整组。 |
 
 - 真机是默认验收端：编译通过的包直接装机，有问题拉 `Documents/ddlog.txt` 定位，不回模拟器复现。
-- 模拟器只有在老板同意或指定时才用，不要自己判断「需要」就开。用完 `xcrun simctl shutdown all`。
+- 用完 `xcrun simctl shutdown all`。
 - 不再要求：每个改动跑全姿态 × 四模式、修 bug 先写 UI 测试并在旧代码上跑红、重构前后整组 UI 测试比基线、改完先截多台模拟器再装机。
 
 ## 改动前自检

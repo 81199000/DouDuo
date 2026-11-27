@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 import AVFoundation
-// VLC 软解兜底（来自 無為 影库播放器）：AVPlayer 解不了 / 起播失败时接管。依赖 tylerjonesio/vlckit-spm。
+// VLC 软解兜底：AVPlayer 解不了 / 起播失败时接管。依赖 tylerjonesio/vlckit-spm。
 import VLCKitSPM
 
 // MARK: - VLC 播放器 UIKit 包装（软解 HEVC 等苹果硬解不认的格式）
@@ -14,7 +14,7 @@ struct VLCPlayerSurface: UIViewRepresentable {
         let v = VLCPlayerUIView()
         v.controller = controller
         v.fillWidth = fillWidth
-        v.backgroundColor = letterbox ?? .black   // 视频留边纯黑（老板定）
+        v.backgroundColor = letterbox ?? .black   // 视频留边纯黑
         controller.boundSurface = v
         guard !controller.blocksSurfaceAttachment else { return v }
         controller.mediaPlayer.drawable = v
@@ -118,13 +118,11 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
 
     /// 控制器被释放（例如离开推荐页时推荐直播卡整页销毁）时，VLCMediaPlayer 的析构会同步 join 解码/音频线程；
     /// 音频输出 flush 卡住时这一下永远不返回——放在主线程就是整个 App 卡死，10 秒后被系统看门狗杀掉
-    /// （2026-11-21 Duo 两次：播放中点「直播」频道，主线程停在 libvlc_media_player_destroy → pthread_join，
     /// VLC 线程停在 input_Close / ca_Flush）。所以最后一次释放必须交给后台线程，跟 installFreshPlayer 换代时一样。
     deinit {
         guard let player = mediaPlayer else { return }
         // ⚠️ activePlayer 里还有一份强引用：不先清掉，控制器的成员在 deinit 之后（主线程）才释放，
         // 后台那份先放完时，最后一次释放就落在 activePlayer 上 → 主线程 libvlc_media_player_destroy 卡死
-        // （2026-11-23 14:01 Duo：退后台时直播预热被丢弃，10 秒后控制器析构，主线程卡 20 秒被系统杀）。
         activePlayer.suspendAcceptance()
         player.delegate = nil
         player.drawable = nil
@@ -211,7 +209,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         onInterruptionRebuildFailed = nil
     }
 
-    /// 旧播放器先离开 drawable 和 delegate。新实例立刻成为唯一回调主人。
+    /// 旧播放器先离开 drawable 和 delegate。
     /// 后台释放可以一直不返回；画面和播放不在等它。
     private func installFreshPlayer() {
         guard interruptionRebuild, !handoffInFlight else { return }
@@ -278,7 +276,6 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
             // ⚠️ 不要加 --no-drop-late-frames / --no-skip-frames：解码一跟不上就死等 → 进度卡住不走。
             // 默认丢帧才能保持进度持续推进。
         ]
-        // 所有播放器共用同一个 libVLC 实例（老板 11-23 卡死：每建一个播放器就带一整套 libVLC，
         // 刷 8 小时累计 89 套没回收的 VLC 工作线程）。这些选项原来是给每个实例的，现在放进共享实例，效果一样。
         return VLCMediaPlayer(library: VLCPlayerCensus.library(options))
     }
@@ -662,7 +659,6 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         advanceClock.stamp()
         // ⚠️ 只弱引用回调来源（VLCMediaPlayer 本身）：强引用的话，控制器已放掉播放器时，
         // 这个排在主线程的任务会成为最后一个持有者 → 在主线程析构 → join 解码线程卡死，App 被系统杀
-        //（真机 11-21 18:46 崩溃：main-queue drain → _Block_release → VLCMediaPlayer dealloc → pthread_join）
         let weakSource = VLCWeakBox(source)
         Task { @MainActor in
             guard epoch == callbackEpoch.current, activePlayer.accepts(weakSource.object), mediaPlayer.isPlaying else { return }
@@ -842,7 +838,6 @@ private final class VLCCallbackEpoch: @unchecked Sendable {
 
 
 /// VLC 播放器计数 + 共享 libVLC 实例。
-/// 2026-11-23 卡死取证：刷了 8 小时后进程有 623 个线程，其中 89 个是 libVLC 的 worker_thread——
 /// 每个 VLCMediaPlayer(options:) 都会新建一整套 libVLC 实例，释放后实例里的工作线程并不退出。
 /// 改成共享实例后，这类线程不再随播放器数量增长。
 enum VLCPlayerCensus {

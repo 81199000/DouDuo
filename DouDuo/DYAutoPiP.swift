@@ -19,7 +19,7 @@ enum DYAutoPiP {
     }
 
     /// 绑定播放器时是否全程锁原生声音（不允许变速交给独立引擎）。
-    /// 只有清屏模式全程锁；自动画中画只在离开 App 时把声音交回原生（老板 2026-11-19 定方案 A），
+    /// 只有清屏模式全程锁；自动画中画只在离开 App 时把声音交回原生
     /// 前台长按加速照样不断声。
     static func bindsNativeAudio(preference: Bool, cleanScreen: Bool) -> Bool {
         cleanScreen

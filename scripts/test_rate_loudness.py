@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""倍速声音变小（老板 11-26 戴耳机）：引擎链路插 PeakLimiter 按倍速补增益；把补偿曲线编出来真跑。"""
+"""倍速声音变小：引擎链路插 PeakLimiter 按倍速补增益；把补偿曲线编出来真跑。"""
 import pathlib, subprocess, sys, tempfile
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 s = (R / "SeamlessAudioPlayer.swift").read_text()

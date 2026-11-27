@@ -255,7 +255,7 @@ final class DYNativeIM {
     var debugLastInitItem: Data?
     #endif
 
-    /// 信封（cb_req.proto Request）。逐字段照官方私信网页抓包（2026-11-27 模拟器 DOUDUO_IMCAP 干跑）：
+    /// 信封（cb_req.proto Request）。逐字段照官方私信网页抓包
     /// 1 cmd / 2 seq / 3 "0.1.8" / 4 "" / 5 refer=3 / 6 0 / 7 build / 8 body / 9 "0" / 11 douyin_pc / 14 "360000" /
     /// 15 headers（发送时 identity_security_* 在最前）/ 18 auth_type=1 / 21 douyin_web / 22 web_sdk。
     /// 环境字段与私信网页本身一致（UA = 网页 UA、browser_platform = navigator.platform、屏幕 = 真实尺寸、referer 空）。
@@ -399,7 +399,7 @@ final class DYNativeIM {
         return (status, bytes, names)
     }
 
-    /// 官方私信网页在原生扫码登录的会话下实际发出的票据头（2026-11-27 23:03 模拟器真发成功抓包）：
+    /// 官方私信网页在原生扫码登录的会话下实际发出的票据头
     /// 公钥空、sign-type 0、没有 client-data——即「不带票据签名」。网页安全 SDK 若自行补签，用的是跟这次登录不匹配的网页密钥，
     /// 服务端判定异常直接作废登录。预先设好这几个头，SDK 看到已存在就不再补签。
     static let officialGuardHeaders: [String: String] = [
@@ -776,7 +776,7 @@ final class DYNativeIM {
 
 
 #if DEBUG
-/// 私信发送探针：DOUDUO_IMSEND=<文字> → 发给唯一的单聊会话（老板确认：小号唯一好友 = 老板大号），
+/// 私信发送探针：DOUDUO_IMSEND=<文字> → 发给唯一的单聊会话
 /// 发完立即检查登录、回读确认。只发一条，不重试。
 @MainActor enum DDIMSendProbe {
     static func run(_ text: String) async {

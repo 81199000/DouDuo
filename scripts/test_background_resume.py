@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""长视频退出 App 回来播不了 / 等一会儿从头播（老板 11-24）。"""
+"""长视频退出 App 回来播不了 / 等一会儿从头播。"""
 import re, sys, pathlib, subprocess, tempfile
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 p = (R / "ShortVideoPlayer.swift").read_text()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""卡死防护（2026-11-23 真机 8 小时 623 线程被看门狗杀）的接线检查。只读源码，不跑设备。"""
+"""卡死防护的接线检查。只读源码，不跑设备。"""
 from pathlib import Path
 import re
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +29,7 @@ t = t[:t.index("DYFeedLiveWarm.shared.release(reason: \"threads\")") + 60]
 assert "线程=%d vlc建=%d vlc释放中=%d" in t and "preloader.clear()" in t and "if DYThreadGuard.pressured" in t
 print("OK thread guard: shared libVLC, release census, warm gating, 30s sampling + valve")
 
-# 6) 控制器析构时先清掉 activePlayer 的强引用（11-23 14:01 卡死：最后一次释放落在主线程）
+# 6) 控制器析构时先清掉 activePlayer 的强引用
 d = VLC[VLC.index("    deinit {"):]
 d = d[:d.index("DispatchQueue.global(qos: .utility).async")]
 assert "activePlayer.suspendAcceptance()" in d and d.index("activePlayer.suspendAcceptance()") < d.index("release.player = player"), "deinit 必须先清 activePlayer"

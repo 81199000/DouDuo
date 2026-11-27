@@ -36,7 +36,7 @@ struct DYCommentNeedsVerify: Error { let decision: String }
  static func run(decision: String) async -> Outcome { runs += 1; lastDecision = decision; return next } }
 struct DYCommentImageDraft: Equatable { let data = Data(); let fileName = "image"; let measured = DYImageXUploadResult(uri:"m",width:1,height:1,format:"jpeg") }
 @MainActor enum DYWebComposer { static var enabled = false }  // 本脚本只测接口方式；网页评论框方式见 test_web_composer.js
-// jibao 11-27 原生接口：本脚本只测网页接口那条路，原生全关（原生发评论另见 DYNativeAPI 自身日志 / 真机验证）
+// 只测网页接口路径，原生接口全关
 @MainActor enum DYNative { static var enabled = false; static var nativeOnly = false; static var writeEnabled = false
  static func replies(_ id: String, commentID: String, cursor: Int) async -> (items: [DYComment], cursor: Int, hasMore: Bool)? { nil }
  static func publishComment(_ a: String, text: String, replyID: String?, replyToReplyID: String?, ticketWeb: Any?, op: String) async -> DYNativePublishOutcome { .notSent("off") } }

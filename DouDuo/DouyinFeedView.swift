@@ -1,5 +1,4 @@
 // DouDuo：抖音第三方客户端。数据走抖音网页端接口，界面 / 播放全原生。
-// 源自 無為 App 的「抖音原生模式」。
 // - 一个看不见的 WKWebView（电脑版 UA）挂在抖音页面上，只当「签名代理」：在页面里发 XHR，
 //   抖音自己的安全 SDK 自动补 a_bogus 等签名，签名算法跟着官方更新走，我们不用逆向。
 // - 登录态与「网页版」共用 WKWebsiteDataStore.default()，在网页版登录后原生模式即带账号。
@@ -179,7 +178,7 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     var flv: [String: String]? = nil
     let portrait: Bool
     var def: String? = nil
-    /// 主播 sec_uid / uid / 关注状态：直播间顶部「关注」和点主播进主页用（工单 B32）。旧数据没有就是 nil。
+    /// 主播 sec_uid / uid / 关注状态：直播间顶部「关注」和点主播进主页用。旧数据没有就是 nil。
     var ownerSec: String? = nil
     var ownerUID: String? = nil
     var ownerFollow: Int? = nil
@@ -265,7 +264,7 @@ enum DYError: LocalizedError {
 final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var ready = false
     /// 签名完成：签名页已加载、安全 SDK 已接管 XHR+fetch、本页登录凭证已刷新（/passport/token/beat/web）。
-    /// 老板 2026-11-19：刚启动 5 秒就发评论 → 403(凭证校验 1101) 并被抖音作废登录；没完成前不许发评论。
+    /// 没完成前不许发评论。
     @Published private(set) var signReady = false
     /// 这一轮签名从什么时候开始（倒计时用）
     @Published private(set) var signStartedAt = Date()
@@ -1107,8 +1106,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     };
     const first = o => (o && o.url_list && o.url_list[0]) || null;
     const q = s => new URLSearchParams(Object.assign({}, base, s)).toString();
-    // 作品列表 /aweme/v1/web/aweme/post/ 专用：带 os_name=Mac OS 时抖音回 200 空包（2026-11-23 实测，其它参数不变、
-    // 只去掉 os_name 就有作品；主页资料等接口不受影响）→ 主页作品一直「这里还没有内容」（工单 B34）
+    // 只去掉 os_name 就有作品；主页资料等接口不受影响）→ 主页作品一直「这里还没有内容」
     const qPost = s => { const o = Object.assign({}, base, s); delete o.os_name; return new URLSearchParams(o).toString(); };
     // 直连 CDN（douyinvod）优先：实测首字节 0.27–0.30s；www.douyin.com/aweme/v1/play/ 多跳一次 0.95–1.85s
     const pickPlay = l => (l || []).find(u => !u.includes('/aweme/v1/play/')) || (l && l[0]) || null;
@@ -1120,8 +1118,8 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
       // 档名两种：normal_540_0（分辨率在中间）/ 540_3_1、1080_1_1（分辨率在开头，多为 H.265）
       const m = /(?:^|_)(\d{3,4})_/.exec(r.gear_name || ''); return m ? +m[1] : 0;
     };
-    // format=dash 的档只有画面没有声音（音轨单独给），只能用 format=mp4 的（2026-11-20 真机：省流量档选到 dash 没声音）
-    // 档名末位 _2 = 字节自研 ByteVC2（文件里是 bvc2），iPhone 解不了 → 有声没画面（2026-11-21 真机：广告 10 条里 5 条黑屏，全是选中了 720_1_2）。
+    // format=dash 的档只有画面没有声音（音轨单独给），只能用 format=mp4 的
+    // 档名末位 _2 = 字节自研 ByteVC2（文件里是 bvc2），iPhone 解不了 → 有声没画面。
     // 普通视频的 H.265 档末位是 _1（hvc1，能解）。播放地址只从能解的档里挑。
     const decodable = r => !/_2$/.test(r.gear_name || '');
     const withAudio = r => (!r.format || r.format === 'mp4') && decodable(r);
@@ -1166,7 +1164,6 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
         q: (br ? (br.gear_name || '?') + ' ' + resOf(br) + 'p h265=' + (br.is_h265 ? 1 : 0) + ' ' + Math.round((br.bit_rate || 0) / 1000) + 'k' : 'nolist')
           + ' | def ' + (pd.width || 0) + 'x' + (pd.height || 0) + ' | gears ' + (v.bit_rate || []).map(r => (r.gear_name || '?') + ':' + Math.round((r.bit_rate || 0) / 1000) + 'k' + (r.is_h265 ? 'h' : '')).join(','),
         // origin_cover = 原比例首帧（竖屏就是竖的）；cover 是网页推荐用的 4:3 横版裁切，会让竖屏视频先显示成横的
-        // ⚠️ 2026-11-16 实测：「我的·作品」接口给的 origin_cover 是全黑占位 JPEG（360×721 全 0）→ 那里改用 cover（postJS 打标记）
         cover: (a.__ddSelfList ? (first(v.cover) || first(v.origin_cover)) : (first(v.origin_cover) || first(v.cover)))
           || (a.images && a.images[0] && first(a.images[0])) || null,
         images: (a.images || []).map(i => first(i)).filter(Boolean),
@@ -1205,7 +1202,7 @@ final class DouyinBridge: NSObject, ObservableObject, WKNavigationDelegate {
     """#
 
     /// 推荐流：网页版首页「推荐」竖屏流（tab/feed）。
-    /// 不用 module/feed（module_id=3003101）：那是网页「精选」，横屏长视频多、偏大众，跟 App 推荐差很远（2026-11 老板实测确认）。
+    /// 不用 module/feed（module_id=3003101）：那是网页「精选」，横屏长视频多、偏大众，跟 App 推荐差很远。
     private static let tabFeedJS = #"""
     const P = Object.assign({}, base, { count: '10', refresh_index: refresh, video_type_select: '1',
       aweme_pc_rec_raw_data: JSON.stringify({ is_client: false, ff_danmaku_status: 0, danmaku_switch_status: 0 }),
@@ -1344,7 +1341,6 @@ final class DYPreloader {
     /// 只有过热/极热才降档省电
     static var ahead: Int {
         // 按流量策略：Wi-Fi 跟「预缓存数量」（上限 10，跟分页器挂载页数一致）；用流量时省流量开 1 条、关 2 条
-        // （老板 11-24：「我要拉 10 个就 10 个」；以前边下边播时写死 3 条，设了 10 也只备 3 条）
         DYNetPolicy.current.preload
     }
     /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
@@ -1405,7 +1401,7 @@ final class DYPreloader {
             let nearIndex = window.firstIndex(where: { $0.id == a.id }) ?? 0
             obs[a.id] = item.observe(\.status, options: [.new]) { [weak self, weak p] it, _ in
                 if it.status == .failed {
-                    // 预热失败（之前直接把坏播放器交给页面 → 被判未就绪弹回 3 次再从零建，老板感觉「加载又慢了」）
+                    // 预热失败
                     let e = it.error as NSError?
                     let src = (it.asset as? AVURLAsset)?.url
                     DYLiveModel.log("DDPRELOADFAIL \(a.id.suffix(6)) local=\(src?.isFileURL ?? false) err=\(e?.domain ?? "-")/\(e?.code ?? 0) under=\((e?.userInfo[NSUnderlyingErrorKey] as? NSError).map { "\($0.domain)/\($0.code)" } ?? "-")")
@@ -1603,9 +1599,8 @@ final class DYFeedModel: ObservableObject {
     /// 竖着看时按约 70% 竖屏均匀穿插（网页推荐接口本身竖屏只占 1～3 成，原序播放几乎全是横屏）；
     /// 「横着看 + 只放横屏内容」时只取横屏。暂时没排进去的留在候选池，保持推荐原顺序。
     /// 横着看（屏幕/播放区比高宽）时只放横屏视频
-    /// 老板 11-24：默认关（横竖屏都不锁定筛选，按抖音推荐原样播），想要的在「高级设置」里打开
     @AppStorage("douyin_wide_landscape_v1") var landscapeWhenWide = false
-    /// 竖着看时固定约 70% 竖屏（老板 2026-11-22 要求做成开关）；关掉 = 按抖音推荐原顺序播放
+    /// 竖着看时固定约 70% 竖屏；关掉 = 按抖音推荐原顺序播放
     @AppStorage("douyin_portrait_mix_v1") var portraitMix = false
     /// 视频比屏幕窄（左右黑边）时自动放大铺满宽度；菜单里可关
     @AppStorage(DYVideoFit.preferenceKey) var autoFit = true
@@ -1839,7 +1834,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     @State private var topNudge: CGFloat = 0
     /// 默认模式顶栏的垂直位置：
     /// - Duo 内屏：0，与系统时间同一行；Duo 外屏：-80，贴物理屏顶（外屏窗口内容区比物理顶端低约 80pt）
-    /// - 其他 iPhone / iPad：放到顶部安全区下沿，避开状态栏和灵动岛（issue #16）
+    /// - 其他 iPhone / iPad：放到顶部安全区下沿，避开状态栏和灵动岛
     private var topBarTopPadding: CGFloat {
         if DYDuoMetrics.isDuoHardware { return hSize == .regular ? 0 : -80 }
         // 紧凑宽度下顶栏自带约 80pt 的下沉（Duo 外屏用 -80 抵消贴顶）；
@@ -1934,7 +1929,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     || abs(next.width - feedHost.width) > 0.5 || abs(next.height - feedHost.height) > 0.5 else { return }
             feedHost = next
         }
-        // 默认模式：顶栏要从物理屏最上沿开始排（外屏/内屏都贴顶），所以整层忽略顶部安全区——和 PR #12 之前完全一致。
         // 简洁/极简模式的 ignoresSafeArea 已在 layoutRoot 上，这里不重复加，避免影响侧边栏的安全区测量。
         .modifier(DDClassicTopInset(active: !railMode))
         .coordinateSpace(.named("douduo.feed"))
@@ -2176,7 +2170,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                              onCacheCleared: { focusCurrent() },
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
-                // 老板要求：进设置页视频也停（以前只有信息页停）
                 .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }
         }
         .fullScreenCover(item: $web, onDismiss: {
@@ -2282,7 +2275,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         (hingeClosed || stacksLandscapeComments) && showComments && !showSearch
             && authorTarget == nil && tab != .live && commentItem != nil
     }
-    /// 评论打开 → 顶栏、右侧栏、模块圆钮、视频上的按钮全部收起，评论在最顶层（老板 2026-11-17）
+    /// 评论打开 → 顶栏、右侧栏、模块圆钮、视频上的按钮全部收起，评论在最顶层
     /// 评论打开或半折常驻 → 菜单和视频上的按钮全部收起，评论在最顶层（与经典 hidesVideoChrome 同口径）
     private var commentsOpen: Bool {
         !showSearch && tab != .live && commentItem != nil && (showComments || residentComments)
@@ -2440,10 +2433,10 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 .accessibilityIdentifier("douyin.channel.\(t == .follow ? "follow" : t == .recommend ? "recommend" : "live")")
                 .accessibilityValue(t == .recommend && refreshing ? "正在刷新" : tab == t ? "已选择" : "")
             }
-            // 「信息」：带字的入口（老板 2026-11-19 要加回来），跟 tab 同款字体；未读红点独立显示
+            // 「信息」：带字的入口，跟 tab 同款字体；未读红点独立显示
             Button { showMessages = true } label: {
                 // 跟左边页签同一结构（文字 + 3pt 下划线位，这里不显示）：页签文字被下划线顶高了 3pt，
-                // 「信息」只有文字就会比「直播」低一截（老板 2026-11-21 截图）
+                // 「信息」只有文字就会比「直播」低一截
                 VStack(spacing: 3) {
                     Text("信息")
                         .font(.headline.weight(.medium))
@@ -2596,7 +2589,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
     private func queueLiveModule(_ action: DYLiveModuleRequest.Action) {
         queuedLiveAction = action
         // 菜单行先无动画收起、下一轮才跑动作（fc4acc7）：收起时的 onChange 已经跑过了，
-        // 这里不立刻发出去就要等下次开关菜单才生效 = 老板 11-19「我的关注 / 发现更多要点两次」。
         if !minimalMenuOpen { publishQueuedLiveModule() }
     }
 
@@ -2647,7 +2639,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                     }
                     Divider().padding(.vertical, 4)
                     minimalMenuRow("搜索", "magnifyingglass", id: "douyin.module.search") { openSearch() }
-                    // 老板 2026-11-19：「信息」入口加回来，点它直接进信息页；「我的」照旧进我的页（同一页的两个分栏）
+                    // 「我的」照旧进我的页（同一页的两个分栏）
                     minimalMenuRow("信息", "bubble.left.and.bubble.right", badge: noticeUnread > 0, id: "douyin.module.messages") {
                         messagesStartOnMine = false; showMessages = true
                     }
@@ -2800,7 +2792,7 @@ private struct DDRailProgressRing: View {
                 Circle().stroke(fg.opacity(theme.media.progressRingTrackOpacity), lineWidth: lw)
                 // 进度弧交给 Core Animation 画：每 0.25s 只改一次 strokeEnd，中间的补间在渲染服务里跑，
                 // 不占 App 主线程。以前用 SwiftUI .animation 补间 = 每帧整棵视图重算，
-                // 真机分析占主线程约 1/4～1/3（老板 11-21：刷久了发烫）。
+                // 真机分析占主线程约 1/4～1/3。
                 DDRingArc(fraction: max(railProgress.fraction, 0.004), color: UIColor(fg), lineWidth: lw)
             }
         }
@@ -2862,7 +2854,7 @@ struct DDPressHold: ViewModifier {
     }
 }
 
-/// 默认模式的顶栏贴物理屏最上沿：整层忽略顶部和左右安全区（与 PR #12 之前一致）。
+/// 默认模式的顶栏贴物理屏最上沿：整层忽略顶部和左右安全区。
 struct DDClassicTopInset: ViewModifier {
     let active: Bool
     func body(content: Content) -> some View {
@@ -2871,7 +2863,7 @@ struct DDClassicTopInset: ViewModifier {
 }
 
 /// 界面模式（更多 → 界面模式）：
-/// - classic 默认：顶部「关注/推荐/直播」文字页签 + 原有右侧按钮栏（PR #12 之前的样子）
+/// - classic 默认：顶部「关注/推荐/直播」文字页签 + 原有右侧按钮栏
 /// - rail 简洁：页签收进右侧功能栏的圆形模块入口，搜索进该入口的菜单
 /// - minimal 极简：同简洁，并且隐藏作者和标题
 enum DDChromeMode: String, CaseIterable, Identifiable {
@@ -3077,7 +3069,6 @@ struct DouyinFeedScreen: View {
         .background(alignment: .topLeading) {
             DYDMMonitorHost()
         }
-        // 老板 11-23：设置里开了「打开时默认静音」，每次进 App（冷启动 + 从后台回来）都提示一下现在是静音
         .task { DYLaunchMute.announce(shared.feed) }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             DYLaunchMute.announce(shared.feed)
@@ -3436,7 +3427,6 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
                              onCacheCleared: { focusCurrent() },
                              offlineCandidateSource: { try await offlineCandidates($0) },
                              offlineInteractionBridge: bridge)
-                // 老板要求：进设置页视频也停（以前只有信息页停）
                 .onAppear { DDPlayback.shared.beginSettingsCover(settingsCoverID) }
         }
         .fullScreenCover(item: $web, onDismiss: {
@@ -4159,7 +4149,7 @@ struct DYUpstreamVideoPage: View {
             if commentsOpen {
                 // 评论打开：视频上的按钮 / 信息全部收起，评论在最顶层
             } else if chromeMode.usesRail {
-                // 简洁 / 极简：整组按钮跟着系统侧栏边缘走（PR #12）
+                // 简洁 / 极简：整组按钮跟着系统侧栏边缘走
                 DYAdaptiveActionRail { edge in
                     HStack(alignment: .bottom, spacing: 12) {
                         if edge == .leading { actionRail(fg, edge: edge) }
@@ -4175,7 +4165,6 @@ struct DYUpstreamVideoPage: View {
                 .opacity(boost.boosting ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: boost.boosting)
             } else {
-                // 默认：PR #12 之前的布局，左下信息 + 右侧按钮栏
                 HStack(alignment: .bottom, spacing: 12) {
                     info(fg)
                     Spacer(minLength: 0)
@@ -4260,7 +4249,7 @@ struct DYUpstreamVideoPage: View {
     /// 小红书式左下信息区：头像 + 昵称 + 红色「关注」胶囊，下面文案 / 音乐
     private func info(_ fg: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 小黄车放在博主名上面（老板 2026-11-20，同抖音 App）
+            // 小黄车放在博主名上面
             if let product = item.product { DYProductPill(product: product, foreground: fg) }
             HStack(spacing: 8) {
                 Button(action: { if !boost.blocksTap { onAuthor() } }) {
@@ -4335,7 +4324,7 @@ struct DYUpstreamVideoPage: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .ddMediaGlassCircle()   // 亮色模式下视频上的玻璃控件仍保持暗色（PR #36）
+                    .ddMediaGlassCircle()   // 亮色模式下视频上的玻璃控件仍保持暗色
                     if chromeMode.usesRail && !usesOfflineFile {
                         DDRailProgressRing(show: isCurrent, fg: fg)
                     }
@@ -4378,7 +4367,7 @@ struct DYUpstreamVideoPage: View {
             VStack(spacing: 2) {
                 Group {
                     if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: !autoFit)   // 11-14 老板定：图标按「点了会怎样」显示（PR #47 的反向改动不采纳）
+                        DYFitCornerGlyph(inward: !autoFit)
                             .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
                             .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
                     } else {
@@ -5003,7 +4992,7 @@ struct DYCommentPanel: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.dyCommentTrailingCleared) private var trailingCleared
     @AppStorage(DDChromeMode.key) private var chromeModeRaw = DDChromeMode.classic.rawValue
-    /// 评论面板四种界面统一用经典样式（老板 2026-11-17 定，外屏内屏都一样）。
+    /// 评论面板四种界面统一用经典样式。
     private var usesClassicComments: Bool {
         if #available(iOS 27.1, *) { return true }
         return false
@@ -5219,7 +5208,7 @@ struct DYCommentPanel: View {
             .foregroundStyle(.themeTextPrimary)
             .padding(.horizontal, 16).padding(.vertical, 12)
             // 横屏（侧栏）时关闭键离右缘太近，会和视频时间显示挤在一起，整体左移让位；
-            // 外层已按系统竖栏缩窄过面板时不再重复让位（issue #15）
+            // 外层已按系统竖栏缩窄过面板时不再重复让位
             .padding(.trailing, hSize == .regular && !trailingCleared ? 88 : 0)
             Divider()
             ScrollViewReader { proxy in
@@ -6049,7 +6038,7 @@ struct DYCommentPanel: View {
         }
         if target == nil || target == top, page.contains(where: { $0.id == f.cid }) { target = f.cid }
         // 「@我的」通知只带被 @ 那条的 cid，不知道它是不是楼中楼（parentCid 为空）。
-        // 接口把它挂在某条一级评论的 reply_comment 里回来时，上面两步都找不到 → 误报「已删除」（粉丝反馈 11-23）。
+        // 接口把它挂在某条一级评论的 reply_comment 里回来时，上面两步都找不到 → 误报「已删除」。
         // 兜底：在本页所有一级评论的 pinned 里找它，找到就按楼中楼展开并定位。
         if target == nil, let owner = page.first(where: { ($0.pinned ?? []).contains { $0.id == f.cid } }), let pinned = owner.pinned {
             replies[owner.id] = pinned
@@ -6527,7 +6516,7 @@ struct DYCommentTopTracker: ViewModifier {
     }
 }
 
-/// 签名未完成时的提示：带倒计时，让用户知道大概还要等几秒（老板 2026-11-19）
+/// 签名未完成时的提示：带倒计时，让用户知道大概还要等几秒
 struct DYSignWaitHint: View {
     @ObservedObject var bridge: DouyinBridge
     let color: Color

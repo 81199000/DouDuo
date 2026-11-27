@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 私信点图片 → 原生看大图（老板 2026-11-22）：在 jsdom 里跑生产脚本，断言
+// 私信点图片 → 原生看大图：在 jsdom 里跑生产脚本，断言
 // ① 点消息气泡里的图片：网页自己的点击被吞掉，App 收到 {type:'photo', urls:[原图], index}
 // ② 头像 / 分享视频卡里的图片不拦  ③ 网页看大图层若还是冒出来，立刻派 Esc 收掉
 const fs = require('fs'), path = require('path'), assert = require('assert');

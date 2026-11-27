@@ -32,7 +32,7 @@ console.log(JSON.stringify(vm.runInNewContext(js+'\nmapA(a)',{a,URLSearchParams}
 
 class MetadataTests(unittest.TestCase):
     def test_image_post_carries_background_music_url(self):
-        """图集作品必须带出 music.play_url，否则图集没背景音乐（老板反馈过）。"""
+        """图集作品必须带出 music.play_url，否则图集没背景音乐。"""
         a = {"aweme_id": "1", "desc": "图集", "images": [{"url_list": ["https://p3.douyinpic.com/a.jpg"]}],
              "music": {"title": "BGM", "play_url": {"url_list": ["https://sf.douyinstatic.com/m.mp3"]}},
              "statistics": {}, "author": {"nickname": "n"}, "video": {}}

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 「一类」网页接口（批量管理 / 收藏夹 / 合集 / 音乐 / 通知 / 翻译 / 关注请求 / 短链）的请求形状回归。
 // 从生产 Swift 抽 JS，在本地假环境里跑：记录发出的请求、回放给定响应。不碰抖音。
-// 期望形状逐个对照网页版 douyin_web 脚本（2026-11-22）。
+// 期望形状逐个对照网页版 douyin_web 脚本。
 const fs = require('fs'), path = require('path'), vm = require('vm'), assert = require('assert');
 const src = fs.readFileSync(path.join(__dirname, '../DouDuo/DouyinBridge+Library.swift'), 'utf8');
 const more = fs.readFileSync(path.join(__dirname, '../DouDuo/DouyinBridge+More.swift'), 'utf8');

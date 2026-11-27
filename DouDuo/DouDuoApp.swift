@@ -163,7 +163,7 @@ struct DouDuoApp: App {
         // 「不再推荐看过的视频」：推荐接口新推来的，划到过就跳过（开关在设置 → 推荐与内容）
         DYFeedModel.isSeen = { id in DYSeenHistory.enabled && DYSeenHistory.shared.contains(id) }
         DYLaunchMute.apply()
-        // 后台网页不许登出 + 登录被清掉时提示（老板 11-18：评论发不出就是被退出了，App 还没提示）
+        // 后台网页不许登出 + 登录被清掉时提示
         Task { @MainActor in
             DYLogoutBlock.prepare()
             DYKeyStateProbe.log = { DYLiveModel.log($0) }

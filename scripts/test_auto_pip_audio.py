@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""自动画中画的声音口径（老板 2026-11-19 定方案 A）：
+"""自动画中画的声音口径
 前台变速照样交给独立引擎（不断声），只在离开 App、要进系统画中画时把声音交回 AVPlayer 原生。"""
 import re, sys
 from pathlib import Path

@@ -114,7 +114,6 @@ class MenuPolicyTests(unittest.TestCase):
         tabs = block(FEED, "enum DYTab:")
         for title in ("关注", "推荐", "直播"):
             self.assertIn('"' + title + '"', tabs)
-        # 老板 2026-11-19：顶栏「信息」要有字，点它进信息页
         self.assertIn('Text("信息")', top)
         self.assertIn("showMessages = true", top)
         self.assertNotIn("myUser?.name", top)
@@ -130,7 +129,6 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertIn('"下载"', quick)
         self.assertNotIn("ShareLink", menu)
         self.assertNotIn("danmaku", quick.lower())
-        # 2026-11-14 老板定：不感兴趣放在转发和下载中间，跟它们同色（不是红色 destructive）
         self.assertLess(quick.index("DYForwardMenu"), quick.index('"不感兴趣"'))
         self.assertLess(quick.index('"不感兴趣"'), quick.index('"下载"'))
         self.assertNotIn("role: .destructive", quick)
@@ -150,7 +148,7 @@ class MenuPolicyTests(unittest.TestCase):
             self.assertIn(token, screen)
 
     def test_settings_paths_and_duration_preferences(self):
-        # 2026-11-14 老板定：「更多」最后一节只有「设置」，点进完整设置页；刷新推荐 / 弹幕 / 界面都在设置页。
+        # 刷新推荐 / 弹幕 / 界面都在设置页。
         upstream = block(UPSTREAM_ROOT, "private func moreExtrasMenu")
         classic = block(FEED, "    private var moreExtrasMenu: some View")
         for menu in (upstream, classic):
@@ -166,15 +164,13 @@ class MenuPolicyTests(unittest.TestCase):
         self.assertLess(classic.index("$bgPlay"), classic.index("DYSettingsButton()"))
         self.assertNotIn("struct DYChromeModePicker", FEED)
         screen = (ROOT / "DouDuo/DYSettingsScreen.swift").read_text()
-        # 老板 11-19 重排：界面 → 播放与弹幕 → 推荐与内容 → 评论与私信 → 缓存与离线 → 账号 → 关于
-        # 11-24 老板重排：评论开关收进「高级设置」，私信通知并入「账号与私信」，缓存区改名「流量与缓存」
         order = ['Text("界面")', 'Text("播放与弹幕")', 'Text("推荐与内容")', 'Text("流量与缓存")',
                  'Text("账号与私信")', 'Label("高级设置"', 'Text("关于")']
         for section in ['Label("刷新推荐"'] + order:
             self.assertIn(section, screen)
         idx = [screen.index(t) for t in order]
         self.assertEqual(idx, sorted(idx), "设置分组顺序")
-        # 2026-11-14 老板定：表层菜单已有的（静音 / 铺满 / 听书 / 自动连播）设置页不重复；短视频占比删除
+        # 短视频占比删除
         for gone in ('"douyin_autoplay_v1"', '"douyin_muted_v1"', '"douyin_autofit_v1"', '"douyin_bg_play_v1"',
                      "short_ratio", "短视频占比", "ratioChoices", 'Toggle("静音"', 'Toggle("自动连播"', 'Toggle("铺满宽度',
                      'Toggle("听书模式', "$autoNext", "$muted", "$autoFit", "$backgroundPlay"):
@@ -197,12 +193,11 @@ class MenuPolicyTests(unittest.TestCase):
             self.assertNotIn(gone, panel)
         load = block(FEED, "func loadMore(_ bridge:")
         self.assertIn("added += fill(want - added)", load)
-        # 2026-11-15 老板定：恢复竖着看约 70% 竖屏穿插（原序播放几乎全是横屏）；凑不齐才放宽，横屏限定不放宽
+        # 凑不齐才放宽，横屏限定不放宽
         self.assertIn("if added == 0, !landscapeOnlyActive { added += fill(want, relaxed: true) }", load)
         self.assertIn("static let portraitTarget = 0.7", FEED)
 
     def test_feed_uses_recommend_endpoint_only(self):
-        # 2026-11-14 老板定：只保留网页首页「推荐」(tab/feed)，精选(module/feed)删掉，也不给切换
         fetch = block(FEED, "func fetchFeed()")
         self.assertIn("Self.tabFeedJS", fetch)
         self.assertNotIn("feedJS,", fetch.replace("tabFeedJS", ""))
@@ -298,7 +293,7 @@ remix.landscapeWhenWide = false
 remix.remix(after: 0)
 precondition(remix.items.map(\.id) == ["current", "upcoming-tall", "upcoming-wide"], "\(remix.items.map(\.id))")
 precondition(DYFeedModel.isPortrait(DYAweme(id: "gallery", images: ["fixture"])))
-// 5) 「竖屏时固定 70% 竖屏」「横屏只放横屏」默认都关（老板 11-24）：竖着看按推荐原顺序，不再穿插
+// 5) 「竖屏时固定 70% 竖屏」「横屏只放横屏」默认都关：竖着看按推荐原顺序，不再穿插
 preferences.removePersistentDomain(forName: suiteName)
 let plain = DYFeedModel()
 precondition(!plain.portraitMix && !plain.landscapeWhenWide, "11-24 起两个筛选默认关")

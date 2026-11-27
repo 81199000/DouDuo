@@ -103,7 +103,7 @@ enum DYVideoFit {
         return CGFloat(max(screenAspect / videoAspect, videoAspect / screenAspect))
     }
 
-    /// 推荐流按横屏还是竖屏选片（老板 2026-11-17）：半折叠时横竖反过来。
+    /// 推荐流按横屏还是竖屏选片：半折叠时横竖反过来。
     /// 竖拿半折（视频在上半块，是横的）→ 横屏；横拿半折（视频在左半块，是竖的）→ 竖屏；没半折看窗口宽高。
     static func feedPlaysLandscape(window: CGSize, halfFolded: Bool) -> Bool {
         let landscapeWindow = window.width > window.height

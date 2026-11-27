@@ -2,7 +2,7 @@ import AVFoundation
 import ObjectiveC
 import UIKit
 
-/// 根治「直播卡后面那条视频开播后被停住卡一下」（2026-11-20 真机，三次补救都只能事后接上，肉眼仍有一顿）。
+/// 根治「直播卡后面那条视频开播后被停住卡一下」。
 ///
 /// 根因：推荐里的直播卡用 VLC 播放，VLC 停播时会自己调 `AVAudioSession setActive:NO`，
 /// 把整个 App 的音频会话关掉——这时下一条短视频已经开播，系统直接把它暂停。

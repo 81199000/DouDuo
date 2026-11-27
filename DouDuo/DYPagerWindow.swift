@@ -8,7 +8,6 @@ import SwiftUI
 enum DYPagerWindow {
     static let behind = 1
     /// 提前挂载几条 = 设置里的缓存条数（5 条就挂 5 页，上限 10），跟暖机数一致。
-    /// 之前写死 1 页：老板设 10 条缓存也只挂下一条，而「未就绪就弹回」的规则又拦着，导致每次都要滑两次。
     static var ahead: Int { min(max(DYVideoCache.limit, 1), 10) }
     /// 占位里显示封面的范围（快速连滑越过挂载窗口时也不是纯黑）
     static let coverRange = 4

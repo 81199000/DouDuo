@@ -33,7 +33,7 @@ final class DYMessageCache: ObservableObject {
     /// 名字旁的关系标签，文案与抖音网页版关注按钮一致（webpack 常量 vc：
     /// Followed「已关注」/ FollowEach「相互关注」/ FollowByOther「回关」= 对方关注了我、我没关注）。
     /// 消息列表里「回关」读起来像按钮，换成「关注了你」，意思相同；「已关注」不打标（默认情况，打了是噪音）。
-    /// 对方关注了我（follower_status > 0，含互关）→ 头像上的红心（老板 2026-11-20 定：红心 = 别人关注我）
+    /// 对方关注了我（follower_status > 0，含互关）→ 头像上的红心
     func followsMe(_ row: DYConversationRow) -> Bool {
         guard row.kind == 1, let sec = row.sec, !sec.isEmpty else { return false }
         return (follower[sec] ?? 0) > 0 || follow[sec] == 2
@@ -256,12 +256,11 @@ final class DYMessageCache: ObservableObject {
             let fresh = try await bridge.notices(group: group, maxTime: cursor, minTime: boundary)
             guard scope == account else { throw CancellationError() }
             // 翻页游标要停在「已拉到的最后一页」之后：以前只记第 1 页的游标，空缓存首拉 3 页后，
-            // 下滑分页从第 2 页重拉 → 全是已有的 → 列表不增长、转圈不再触发，就卡在第一屏（2026-11-20 老板报）
+            // 下滑分页从第 2 页重拉 → 全是已有的 → 列表不增长、转圈不再触发，就卡在第一屏
             if batch == 0 || old == nil { initialCursor = fresh.maxTime; initialMore = fresh.hasMore }
             incoming.append(contentsOf: fresh.items)
             if !fresh.hasMore || fresh.items.isEmpty || fresh.maxTime == cursor || fresh.items.contains(where: { known.contains($0.id) }) { break }
             // 没有缓存（或缓存不足一页）时也要连拉几页：抖音单页只给 10 条，
-            // 只取首页会出现「消息中心永远只有 10 条」——老板报的「只显示 20 个人」就是这个。
             // 首屏给到 3 页（约 30 条）够填满一屏，再往下由用户下滑分页继续。
             if old == nil && batch >= 2 { break }
             cursor = fresh.maxTime
@@ -276,7 +275,7 @@ final class DYMessageCache: ObservableObject {
     }
     func store(_ page: DYCachedNoticePage, group: Int) { snapshot.pages[String(group)] = page; save() }
     /// 刚标已读的分组 → 时间。抖音标已读后未读数接口要过一会才归零，期间以本地 0 为准，
-    /// 否则返回后角标还在，要再点进别的分类（再触发一次刷新）才清掉（老板 2026-11-20 报）。
+    /// 否则返回后角标还在，要再点进别的分类（再触发一次刷新）才清掉。
     private var justRead: [Int: Date] = [:]
     /// 服务端未读数 → 显示用：刚读过的分组在 30 秒内按 0 显示
     func applyReadMask(_ server: [Int: Int]) -> [Int: Int] {
@@ -426,7 +425,7 @@ enum DYNoticeGroup: Int, CaseIterable, Identifiable {
     case all = 700
     case comment = 2
     case digg = 3
-    /// @我的（网页版 noticeGroupMap 9→6，2026-11-22 从官方 JS 读出）
+    /// @我的
     case at = 6
     case fans = 401
     case system = 961
@@ -548,7 +547,7 @@ struct DYMessagesScreen: View {
     var onMine: (() -> Void)? = nil
     /// 「我的」页内容（简洁/极简模式：跟信息页融合，共用右侧栏，点返回回到信息）
     var mineContent: AnyView? = nil
-    /// 打开时先显示哪一页：点「我的」进来就是「我的」，点「信息」进来就是信息（老板 2026-11-17）
+    /// 打开时先显示哪一页：点「我的」进来就是「我的」，点「信息」进来就是信息
     var startsOnMine = false
     @State private var showingMine = false
     /// 「我的」第一次切过去后就常驻（隐藏而不销毁），之后信息 ⇄ 我的来回切不再重建、不重拉资料和作品
@@ -585,7 +584,7 @@ struct DYMessagesScreen: View {
     @State private var keyboardFrame: CGRect?
     @State private var chatPaneFrame = CGRect.zero
     /// 右侧栏所在容器的高度：键盘弹出会被缩掉一截，贴底排的栏就跟着上移。
-    /// 记下没键盘时的高度，缩掉多少补回多少，栏就待在原地（老板定：键盘弹起来菜单不要动）。
+    /// 记下没键盘时的高度，缩掉多少补回多少，栏就待在原地。
     /// 底部安全区高度（home 条那段）
     private var keyboardBottomInset: CGFloat {
         chatModel.web?.window?.safeAreaInsets.bottom ?? 0
@@ -921,17 +920,16 @@ struct DYMessagesScreen: View {
     @ContentBuilder
     private var messageContent: some View {
         if #available(iOS 27.1, *) {
-            // 老板定：整个信息界面靠左，右边一条跟视频页同款的右侧栏（内外屏、横竖屏同一套）。
             // 右侧栏跟视频页一样用 DYAdaptiveActionRail：读系统竖栏那一列的宽度，伸进去居中对齐，
             // 内容区只让出栏本身占的宽度（不再被安全区 + 栏宽挤两次）。
-            // 横屏时系统竖栏会被放到左边（toolbarVerticalEdge = .leading）；老板要右侧栏「横屏也一样」→ 一律放右边
+            // 横屏时系统竖栏会被放到左边（toolbarVerticalEdge =.leading）
             if isClassicChrome {
                 messagePanes
             } else {
             DYAdaptiveActionRail { systemEdge in
                 GeometryReader { safe in
-                    // 全屏时一律放右边（老板定）。分屏且系统竖栏在左（DouDuo 在左半屏）时跟视频页一样进左边那一列，
-                    // 否则左边那一列空着成黑边、侧栏挤在中间（粉丝反馈 11-23，老板截图确认）
+                    // 全屏时一律放右边。分屏且系统竖栏在左（DouDuo 在左半屏）时跟视频页一样进左边那一列
+                    // 否则左边那一列空着成黑边、侧栏挤在中间
                     let edge: HorizontalEdge = systemEdge == .leading && DYWindowSplit.isSplit ? .leading : .trailing
                     // 系统竖栏和侧栏同一边时，栏居中到那一列；不同边时离边 12
                     let column = systemEdge == edge ? (edge == .leading ? safe.safeAreaInsets.leading : safe.safeAreaInsets.trailing) : 0
@@ -946,7 +944,7 @@ struct DYMessagesScreen: View {
                             .allowsHitTesting(!showingMine)
                         if showingMine || mineMounted, let mineContent {
                             // 外层整页忽略了顶部安全区；「我的」自带导航栏，内容要让开状态栏 + 导航栏，
-                            // 否则页头（含「去登录」）被导航栏盖住、点不到（老板 2026-11-17「点击登录无反应」）。
+                            // 否则页头（含「去登录」）被导航栏盖住、点不到。
                             mineContent
                                 .safeAreaPadding(.top, messageTopInset)
                                 .padding(edge == .leading ? .leading : .trailing, reserve)
@@ -986,7 +984,7 @@ struct DYMessagesScreen: View {
                     root
                         .frame(width: listWidth, height: geo.size.height)
                         .clipped()
-                        // 分栏时联系人和聊天之间画一条明显的竖线（老板要「明显的色差或分割线」）
+                        // 分栏时联系人和聊天之间画一条明显的竖线
                         .overlay(alignment: rtl ? .leading : .trailing) {
                             if split {
                                 theme.messages.splitDivider
@@ -1233,13 +1231,13 @@ struct DYMessagesScreen: View {
                 .accessibilityIdentifier("douyin.conversation.row")
                 .listRowBackground(navigation.chatID == row.id ? theme.messages.selectedRow : row.isPinned == true ? theme.messages.pinnedRow : .clear)
                 .accessibilityAddTraits(navigation.chatID == row.id ? .isSelected : [])
-                // 不再 .disabled：点会话时整列表变「禁用」→ 所有行一起变暗，打开完再变亮（老板说「整个列表闪一下」）。
+                // 不再.disabled：点会话时整列表变「禁用」→ 所有行一起变暗，打开完再变亮。
                 // 防连点由 openConversation / 改会话流程开头的 guard 负责，视觉上不动列表。
                 .accessibilityValue(row.isPinned == true ? "已置顶" : "")
                 .anchorPreference(key: DYMessageRowBoundsKey.self, value: .bounds) {
                     row.isPinned == true ? [row.id: $0] : [:]
                 }
-                // 只保留左滑：右滑会跟左缘右滑返回上一层冲突（老板定），置顶并入左滑菜单
+                // 只保留左滑：右滑会跟左缘右滑返回上一层冲突，置顶并入左滑菜单
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button("删除", systemImage: "trash", role: .destructive) { deletingConversation = row }
                     Button("不显示", systemImage: "eye.slash") {
@@ -1488,7 +1486,6 @@ struct DYMessagesScreen: View {
             return
         }
         // 乐观跳转：点下就进聊天界面（原生表头 + 转圈），DOM 切换在后台完成。
-        // 以前要等网页 DOM 切完才跳，那段时间就是老板说的「点了要等很久」。
         chatDOMReady = false
         chatPlaceholder = snapshotKey(for: row.id, web: web).flatMap { DYChatSnapshotCache.shared.image(for: $0) }
         lastOpenUsedSnapshot = chatPlaceholder != nil
@@ -2077,7 +2074,7 @@ struct DYMessagesScreen: View {
             conversations = cache.snapshot.conversations.sorted(by: DYConversationRow.byTimeDesc)
         }
         recent = cache.page(700)?.items ?? []
-        // 进信息页的首屏成本：缓存直出花多久（老板要求「打开就不重新加载」）
+        // 进信息页的首屏成本：缓存直出花多久
         DYLiveModel.log("DDMSGROOT cached_ms=\(Int(Date().timeIntervalSince(t0) * 1000)) prepare_ms=\(tPrep) chats=\(conversations.count) recent=\(recent.count)")
         #if DEBUG
         if DYMessageFixture.enabled { return }
@@ -2142,7 +2139,7 @@ struct DYNoticeListScreen: View {
     let isActive: Bool
     let embedded: Bool
     /// 嵌在信息页右侧时外层整页忽略了顶部安全区：标题行要让开状态栏，否则「全部互动」下拉落在系统导航栏底下，点不到
-    /// （老板 2026-11-22：展开大屏竖屏点不了）。跟左侧「消息」标题同一个值，两边顶部对齐。
+    /// 。跟左侧「消息」标题同一个值，两边顶部对齐。
     var topInset: CGFloat = 0
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
@@ -2370,7 +2367,6 @@ struct DYNoticeListScreen: View {
     }
 
     private func startReply(_ n: DYNotice) {
-        // 老板 11-19：通知里直接回复屡次「显示成功却看不到」，评论区里回复一直正常。
         // 有视频和评论 id 的，一律打开那条视频的评论区并进入「回复 @它」，用评论区同一套发送。
         if n.commentFocus != nil {
             DYLiveModel.log("DDNOTICEREPLY via=comment-panel")
@@ -2664,7 +2660,6 @@ struct DYNoticeListScreen: View {
                 } label: {
                     Label(open ? "收起" : "展开", systemImage: open ? "chevron.up" : "chevron.down")
                         .labelStyle(.titleAndIcon)
-                        // 老板 11-23：「展开」常点不到——按钮上下各留 10pt 可点区域，和正文/下一条拉开
                         .padding(.vertical, 10).padding(.trailing, 8)
                         .contentShape(Rectangle())
                 }
@@ -2777,7 +2772,6 @@ enum DYChatOpener {
     enum Result { case opened, notReady, notFound }
 
     /// 等聊天网页「不再动」：消息列表高度、输入框位置连续 3 帧不变才算稳（最多 ~700ms）。
-    /// 揭开前调用——以前一切换就揭开，老板看到的是网页边渲染边挪输入框、挪消息。
     /// 返回 (采样次数, 毫秒)。
     static func settle(_ web: WKWebView) async -> (frames: Int, ms: Int) {
         let js = #"""
@@ -3146,7 +3140,7 @@ enum DYChatOpener {
     """#
 
     static func collapseStranger(_ web: WKWebView) async {
-        // 实测（2026-11-16 03:21 起）：陌生人面板的表头一直在，收起后也不消失，
+        // 实测：陌生人面板的表头一直在，收起后也不消失
         // 原来每次进聊天都要等满 20×25ms 才放弃 → 每次多卡 ~600ms。
         // 主列表行在就直接跳过；需要收起时最多等 150ms。
         if (try? await web.evaluateJavaScript(mainListReadyJS)) as? Bool == true { return }
@@ -3469,11 +3463,10 @@ struct DYForwardScreen: View {
             NavigationStack {
                 VStack(spacing: 0) {
                 // 自己画的搜索框（不用 .searchable）：转发面板是全屏层里再弹的表单，后面还挂着隐藏网页，
-                // 系统搜索栏在这里点了不出键盘（老板 11-23）。整条可点，点了直接给输入框焦点。
+                // 系统搜索栏在这里点了不出键盘。整条可点，点了直接给输入框焦点。
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.themeTextSecondary)
                     // UIKit 输入框：打开就自己要焦点弹键盘（SwiftUI TextField 在这层叠的弹窗里点了没反应，
-                    // 日志里一次焦点变化都没有——老板 11-23 两次反馈）
                     DYForwardSearchField(text: $query, autoFocus: true)
                         .frame(maxWidth: .infinity)
                         .accessibilityIdentifier("douyin.forward.search.field")

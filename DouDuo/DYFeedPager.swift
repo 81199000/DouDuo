@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 推荐流的竖向分页器：默认 / 简洁 / 极简 / 经典四种界面共用这一份。
-/// 以前经典布局（PR #17）各自复制了一份 ScrollView，漏挂 `DYPagingSpeedBridge`，
+/// 以前经典布局各自复制了一份 ScrollView，漏挂 `DYPagingSpeedBridge`
 /// 只有它还在走系统分页的慢收尾，滑起来明显比另外三种拖沓。改分页行为只改这里。
 struct DYFeedPager<Page: View>: View {
     let items: [DYAweme]
@@ -66,7 +66,7 @@ struct DYFeedPager<Page: View>: View {
             })
         .onChange(of: scrollID) { _, id in
             guard let id, items.contains(where: { $0.id == id }) else { return }
-            // 老板定：滑到位停住才播。滚动位置过中线时不切当前条——由分页桥在收尾动画停住时（didSettle）切。
+            // 滚动位置过中线时不切当前条——由分页桥在收尾动画停住时（didSettle）切。
             // 只有减少动态效果（分页桥不接管）时才沿用系统的过中线即切。
             if userScrolling { if reduceMotion { currentID = id } }
             else if id != currentID { scrollID = currentID }

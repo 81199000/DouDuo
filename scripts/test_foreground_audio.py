@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""长视频退出 App 回来能播但没声音（老板 11-26）：回前台把声音交回原生、清中断门闩、记音频状态。"""
+"""长视频退出 App 回来能播但没声音：回前台把声音交回原生、清中断门闩、记音频状态。"""
 import pathlib, sys
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 p = (R / "ShortVideoPlayer.swift").read_text()

@@ -3,7 +3,7 @@ import Security
 import SwiftUI
 import WebKit
 
-/// 多账号（老板 2026-11-17）：每个账号存一份抖音网页的登录 cookie，切换 = 换 cookie + 重载签名页。
+/// 多账号：每个账号存一份抖音网页的登录 cookie，切换 = 换 cookie + 重载签名页。
 /// - cookie 是登录凭据：整份存 Keychain（仅本机、解锁后可读、不进 iCloud 备份），App 文件里只放昵称头像等展示信息
 /// - 「退出登录」只清本机登录态（删 cookie），不调抖音的登出接口——调了会让抖音作废这份凭据，存着的账号就切不回来了
 /// - 「移除账号」才把存着的凭据一起删掉
@@ -160,7 +160,7 @@ final class DYAccountStore: ObservableObject {
     }
 
     /// 登录态变了（App 内登录成功 / 切换 / 退出）：立刻重新核对账号。
-    /// 信息页的账号核对有 5 分钟缓存，以前登录后还拿着「未登录时打开的聊天网页」，信息一直加载不出来（老板 11-17）。
+    /// 信息页的账号核对有 5 分钟缓存，以前登录后还拿着「未登录时打开的聊天网页」，信息一直加载不出来。
     /// prepare() 发现账号变了会丢掉旧聊天网页，后台下一轮按新账号重开 /chat。
     static func sessionDidChange() {
         DYMessageCache.shared.invalidateScope()

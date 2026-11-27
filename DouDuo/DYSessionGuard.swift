@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import WebKit
 
-/// 登录态守护（老板 2026-11-18：评论发不出 = 被退出登录了，而且 App 没有任何提示）。
+/// 登录态守护。
 ///
 /// 真机日志实证（19:04:37–39）：App 启动后，后台停着的私信网页（/chat）在打开 2 秒内由网页自己的脚本
 /// 发了 `www.douyin.com/passport/web/logout/`；DouDuo 原生代码没有调用任何登出（无 DDACCOUNT sign-out）。

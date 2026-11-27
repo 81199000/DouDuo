@@ -917,7 +917,6 @@ final class DYChatWebSession {
             await cache.prepare()
             if cache.scopeGeneration > 0 { settled = true }
         }
-        // 老板要求「进信息页不用重新加载」：只要已登录就把聊天网页常驻挂着，
         // 跟「私信通知」开关无关；开关只管横幅和轮询。
         if cache.chatModel.web == nil, cache.hasSession || DYDMProbe.enabled { ensureWeb(cache.chatModel) }
         place()

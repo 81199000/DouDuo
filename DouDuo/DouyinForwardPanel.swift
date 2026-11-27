@@ -93,7 +93,7 @@ struct DYClassicNativeForwardPanel: View {
     private var contactRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: WuWeiDesign.Spacing.sm) {
-                // 只排最近联系的 10 个，其余从末尾「更多」里搜（老板 11-23）
+                // 只排最近联系的 10 个，其余从末尾「更多」里搜
                 ForEach(Array(contacts.prefix(10))) { contact in
                     Button { onContact(contact) } label: {
                         VStack(spacing: WuWeiDesign.Spacing.sm) {
@@ -310,7 +310,7 @@ struct DYUpstreamNativeForwardPanel: View {
     private var contactRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: WuWeiDesign.Spacing.sm) {
-                // 只排最近联系的 10 个，其余从末尾「更多」里搜（老板 11-23）
+                // 只排最近联系的 10 个，其余从末尾「更多」里搜
                 ForEach(Array(contacts.prefix(10))) { contact in
                     Button { onContact(contact) } label: {
                         VStack(spacing: WuWeiDesign.Spacing.sm) {

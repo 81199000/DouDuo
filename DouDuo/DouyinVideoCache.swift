@@ -63,7 +63,7 @@ actor DYVideoCache {
         return (files ?? []).filter { $0.pathExtension == "head" }
     }
 
-    /// 设置只有 1 / 5 / 10 三档（老板 11-24）。旧版存的值就近归档：0（关闭）→ 1，6–9 → 10 以下取 5，20/50/100 → 10
+    /// 设置只有 1 / 5 / 10 三档。旧版存的值就近归档：0（关闭）→ 1，6–9 → 10 以下取 5，20/50/100 → 10
     nonisolated static var limit: Int { normalized((UserDefaults.standard.object(forKey: countKey) as? Int) ?? defaultCount) }
     nonisolated static func normalized(_ v: Int) -> Int { v <= 1 ? 1 : (v < 10 ? 5 : 10) }
 
@@ -98,7 +98,7 @@ actor DYVideoCache {
     private var longCompletion: Task<Void, Never>?
     private var failed: Set<String> = []
     /// 本次运行已划到过的：markWatched 时这条可能还没入库（边下边播看着看着才拼齐 / 整条下载晚于划到），
-    /// 入库时按这里置已看，否则重启后会被当成「没看过」塞回推荐（工单 B2：重复内容）
+    /// 入库时按这里置已看，否则重启后会被当成「没看过」塞回推荐
     private var watchedIDs: Set<String> = []
     private var prepared = false
     private var clearing = false
@@ -186,7 +186,6 @@ actor DYVideoCache {
     }
 
     /// Wi-Fi 省流量关时按预缓存数量整条下（含长视频，受 30 分钟 / 400MB 上限）。省流量开时一条都不整条下。
-    /// （11-21 曾因「12 分钟的只看 2 秒就下了 105MB」改成只下短视频；11-24 老板改为交给开关决定）
     /// 整条缓存的顺序（纯函数，脚本测试直接跑）：
     /// 先下一条、当前、再后面一条里的短视频（≤90 秒），再补长视频（当前 → 下一条 → 后面），超 10 分钟的不排。
     nonisolated static func plan(current: DYAweme, ahead: [DYAweme]) -> [String] {

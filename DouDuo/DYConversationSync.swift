@@ -77,7 +77,6 @@ enum DYConversationSync {
 }
 
 /// 信息板块后台预热：刷视频时就把私信网页挂起来、列表读好。
-/// 老板要求「进信息页完全不用重新加载」——靠的就是这里在后台把 DOM 和缓存都准备好。
 /// 只在 App 前台、且消息页没打开时工作；进后台立刻停，不白耗电。
 @MainActor
 final class DYChatPrewarm {

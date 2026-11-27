@@ -1,6 +1,5 @@
 // 「真人方式」发评论：在后台打开这条视频的抖音网页，往它自己的评论框里输入，再点它自己的「发送」。
 // 请求由抖音网页自己发出（签名、风控参数、页面行为都与真人一致），我们只在旁边看它的回执。
-// 老板 11-19：直接调评论接口时偶发 403 + 服务器作废登录，改成这种方式降低风控概率。
 import Foundation
 import WebKit
 
@@ -16,7 +15,6 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     /// 是否走「真人方式」。默认开；设置里可关（关掉回到直接调接口）。
     static let enabledKey = "douduo_comment_via_web_ui_v1"
     static var enabled: Bool {
-        // 11-19：网页评论框发送 403 后抖音同时作废登录（真机 12:11），查清前默认关，走原接口
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
@@ -177,7 +175,6 @@ final class DYWebComposer: NSObject, WKNavigationDelegate {
     """#
 
     /// 网页里：（回复时先点那条评论的「回复」）→ 用抖音编辑器自己的接口填字 → 点它自己的发送图标 → 等抖音回执。
-    /// 11-19 真机只读探测：评论框是 Draft.js（.comment-input-inner-container .public-DraftEditor-content），
     /// execCommand 会让 Draft 重复插字，必须走它的 editorState/onChange；有字后右侧 .commentInput-right-ct 里的
     /// 发送图标多出一个激活 class 且带 onClick；点「回复」会在那条评论里另起一个「回复@xx」编辑器。
     static let sendJS = #"""

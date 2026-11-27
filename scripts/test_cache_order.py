@@ -60,7 +60,7 @@ print("PASS cache order: long current never downloaded (no bandwidth fight); nex
         print(r.stdout.strip())
 
     def test_net_policy(self):
-        """11-24 老板定：Wi-Fi / 蜂窝各一个省流量开关，按开关 × 网络决定清晰度 / 提前备几条 / 整条下几条（把正式代码编出来真跑）"""
+        """"""
         src = (ROOT / "DouDuo/DYStreamCache.swift").read_text()
         a = src.index("enum DYNetPolicy {"); b = src.index("    static var current: Plan {", a)
         fn = src[a:b] + "}\n"

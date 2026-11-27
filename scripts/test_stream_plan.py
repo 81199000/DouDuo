@@ -111,7 +111,7 @@ class StreamPlan(unittest.TestCase):
         self.assertIn("func adoptStreamed(", CACHE)
         # 不同清晰度不混字节
         self.assertIn("knownTotal != total", STREAM)
-        # NSLock 不可重入：持有 e.lock 期间不能再调会拿同一把锁的方法（2026-11-20 真机卡死就是这个）
+        # NSLock 不可重入：持有 e.lock 期间不能再调会拿同一把锁的方法
         import re
         held = False
         for n, line in enumerate(STREAM.splitlines(), 1):

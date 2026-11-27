@@ -4,7 +4,6 @@ import UIKit
 /// 桌面投光：竖屏半折叠（桌面姿态）时，上半屏视频像一块立着的屏幕，
 /// 把画面的光投到下半屏评论区这张「桌面」上。
 /// - 光源复用环境光取帧（DYAmbientFrameView，48px 宽、已模糊），不另挂播放器输出。
-/// - 2026-11-19 老板给了奈飞实拍照：倒影同宽、翻转、只占视频高度、很暗、半糊（见下面 DYDeskLight 注释）。
 /// - 直接把帧推给投光视图，不经过 SwiftUI 状态（12 帧/秒的值挂到视图树上会让整页反复重算）。
 @MainActor
 enum DYDeskLightHub {
@@ -19,14 +18,14 @@ enum DYDeskLightHub {
     }
 }
 
-/// 把一帧视频做成「真投影」（2026-11-19 老板对照奈飞：亮处投得明显、暗处几乎不投；离折痕近清楚、远处糊且放大）
+/// 把一帧视频做成「真投影」
 /// 全在 Core Image 里做（GPU，72px 宽，12 帧/秒）：
 /// 1. 翻转：视频底边贴折痕；
 /// 2. 按亮度出光：Gamma 1.9 压掉暗部、保留高光——画面亮的地方投影才明显；
-/// 3. 糊度：整体 σ2.4 打底（老板定的上一版糊度），远端再叠 CIMaskedVariableBlur 半径 3.2；
+/// 3. 糊度：整体 σ2.4 打底，远端再叠 CIMaskedVariableBlur 半径 3.2
 /// 4. 按距离渐大：CIPerspectiveTransform，远端向两侧各放出 25%（光离光源越远越散）。
 enum DYDeskProjection {
-    static let width: CGFloat = 72   // 老板：模糊度回到 26fdac8 那版（72px + σ2.4）
+    static let width: CGFloat = 72
     /// 远端各向外放出的比例（视图按同样比例摆放）
     static let spread: CGFloat = 0.25
 
@@ -92,11 +91,11 @@ struct DYDeskLight: UIViewRepresentable {
     }
 }
 
-/// 照奈飞半折叠实拍（老板 2026-11-19 照片）做的「桌面倒影」：
+/// 照奈飞半折叠实拍做的「桌面倒影」
 /// - 和上方视频同宽、同比例，左右位置一一对应（不拉伸铺满）；
 /// - 上下翻转，只占视频那么高，下面留黑；
 /// - 很暗、起点离折痕一小段、先淡入再淡出；
-/// - 亮度、糊度、放大都按「真投影」算，见 DYDeskProjection（老板：亮处投得明显，近处清楚、远处糊且大）；
+/// - 亮度、糊度、放大都按「真投影」算，见 DYDeskProjection
 /// - 底下垫一层环境光：同画面缩到 16px 重度模糊，比视频宽 1.5 倍、铺满下半屏后淡出，像屏幕的光洒在桌面上。
 final class DYDeskLightView: UIView {
     var topInset: CGFloat = 0 { didSet { if topInset != oldValue { setNeedsLayout() } } }

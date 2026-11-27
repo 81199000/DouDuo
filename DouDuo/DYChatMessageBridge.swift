@@ -118,7 +118,7 @@ extension DYChatWebBridge {
     """#
 }
 
-/// 私信里点图片：不再让网页弹它自己的看大图层（触屏上没有关闭方式，关闭钮还被聊天头挡住，老板 2026-11-22），
+/// 私信里点图片：不再让网页弹它自己的看大图层
 /// 改成在捕获阶段拦下点击，把这条消息里的图片原图地址交给 App，用原生 DYPhotoViewer 打开（照片 App 同款：
 /// 双指缩放、双击放大、下滑关闭）。只拦「消息气泡里的图片」：头像、表情、分享卡封面不拦（分享卡交给视频钩子）。
 /// 万一网页的看大图层还是出来了（别的入口），立刻按 Esc 收掉，不让它挡住界面。
@@ -165,7 +165,6 @@ enum DYChatImagePreviewClose {
     if (/^https?:/.test(o) && !/~tplv-[^/]*(?:resize|thumb)/.test(o)) return o;
     return bestURL(payloadOf(msg)) || o;
   };
-  // 真机 11-22：图片消息 = MessageItemImageImageBox > img.MessageItemImageImage（aweType 2702）。
   // 先正向认图片消息；以前用「祖先类名含 avatar 就排除」，消息行外层类名带 Avatar，图片全被排除 → 点了没反应。
   const isPhotoMessage = img => {
     if (!img || img.tagName !== 'IMG') return null;

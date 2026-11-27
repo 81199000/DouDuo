@@ -1,4 +1,4 @@
-// 推荐流直播卡片：cell_room.rawdata（字符串 JSON）→ 直播页条目；视频照常；广告丢弃。字段按 2026-11-20 真机样本（英语sini老师）。
+// 推荐流直播卡片：cell_room.rawdata（字符串 JSON）→ 直播页条目；视频照常；广告丢弃。
 const fs = require('fs'), path = require('path'), assert = require('assert');
 const s = fs.readFileSync(path.join(__dirname, '..', 'DouDuo', 'DouyinFeedView.swift'), 'utf8');
 const cut = (from, to) => { const i = s.indexOf(from); assert(i > 0, from); const j = s.indexOf(to, i); return s.slice(i, j); };
@@ -18,7 +18,7 @@ const out = items([
   { aweme_id: '3', video: {}, is_ads: true },
   { aweme_id: '4', cell_room: { rawdata: JSON.stringify(Object.assign({}, rd, { status: 4 })) } },
 ]);
-// 广告不再丢（11-21 老板：广告加回来 + 单独开关），只带 isAd 标记交给原生侧按设置过滤
+// 广告不再丢，只带 isAd 标记交给原生侧按设置过滤
 assert.deepStrictEqual(out.map(x => x.id), ['1', 'live_7710083151640431387', '3']);
 assert.strictEqual(out[2].isAd, true);
 assert.strictEqual(out[0].isAd, undefined);

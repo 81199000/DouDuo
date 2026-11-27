@@ -5,7 +5,7 @@ import Network
 import UIKit
 #endif
 
-/// 边下边播（老板 2026-11-20 定 A 方案）。
+/// 边下边播。
 ///
 /// 播放器永远只认一个地址 `ddstream://<id>`，数据全部由这里供：
 /// 本地已有的字节直接从文件读，没有的现场从抖音 CDN 拉、一边喂给播放器一边写进同一个文件。
@@ -21,7 +21,7 @@ enum DYStream {
     /// 设置里的「省流量模式」：用流量时降一档清晰度、只预热 1 条
     static let saverKey = "douyin_data_saver_v1"
 
-    /// 设置里的「Wi-Fi 省流量」（老板 11-24 新增，默认关）：开 = Wi-Fi 下也只下开头；关 = 按预缓存数量整条下
+    /// 设置里的「Wi-Fi 省流量」：开 = Wi-Fi 下也只下开头；关 = 按预缓存数量整条下
     static let wifiSaverKey = "douyin_wifi_saver_v1"
 
     static var enabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
@@ -34,7 +34,6 @@ enum DYStream {
     static func url(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)")! }
     /// 拖进度条的预览小图用：同一份缓存，但只读本地已有的，绝不联网、不开跳读窗口
     /// （以前预览走播放器同一个资源：手指扫过的每个位置都开 8 秒跳读窗口去下，
-    /// 下载带宽被预览吃掉，松手后真正要播的那段排在后面 → 快进卡，老板 11-26）
     static func peekURL(for id: String) -> URL { URL(string: "\(scheme)://v/\(id)?peek=1")! }
     static func id(of url: URL) -> String? {
         guard url.scheme == scheme else { return nil }
@@ -78,7 +77,7 @@ enum DYStream {
     }
 }
 
-/// 流量策略（老板 11-24）：两个省流量开关 × 当前网络 → 清晰度 / 提前备几条 / 整条下几条
+/// 流量策略：两个省流量开关 × 当前网络 → 清晰度 / 提前备几条 / 整条下几条
 /// - Wi-Fi 省流量关（默认）：按「预缓存数量」提前备好，并把这几条整条下好
 /// - Wi-Fi 省流量开：按「预缓存数量」提前备好，每条只下开头几秒，不播不继续下
 /// - 蜂窝省流量开（默认）：低一档清晰度，只备下一条的开头
@@ -382,7 +381,7 @@ final class DYStreamStore: @unchecked Sendable {
     /// 边下边播的半截文件最多占多少（超了按最近使用淘汰）
     static let keepBytes: Int64 = 300 * 1024 * 1024
 
-    /// 清理边下边播目录（启动时 + 每次换条时）。以前这个函数没人调，半截文件一直堆着不删（老板 11-21：视频缓存 8.67GB）。
+    /// 清理边下边播目录（启动时 + 每次换条时）。以前这个函数没人调，半截文件一直堆着不删。
     /// 规则：已整条收进正式缓存的、孤儿文件直接删；其余按最近使用留 keep 条且不超过 keepBytes。
     /// 正在播 / 正在下 / 2 分钟内刚用过的不动。
     func trim() {
@@ -506,7 +505,7 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     private func untrack(_ id: ObjectIdentifier) { lock.lock(); live[id] = nil; lock.unlock() }
 
     /// App 挂起时系统把边下边播的连接冻住，回来后连接已死但任务还挂着：它占着「正在下这段」的标记，
-    /// 播放器要的数据就一直等它，直到 20 秒超时（真机 11-26：回前台卡 13.7 秒 / 4 秒）。
+    /// 播放器要的数据就一直等它，直到 20 秒超时。
     /// 回前台：换新会话，旧连接按「连接断了」作废 → 下载循环立刻用新连接重拉同一段。
     private func reviveAfterForeground() {
         lock.lock()
@@ -617,7 +616,6 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
     }
 
     /// 只把开头（预热范围：Wi-Fi 约 6 秒）下好。整条预下之前先跑这个，保证后面一两条划到就能起播。
-    /// 11-24 真机：慢起播的 13 条里 9 条当时正在整条下别的视频，下一条的开头被挤得只剩 1 秒左右；
     /// 看直播时直播流也在抢网速，直播后面那条划到时常常只缓冲了 0.8–1 秒。
     func fillHead(_ item: DYAweme, remote: URL) async {
         let key = DYStreamStore.shared.register(item, remote: remote)
@@ -767,7 +765,6 @@ final class DYStreamLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked 
                 }
                 // 2) 别的请求正在下这段：等它写进来（每 60ms 看一次），不重复下
                 // 先在锁外算好：horizon() 自己要拿 e.lock，NSLock 不可重入，锁里再调会死锁
-                // （2026-11-20 真机：上一版在锁里调 horizon → 加载线程卡死，画面冻住）
                 let horizon = DYStreamStore.shared.horizon(e) ?? total
                 let starving = DYStreamStore.shared.isStarving(e.id)
                 e.lock.lock()

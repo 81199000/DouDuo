@@ -72,7 +72,6 @@ private struct DYCommentRecoveryScreen: View {
                     DYLiveModel.log("DDSESSION comment recovery: sessionid gone")
                     return
                 }
-                // cookie 还在不代表还登录着：11-19 00:48 真机评论 403 后，sessionid 仍在本机，
                 // 但抖音已把这次登录作废（读自己资料返回「用户未登录」）。实际问一次服务器再下结论。
                 do {
                     _ = try await bridge.selfProfile()

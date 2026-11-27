@@ -30,7 +30,7 @@ final class DYPlaybackTelemetry {
         let base = p.currentTime().seconds
         DYLiveModel.log("DDSWIPEIN \(id) dur=\(Int(duration)) ready=\(ready) buf=\(String(format: "%.1f", buf))s local=\(local)")
         // .initial：begin 时播放器可能已经在 playing（上一帧就 rate=1 了），只听 .new 会漏掉这次起播
-        // 起播慢诊断：0.6 / 1.5 / 2.5 秒还没动，记下播放器在等什么、边下边播那边是什么状态（老板 11-24：划到后停在第一帧约 3 秒）
+        // 起播慢诊断：0.6 / 1.5 / 2.5 秒还没动，记下播放器在等什么、边下边播那边是什么状态
         for delay in [0.6, 1.5, 2.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak p] in
                 guard let self, let p, self.player === p, self.startAt == t0 else { return }

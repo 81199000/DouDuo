@@ -1,5 +1,5 @@
-// 原生扫码登录流程（DouDuo N）：策略 → 取二维码 → 轮询扫码结果 → 跟跳转 → 进首页把会话坐实。
-// 移植自 Amor5207/douyin-tv（GPL-3.0）DouyinApi 的 passport 登录部分；小号实测可登录、可发评论不掉线。
+// 原生扫码登录流程：策略 → 取二维码 → 轮询扫码结果 → 跟跳转 → 进首页把会话坐实。
+// 移植自 Amor5207/douyin-tv（GPL-3.0）DouyinApi 的 passport 登录部分
 import Foundation
 
 @MainActor
@@ -190,7 +190,6 @@ final class DYNativeLogin: ObservableObject {
         }
         DDLog("DDNLOGIN qr ok token=\(token.prefix(6))… img=\(img.count)B")
         qrImage = img
-        // 实测这个 token 只有约 66 秒寿命（之后轮询直接回 4031），所以 55 秒就换，别让老板扫到已死的码
         expiresAt = Date().addingTimeInterval(55)
         phase = .waiting(token: token)
         startPolling(token: token)
@@ -206,7 +205,6 @@ final class DYNativeLogin: ObservableObject {
                 if Task.isCancelled || !polling { return }
                 if case .scanned = phase {
                     // 已经扫过（等手机确认），别在确认前把码换掉——换了等于把这次扫码作废；
-                    // 但也不能无限等，90 秒还没登进去就让老板重扫
                     if let exp = expiresAt, Date().timeIntervalSince(exp) > 35 {
                         polling = false
                         DDLog("DDNLOGIN scanned-timeout")
@@ -503,7 +501,6 @@ final class DYNativeLogin: ObservableObject {
 
     // MARK: 手机号验证码登录（跟扫码同一套：App 自己的密钥在 sms_login 这一步交给抖音绑定）
     //
-    // 2026-11-28 真机抓官方登录页（DOUDUO_LOGIN_DRYRUN 拦在本机）对齐的字段：
     // - send_code：query 同 passport 公共参数（无 ts，末尾 is_new_login=1）+ msToken + a_bogus；
     //   表单 is6Digits=1 / mix_mode=1 / mobile=xor5("+86 1xxxxxxxxxx") / type=xor5("24") / fixed_mix_mode=1
     // - sms_login：表单 service=https://www.douyin.com / mix_mode=1 / mobile / code=xor5(验证码) / fixed_mix_mode=1；

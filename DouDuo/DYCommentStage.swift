@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 推荐页评论排布：四种界面同一份（老板 2026-11-17 定，见 docs/ui-modes.md）。
+/// 推荐页评论排布：四种界面同一份。
 ///
 /// 原样搬自经典推荐页（DYClassicFeedScreen.flatArrangement），一套布局通吃所有状态，且**不换容器**
 /// （换容器会重建播放器 → 黑屏 / 重播）：
@@ -29,7 +29,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
     var authorPane: (id: String?, workOpen: Bool, supportsSidePanel: Bool)? = nil
     /// 半折叠触控板上下滑翻页（+1 下一条 / -1 上一条）；nil = 不支持
     var onPage: ((Int) -> Void)? = nil
-    /// 当前条是推荐流里的直播间：没有评论可显示，下半屏直接是触控板，单击 = 进直播间（老板 11-24）
+    /// 当前条是推荐流里的直播间：没有评论可显示，下半屏直接是触控板，单击 = 进直播间
     var onLiveTap: (() -> Void)? = nil
     @ViewBuilder var feed: () -> Feed
     @ViewBuilder var author: () -> Author
@@ -38,7 +38,7 @@ struct DYCommentStage<Feed: View, Author: View>: View {
 
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
-    /// 半折叠下半屏：评论 4 秒没人碰 → 触控板（老板 11-24，见 DYTouchpad.swift）
+    /// 半折叠下半屏：评论 4 秒没人碰 → 触控板
     @State private var padShown = false
     @State private var padTimer: Task<Void, Never>?
     @State private var keyboardUp = false
@@ -70,7 +70,6 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                 .frame(width: layout.videoSize.width, height: layout.videoSize.height, alignment: .topLeading)
                 .environment(\.dyRestrictsPlaybackToPane, layout.showsPane && layout.sideBySide)
                 // 侧栏评论时视频区要裁边：播放器的环境光底（DYAmbientBackdrop）会铺满整屏宽，盖住右侧评论栏
-                //（内屏横屏评论纯黑的根因；dd405e6 拿掉这个裁边后 11-18 晚复发，老板 11-19 指出之前修过）。
                 .modifier(DDClipIf(on: layout.showsPane && layout.sideBySide))
             if layout.showsPane {
                 Group {
@@ -89,7 +88,6 @@ struct DYCommentStage<Feed: View, Author: View>: View {
                             .background(DYTouchSniffer { lastTouch = Date() })
                     } else {
                         // 刷到直播间：没有评论。⚠️ 这里不能空着——空 Group 上挂的 frame / overlay（触控板）整块不渲染，
-                        // 11-24 老板：「刷到直播间触控板就滑动不了下个视频」就是这个
                         Color.black
                     }
                 }
@@ -136,13 +134,13 @@ struct DYCommentStage<Feed: View, Author: View>: View {
         .onChange(of: layout.resident && layout.sideBySide, initial: true) { _, bookFold in
             onLayout(layout.resident, bookFold)
         }
-        // 折成半折叠直接是触控板，点了才出评论（老板 11-24 改）；评论 4 秒没碰再回触控板。换视频不复位
+        // 折成半折叠直接是触控板，点了才出评论；评论 4 秒没碰再回触控板。换视频不复位
         .onChange(of: padLayout, initial: true) { _, on in
             DYLiveModel.log("DDTOUCHPAD layout=\(on ? "半折叠上下分" : "其他")")
             padTimer?.cancel()
             padShown = on
         }
-        // 从直播间划回视频：保持触控板（老板选 B，连着刷不闪评论）
+        // 从直播间划回视频：保持触控板
         .onChange(of: liveHere) { _, live in
             if live, padLayout { padTimer?.cancel(); padShown = true }
         }
@@ -221,7 +219,7 @@ extension EnvironmentValues {
 /// 侧栏评论时把视频区裁到自己的框内（环境光底铺满整屏会盖住右侧评论栏，dd405e6 拿掉后评论纯黑）。
 ///
 /// 裁剪**一直挂着、视图类型不变**：以前写成 `if on { content.clipped() } else { content }`，两个分支是两种视图，
-/// Duo 内屏横屏一开关评论 SwiftUI 就把整块视频连播放器拆掉重建 → 从头播（议题 #52-2 / 工单 B13）。
+/// Duo 内屏横屏一开关评论 SwiftUI 就把整块视频连播放器拆掉重建 → 从头播。
 /// 关评论时裁剪框只往外放 200pt（盖住安全区就够）。**别放到几万点**：95ef04d 用 ±100000 的超大裁剪，
 /// 真机评论区黑屏（渲染不了那么大的遮罩），已回滚。
 struct DDClipIf: ViewModifier {
@@ -232,7 +230,7 @@ struct DDClipIf: ViewModifier {
 }
 
 /// 开评论时只裁左右（别盖住右侧评论栏），上下照样外扩：环境光要铺到屏幕最底边，
-/// 否则底部手势条那一截露出页面底色（老板 11-21：先是白边，垫黑底后成黑边）。
+/// 否则底部手势条那一截露出页面底色。
 private struct DDPaneClipShape: Shape {
     let on: Bool
     func path(in rect: CGRect) -> Path {

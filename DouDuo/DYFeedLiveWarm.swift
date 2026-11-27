@@ -3,7 +3,6 @@ import UIKit
 
 /// 推荐里下一条是直播时，提前把直播流连上（静音、画在主窗口最底层看不见的地方）。
 /// 划到直播那一页时直接把这个已经在出画面的视图搬过去，不用重新连接——跟刷视频一样一划就有画面。
-/// 老板 11-21：「感知到下一个是直播就先加载起来，下滑下来立马播放」。
 /// 实测之前每次划到直播要等 0.36–1.0 秒（中位 0.44 秒）才出画。
 @MainActor
 final class DYFeedLiveWarm {
@@ -39,7 +38,7 @@ final class DYFeedLiveWarm {
 
     /// 按当前条更新：下一条是直播 → 预热它；否则把已有的预热停掉。
     /// ⚠️ 预热的正好是当前条（刚划到这间直播）时不能停：页面马上要接过去。
-    /// 上一版在这里把它停了，导致一次都没接上（真机 11-21：start 13 次、take 0 次）。
+    /// 上一版在这里把它停了，导致一次都没接上。
     func update(current: DYAweme?, next: DYAweme?) {
         if let w = warm, w.roomID == current?.live?.roomID { return }
         guard let next, let live = next.live, Self.allowed else { release(reason: "next-not-live"); return }
@@ -66,7 +65,7 @@ final class DYFeedLiveWarm {
         DYLiveModel.log("DDLIVEWARM start room=\(live.roomID.suffix(6)) q=\(s.quality) flv=\(s.isFLV)")
         muteKeeper?.cancel()
         // 用音量 0 而不是静音：iOS 上 VLC 静音 = 暂停音频输出并清空，取消静音要重启输出、重新对时，
-        // 声音要晚一会才出来（老板 11-21：画面很快出来，声音要等一会）。音量 0 时音频照常在走，划到只把音量拉回来。
+        // 声音要晚一会才出来。音量 0 时音频照常在走，划到只把音量拉回来。
         // 音频输出没建好前设音量无效（get 返回 -1），所以前 3 秒每 30ms 盯一次，之后 200ms。
         muteKeeper = Task { @MainActor [weak c] in
             let t0 = CACurrentMediaTime()
@@ -111,7 +110,7 @@ final class DYFeedLiveWarm {
     /// 停播 + 摘掉视图（页面用完也走这里）。
     /// ⚠️ 不能停完立刻放掉控制器：VLC 停播是异步的，排在主线程的回调还拿着播放器，
     /// 最后一次释放就会落在主线程上 → libvlc_media_player_destroy 等线程结束卡死 → 系统杀掉 App
-    /// （真机 11-21 18:46 崩溃日志即此）。先留 10 秒等停播彻底完成，再放（控制器 deinit 会把释放交给后台线程）。
+    /// 。先留 10 秒等停播彻底完成，再放（控制器 deinit 会把释放交给后台线程）。
     static func dispose(_ h: Handle) {
         h.controller.onError = nil
         h.controller.stop()
@@ -125,7 +124,6 @@ final class DYFeedLiveWarm {
     private static var retired: [Handle] = []
 
     /// 离开直播：声音立刻拉到 0，真正停播往后挪这么久。（「立刻」现在是抬手那一刻，见 DYFeedLeaving）
-    /// 11-24 真机：停直播和下一条视频开播撞在同一刻时，缓冲够了的视频也要等 0.5–1.4 秒才起播（平时 0.03 秒）
     static let stopDelay: TimeInterval = 0.6
     private static var pendingStops: [ObjectIdentifier: DispatchWorkItem] = [:]
     private static var lingering: [VLCPlayerController] = []
@@ -155,7 +153,7 @@ final class DYFeedLiveWarm {
     }
 
     /// 划走那一刻就没声：只把音量拉到 0 不够——VLC 已把后面一两秒按原音量排进输出（蓝牙还要再晚一截），
-    /// 会接着响完（老板 11-24：「划到下个视频不会直接结束直播的声音」）。静音会停掉并清空音频输出，立刻无声。
+    /// 会接着响完。静音会停掉并清空音频输出，立刻无声。
     static func silenceNow(_ c: VLCPlayerController) {
         c.mediaPlayer.audio?.volume = 0
         c.mediaPlayer.audio?.isMuted = true

@@ -33,7 +33,6 @@ const fixture = {
       }
     },
     {
-      // 11-19 真机：一级评论的通知 parent_id = 作品 id（不是评论 id）
       nid_str: 'n-top', type: 31, create_time: 1699999998, aweme_id: 'a-3',
       comment: { parent_id: 'a-3', comment: { cid: 'c-top', aweme_id: 'a-3', text: '一级评论', user: { nickname: '甲' } },
                  aweme: { aweme_id: 'a-3' } }

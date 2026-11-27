@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Compile production DDPlayback (cover gate) and DYCommentDraftStore against stubs; no device/account.
-Regression for 11-18 ddlog: a video opened from 信息 registered while the messages cover was held,
-got paused at t=0 and only started 12-33 s later."""
+"""Compile production DDPlayback (cover gate) and DYCommentDraftStore against stubs; no device/account."""
 import os, pathlib, re, subprocess, tempfile
 root = pathlib.Path(__file__).resolve().parents[1]
 player = (root/'DouDuo/ShortVideoPlayer.swift').read_text()
