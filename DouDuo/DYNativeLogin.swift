@@ -143,7 +143,14 @@ final class DYNativeLogin: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled || !polling { return }
                 if case .scanned = phase {
-                    // 已经扫过（等手机确认），别在确认前把码换掉——换了等于把这次扫码作废
+                    // 已经扫过（等手机确认），别在确认前把码换掉——换了等于把这次扫码作废；
+                    // 但也不能无限等，90 秒还没登进去就让老板重扫
+                    if let exp = expiresAt, Date().timeIntervalSince(exp) > 35 {
+                        polling = false
+                        DDLog("DDNLOGIN scanned-timeout")
+                        phase = .failed("扫码后迟迟没有确认，请重新扫一次")
+                        return
+                    }
                 } else if let exp = expiresAt, Date() > exp {
                     DDLog("DDNLOGIN qr-expired, refreshing")
                     await fetchQr()
@@ -155,6 +162,14 @@ final class DYNativeLogin: ObservableObject {
                     // 码已被服务端判死，立刻换新码，不要拿死码继续轮询
                     DDLog("DDNLOGIN token-dead(4031) refreshing")
                     await fetchQr()
+                    return
+                }
+                if loggedIn {
+                    polling = false
+                    DDLog("DDNLOGIN logged-in-by-cookie")
+                    let ok = await completeLogin(redirect: "")
+                    DDLog("DDNLOGIN complete ok=\(ok) sessionid=\(DYCookieJar.shared.value("sessionid") == nil ? "none" : "set") ticket=\(DYNativeTicket.hasTicket)")
+                    if ok { await DYCookieJar.shared.pushToWebKit(); phase = .done }
                     return
                 }
                 guard let step else {
@@ -199,7 +214,10 @@ final class DYNativeLogin: ObservableObject {
                                    dtrait: DYDtrait.session)
         let form = body.map { "\($0.0)=\(DYPassport.encComponent($0.1))" }.joined(separator: "&")
         guard let r = await send("POST", URL(string: DYPassport.host + path + "?" + qs)!, headers: h, body: form,
-                                 followRedirect: false) else { return nil }
+                                 followRedirect: true) else { return nil }
+        DDLog("DDNLOGIN poll http=\(r.status) loc=\(r.location == nil ? "-" : "yes") body=\(String(r.text.prefix(90)))")
+        // 确认后服务端 302 到带 sessionid 的地址，跟过去 cookie 已经在罐里了
+        if !(DYCookieJar.shared.value("sessionid") ?? "").isEmpty { return (DYPassport.host + "/", "3") }
         if let loc = r.location, !loc.isEmpty { return (loc, "3") }
         guard let d = r.text.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
