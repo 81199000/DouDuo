@@ -304,6 +304,7 @@ final class DYNativeIM {
         let t0 = Date()
         let (http, data, names) = try await pageXHR(url, method: "POST", body: body, accept: "application/x-protobuf")
         DYLiveModel.log("DDNATIVEIM send via=page http=\(http) bytes=\(data.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000)) sdkHeaders=\(names.filter { $0.hasPrefix("bd-") || $0.hasPrefix("x-") }.joined(separator: ","))")
+        if data.count <= 64 { DYLiveModel.log("DDNATIVEIM send-resp hex=\(data.map { String(format: "%02x", $0) }.joined()) shape=\(DYPB.shape(data))") }
         guard http == 200, let top = DYPB.decode(data) else { throw DYIMError.badResponse("HTTP \(http)") }
         let status = top.int(3) ?? 0
         let msg = String((top.string(4) ?? "").prefix(60)).filter { $0.isASCII }
