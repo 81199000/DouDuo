@@ -932,6 +932,43 @@ final class DouDuoUITests: XCTestCase {
         attach(app, "search-result-author-direct")
     }
 
+    /// 极简模式暂停后，点模块入口让左下角作者出来，再单击作者要直接进作者页（不能要双击）。
+    func testMinimalPausedAuthorSingleTap() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["DOUDUO_CHROME_MODE"] = "minimal"
+        for flag in ["DOUDUO_HASHTAG_FIXTURE", "DOUDUO_PLAYBACK_FIXTURE", "DOUDUO_RESET_HASHTAG_FILTER"] {
+            app.launchEnvironment[flag] = "1"
+        }
+        app.launchArguments += ["-douyin_muted_v1", "YES", "-douduo_dismissed_update_v1", "1.5.0"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let module = app.buttons["douyin.module.menu"].firstMatch
+        XCTAssertTrue(module.waitForExistence(timeout: 20))
+        Thread.sleep(forTimeInterval: 2)
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.4)).tap()
+        let playback = app.staticTexts["douyin.video.playback"].firstMatch
+        XCTAssertTrue(waitUntil(timeout: 5) { playback.label == "paused" }, "先暂停")
+        let author = app.buttons["douyin.author"].firstMatch
+        XCTAssertFalse(author.exists, "极简模式平时不显示作者")
+        module.tap()
+        XCTAssertTrue(author.waitForExistence(timeout: 3), "点开模块入口后左下角显示作者")
+        attach(app, "b45-minimal-menu-open")
+        // 菜单开着时，第一下会被系统拿去关菜单；作者区必须留着，紧接着点作者就能进作者页
+        //（原来菜单一收作者区立刻消失，第二下落到视频上变成暂停/播放）
+        author.tap()
+        let panel = app.descendants(matching: .any).matching(identifier: "douyin.author.panel").firstMatch
+        if !panel.waitForExistence(timeout: 1.5) {
+            XCTAssertTrue(author.exists && author.isHittable, "菜单收起后作者区要留着，能接着点")
+            author.tap()
+        }
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), "点作者要打开作者页")
+        attach(app, "b45-minimal-author-opened")
+    }
+
+    /// 播到一半拖进度条快进，播完必须照样切下一条。
+
     /// 播到一半拖进度条快进，播完必须照样切下一条。
     func testAutoNextAfterSeek() throws {
         continueAfterFailure = false

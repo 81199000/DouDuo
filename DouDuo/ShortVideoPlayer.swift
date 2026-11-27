@@ -259,6 +259,29 @@ final class PageLife {
 @MainActor final class DDPeekInfo: ObservableObject {
     static let shared = DDPeekInfo()
     @Published var on = false
+    /// 松手 / 菜单收起后作者区多留一会儿：菜单开着时点作者，第一下只会关掉菜单，
+    /// 原来作者区随即消失，要「双击」碰运气才进得去作者页。
+    static let lingerSeconds: Double = 3
+    private var hideTask: Task<Void, Never>?
+
+    func show() {
+        hideTask?.cancel(); hideTask = nil
+        on = true
+    }
+
+    func hide(after delay: Double = DDPeekInfo.lingerSeconds) {
+        hideTask?.cancel()
+        hideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(.easeOut(duration: 0.15)) { self.on = false }
+        }
+    }
+
+    func hideNow() {
+        hideTask?.cancel(); hideTask = nil
+        on = false
+    }
 }
 
 /// 极简模式：播放进度画在圆形模块入口的外圈。播放器页把当前进度写进来，屏幕层读。

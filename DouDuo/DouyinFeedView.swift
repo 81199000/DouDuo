@@ -2612,13 +2612,14 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 onPressChanged: { pressing in
                     guard chromeMode.hidesInfo else { return }
                     // 抬手时若是单击，菜单会随后打开，标题由菜单状态接管，这里不先关
-                    if pressing { withAnimation(.easeOut(duration: 0.1)) { peek.on = true } }
-                    else if !minimalMenuOpen { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
+                    // 松手后作者区多留几秒，好让用户接着点作者 / 关注
+                    if pressing { withAnimation(.easeOut(duration: 0.1)) { peek.show() } }
+                    else if !minimalMenuOpen { peek.hide() }
                 },
                 onTap: {
                     DYLiveModel.log("DDTAB module-open")
                     minimalMenuOpen = true
-                    if chromeMode.hidesInfo { peek.on = true }
+                    if chromeMode.hidesInfo { peek.show() }
                 }))
             .popover(isPresented: $minimalMenuOpen,
                      attachmentAnchor: .point(opensUpward ? .top : (edge == .trailing ? .leading : .trailing)),
@@ -2655,7 +2656,9 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
                 .presentationCompactAdaptation(.popover)
             }
             .onChange(of: minimalMenuOpen) { _, open in
-                if !open, chromeMode.hidesInfo { withAnimation(.easeOut(duration: 0.15)) { peek.on = false } }
+                // 菜单开着时点作者，这一下会先被系统拿去关菜单；作者区不能跟着立刻消失，
+                // 否则第二下落到视频上变成暂停/播放，「要双击还不一定行」
+                if !open, chromeMode.hidesInfo { peek.hide() }
                 if !open { publishQueuedLiveModule() }
             }
             .accessibilityElement(children: .ignore)
@@ -2672,6 +2675,7 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             // 菜单直接无动画收起，下一轮再打开目标页（目标页自己的弹出动画照常）。
             var t = Transaction()
             t.disablesAnimations = true
+            peek.hideNow()   // 选了菜单项就是要去别处，作者区不用多留
             withTransaction(t) { minimalMenuOpen = false }
             DYLiveModel.log("DDTAB menu-row \(id)")
             DispatchQueue.main.async { action() }
