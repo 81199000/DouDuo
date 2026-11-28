@@ -885,6 +885,7 @@ struct PlayerPage: View {
             vlc?.mediaPlayer.audio?.isMuted = m || !DDAudioFloor.may(id)
         }
         // 出声权（分页器统一交接，见 DDAudioFloor）：撤权立刻断声；回弹 / 提交后再按当前状态还声
+        .onReceive(NotificationCenter.default.publisher(for: DYPagingDelegate.prestart)) { prestart($0) }
         .onReceive(NotificationCenter.default.publisher(for: DDAudioFloor.changed)) { note in
             applyAudioFloor(phase: note.userInfo?["phase"] as? String, to: note.userInfo?["to"] as? String)
         }
@@ -1746,6 +1747,22 @@ struct PlayerPage: View {
     }
 
     /// 出声权变化：没权立刻断声（不等 isActive 变 false，那要等到新条停住）；回弹 / 提交拿回权且这一条在播就还声
+    private func prestart(_ note: Notification) {
+        guard (note.userInfo?["id"] as? String) == id, !isActive, vlc == nil, !userPaused,
+              let p = player, p.rate == 0, p.currentItem?.status == .readyToPlay,
+              DYPlaybackTelemetry.bufferedAhead(p) >= 1.0 else { return }
+        let from = p.currentTime()
+        p.isMuted = true
+        p.playImmediately(atRate: playRate)
+        DYLiveModel.log("DDPRESTART \(id.suffix(6)) t=\(String(format: "%.2f", from.seconds))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak p] in
+            guard let p, !playbackIsActive, p.rate != 0 else { return }
+            p.pause()
+            p.seek(to: from, toleranceBefore: .zero, toleranceAfter: .zero)
+            DYLiveModel.log("DDPRESTART undo \(id.suffix(6))")
+        }
+    }
+
     private func applyAudioFloor(phase: String?, to: String?) {
         guard player != nil || vlc != nil else { return }
         // 提交 / 回弹只把权给 `to` 那一页：别的页（尤其刚交出权、isActive 还没来得及变 false 的旧页）

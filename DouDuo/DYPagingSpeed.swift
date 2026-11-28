@@ -108,6 +108,10 @@ final class DYPagingSpeedHost: UIView {
         #endif
     }
     func reconcileAfterLayout() { proxy?.reconcileAfterLayout() }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        proxy?.checkSize(via: "layout")
+    }
     func snapToCurrent() { proxy?.snapToCurrent() }
     func listChanged() { proxy?.listChanged() }
     func detach() { proxy?.detach(); proxy = nil }
@@ -195,7 +199,10 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     /// 提前起播时收尾动画还要走多久：这段时间里别让 SwiftUI 的 scrollPosition 跟着当前条改（会和收尾动画抢位置 → DDJUMPFIX）
     @MainActor static var settleEndsAt: CFTimeInterval = 0
     /// 收尾动画剩最后这么久时就切当前条起播
-    static let earlyStart: TimeInterval = 0.12
+    static let earlyStart: TimeInterval = 0
+    static let prestartLead: TimeInterval = 0.15
+    static let prestart = Notification.Name("dd.pager.prestart")
+    private var prestarted = false
     private var earlyFired = false
     private var writing = false
     private var jumpFixes = 0
@@ -220,10 +227,14 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         displayTarget.owner = self
         scroll.panGestureRecognizer.addTarget(self, action: #selector(panChanged(_:)))
         boundsObservation = scroll.observe(\.bounds, options: [.new]) { [weak self] view, _ in
-            guard let self, view.bounds.size != self.size else { return }
-            self.size = view.bounds.size
-            self.reconcileAfterLayout()
+            self?.checkSize(view, via: "kvo")
         }
+    }
+    func checkSize(_ view: UIScrollView? = nil, via: String) {
+        guard let view = view ?? scroll, view.bounds.size != size, view.bounds.height > 0 else { return }
+        DYLiveModel.log("DDROTATE bounds via=\(via) \(Int(size.width))x\(Int(size.height))->\(Int(view.bounds.width))x\(Int(view.bounds.height))")
+        size = view.bounds.size
+        reconcileAfterLayout()
     }
     override func responds(to selector: Selector!) -> Bool {
         super.responds(to: selector) || original?.responds(to: selector) == true
@@ -306,7 +317,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
         guard target != nil else { return }
         start = scrollView.contentOffset; startTime = CACurrentMediaTime()
-        expected = start; jumpFixes = 0; earlyFired = false
+        expected = start; jumpFixes = 0; earlyFired = false; prestarted = false
         // 剩余距离越长越久（0.22–0.32s），不再固定 0.10s 一闪而过
         if let t = target {
             let remain = abs(t.y - scrollView.contentOffset.y) / max(scrollView.bounds.height, 1)
@@ -352,6 +363,10 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
             DDAudioFloor.commit(targetID, via: "settle-early")
             didSettle(targetID)
         }
+        if !prestarted, CACurrentMediaTime() - startTime >= animationDuration - Self.prestartLead {
+            prestarted = true
+            NotificationCenter.default.post(name: Self.prestart, object: nil, userInfo: ["id": targetID])
+        }
         let progress = 1 - pow(1 - fraction, 3)
         let p = CGPoint(x: start.x + (target.x - start.x) * progress,
                         y: start.y + (target.y - start.y) * progress)
@@ -382,7 +397,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         targetID = to
         target = CGPoint(x: scroll.contentOffset.x, y: y)
         start = scroll.contentOffset; startTime = CACurrentMediaTime()
-        expected = start; jumpFixes = 0; earlyFired = false
+        expected = start; jumpFixes = 0; earlyFired = false; prestarted = false
         // 比手滑收尾（0.16–0.22s）慢一点：没有手指带着，要看得出是「滑上来」而不是闪过去
         animationDuration = 0.34
         let next = CADisplayLink(target: displayTarget, selector: #selector(DYPagingDisplayTarget.tick(_:)))
@@ -404,13 +419,28 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
         // 只有本分页器自己的收尾被打断才算回弹（别的分页器——关注页 / 离线库——布局变化不能取消推荐流的交接）
         if link != nil { DDAudioFloor.cancel("reconcile") }
         stop()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let scroll = self.scroll, scroll.delegate === self,
-                  !scroll.isDragging, let id = self.currentID(),
-                  let index = self.ids().firstIndex(of: id) else { return }
-            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x,
-                y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top), animated: false)
+        realignGeneration &+= 1
+        let gen = realignGeneration
+        realign(tag: "sync")
+        for delay in [0.0, 0.05, 0.15, 0.3, 0.5, 0.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, gen == self.realignGeneration else { return }
+                self.realign(tag: "reconcile+\(Int(delay * 1000))ms")
+            }
         }
+    }
+    private var realignGeneration = 0
+    private func realign(tag: String) {
+        if let scroll {
+            let idx = currentID().flatMap { ids().firstIndex(of: $0) }
+            DYLiveModel.log("DDROTATE check \(tag) link=\(link != nil) owner=\(scroll.delegate === self) track=\(scroll.isTracking) idx=\(idx.map(String.init) ?? "-") ids=\(ids().count) h=\(Int(scroll.bounds.height)) off=\(Int(scroll.contentOffset.y)) content=\(Int(scroll.contentSize.height)) inset=\(Int(scroll.adjustedContentInset.top))")
+        }
+        guard link == nil, let scroll, scroll.delegate === self, !scroll.isTracking,
+              let id = currentID(), let index = ids().firstIndex(of: id), scroll.bounds.height > 0 else { return }
+        let want = CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top
+        guard abs(scroll.contentOffset.y - want) > 0.5 else { return }
+        DYLiveModel.log("DDROTATE realign \(tag) size=\(Int(scroll.bounds.width))x\(Int(scroll.bounds.height)) content=\(Int(scroll.contentSize.height)) off=\(Int(scroll.contentOffset.y)) want=\(Int(want)) drag=\(scroll.isDragging) decel=\(scroll.isDecelerating)")
+        scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: want), animated: false)
     }
     func snapToCurrent() {
         DispatchQueue.main.async { [weak self] in

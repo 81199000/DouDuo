@@ -556,6 +556,9 @@ struct DYLiveEnterStreams: Equatable {
     var flv: [String: String]
     var hls: [String: String]
     var def: String?
+    var likeCount: Int? = nil
+    var viewers: String? = nil
+    var totalViewers: String? = nil
 
     static func parse(_ data: Data) -> DYLiveEnterStreams? {
         guard let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -585,8 +588,13 @@ struct DYLiveEnterStreams: Equatable {
                 if (codec == "h264" || codec == "avc") && bitrate > 0 { avc.insert(url) }
             }
         }
+        let stats = room["stats"] as? [String: Any]
+        let viewers = (stats?["user_count_str"] as? String) ?? (room["user_count_str"] as? String)
         return DYLiveEnterStreams(id: id, flv: flvAll.filter { avc.contains($0.value) }, hls: hls,
-                                  def: su["default_resolution"] as? String)
+                                  def: su["default_resolution"] as? String,
+                                  likeCount: (room["like_count"] as? NSNumber)?.intValue,
+                                  viewers: viewers?.isEmpty == false ? viewers : nil,
+                                  totalViewers: (stats?["total_user_str"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 

@@ -50,6 +50,17 @@ enum DYLiveEnterClient {
         return URLSession(configuration: c)
     }()
 
+    private static var statsCache: [String: (like: Int?, viewers: String?, total: String?)] = [:]
+    static func cachedStats(webRid: String) -> (like: Int?, viewers: String?, total: String?)? { statsCache[webRid] }
+    static func stats(webRid: String) async -> (like: Int?, viewers: String?, total: String?)? {
+        if let c = statsCache[webRid] { return c }
+        guard let s = await streams(webRid: webRid) else { return nil }
+        let v = (like: s.likeCount, viewers: s.viewers, total: s.totalViewers)
+        statsCache[webRid] = v
+        if statsCache.count > 60 { statsCache.removeAll() ; statsCache[webRid] = v }
+        return v
+    }
+
     static func streams(webRid: String) async -> DYLiveEnterStreams? {
         guard !webRid.isEmpty else { return nil }
         for attempt in 0..<2 {
@@ -149,8 +160,8 @@ final class DYLiveModel: ObservableObject {
     @Published var clean = false
     /// 「铺满」：开着时画面和屏幕同方向就裁剪铺满（横对横、竖对竖），关掉一律完整显示。
     /// 默认开（跟以前竖屏直播在竖屏上默认铺满一致）；记住偏好，预览、进房、换直播间都沿用
-    @Published var fillScreen: Bool = UserDefaults.standard.object(forKey: "douduo_live_fill_v1") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(fillScreen, forKey: "douduo_live_fill_v1") }
+    @Published var fillScreen: Bool = DYVideoFit.storedFillWidth(in: .standard) {
+        didSet { if DYVideoFit.storedFillWidth(in: .standard) != fillScreen { DYVideoFit.setFillWidth(fillScreen, in: .standard) } }
     }
     @Published var entered = false
     /// 「发现更多」面板展开（在挑直播间）：不播任何直播，免得后台挂着一个还在出声
@@ -271,6 +282,13 @@ final class DYLiveModel: ObservableObject {
 
     init() {
         bind(vlc)
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let v = DYVideoFit.storedFillWidth(in: .standard)
+                if self.fillScreen != v { self.fillScreen = v }
+            }
+        }
         // 低电量模式 / 发热状态变了：马上按新方式重新安排下一间（两路同时播 ↔ 只截一帧）
         for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -1088,6 +1106,11 @@ final class DYLiveModel: ObservableObject {
         entered = true
         clean = false
         fetchedAt = Date()
+        if let h = DYFeedLiveWarm.shared.takeEntering(room.id) {
+            warm = WarmSlot(roomID: room.id, source: h.source, controller: h.controller, view: h.view,
+                            startedAt: CACurrentMediaTime(), preview: false)
+            Self.log("DDLIVE_ENTER handoff room=\(room.id.suffix(6))")
+        }
         play(room)
     }
 
@@ -1541,6 +1564,8 @@ struct DYLiveFeed: View {
     @State private var viewportMinY: CGFloat = 0
     @State private var viewportMaxY: CGFloat = 0
     @AppStorage("douyin_danmaku_v1") private var danmakuOn = true
+    @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
+    @Environment(\.dyHingeClosed) private var hingeClosedRoot
     /// 系统只通过 onHingeChange 给出开合。没收到回调前保持不支持，继续整屏。
     @State private var hingeStatus: DYLiveHingeStatus = .unsupported
     @State private var layoutMemory = DYLiveAdaptiveMemory.empty
@@ -1580,11 +1605,26 @@ struct DYLiveFeed: View {
                     safeTop: inset(geo.safeAreaInsets.top, screenInsets.top))
                 : shown.video
             ZStack {
-                (shown.layout == .existing ? Color.ddBackground : Color.black)
-                DYLiveVideoHost(controller: model.vlc, view: model.videoView, fillWidth: fillWidth, letterbox: shown.layout == .existing ? nil : .black)
+                (shown.layout == .existing && model.rooms.isEmpty ? Color.ddBackground : Color.black)
+                if shown.layout == .existing, ambientLevel > 0 {
+                    DYLiveAmbientBackdrop(controller: model.vlc, active: active && model.currentID != nil,
+                                          dim: DYVideoAmbient.dim, fillWidth: fillWidth)
+                        .frame(width: videoFrame.width, height: videoFrame.height)
+                        .position(x: videoFrame.midX, y: videoFrame.midY)
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("live.ambient")
+                }
+                DYLiveVideoHost(controller: model.vlc, view: model.videoView, fillWidth: fillWidth,
+                                letterbox: shown.layout == .existing ? (ambientLevel > 0 ? .clear : .black) : .black)
                     .frame(width: videoFrame.width, height: videoFrame.height)
-                    .position(x: videoFrame.midX, y: videoFrame.midY)
+                    .position(x: videoFrame.midX + DYDuoMetrics.closedPortraitVideoOffset(
+                                  viewport: videoFrame.size,
+                                  videoAspect: model.playbackVideoSize.height > 1
+                                      ? model.playbackVideoSize.width / model.playbackVideoSize.height : 0,
+                                  fills: fillWidth, isDuo: DYDuoMetrics.isDuoHardware, isClosed: hingeClosedRoot),
+                              y: videoFrame.midY)
                     .allowsHitTesting(false)
+                    .opacity(currentRoom?.isAudioOnly == true ? 0 : 1)
                 if model.rooms.isEmpty { emptyState }
                 else {
                     pages(video: shown.video, interaction: shown.interaction,
@@ -2242,7 +2282,8 @@ struct DYLiveFeed: View {
                                    ambientAxis: model.currentID == room.id ? ambientAxis : nil,
                                    splitRole: splitRole, splitAction: splitAction,
                                    isolationID: "\(bridge.followSession):\(room.id)",
-                                   bridge: bridge, onAuthor: { liveAuthor = $0 })
+                                   bridge: bridge, onAuthor: { liveAuthor = $0 },
+                                   showsPreviewFill: classicPreviewChrome)
                         .containerRelativeFrame([.horizontal, .vertical])
                         .contentShape(Rectangle())
                         .accessibilityHidden(model.currentID != room.id)
@@ -2421,6 +2462,7 @@ private struct DYLiveRoomPage: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.horizontalSizeClass) private var hSize
     @AppStorage(DYLiveBackgroundSound.storageKey) private var backgroundSound = false
+    @Environment(\.dyHingeClosed) private var hingeClosed
     let room: DYLiveRoom
     @ObservedObject var model: DYLiveModel
     let isCurrent: Bool
@@ -2442,6 +2484,7 @@ private struct DYLiveRoomPage: View {
     @ObservedObject var bridge: DouyinBridge
     /// 点主播头像/昵称：打开原生主播主页
     var onAuthor: (DYAweme.Author) -> Void = { _ in }
+    var showsPreviewFill = true
     @State private var followBusy = false
     @State private var followMsg: String?
     private var foreground: Color { theme.media.onMedia.color(for: scheme) }
@@ -2465,17 +2508,30 @@ private struct DYLiveRoomPage: View {
                         // 视频画面区出画前保持纯黑，不随亮色外观变白
                         Color.black
                         // 省电预加载截到的真实画面优先（划的过程中、现连出画前都垫着它），没有才用封面
-                        if let frame = model.previewFrame(for: room.id) {
-                            Image(uiImage: frame).resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit)
-                                .frame(width: geo.size.width, height: geo.size.height).clipped()
-                        } else if let cover = room.cover, let url = URL(string: cover) {
-                            CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: room.portrait ? .fill : .fit) }
-                                placeholder: { Color.black }
-                                .frame(width: geo.size.width, height: geo.size.height).clipped()
+                        let frame = model.previewFrame(for: room.id)
+                        let fills = model.fillScreen && room.portrait == (geo.size.height >= geo.size.width)
+                        let aspect = frame.map { $0.size.width / max($0.size.height, 1) } ?? (room.portrait ? 9.0 / 16 : 16.0 / 9)
+                        let box = fills ? geo.size
+                            : DYVideoFit.contentSize(container: geo.size, videoAspect: aspect, fillWidth: false)
+                        Group {
+                            if let frame {
+                                Image(uiImage: frame).resizable().aspectRatio(contentMode: .fill)
+                            } else if let cover = room.cover, let url = URL(string: cover) {
+                                CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: .fill) }
+                                    placeholder: { Color.black }
+                            }
                         }
+                        .frame(width: box.width, height: box.height).clipped()
+                        .position(x: geo.size.width / 2 + DYDuoMetrics.closedPortraitVideoOffset(
+                                      viewport: geo.size, videoAspect: aspect, fills: fills,
+                                      isDuo: DYDuoMetrics.isDuoHardware, isClosed: hingeClosed),
+                                  y: geo.size.height / 2)
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
                     .allowsHitTesting(false)
+                }
+                if isCurrent, room.isAudioOnly {
+                    DYLiveAudioOnlyCover(room: room).placed(in: video)
                 }
                 if isCurrent && !model.entered {
                     Color.clear.contentShape(Rectangle()).onTapGesture { model.enterRoom() }
@@ -2575,8 +2631,11 @@ private struct DYLiveRoomPage: View {
                             .frame(maxWidth: 420, alignment: .leading)
                             if closeOnBottom {
                                 Spacer(minLength: 12)
-                                closeX(action: model.leaveRoom, id: "live.room.close")
-                                    .modifier(DYRailReservedNudge())
+                                HStack(spacing: 4) {
+                                    fillButton
+                                    closeX(action: model.leaveRoom, id: "live.room.close")
+                                }
+                                .modifier(DYRailReservedNudge())
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2623,7 +2682,7 @@ private struct DYLiveRoomPage: View {
                     .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 28)
                     .overlay(alignment: .topTrailing) {
                         // 预览也一直有铺满按钮；右边距让开外屏右侧的时间 / 信号和摄像头
-                        if isCurrent {
+                        if isCurrent, showsPreviewFill {
                             fillButton
                                 .padding(.top, topInset)
                                 .padding(.trailing, hSize == .compact ? 82 : 18)
@@ -2710,10 +2769,11 @@ private struct DYLiveRoomPage: View {
                     Color.clear.frame(width: 0, height: 0)
                 }
             }
-            fillButton
-            // 退出直播间：官方同款右上角小 ×（外屏右边距让开摄像头）
             if showsClose {
-                closeX(action: model.leaveRoom, id: "live.room.close")
+                HStack(spacing: 0) {
+                    fillButton
+                    closeX(action: model.leaveRoom, id: "live.room.close")
+                }
             }
         }
     }

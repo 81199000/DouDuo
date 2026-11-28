@@ -193,6 +193,11 @@ struct DYLiveRoom: Identifiable, Decodable, Equatable {
     /// 有没有 VLC 能快速起播的 H.264 FLV（compatibleLiveFLV 只留明确标成 H.264 的）
     var hasFLV: Bool { !(flv ?? [:]).isEmpty }
 
+    var isAudioOnly: Bool {
+        let urls = Array(hls.values) + Array((flv ?? [:]).values)
+        return !urls.isEmpty && urls.allSatisfy { $0.contains("/radio/") }
+    }
+
     var bestHLS: URL? {
         for k in ["HD1", "FULL_HD1", "SD2", "SD1"] { if let s = hls[k], let u = URL(string: s) { return u } }
         return hls.values.first.flatMap(URL.init(string:))
@@ -1879,6 +1884,8 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
             if railMode, !(tab == .live && (live.clean || live.entered)), !commentsOpen {
                 if tab == .live, layoutAModuleAnchor.active, feedHost.width > 1 {
                     layoutAModuleButton.modifier(DYRailInputLock())
+                } else if tab == .live, !live.entered {
+                    rootActionRail(DYFeedRailEntry(id: "live-channel", tab: .live, actions: AnyView(liveChannelActions)), selector: true)
                 } else {
                     rootActionRail(nil, selector: true)
                 }
@@ -2536,6 +2543,29 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
         minimalModuleButton(edge: edge, opensUpward: opensUpward)
     }
 
+    private var liveChannelActions: some View {
+        let fg = theme.media.onMedia.color(for: scheme)
+        return DYRailColumn(slots: [
+            DYRailSlot(id: "douyin.live.rail.recommend", icon: DYTab.recommend.symbol, text: "推荐", tint: fg, label: "推荐") {
+                tapChannel(.recommend, switchTab: selectTab)
+            },
+            DYRailSlot(id: "douyin.live.rail.follow", icon: "person.2", text: "关注", tint: fg, label: "关注", iconScale: 0.78) {
+                queueLiveModule(.followedLive)
+            },
+            DYRailSlot(id: "douyin.live.rail.discover", icon: "square.grid.2x2", text: "发现", tint: fg, label: "发现") {
+                queueLiveModule(.discover)
+            },
+            DYRailSlot.fit(fill: live.fillScreen, tint: fg, id: "douyin.live.rail.fill") {
+                withAnimation(.easeInOut(duration: 0.2)) { live.fillScreen.toggle() }
+            },
+        ], tint: fg, moreID: "douyin.live.rail.more") {
+            Button("搜索", systemImage: "magnifyingglass") { openSearch() }
+            Toggle("静音", systemImage: "speaker.slash", isOn: $live.muted)
+            Button("重新连接", systemImage: "arrow.clockwise") { live.retry() }
+            DYSettingsButton()
+        }
+    }
+
     /// 布局 A：同一颗模块圆钮改到下窗格右下。清空层不接点击，只有圆钮自己可点。
     private var layoutAModuleButton: some View {
         let place = DYLiveLayoutToggle.layoutAModuleFrame(
@@ -2554,7 +2584,6 @@ struct DYUpstreamFeedScreen: DYRecommendFeedHost {
 
     private var moduleCircleLabel: some View {
         let ringOn = chromeMode.usesRail && tab != .live
-        // 有进度环时，玻璃圆缩进环里面（环内侧留 4pt）；没有环（直播）时保持原来的 50pt 圆。
         let glass: CGFloat = ringOn ? DDRailMetrics.entryDiameter - 8 : DDRailMetrics.entryDiameter
         return ZStack {
             Image(systemName: tab.symbol)
@@ -2804,7 +2833,7 @@ private struct DDRailProgressRing: View {
 }
 
 enum DDRailMetrics {
-    static let entryDiameter: CGFloat = 50
+    static let entryDiameter: CGFloat = DYRailCapsule.width
 }
 
 /// 按住 ≥ threshold 秒算「长按」，抬手前一直保持；不满 threshold 抬手算「单击」。
@@ -3266,6 +3295,19 @@ struct DYClassicFeedScreen: DYRecommendFeedHost {
             if let t = ProcessInfo.processInfo.environment["DOUDUO_IMSEND"], !t.isEmpty { Task { await DDIMSendProbe.run(t) } }
             if let js = ProcessInfo.processInfo.environment["DOUDUO_CHATJS"], !js.isEmpty { Task { await DDChatJSProbe.run(js) } }
             if ProcessInfo.processInfo.environment["DOUDUO_LIVEPROBE"] == "1" { Task { await DDFeatureProbe.run(bridge, live: live) } }
+            if let spec = ProcessInfo.processInfo.environment["DOUDUO_AUTOSWIPE"] {
+                let parts = spec.split(separator: ",").compactMap { Double($0) }
+                let count = Int(parts.first ?? 3), dwell = parts.count > 1 ? parts[1] : 3
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(6))
+                    for _ in 0..<count {
+                        try? await Task.sleep(for: .seconds(dwell))
+                        guard let id = currentID, let i = feed.items.firstIndex(where: { $0.id == id }), i + 1 < feed.items.count else { continue }
+                        advance(from: id, to: feed.items[i + 1].id)
+                    }
+                    DYLiveModel.log("DDAUTOSWIPE done n=\(count)")
+                }
+            }
             #if DEBUG
             if ProcessInfo.processInfo.environment["DOUDUO_APISCAN"] == "1" { Task { await DYApiScanner.run(bridge) } }
             if ProcessInfo.processInfo.environment["DOUDUO_CPROBE"] == "1" { Task { await DYCommentApiProbe.run(bridge) } }
@@ -4310,7 +4352,7 @@ struct DYUpstreamVideoPage: View {
                         Image(systemName: "chevron.backward")
                             .font(.title2.weight(.medium))
                             .foregroundStyle(fg)
-                            .frame(width: 50, height: 50)
+                            .frame(width: DDRailMetrics.entryDiameter, height: DDRailMetrics.entryDiameter)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -4324,63 +4366,25 @@ struct DYUpstreamVideoPage: View {
                 .accessibilityLabel("返回上一层")
                 .accessibilityIdentifier(backIdentifier)
             }
-            VStack(spacing: theme.media.actionItemSpacing) {
-                railItem(liked ? "heart.fill" : "heart", DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
-                         tint: liked ? theme.status.danger.color(for: scheme) : fg, "douyin.like", onLike)
-                railItem("ellipsis.bubble", DYFormat.count(item.stats.comment), tint: fg, "douyin.comments", onComments)
-                railItem(collected ? "star.fill" : "star", DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
-                         tint: collected ? theme.status.warning.color(for: scheme) : fg, "douyin.collect", onCollect)
-                if !chromeMode.usesRail {
-                    railItem("magnifyingglass", "", tint: fg, "douyin.search", onSearch)
-                }
-                if item.images.isEmpty {
-                    // 有些视频铺满后会裁掉边缘，随手切回完整画面
-                    // 颜色不变，靠图标形态区分：铺满中 = 向内箭头（点了缩回完整画面）；完整画面 = 向外箭头（点了放大铺满）
-                    railItem(autoFit ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", "", tint: fg,
-                             "douyin.fit") {
-                        autoFit.toggle()
-                        onToast?(autoFit ? "铺满：开" : "完整画面")
-                    }
-                }
-            }
-            .padding(.vertical, 8)
-            .frame(width: railWidth)
-            .ddMediaGlassCapsule()
-            .frame(width: actionColumnWidth)
+            DYRailCapsule(slots: railSlots(fg), blocksTap: { boost.blocksTap }, boost: boost)
             moreMenu(fg)
         }
         .themeShadow(.mediaLabel)
     }
 
-    private func railItem(_ icon: String, _ text: String, tint: Color, _ id: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: { if !boost.blocksTap { act() } }) {
-            VStack(spacing: 2) {
-                Group {
-                    if id == "douyin.fit" {
-                        DYFitCornerGlyph(inward: !autoFit)
-                            .stroke(tint, style: StrokeStyle(lineWidth: theme.media.actionGlyphStroke, lineCap: .round, lineJoin: .round))
-                            .frame(width: theme.media.actionGlyphSize, height: theme.media.actionGlyphSize)
-                    } else {
-                        Image(systemName: icon)
-                            .font(.system(size: theme.media.actionGlyphSize, weight: .regular, design: .rounded))
-                            .foregroundStyle(tint)
-                    }
-                }
-                .frame(width: 34, height: 34)
-                if !text.isEmpty {
-                    Text(text).font(.caption2.weight(.medium)).monospacedDigit()
-                        .foregroundStyle(theme.media.onMediaSecondary.color(for: scheme))
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                }
-            }
-            // 有数字的按钮：图标 34 + 间隙 2 + 文字；没数字的（搜索/铺满）去掉文字那一截，只留图标高度，
-            // 这样图标到相邻按钮的距离，和「图标—文字」之间的距离一致，不再多出一块空白
-            .frame(width: railWidth, height: text.isEmpty ? 36 : 50, alignment: .top)
-            .contentShape(Rectangle())
+    private func railSlots(_ fg: Color) -> [DYRailSlot] {
+        var out = [
+            DYRailSlot(id: "douyin.like", icon: liked ? "heart.fill" : "heart", text: DYFormat.count(item.stats.digg + (liked ? 1 : 0)),
+                       tint: liked ? theme.status.danger.color(for: scheme) : fg, action: onLike),
+            DYRailSlot(id: "douyin.comments", icon: "ellipsis.bubble", text: DYFormat.count(item.stats.comment), tint: fg, action: onComments),
+            DYRailSlot(id: "douyin.collect", icon: collected ? "star.fill" : "star", text: DYFormat.count(item.stats.collect + (collected ? 1 : 0)),
+                       tint: collected ? theme.status.warning.color(for: scheme) : fg, action: onCollect),
+        ]
+        if !chromeMode.usesRail { out.append(DYRailSlot(id: "douyin.search", icon: "magnifyingglass", tint: fg, action: onSearch)) }
+        if item.images.isEmpty {
+            out.append(DYRailSlot.fit(fill: autoFit, tint: fg) { autoFit.toggle(); onToast?(autoFit ? "铺满：开" : "完整画面") })
         }
-        .buttonStyle(.plain)
-        .modifier(DYHoldBoost(control: boost))
-        .accessibilityIdentifier(id)
+        return out
     }
 
     private func rateTitle(_ r: Double) -> String { r == 1 ? "正常速度" : String(format: "%g 倍速", r) }
@@ -4449,13 +4453,7 @@ struct DYUpstreamVideoPage: View {
             }
             moreExtras
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: theme.media.moreGlyphSize, weight: .regular, design: .rounded))
-                .foregroundStyle(fg)
-                .frame(width: 50, height: 50)
-                .contentShape(Circle())
-                .ddMediaGlassCircle()
-                .frame(width: 54)
+            DYRailMoreLabel(tint: fg)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -6445,7 +6443,7 @@ extension DYFeedModel {
 }
 
 /// 铺满/还原：两枚对角框，统一圆头笔画，不使用粗箭头。
-private struct DYFitCornerGlyph: Shape {
+struct DYFitCornerGlyph: Shape {
     var inward: Bool
     func path(in rect: CGRect) -> Path {
         var p = Path()

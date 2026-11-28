@@ -29,7 +29,9 @@ struct DYFeedLivePage: View {
     let isCurrent: Bool
     let insets: EdgeInsets
     let onEnter: (DYLiveRoom) -> Void
-    @StateObject private var player = VLCPlayerController()
+    @StateObject private var holder = DYFeedLivePlayerHolder()
+    private var player: VLCPlayerController { holder.player }
+    @State private var playingSource: DYLiveStream?
     @State private var started = false
     @State private var sourceIndex = 0
     @State private var failed = false
@@ -44,6 +46,12 @@ struct DYFeedLivePage: View {
     @AppStorage(DYVideoAmbient.key) private var ambientLevel = DYVideoAmbient.defaultLevel
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dyRootRailTab) private var rootRailTab
+    @AppStorage(DYVideoFit.preferenceKey) private var fillWidth = true
+    @State private var liveLikes: Int?
+    @State private var liveViewers: String?
+    @State private var liveTotal: String?
+    @Environment(\.dyHingeClosed) private var hingeClosed
 
     private var room: DYLiveRoom { live.room }
     private var fg: Color { theme.media.onMedia.color(for: scheme) }
@@ -53,35 +61,45 @@ struct DYFeedLivePage: View {
             Color.black
             if isCurrent {
                 GeometryReader { g in
-                    let mode: ContentMode = live.portrait == (g.size.height >= g.size.width) ? .fill : .fit
-                    if let frame = DYFeedLiveWarm.shared.frame(for: live.roomID) {
-                        Image(uiImage: frame).resizable().aspectRatio(contentMode: mode)
-                            .frame(width: g.size.width, height: g.size.height).clipped()
-                    } else if let cover = live.cover, let url = URL(string: cover) {
-                        CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: mode) }
-                            placeholder: { Color.black }
-                            .frame(width: g.size.width, height: g.size.height).clipped()
+                    let mode: ContentMode = fillWidth && live.portrait == (g.size.height >= g.size.width) ? .fill : .fit
+                    let frame = DYFeedLiveWarm.shared.frame(for: live.roomID)
+                    let aspect = frame.map { $0.size.width / max($0.size.height, 1) } ?? (live.portrait ? 9.0 / 16 : 16.0 / 9)
+                    let box = mode == .fill ? g.size
+                        : DYVideoFit.contentSize(container: g.size, videoAspect: aspect, fillWidth: false)
+                    Group {
+                        if let frame {
+                            Image(uiImage: frame).resizable().aspectRatio(contentMode: .fill)
+                        } else if let cover = live.cover, let url = URL(string: cover) {
+                            CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: .fill) }
+                                placeholder: { Color.clear }
+                        }
                     }
+                    .frame(width: box.width, height: box.height).clipped()
+                    .position(x: g.size.width / 2 + DYDuoMetrics.closedPortraitVideoOffset(
+                                  viewport: g.size, videoAspect: aspect, fills: mode == .fill,
+                                  isDuo: DYDuoMetrics.isDuoHardware, isClosed: hingeClosed),
+                              y: g.size.height / 2)
                 }
                 .allowsHitTesting(false)
             }
             // 环境光：画面没铺满（横屏直播 / 竖屏直播在折叠屏外屏）时四周跟着画面颜色变，同视频页
             if isCurrent, ambientLevel > 0 {
                 DYLiveAmbientBackdrop(controller: warm?.controller ?? player, active: isCurrent,
-                                      dim: DYVideoAmbient.dim, fillWidth: live.portrait)
+                                      dim: DYVideoAmbient.dim, fillWidth: fillWidth)
                     .id(warm?.roomID ?? "cold")
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("douyin.feed.live.ambient")
             }
             if isCurrent {
                 // 预热过（上一条时已在后台连上）就用那一路，划到就有画面；否则现连
-                DYFeedLiveVideo(controller: warm?.controller ?? player, warmView: warm?.view, portrait: live.portrait) {
+                DYFeedLiveVideo(controller: warm?.controller ?? player, warmView: warm?.view, portrait: live.portrait, fillWidth: fillWidth) {
                     guard shownAt > 0 else { return }
                     DYLiveModel.log("DDFEEDLIVE firstframe room=\(live.roomID.suffix(6)) wait=\(Int((CACurrentMediaTime() - shownAt) * 1000))ms src=\(sourceIndex) warm=\(warm != nil)")
                     shownAt = 0
                 }
                 .id(warm?.roomID ?? "cold")
             }
+            if isCurrent, room.isAudioOnly { DYLiveAudioOnlyCover(room: room) }
             // 同抖音 App：「点击进入直播间」放在下方居中、紧挨左下信息上面，不挡画面中间
             VStack(spacing: 14) {
                 Spacer()
@@ -148,7 +166,30 @@ struct DYFeedLivePage: View {
         }
 
         .onDisappear { stop() }
+        .preference(key: DYFeedRailPreference.self, value: railEntry)
+        .task(id: isCurrent ? live.webRid : "") {
+            guard isCurrent, !live.webRid.isEmpty else { return }
+            if let c = DYLiveEnterClient.cachedStats(webRid: live.webRid) { liveLikes = c.like; liveViewers = c.viewers; liveTotal = c.total; return }
+            if let c = await DYLiveEnterClient.stats(webRid: live.webRid) { liveLikes = c.like; liveViewers = c.viewers; liveTotal = c.total }
+        }
         .accessibilityIdentifier("douyin.feed.live")
+    }
+
+    private var railEntry: [DYFeedRailEntry] {
+        guard isCurrent, let rootRailTab else { return [] }
+        return [DYFeedRailEntry(id: item.id, tab: rootRailTab, actions: AnyView(railActions))]
+    }
+
+    private var railActions: some View {
+        DYRailColumn(slots: [
+            DYRailSlot(id: "douyin.like", icon: "heart", text: liveLikes.map(DYFormat.count) ?? "", tint: fg, label: "本场点赞", reservesText: true, action: enter),
+            DYRailSlot(id: "douyin.comments", icon: "person.2", text: liveViewers ?? live.viewers, tint: fg, label: "在看人数", reservesText: true, iconScale: 0.78, action: enter),
+            DYRailSlot(id: "douyin.collect", icon: "eye", text: liveTotal ?? "", tint: fg, label: "本场看过", reservesText: true, iconScale: 0.8, action: enter),
+            DYRailSlot.fit(fill: fillWidth, tint: fg) { fillWidth.toggle() },
+        ], tint: fg, moreID: "douyin.feed.live.more") {
+            Button("进入直播间", systemImage: "dot.radiowaves.left.and.right") { enter() }
+            DYSettingsButton()
+        }
     }
 
     private var enterButton: some View {
@@ -168,14 +209,28 @@ struct DYFeedLivePage: View {
     }
 
     private func enter() {
-        stop()
+        handOffOrStop()
         DYLiveModel.log("DDFEEDLIVE enter room=\(live.roomID) rid=\(live.webRid)")
         onEnter(room)
+    }
+
+    private func handOffOrStop() {
+        let c = warm?.controller ?? player
+        guard started, let source = playingSource, c.mediaPlayer.hasVideoOut, c.videoSize.width > 0,
+              let view = warm?.view ?? (c.boundSurface as? VLCPlayerUIView) else { stop(); return }
+        started = false
+        shownAt = 0
+        restoreTask?.cancel(); restoreTask = nil
+        c.onError = nil
+        view.handedOff = true
+        if warm != nil { warm = nil } else { holder.detach() }
+        DYFeedLiveWarm.shared.handOff(.init(roomID: live.roomID, source: source, controller: c, view: view))
     }
 
     private func start() {
         if warm == nil, let h = DYFeedLiveWarm.shared.take(live.roomID) {
             warm = h
+            playingSource = live.room.liveStreams.first
             started = true
             failed = false
             shownAt = CACurrentMediaTime()
@@ -220,6 +275,7 @@ struct DYFeedLivePage: View {
             }
         }
         if shownAt == 0 { shownAt = CACurrentMediaTime() }
+        playingSource = s
         DYLiveModel.log("DDFEEDLIVE play room=\(live.roomID) q=\(s.quality) flv=\(s.isFLV) title=\(live.title.prefix(20))")
         player.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
         Self.traceAudio(player, room: live.roomID, tag: "cold")
@@ -285,4 +341,16 @@ struct DYFeedLivePage: View {
             return Int(c.mediaPlayer.media?.statistics.playedAudioBuffers ?? 0) > base
         }
     }
+}
+
+@MainActor
+final class DYFeedLivePlayerHolder: ObservableObject {
+    private var current: VLCPlayerController?
+    var player: VLCPlayerController {
+        if let current { return current }
+        let p = VLCPlayerController()
+        current = p
+        return p
+    }
+    func detach() { current = nil }
 }

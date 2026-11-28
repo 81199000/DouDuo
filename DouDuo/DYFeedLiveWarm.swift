@@ -26,6 +26,34 @@ final class DYFeedLiveWarm {
 
     private var warm: Handle?
     private var startedAt: CFTimeInterval = 0
+
+    struct EnterHandoff {
+        let roomID: String
+        let source: DYLiveStream
+        let controller: VLCPlayerController
+        let view: VLCPlayerUIView
+    }
+    private var entering: EnterHandoff?
+    func handOff(_ h: EnterHandoff) {
+        if let old = entering { Self.dispose(Handle(roomID: old.roomID, controller: old.controller, view: old.view)) }
+        entering = h
+        DYLiveModel.log("DDFEEDLIVE handoff room=\(h.roomID.suffix(6)) q=\(h.source.quality)")
+        let c = h.controller
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, let e = self.entering, e.controller === c else { return }
+            self.entering = nil
+            Self.dispose(Handle(roomID: e.roomID, controller: e.controller, view: e.view))
+        }
+    }
+    func takeEntering(_ roomID: String) -> EnterHandoff? {
+        guard let e = entering else { return nil }
+        entering = nil
+        guard e.roomID == roomID else {
+            Self.dispose(Handle(roomID: e.roomID, controller: e.controller, view: e.view))
+            return nil
+        }
+        return e
+    }
     private var cap: Task<Void, Never>?
     /// 预热期间一直按住音量 0（见 update 里的说明），还在看上一条时不能漏出直播的声音
     private var muteKeeper: Task<Void, Never>?
@@ -54,6 +82,9 @@ final class DYFeedLiveWarm {
     }
 
     func captureFrame(next: DYAweme?) {
+        if let rid = next?.live?.webRid, !rid.isEmpty, DYLiveEnterClient.cachedStats(webRid: rid) == nil {
+            Task { _ = await DYLiveEnterClient.stats(webRid: rid) }
+        }
         guard let live = next?.live, DYFeedExtras.liveEnabled, !DYStream.saving,
               VLCPlayerCensus.releaseBacklog < 2, !DYThreadGuard.pressured else { return }
         if let at = frameAt[live.roomID], Date().timeIntervalSince(at) < Self.frameFresh { return }
@@ -268,8 +299,10 @@ final class DYFeedLiveWarm {
 struct DYWarmLiveSurface: UIViewRepresentable {
     let view: VLCPlayerUIView
     var alwaysFill = false
+    var fillWidth = true
     func makeUIView(context: Context) -> UIView {
         view.alwaysFill = alwaysFill
+        view.fillWidth = fillWidth
         let box = UIView()
         box.backgroundColor = .clear
         box.clipsToBounds = true
@@ -280,10 +313,12 @@ struct DYWarmLiveSurface: UIViewRepresentable {
         return box
     }
     func updateUIView(_ box: UIView, context: Context) {
+        guard !view.handedOff else { return }
         if view.superview !== box {
             view.removeFromSuperview(); view.frame = box.bounds; box.addSubview(view)
         }
         view.alwaysFill = alwaysFill
+        view.fillWidth = fillWidth
         view.applyFill()
     }
 }
@@ -293,21 +328,26 @@ struct DYFeedLiveVideo: View {
     @ObservedObject var controller: VLCPlayerController
     let warmView: VLCPlayerUIView?
     let portrait: Bool
+    var fillWidth = true
     let onFirstFrame: () -> Void
+    @Environment(\.dyHingeClosed) private var hingeClosed
     var body: some View {
         // 画面没铺满时把画面层缩到画面本身大小、居中：VLC 渲染层的留边不一定透明，
         // 铺满整屏会把下面的环境光盖成黑边（同视频页 contentSize 的做法）
         GeometryReader { g in
             let vs = controller.videoSize
             let fitted = vs.width > 1 && vs.height > 1
-                ? DYVideoFit.contentSize(container: g.size, videoAspect: vs.width / vs.height, fillWidth: true)
+                ? DYVideoFit.contentSize(container: g.size, videoAspect: vs.width / vs.height, fillWidth: fillWidth)
                 : g.size
             Group {
-                if let warmView { DYWarmLiveSurface(view: warmView) }
-                else { VLCPlayerSurface(controller: controller, fillWidth: true, letterbox: .clear) }
+                if let warmView { DYWarmLiveSurface(view: warmView, fillWidth: fillWidth) }
+                else { VLCPlayerSurface(controller: controller, fillWidth: fillWidth, letterbox: .clear) }
             }
             .frame(width: fitted.width, height: fitted.height)
-            .position(x: g.size.width / 2, y: g.size.height / 2)
+            .position(x: g.size.width / 2 + DYDuoMetrics.closedPortraitVideoOffset(
+                          viewport: g.size, videoAspect: vs.width > 1 && vs.height > 1 ? vs.width / vs.height : 0,
+                          fills: fillWidth, isDuo: DYDuoMetrics.isDuoHardware, isClosed: hingeClosed),
+                      y: g.size.height / 2)
         }
         .opacity(controller.videoSize.width > 0 ? 1 : 0)
         .allowsHitTesting(false)

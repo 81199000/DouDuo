@@ -13,6 +13,8 @@ struct DYFeedPager<Page: View>: View {
     @State private var mounted: [String] = []
     @State private var shiftTask: Task<Void, Never>?
     @State private var jumpToken = 0
+    @State private var scrollMoving = false
+    @State private var hideTask: Task<Void, Never>?
     static var shiftDelay: TimeInterval { 0.3 }
 
     var body: some View {
@@ -31,6 +33,7 @@ struct DYFeedPager<Page: View>: View {
                         }
                         .frame(width: geo.size.width, height: h)
                         .clipped()
+                        .opacity(slot.item.id == currentID || scrollMoving || userScrolling ? 1 : 0)
                         .offset(y: CGFloat(slot.index) * h)
                         .id(slot.item.id)
                     }
@@ -38,11 +41,24 @@ struct DYFeedPager<Page: View>: View {
                 .frame(width: geo.size.width, height: h * CGFloat(max(items.count, 1)), alignment: .top)
                 .background(DYPagingSpeedBridge(ids: items.map(\.id), currentID: $currentID, jumpToken: jumpToken))
             }
+            .onScrollPhaseChange { _, phase in
+                hideTask?.cancel()
+                if phase != .idle {
+                    if !scrollMoving { scrollMoving = true }
+                } else {
+                    hideTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        guard !Task.isCancelled else { return }
+                        scrollMoving = false
+                    }
+                }
+            }
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.always)
             .ignoresSafeArea()
         }
+        .background(Color.black.ignoresSafeArea())
         .ignoresSafeArea()
         .simultaneousGesture(DragGesture(minimumDistance: 8)
             .onChanged { value in

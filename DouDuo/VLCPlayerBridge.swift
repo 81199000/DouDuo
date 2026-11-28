@@ -25,10 +25,12 @@ struct VLCPlayerSurface: UIViewRepresentable {
     }
     /// 页面被拆掉时把 drawable 摘掉：直播切房间后旧页的视图已离屏，不能让新流画到它上面
     static func dismantleUIView(_ uiView: VLCPlayerUIView, coordinator: ()) {
+        guard !uiView.handedOff else { return }
         if let c = uiView.controller, c.mediaPlayer.drawable as? UIView === uiView { c.mediaPlayer.drawable = nil }
         if uiView.controller?.boundSurface === uiView { uiView.controller?.boundSurface = nil }
     }
     func updateUIView(_ uiView: VLCPlayerUIView, context: Context) {
+        guard !uiView.handedOff else { return }
         // ⚠️ 不要每次 updateUIView 都重设 drawable（@State 0.25s 变一次会反复触发，
         // 频繁 attach/detach 视频输出 → 画面冻结）。仅在 drawable 丢失时补挂。
         controller.boundSurface = uiView
@@ -47,6 +49,7 @@ struct VLCPlayerSurface: UIViewRepresentable {
 
 final class VLCPlayerUIView: UIView {
     weak var controller: VLCPlayerController?
+    var handedOff = false
     var fillWidth = true
     var alwaysFill = false { didSet { if alwaysFill != oldValue { applyFill() } } }
     override init(frame: CGRect) {
@@ -128,15 +131,14 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
     /// 音频输出 flush 卡住时这一下永远不返回——放在主线程就是整个 App 卡死，10 秒后被系统看门狗杀掉
     /// VLC 线程停在 input_Close / ca_Flush）。所以最后一次释放必须交给后台线程，跟 installFreshPlayer 换代时一样。
     deinit {
-        guard let player = mediaPlayer else { return }
         // ⚠️ activePlayer 里还有一份强引用：不先清掉，控制器的成员在 deinit 之后（主线程）才释放，
         // 后台那份先放完时，最后一次释放就落在 activePlayer 上 → 主线程 libvlc_media_player_destroy 卡死
         activePlayer.suspendAcceptance()
-        player.delegate = nil
-        player.drawable = nil
         let release = VLCPlayerRelease()
-        release.player = player
+        release.player = mediaPlayer
         mediaPlayer = nil          // 控制器不再持有：此后唯一的引用在 release 里
+        guard release.player != nil else { return }
+        release.detach()
         let done = VLCReleaseFlag()
         VLCPlayerCensus.releaseStarted()
         DispatchQueue.global(qos: .utility).async {
@@ -227,13 +229,11 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate, ObservableObj
         stopWait = nil
         stopInFlight = false
         activePlayer.suspendAcceptance()
-        let retired: VLCMediaPlayer = mediaPlayer
-        retired.delegate = nil
-        retired.drawable = nil
         handoffID &+= 1
         let id = handoffID
         let release = VLCPlayerRelease()
-        release.player = retired
+        release.player = mediaPlayer
+        release.detach()
         let player = Self.makePlayer()
         mediaPlayer = player
         activePlayer.adopt(player, armStaleLog: true)
@@ -779,6 +779,10 @@ private final class VLCWeakBox: @unchecked Sendable {
 
 private final class VLCPlayerRelease: @unchecked Sendable {
     var player: VLCMediaPlayer?
+    func detach() {
+        player?.delegate = nil
+        player?.drawable = nil
+    }
 }
 
 private struct VLCReplacement {

@@ -28,10 +28,10 @@ check("Self.queue.async" in tk and tk.index("Self.queue.async") < tk.index("save
 check("guard !working" in tk, "上一张没好不截下一张")
 check("!covered" in tk, "铺满整屏时不截")
 check("thermalState" in a and "ProcessInfo.ThermalState.serious" in a, "发热停")
-for k in ["applyingGaussianBlur(sigma: 3)", "kCIInputSaturationKey: 0.85", "48 / max(src.extent.width, 1)"]:
+for k in ["applyingGaussianBlur(sigma: 4)", "kCIInputSaturationKey: 0.8]", "64 / max(src.extent.width, 1)"]:
     check(k in a and k in vid, f"处理跟视频环境光一致：{k}")
 check('"DDLIVEAMBIENT first' in a and '"DDLIVEAMBIENT snapshot' in a, "出图 / 截不到写日志")
 
 lv = warm[warm.index("struct DYFeedLiveVideo: View {"):warm.index("enum DYFeedLeaving")]
-check("DYVideoFit.contentSize(container: g.size" in lv and ".frame(width: fitted.width, height: fitted.height)" in lv and "fillWidth: true" in lv, "推荐流直播同视频规则：同向铺满，竖屏看横屏保持完整")
+check("DYVideoFit.contentSize(container: g.size" in lv and ".frame(width: fitted.width, height: fitted.height)" in lv and "fillWidth: fillWidth" in lv, "推荐流直播同视频规则：同向铺满，竖屏看横屏保持完整")
 sys.exit(1 if fails else 0)

@@ -3783,6 +3783,10 @@ struct DYForwardOfficialScreen: View {
         loading = !cache.hasContactsSnapshot
         message = cache.hasContactsSnapshot ? "已恢复朋友缓存，后台同步变化" : "正在加载分享联系人…"
         DYLiveModel.log("DDPEOPLE restore contacts=\(contacts.count) warm=\(retainedWeb != nil)")
+        if nativeOnly, DYNativeChat.enabled, !layoutFixture {
+            refreshNativeContacts(scope: scope)
+            return
+        }
         if let web, !sending {
             // 官网没有好友变更游标：温上下文仅本地差异扫描，最多每5分钟后台校准一次来源快照。
             if lastRemoteRefresh.map({ Date().timeIntervalSince($0) >= 300 }) ?? true { web.reload() }
@@ -3792,6 +3796,54 @@ struct DYForwardOfficialScreen: View {
     private struct Snapshot: Decodable {
         let state: String; let items: [DYForwardContact]
         let isDelta: Bool?; let removed: [String]?; let revision: String?
+    }
+    private var nativeLoad: Task<Void, Never>?
+    private var nativeConversationIDs: [String: String] = [:]
+    private func refreshNativeContacts(scope: String) {
+        nativeLoad?.cancel()
+        nativeLoad = Task { [weak self] in
+            let t0 = Date()
+            do {
+                let all = try await DYNativeIM.shared.loadConversations(maxPages: 10)
+                guard let self, !Task.isCancelled, self.accountScope == scope else { return }
+                let list = all.filter { !$0.hiddenInMainList && ($0.type == 1 || $0.type == 2) && !$0.onlySystem }
+                    .sorted { ($0.last?.createdMS ?? 0) > ($1.last?.createdMS ?? 0) }
+                var users: [String: DYIMUser] = [:]
+                if let bridge = DouyinBridge.primary {
+                    users = await DYNativeIM.shared.users(list.filter { $0.type == 1 }.map { ($0.peerUID, $0.peerSec) }, bridge: bridge)
+                } else {
+                    for c in list where c.type == 1 { if let u = DYNativeIM.shared.cachedUser(uid: c.peerUID) { users[String(c.peerUID)] = u } }
+                }
+                guard !Task.isCancelled, self.accountScope == scope else { return }
+                var ids: [String: String] = [:]
+                let rows: [DYForwardContact] = list.compactMap { c in
+                    let u = users[String(c.peerUID)]
+                    let name = c.type == 1 ? (u?.name ?? "") : (c.name.isEmpty ? "群聊" : c.name)
+                    guard !name.isEmpty else { return nil }
+                    let id = "\(c.type)|" + (c.type == 1 ? String(c.peerUID) : c.id)
+                    ids[id] = c.id
+                    return DYForwardContact(id: id, name: name, avatar: c.type == 1 ? u?.avatar : (c.avatar.isEmpty ? nil : c.avatar),
+                                            kind: c.type, secUid: c.type == 1 ? (c.peerSec.isEmpty ? u?.sec : c.peerSec) : nil)
+                }
+                self.nativeConversationIDs = ids
+                let cache = DYPeopleCache.shared
+                cache.mergeContacts(rows, scope: scope, complete: true)
+                self.contacts = rows
+                self.loading = false; self.loginRequired = false
+                if !self.sending { self.message = rows.isEmpty ? "还没有可转发的私信朋友" : "选择朋友转发当前作品" }
+                DYLiveModel.log("DDFORWARD native-list n=\(rows.count) convs=\(all.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            } catch {
+                guard let self, !Task.isCancelled, self.accountScope == scope else { return }
+                self.loading = false
+                if case DYIMError.noLogin = error {
+                    self.loginRequired = true
+                    self.message = "请先登录抖音，再选择朋友"
+                } else {
+                    self.message = self.contacts.isEmpty ? "朋友列表加载失败，请稍后重试" : "已显示朋友缓存"
+                }
+                DYLiveModel.log("DDFORWARD native-list fail \(error.localizedDescription)")
+            }
+        }
     }
     func send(to contact: DYForwardContact, itemURL: URL, note: String = "") async -> DYForwardReceipt? {
         #if DEBUG && targetEnvironment(simulator)
@@ -3895,7 +3947,10 @@ struct DYForwardOfficialScreen: View {
         navigationGeneration = UUID(); readyForSend = false; bridgeFailed = false; opening?.cancel()
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard webView.url?.lastPathComponent == expectedID else { return }
+        guard webView.url?.lastPathComponent == expectedID else {
+            DYLiveModel.log("DDFORWARD finish-mismatch url=\(webView.url?.path ?? "-") expected=\(expectedID.suffix(6))")
+            return
+        }
         lastRemoteRefresh = Date(); openPanel()
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail() }
@@ -3903,6 +3958,7 @@ struct DYForwardOfficialScreen: View {
         if (error as NSError).code != NSURLErrorCancelled { fail() }
     }
     private func fail() {
+        DYLiveModel.log("DDFORWARD web-fail url=\(web?.url?.path ?? "-")")
         readyForSend = false; bridgeFailed = true; loading = false
         message = contacts.isEmpty ? "官网加载失败，请关闭后重试" : "已显示朋友缓存，后台同步暂时失败"
     }
@@ -3915,6 +3971,42 @@ struct DYForwardOfficialScreen: View {
             loading = false
         } else { openPanel() }
     }
+    private var captchaAsked = false
+    private func onCaptchaPage() async -> Bool {
+        guard let web else { return false }
+        let title = (try? await web.evaluateJavaScript("document.title") as? String) ?? ""
+        return title.contains("验证码")
+    }
+    private func passCaptcha(generation: UUID, account: String, work: String) async {
+        guard let url = web?.url, !captchaAsked else {
+            loading = false; readyForSend = false; bridgeFailed = true
+            message = "抖音要求安全验证，请稍后再试"
+            DYLiveModel.log("DDFORWARD captcha skip asked=\(captchaAsked)")
+            return
+        }
+        captchaAsked = true
+        message = "抖音要求先完成安全验证"
+        DYLiveModel.log("DDFORWARD captcha present")
+        var lastReload = Date()
+        let ok = await DYCaptchaPage.run(url: url, reason: "读取转发朋友", probe: { [weak self] in
+            guard let self, let web = self.web else { return false }
+            if await self.onCaptchaPage() {
+                if !web.isLoading, Date().timeIntervalSince(lastReload) > 8 { lastReload = Date(); web.reload() }
+                return false
+            }
+            let n = (try? await web.evaluateJavaScript("document.querySelectorAll('[data-e2e]').length") as? Int) ?? 0
+            return n > 0
+        })
+        DYLiveModel.log("DDFORWARD captcha ok=\(ok)")
+        guard navigationGeneration == generation, accountScope == account, expectedID == work else { return }
+        if ok {
+            if await onCaptchaPage() { web?.reload() }
+            openPanel()
+        } else {
+            loading = false; readyForSend = false; bridgeFailed = true
+            message = "需要先完成抖音安全验证才能读取朋友"
+        }
+    }
     private func openPanel() {
         opening?.cancel()
         guard !fullPage else { return }
@@ -3922,27 +4014,50 @@ struct DYForwardOfficialScreen: View {
         loginRequired = false; bridgeFailed = false
         if !sending { message = nativeOnly && !contacts.isEmpty ? "已显示朋友缓存，后台同步变化" : nativeOnly ? "正在加载分享联系人…" : "正在打开抖音官方分享面板…" }
         let generation = navigationGeneration, account = accountScope, work = expectedID
+        DYLiveModel.log("DDFORWARD open-start work=\(work.suffix(6)) web=\(web != nil) inWindow=\(web?.window != nil) url=\(web?.url?.path ?? "-") scope=\(account.isEmpty ? "empty" : "ok") cache=\(DYPeopleCache.shared.scope == account)")
         opening = Task { [weak self] in
-            for _ in 0..<80 {
+            var lastState = ""
+            for round in 0..<80 {
                 guard !Task.isCancelled, let self, let web = self.web,
-                      self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
-                if let raw = try? await web.evaluateJavaScript(Self.openPanelJS) as? String,
+                      self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else {
+                    DYLiveModel.log("DDFORWARD open-abort round=\(round) cancelled=\(Task.isCancelled) web=\(self?.web != nil) gen=\(self?.navigationGeneration == generation) scope=\(self?.accountScope == account) work=\(self?.expectedID == work)")
+                    return
+                }
+                let t0 = CACurrentMediaTime()
+                let raw = try? await web.evaluateJavaScript(Self.openPanelJS) as? String
+                let ms = Int((CACurrentMediaTime() - t0) * 1000)
+                let state = raw.flatMap { $0.data(using: .utf8) }.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }?["state"] ?? "nil"
+                if state != lastState || ms > 1500 {
+                    DYLiveModel.log("DDFORWARD open-state round=\(round) state=\(state) jsMs=\(ms) url=\(web.url?.path ?? "-") inWindow=\(web.window != nil)")
+                    lastState = state
+                }
+                if state != "ready", state != "login", round % 3 == 2, await self.onCaptchaPage() {
+                    await self.passCaptcha(generation: generation, account: account, work: work)
+                    return
+                }
+                if let raw,
                    let data = raw.data(using: .utf8),
                    let response = try? JSONSerialization.jsonObject(with: data) as? [String: String],
                    let state = response["state"], state == "ready" || state == "login" {
                     guard !Task.isCancelled, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
                     if self.nativeOnly {
                         if state == "login" {
+                            DYLiveModel.log("DDFORWARD native login-required")
                             self.readyForSend = false; self.loginRequired = true; self.loading = false
                             self.message = self.contacts.isEmpty ? "登录抖音后显示可转发的朋友" : "已显示朋友缓存，登录抖音后可转发"
                             return
                         }
-                        if let json = try? await web.callAsyncJavaScript("return JSON.stringify(window.__ddNativeForward.read(expected, true));", arguments: ["expected": work], contentWorld: .page) as? String,
-                           let bytes = json.data(using: .utf8), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: bytes),
+                        let json = try? await web.callAsyncJavaScript("return JSON.stringify(window.__ddNativeForward.read(expected, true));", arguments: ["expected": work], contentWorld: .page) as? String
+                        let parsed = json.flatMap { $0.data(using: .utf8) }.flatMap { try? JSONDecoder().decode(Snapshot.self, from: $0) }
+                        if parsed?.state != lastState {
+                            DYLiveModel.log("DDFORWARD read state=\(parsed?.state ?? (json == nil ? "js-nil" : "decode-fail")) items=\(parsed?.items.count ?? -1)")
+                            lastState = parsed?.state ?? "nil"
+                        }
+                        if let snapshot = parsed,
                            snapshot.state == "ready" || snapshot.state == "empty" {
                             guard !Task.isCancelled, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
                             let cache = DYPeopleCache.shared
-                            guard cache.scope == account else { return }
+                            guard cache.scope == account else { DYLiveModel.log("DDFORWARD drop scope-mismatch"); return }
                             if snapshot.isDelta == true, let removed = snapshot.removed, !removed.isEmpty {
                                 let deleted = Set(removed)
                                 cache.mergeContacts(cache.contacts.filter { !deleted.contains($0.id) } + snapshot.items, scope: account, complete: true)
@@ -3955,6 +4070,7 @@ struct DYForwardOfficialScreen: View {
                             if let revision = snapshot.revision {
                                 _ = try? await web.callAsyncJavaScript("return window.__ddNativeForward.ack(revision);", arguments: ["revision": revision], contentWorld: .page)
                             }
+                            self.captchaAsked = false
                             DYLiveModel.log("DDFORWARD native-contacts=\(self.contacts.count) changed=\(snapshot.items.count) removed=\(snapshot.removed?.count ?? 0)")
                             return
                         }
@@ -3968,6 +4084,9 @@ struct DYForwardOfficialScreen: View {
                 try? await Task.sleep(for: .milliseconds(350))
             }
             guard !Task.isCancelled, let self, self.navigationGeneration == generation, self.accountScope == account, self.expectedID == work else { return }
+            if let diag2 = try? await self.web?.evaluateJavaScript("JSON.stringify({ready:document.readyState,title:document.title.slice(0,30),n:document.querySelectorAll('[data-e2e]').length,scripts:document.scripts.length,bodyLen:document.body?document.body.innerHTML.length:-1,text:document.body?document.body.innerText.slice(0,120):'',vw:innerWidth,vh:innerHeight,vis:document.visibilityState})") as? String {
+                DYLiveModel.log("DDFORWARD page=\(diag2) webFrame=\(Int(self.web?.frame.width ?? -1))x\(Int(self.web?.frame.height ?? -1)) inWindow=\(self.web?.window != nil) loading=\(self.web?.isLoading ?? false)")
+            }
             if let diag = try? await self.web?.evaluateJavaScript("JSON.stringify({path:location.pathname,entries:[...document.querySelectorAll('[data-e2e]')].map(e=>e.getAttribute('data-e2e')).filter(s=>/share/.test(s)),props:(()=>{const e=document.querySelector('[data-e2e=video-player-share]');const k=e&&Object.keys(e).find(k=>k.startsWith('__reactProps'));return k?Object.keys(e[k]):[]})(),panel:!!document.querySelector('[data-e2e=video-share-container]')})") as? String {
                 DYLiveModel.log("DDFORWARD diag=\(diag)")
             }

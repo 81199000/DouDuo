@@ -17,7 +17,8 @@ assert 'opticalLeadingInset: theme.media.expandedRailOpticalInset' in feed
 for key, old in [('actionItemSpacing', 6), ('actionGroupSpacing', 10)]:
     value = re.search(r'let '+key+r': CGFloat = ([0-9.]+)', theme)
     assert value and float(value.group(1)) > old, 'spacing must increase: '+key
-assert 'VStack(spacing: theme.media.actionItemSpacing)' in feed
+rail = (root/'DouDuo/DYRailCapsule.swift').read_text()
+assert 'VStack(spacing: theme.media.actionItemSpacing)' in rail
 assert 'VStack(spacing: theme.media.actionGroupSpacing)' in feed
 swift = '''import Foundation
 enum Metrics {

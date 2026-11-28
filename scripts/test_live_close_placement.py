@@ -74,8 +74,9 @@ class LiveClosePlacementTests(unittest.TestCase):
         self.assertIn('accessibilityIdentifier("live.room.gift")', page)
         self.assertIn('accessibilityIdentifier("live.room.share")', page)
         self.assertIn("HStack(alignment: .bottom, spacing: 10)", page)
-        # 铺满按钮预览和进房都一直显示（头部一处、预览一处，共用 fillButton）
-        self.assertEqual(page.count("fillButton"), 3)
+        # 铺满按钮：进房后紧挨关闭键（右上、右下两种位置），预览一处（简洁/极简由右侧胶囊接管），共用 fillButton
+        self.assertEqual(page.count("fillButton"), 4)
+        self.assertIn("fillButton\n                    closeX(action: model.leaveRoom", page)
         self.assertIn('accessibilityIdentifier("live.room.fill")', page)
         self.assertIn("let fillWidth = model.fillScreen", SOURCE)
         gift = page.split('accessibilityIdentifier("live.room.gift")', 1)[0].rsplit("Button {", 1)[1]

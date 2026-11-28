@@ -129,14 +129,13 @@ final class DYLiveAmbientView: UIView {
         }
     }
 
-    /// 与视频环境光同一套处理：小图 → 高斯模糊 σ3 → 饱和度 0.85
     static func blurred(_ img: UIImage?) -> CGImage? {
         guard let cg = img?.cgImage else { return nil }
         let src = CIImage(cgImage: cg)
-        let scale = 48 / max(src.extent.width, 1)
+        let scale = 64 / max(src.extent.width, 1)
         let small = src.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let out = small.clampedToExtent().applyingGaussianBlur(sigma: 3).cropped(to: small.extent)
-            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.85])
+        let out = small.clampedToExtent().applyingGaussianBlur(sigma: 4).cropped(to: small.extent)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.8])
         return ci.createCGImage(out, from: small.extent)
     }
 }

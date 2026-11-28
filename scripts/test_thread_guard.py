@@ -32,5 +32,5 @@ print("OK thread guard: shared libVLC, release census, warm gating, 30s sampling
 # 6) 控制器析构时先清掉 activePlayer 的强引用
 d = VLC[VLC.index("    deinit {"):]
 d = d[:d.index("DispatchQueue.global(qos: .utility).async")]
-assert "activePlayer.suspendAcceptance()" in d and d.index("activePlayer.suspendAcceptance()") < d.index("release.player = player"), "deinit 必须先清 activePlayer"
+assert "activePlayer.suspendAcceptance()" in d and d.index("activePlayer.suspendAcceptance()") < d.index("release.player = mediaPlayer"), "deinit 必须先清 activePlayer"
 print("OK deinit drops activePlayer before background release")
