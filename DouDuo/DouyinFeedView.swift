@@ -1331,9 +1331,9 @@ private struct DouyinBridgeHost: UIViewRepresentable {
 final class DYPreloader {
     /// 提前暖几条 = 设置里的缓存条数（5 条缓存就暖 5 个播放器，上限 10）；
     /// 只有过热/极热才降档省电
+    static let maxPlayers = 3
     static var ahead: Int {
-        // 按流量策略：Wi-Fi 跟「预缓存数量」（上限 10，跟分页器挂载页数一致）；用流量时省流量开 1 条、关 2 条
-        DYNetPolicy.current.preload
+        min(maxPlayers, DYNetPolicy.current.preload)
     }
     /// 最近几条做「预解码首帧 + preroll」（更远的只备播放器）；但**数据一到就登记可播**，
     /// 这样「下一条没加载好就滑不动」不会变成每次都要滑两次

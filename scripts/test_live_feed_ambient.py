@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """推荐流里刷到的直播加环境光：直播走 VLC 没有 AVPlayerItem
-用 VLC 截小图 → 同一套模糊铺背景；画面层缩到画面大小居中，留边不盖住环境光。"""
+用 VLC 截小图 → 同一套模糊铺背景；画面同向铺满、异向保持完整，留边露出环境光。"""
 import pathlib, sys
 R = pathlib.Path(__file__).resolve().parent.parent / "DouDuo"
 a = (R / "DYLiveAmbient.swift").read_text()
@@ -33,5 +33,5 @@ for k in ["applyingGaussianBlur(sigma: 3)", "kCIInputSaturationKey: 0.85", "48 /
 check('"DDLIVEAMBIENT first' in a and '"DDLIVEAMBIENT snapshot' in a, "出图 / 截不到写日志")
 
 lv = warm[warm.index("struct DYFeedLiveVideo: View {"):warm.index("enum DYFeedLeaving")]
-check("DYVideoFit.contentSize(container: g.size" in lv and ".frame(width: fitted.width, height: fitted.height)" in lv, "画面层缩到画面大小，留边露出环境光")
+check("DYVideoFit.contentSize(container: g.size" in lv and ".frame(width: fitted.width, height: fitted.height)" in lv and "fillWidth: true" in lv, "推荐流直播同视频规则：同向铺满，竖屏看横屏保持完整")
 sys.exit(1 if fails else 0)

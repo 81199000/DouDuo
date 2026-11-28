@@ -10,10 +10,12 @@ struct VLCPlayerSurface: UIViewRepresentable {
     let controller: VLCPlayerController
     var fillWidth: Bool = true
     var letterbox: UIColor? = nil
+    var alwaysFill: Bool = false
     func makeUIView(context: Context) -> VLCPlayerUIView {
         let v = VLCPlayerUIView()
         v.controller = controller
         v.fillWidth = fillWidth
+        v.alwaysFill = alwaysFill
         v.backgroundColor = letterbox ?? .black   // 视频留边纯黑
         controller.boundSurface = v
         guard !controller.blocksSurfaceAttachment else { return v }
@@ -37,6 +39,7 @@ struct VLCPlayerSurface: UIViewRepresentable {
         }
         uiView.controller = controller
         uiView.fillWidth = fillWidth
+        uiView.alwaysFill = alwaysFill
         uiView.backgroundColor = letterbox ?? .black
         uiView.applyFill()   // videoSize 要播起来才有，靠 0.25s 刷新补上
     }
@@ -45,6 +48,7 @@ struct VLCPlayerSurface: UIViewRepresentable {
 final class VLCPlayerUIView: UIView {
     weak var controller: VLCPlayerController?
     var fillWidth = true
+    var alwaysFill = false { didSet { if alwaysFill != oldValue { applyFill() } } }
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
@@ -68,7 +72,8 @@ final class VLCPlayerUIView: UIView {
         // 超出屏幕部分看不见（居中缩放，裁切对称）。
         let video = vs.width / vs.height, screen = bounds.width / bounds.height
         // 只在视频和屏幕同向时放大：竖屏看竖屏铺满宽度、横屏看横屏铺满高度；竖屏看横屏保持原样
-        let s = DYVideoFit.vlcScale(fillWidth: fillWidth, videoAspect: video, screenAspect: screen)
+        let s = alwaysFill ? CGFloat(max(screen / video, video / screen))
+            : DYVideoFit.vlcScale(fillWidth: fillWidth, videoAspect: video, screenAspect: screen)
         let t = CATransform3DMakeScale(s, s, 1)
         if !CATransform3DEqualToTransform(layer.sublayerTransform, t) { layer.sublayerTransform = t }
     }

@@ -92,24 +92,55 @@ import UIKit
         ]
     }()
 
+    private static let queue = DispatchQueue(label: "douduo.keepalive", qos: .userInitiated)
+    private static var starting = false
+    private static var generation = 0
+
     static func start() {
         _ = lifecycle
         wanted = true
         guard UIApplication.shared.applicationState != .background else { return }
-        if let engine { if !engine.isRunning { try? engine.start() }; return }
-        let e = AVAudioEngine()
-        let fmt = e.outputNode.inputFormat(forBus: 0)
-        guard fmt.sampleRate > 0, fmt.channelCount > 0 else { return }
-        let src = AVAudioSourceNode(format: fmt) { silence, _, _, abl in
-            for b in UnsafeMutableAudioBufferListPointer(abl) { if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) } }
-            silence.pointee = true
-            return noErr
+        if let engine {
+            if !engine.isRunning { queue.async { try? engine.start() } }
+            return
         }
-        e.attach(src)
-        e.connect(src, to: e.mainMixerNode, format: fmt)
-        do { try e.start() } catch { DYLiveModel.log("DDKEEPALIVE start-fail \(error.localizedDescription)"); return }
+        guard !starting else { return }
+        starting = true
+        let gen = generation
+        let t0 = CACurrentMediaTime()
+        queue.async {
+            let e = AVAudioEngine()
+            let fmt = e.outputNode.inputFormat(forBus: 0)
+            var failure: String?
+            if fmt.sampleRate > 0, fmt.channelCount > 0 {
+                let src = AVAudioSourceNode(format: fmt) { silence, _, _, abl in
+                    for b in UnsafeMutableAudioBufferListPointer(abl) { if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) } }
+                    silence.pointee = true
+                    return noErr
+                }
+                e.attach(src)
+                e.connect(src, to: e.mainMixerNode, format: fmt)
+                do { try e.start() } catch { failure = error.localizedDescription }
+            } else { failure = "no-format" }
+            let ms = Int((CACurrentMediaTime() - t0) * 1000)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    starting = false
+                    if let failure { DYLiveModel.log("DDKEEPALIVE start-fail \(failure)"); return }
+                    guard gen == generation, wanted, engine == nil,
+                          UIApplication.shared.applicationState != .background else {
+                        queue.async { e.stop() }
+                        return
+                    }
+                    attach(e, format: fmt, ms: ms)
+                }
+            }
+        }
+    }
+
+    private static func attach(_ e: AVAudioEngine, format fmt: AVAudioFormat, ms: Int) {
         engine = e
-        DYLiveModel.log("DDKEEPALIVE on rate=\(Int(fmt.sampleRate)) ch=\(fmt.channelCount) 输出=\(DDAudioSessionGate.routeName)")
+        DYLiveModel.log("DDKEEPALIVE on rate=\(Int(fmt.sampleRate)) ch=\(fmt.channelCount) 输出=\(DDAudioSessionGate.routeName) start=\(ms)ms")
         let nc = NotificationCenter.default
         // 换耳机 / 来电打断后引擎会停：重新拉起（格式变化直接重建）
         observers = [
@@ -118,7 +149,7 @@ import UIKit
             },
             nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
                 let ended = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
-                MainActor.assumeIsolated { if ended, let engine, !engine.isRunning { try? engine.start() } }
+                MainActor.assumeIsolated { if ended, let engine, !engine.isRunning { queue.async { try? engine.start() } } }
             },
         ]
     }
@@ -127,9 +158,10 @@ import UIKit
     static func release() { wanted = false; stop() }
 
     static func stop() {
+        generation += 1
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
-        engine?.stop()
+        if let e = engine { queue.async { e.stop() } }
         engine = nil
     }
 }

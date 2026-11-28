@@ -19,6 +19,25 @@ struct DYFeedSession: Codable {
               session.items.contains(where: { $0.id == session.currentID }) else { return nil }
         return session
     }
+    private static let saveQueue = DispatchQueue(label: "douduo.feed.session", qos: .utility)
+    private static let pendingLock = NSLock()
+    nonisolated(unsafe) private static var pending: DYFeedSession?
+
+    func saveInBackground() {
+        Self.pendingLock.lock()
+        let scheduled = Self.pending != nil
+        Self.pending = self
+        Self.pendingLock.unlock()
+        guard !scheduled else { return }
+        Self.saveQueue.async {
+            Self.pendingLock.lock()
+            let s = Self.pending
+            Self.pending = nil
+            Self.pendingLock.unlock()
+            s?.save()
+        }
+    }
+
     func save() {
         guard items.contains(where: { $0.id == currentID }),
               let data = try? JSONEncoder().encode(self) else { return }

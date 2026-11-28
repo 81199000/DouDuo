@@ -50,8 +50,21 @@ struct DYFeedLivePage: View {
 
     var body: some View {
         ZStack {
-            // 不铺封面：先封面再切到直播画面会「闪一下」，没出画前就是黑底
             Color.black
+            if isCurrent {
+                GeometryReader { g in
+                    let mode: ContentMode = live.portrait == (g.size.height >= g.size.width) ? .fill : .fit
+                    if let frame = DYFeedLiveWarm.shared.frame(for: live.roomID) {
+                        Image(uiImage: frame).resizable().aspectRatio(contentMode: mode)
+                            .frame(width: g.size.width, height: g.size.height).clipped()
+                    } else if let cover = live.cover, let url = URL(string: cover) {
+                        CachedAsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: mode) }
+                            placeholder: { Color.black }
+                            .frame(width: g.size.width, height: g.size.height).clipped()
+                    }
+                }
+                .allowsHitTesting(false)
+            }
             // 环境光：画面没铺满（横屏直播 / 竖屏直播在折叠屏外屏）时四周跟着画面颜色变，同视频页
             if isCurrent, ambientLevel > 0 {
                 DYLiveAmbientBackdrop(controller: warm?.controller ?? player, active: isCurrent,
@@ -103,7 +116,7 @@ struct DYFeedLivePage: View {
         .onChange(of: isCurrent) { _, cur in cur ? start() : stop() }
         // 出声权由分页器统一交接（DDAudioFloor）：抬手撤权立刻静音；只有明确的回弹 / 取消才把声音还回来
         .onReceive(NotificationCenter.default.publisher(for: DDAudioFloor.changed)) { note in
-            guard started else { return }
+            guard started, !DYFeedLiveWarm.plain else { return }
             let phase = note.userInfo?["phase"] as? String
             let to = note.userInfo?["to"] as? String
             // 撤权点名到这一间，或权被提交 / 还给了别的页：立刻静音（不等 isCurrent 变 false）
@@ -124,6 +137,10 @@ struct DYFeedLivePage: View {
             if m {
                 restoreTask?.cancel(); restoreTask = nil
                 c.outputMuted = true; c.mediaPlayer.audio?.isMuted = true
+            } else if started, isCurrent, DYFeedLiveWarm.plain {
+                c.outputMuted = false
+                c.mediaPlayer.audio?.isMuted = false
+                c.mediaPlayer.audio?.volume = 100
             } else if started, isCurrent, let t = DDAudioFloor.token(item.id) {
                 c.outputMuted = false
                 restoreVolume(c, token: t)
@@ -188,9 +205,13 @@ struct DYFeedLivePage: View {
         started = true
         // 刚离开 0.6 秒内又划回来：取消还没执行的停播；离开时音量拉到了 0，这里拉回来
         DYFeedLiveWarm.cancelPendingStop(player)
-        let token = muted ? nil : DDAudioFloor.token(item.id)
-        player.outputMuted = token == nil
-        if let token { restoreVolume(player, token: token) }
+        if DYFeedLiveWarm.plain {
+            player.outputMuted = muted
+        } else {
+            let token = muted ? nil : DDAudioFloor.token(item.id)
+            player.outputMuted = token == nil
+            if let token { restoreVolume(player, token: token) }
+        }
         player.onError = { [sourceIndex] in
             Task { @MainActor in
                 // 当前线路起不来就换下一条（FLV → HLS / 换清晰度），全挂了显示「加载失败」

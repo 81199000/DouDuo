@@ -11,7 +11,10 @@ final class DYFeedLiveWarm {
     /// 退到后台就把预热的那一路停掉（后台没人看，别白下数据；回前台按当前条重新判断）
     private init() {
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { DYFeedLiveWarm.shared.release(reason: "background") }
+            MainActor.assumeIsolated {
+                DYFeedLiveWarm.shared.release(reason: "background")
+                DYFeedLiveWarm.shared.stopProbe(reason: "background")
+            }
         }
     }
 
@@ -30,16 +33,99 @@ final class DYFeedLiveWarm {
     static let maxWarm: TimeInterval = 60
 
     /// 省流量模式用流量时不预热；设置里关了「推荐里插入直播间」也不预热
+    static let plain = true
+
     static var allowed: Bool {
-        DYFeedExtras.liveEnabled && !DYStream.saving
+        !plain && DYFeedExtras.liveEnabled && !DYStream.saving
             // 有 VLC 停播卡在后台（≥2 个）或进程线程已经很多：先不预热，划到直播时再现连
             && VLCPlayerCensus.releaseBacklog < 2 && !DYThreadGuard.pressured
+    }
+
+
+    private(set) var frames: [String: UIImage] = [:]
+    private var frameAt: [String: Date] = [:]
+    private var probe: (roomID: String, controller: VLCPlayerController, view: VLCPlayerUIView, task: Task<Void, Never>)?
+    static let frameFresh: TimeInterval = 20
+    static let frameShow: TimeInterval = 90
+
+    func frame(for roomID: String) -> UIImage? {
+        guard let at = frameAt[roomID], Date().timeIntervalSince(at) < Self.frameShow else { return nil }
+        return frames[roomID]
+    }
+
+    func captureFrame(next: DYAweme?) {
+        guard let live = next?.live, DYFeedExtras.liveEnabled, !DYStream.saving,
+              VLCPlayerCensus.releaseBacklog < 2, !DYThreadGuard.pressured else { return }
+        if let at = frameAt[live.roomID], Date().timeIntervalSince(at) < Self.frameFresh { return }
+        if probe?.roomID == live.roomID { return }
+        stopProbe(reason: "switch")
+        guard let s = live.room.liveStreams.first, let window = Self.window else { return }
+        let c = VLCPlayerController()
+        c.outputMuted = true
+        let v = VLCPlayerUIView(frame: window.bounds)
+        v.controller = c
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false
+        v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        window.insertSubview(v, at: 0)
+        c.boundSurface = v
+        c.mediaPlayer.drawable = v
+        c.play(url: s.url, headers: DYMedia.liveHeaders, cachingMs: s.cacheMS)
+        c.mediaPlayer.audio?.isMuted = true
+        let roomID = live.roomID
+        let t0 = CACurrentMediaTime()
+        let task = Task { @MainActor [weak self] in
+            while !Task.isCancelled, CACurrentMediaTime() - t0 < 5 {
+                if c.mediaPlayer.hasVideoOut, c.videoSize.width > 0, c.current > 0 { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !Task.isCancelled, let self, self.probe?.controller === c else { return }
+            let image = c.mediaPlayer.hasVideoOut && c.videoSize.width > 0 ? await Self.snapshot(c) : nil
+            guard self.probe?.controller === c else { return }
+            if let image {
+                self.frames[roomID] = image
+                self.frameAt[roomID] = Date()
+                while self.frameAt.count > 8, let oldest = self.frameAt.min(by: { $0.value < $1.value })?.key {
+                    self.frameAt[oldest] = nil; self.frames[oldest] = nil
+                }
+            }
+            DYLiveModel.log("DDFEEDLIVE frame room=\(roomID.suffix(6)) ok=\(image != nil ? 1 : 0) after=\(Int((CACurrentMediaTime() - t0) * 1000))ms")
+            self.stopProbe(reason: image == nil ? "miss" : "done")
+        }
+        probe = (roomID, c, v, task)
+    }
+
+    func stopProbe(reason: String) {
+        guard let p = probe else { return }
+        probe = nil
+        p.task.cancel()
+        Self.dispose(Handle(roomID: p.roomID, controller: p.controller, view: p.view))
+    }
+
+    private static let snapshotQueue = DispatchQueue(label: "douduo.feed.live.frame", qos: .userInitiated)
+    private static func snapshot(_ c: VLCPlayerController) async -> UIImage? {
+        guard let mp = c.mediaPlayer else { return nil }
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("dd-feed-live-\(UUID().uuidString).png").path
+        return await withCheckedContinuation { (cont: CheckedContinuation<UIImage?, Never>) in
+            snapshotQueue.async {
+                var reason: NSString?
+                let ok = DDTryObjC({ mp.saveVideoSnapshot(at: path, withWidth: 720, andHeight: 0) }, &reason)
+                let image = ok ? (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap(UIImage.init(data:)).map { $0.preparingForDisplay() ?? $0 } : nil
+                try? FileManager.default.removeItem(atPath: path)
+                cont.resume(returning: image)
+            }
+        }
     }
 
     /// 按当前条更新：下一条是直播 → 预热它；否则把已有的预热停掉。
     /// ⚠️ 预热的正好是当前条（刚划到这间直播）时不能停：页面马上要接过去。
     /// 上一版在这里把它停了，导致一次都没接上。
     func update(current: DYAweme?, next: DYAweme?) {
+        if Self.plain {
+            if let id = current?.live?.roomID, probe?.roomID == id { stopProbe(reason: "current") }
+            captureFrame(next: next)
+            return
+        }
         if let w = warm, w.roomID == current?.live?.roomID { return }
         guard let next, let live = next.live, Self.allowed else { release(reason: "next-not-live"); return }
         if warm?.roomID == live.roomID { return }
@@ -50,7 +136,7 @@ final class DYFeedLiveWarm {
         c.outputMuted = false
         let v = VLCPlayerUIView(frame: window.bounds)
         v.controller = c
-        v.fillWidth = live.portrait
+        v.fillWidth = true
         v.backgroundColor = .clear
         v.isUserInteractionEnabled = false
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -138,6 +224,13 @@ final class DYFeedLiveWarm {
     /// 页面自己连的那一路：先静音，0.6 秒后再停播；停完再留 10 秒才放（同 dispose 的说明，防主线程析构卡死）
     static func stopLater(_ c: VLCPlayerController) {
         c.onError = nil
+        if plain {
+            c.stop()
+            DDAudioSessionGate.noteVLCStopping()
+            lingering.append(c)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { lingering.removeAll { $0 === c } }
+            return
+        }
         silenceNow(c)
         let key = ObjectIdentifier(c)
         pendingStops[key]?.cancel()
@@ -174,7 +267,9 @@ final class DYFeedLiveWarm {
 /// 把预热好的直播视图原样搬进页面（不换 drawable，不打断解码）
 struct DYWarmLiveSurface: UIViewRepresentable {
     let view: VLCPlayerUIView
+    var alwaysFill = false
     func makeUIView(context: Context) -> UIView {
+        view.alwaysFill = alwaysFill
         let box = UIView()
         box.backgroundColor = .clear
         box.clipsToBounds = true
@@ -188,6 +283,7 @@ struct DYWarmLiveSurface: UIViewRepresentable {
         if view.superview !== box {
             view.removeFromSuperview(); view.frame = box.bounds; box.addSubview(view)
         }
+        view.alwaysFill = alwaysFill
         view.applyFill()
     }
 }
@@ -204,11 +300,11 @@ struct DYFeedLiveVideo: View {
         GeometryReader { g in
             let vs = controller.videoSize
             let fitted = vs.width > 1 && vs.height > 1
-                ? DYVideoFit.contentSize(container: g.size, videoAspect: vs.width / vs.height, fillWidth: portrait)
+                ? DYVideoFit.contentSize(container: g.size, videoAspect: vs.width / vs.height, fillWidth: true)
                 : g.size
             Group {
                 if let warmView { DYWarmLiveSurface(view: warmView) }
-                else { VLCPlayerSurface(controller: controller, fillWidth: portrait, letterbox: .clear) }
+                else { VLCPlayerSurface(controller: controller, fillWidth: true, letterbox: .clear) }
             }
             .frame(width: fitted.width, height: fitted.height)
             .position(x: g.size.width / 2, y: g.size.height / 2)

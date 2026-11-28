@@ -3,7 +3,6 @@ import QuartzCore
 
 /// 推荐流「出声权」：由分页器统一交接，各页不再自己决定什么时候出声。
 ///
-/// - 抬手确定翻页（revoke）：旧页立刻撤权（静音），目标页在提交前也不许出声——预热可以提前，出声不行。
 /// - 收尾停住、目标页提交（commit）：新页才获权。
 /// - 回弹 / 手势取消 / 收尾被打断（cancel）：明确事件才把权还给原页（以前靠 900ms 定时器猜「没翻过去」）。
 ///
@@ -47,7 +46,8 @@ enum DDAudioFloor {
     static func revoke(from: String, to: String) {
         epoch += 1
         if leaving == nil { blocked = []; back = from; switchAt = CACurrentMediaTime() }
-        blocked.formUnion([from, to])
+        blocked.insert(to)
+        if from != back { blocked.insert(from) }
         leaving = (from, to); owner = nil; lastFrom = nil
         DYLiveModel.log("DDFLOOR ep=\(epoch) lift-revoke from=\(from.suffix(6)) to=\(to.suffix(6))")
         post(.revoke, from: from, to: to)

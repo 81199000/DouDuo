@@ -19,6 +19,7 @@ enum DYPagingSpeed: String, CaseIterable, Identifiable {
 struct DYPagingSpeedBridge: UIViewRepresentable {
     let ids: [String]
     @Binding var currentID: String?
+    var jumpToken: Int? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 维护者定稿：固定「更快」（0.10s），不提供菜单。系统开了「减少动态效果」时仍走系统分页。
     static let fixedSpeed: DYPagingSpeed = .faster
@@ -28,11 +29,15 @@ struct DYPagingSpeedBridge: UIViewRepresentable {
         view.ids = ids
         view.currentID = currentID
         if listChanged { view.listChanged() }
+        if let jumpToken, view.jumpToken != jumpToken {
+            view.jumpToken = jumpToken
+            view.snapToCurrent()
+        }
         view.didSettle = { id in
             guard ids.contains(id), currentID != id else { return }
             currentID = id
         }
-        view.duration = reduceMotion ? nil : Self.fixedSpeed.duration
+        view.duration = jumpToken != nil ? (reduceMotion ? 0.3 : Self.fixedSpeed.duration) : (reduceMotion ? nil : Self.fixedSpeed.duration)
         view.attachWhenReady()
     }
     static func dismantleUIView(_ view: DYPagingSpeedHost, coordinator: ()) { view.detach() }
@@ -68,6 +73,7 @@ final class DYPagingSpeedHost: UIView {
     var duration: TimeInterval?
     var ids: [String] = []
     var currentID: String?
+    var jumpToken: Int?
     var didSettle: (String) -> Void = { _ in }
     private var proxy: DYPagingDelegate?
     /// 手指抬起、已知落到哪一页：提前切当前页起播，不等收尾动画
@@ -96,11 +102,13 @@ final class DYPagingSpeedHost: UIView {
         proxy = next
         scroll.delegate = next
         DYPagerAdvance.register(next)
+        if jumpToken != nil { next.snapToCurrent() }
         #if DEBUG
         ddWrite("DDPAGE attach duration=\(duration)")
         #endif
     }
     func reconcileAfterLayout() { proxy?.reconcileAfterLayout() }
+    func snapToCurrent() { proxy?.snapToCurrent() }
     func listChanged() { proxy?.listChanged() }
     func detach() { proxy?.detach(); proxy = nil }
 }
@@ -187,8 +195,7 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
     /// 提前起播时收尾动画还要走多久：这段时间里别让 SwiftUI 的 scrollPosition 跟着当前条改（会和收尾动画抢位置 → DDJUMPFIX）
     @MainActor static var settleEndsAt: CFTimeInterval = 0
     /// 收尾动画剩最后这么久时就切当前条起播
-    /// 停住再切，这一顿发生在画面静止时，肉眼看不出。
-    static let earlyStart: TimeInterval = 0
+    static let earlyStart: TimeInterval = 0.12
     private var earlyFired = false
     private var writing = false
     private var jumpFixes = 0
@@ -403,6 +410,16 @@ final class DYPagingDelegate: NSObject, UIScrollViewDelegate {
                   let index = self.ids().firstIndex(of: id) else { return }
             scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x,
                 y: CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top), animated: false)
+        }
+    }
+    func snapToCurrent() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.link == nil, let scroll = self.scroll, scroll.delegate === self,
+                  !scroll.isDragging, !scroll.isDecelerating, let id = self.currentID(),
+                  let index = self.ids().firstIndex(of: id), scroll.bounds.height > 0 else { return }
+            let y = CGFloat(index) * scroll.bounds.height - scroll.adjustedContentInset.top
+            guard abs(scroll.contentOffset.y - y) > 0.5 else { return }
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false)
         }
     }
     private func stop() { link?.invalidate(); link = nil; target = nil; targetID = nil; expected = nil }

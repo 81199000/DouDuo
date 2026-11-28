@@ -585,6 +585,8 @@ final class DDSeamlessController {
     /// 。引擎在主线程解码，平时不用它也省了滑动开销。
     /// 交接后这条视频剩下的时间留在引擎上（切回原生会再断一下声），滑到下一条重新用原生声音。
     nonisolated static var engineWanted: Bool { false }
+    nonisolated static var handoffWanted: Bool { false }
+    nonisolated static var plainNativeRate: Bool { true }
 
     /// - Parameter engineHandoff: 原生声音时，变速是否允许就地交给独立引擎（画中画要原生声音，不允许）
     func bind(player: AVPlayer, initialPosition: Double?, isActive: Bool, isPlaying: Bool, rate: Float, muted: Bool,
@@ -714,7 +716,7 @@ final class DDSeamlessController {
             if wantPlaying { videoPlayer?.rate = targetRate }
         case .fallbackAVPlayer:
             videoPlayer?.isMuted = muted
-            if wantPlaying { videoPlayer?.rate = targetRate }
+            if wantPlaying, let vp = videoPlayer, abs(vp.rate - targetRate) > 0.001 { vp.rate = targetRate }
         }
     }
 
@@ -739,7 +741,9 @@ final class DDSeamlessController {
                 return
             }
             if vp.rate > 0, abs(vp.rate - newRate) < 0.001 { return }
-            if handoffAllowed, vp.rate > 0 { beginEngineHandoff() } else { vp.softRate(newRate) }
+            if handoffAllowed, vp.rate > 0 { beginEngineHandoff() }
+            else if Self.plainNativeRate { vp.rate = newRate }
+            else { vp.softRate(newRate) }
         }
     }
 

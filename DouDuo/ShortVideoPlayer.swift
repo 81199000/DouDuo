@@ -1347,7 +1347,8 @@ struct PlayerPage: View {
         }
         let nativeAudio = DYAutoPiP.bindsNativeAudio(preference: autoPiP, cleanScreen: cleanScreen)
         seamAudio.bind(player: p, initialPosition: initialPos, isActive: active, isPlaying: playing, rate: playRate, muted: outMuted,
-                       useEngine: !nativeAudio && DDSeamlessController.engineWanted, engineHandoff: !nativeAudio)
+                       useEngine: !nativeAudio && DDSeamlessController.engineWanted,
+                       engineHandoff: !nativeAudio && DDSeamlessController.handoffWanted)
     }
 
     private func setup(prepared: AVPlayer? = nil) {
